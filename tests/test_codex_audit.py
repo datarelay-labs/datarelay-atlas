@@ -479,9 +479,12 @@ class CodexAuditProviderTests(unittest.TestCase):
     def test_pr_review_evidence_ok_and_fail_closed(self):
         seen_paths: list[str] = []
 
+        def slurp(pages: list) -> str:
+            return json.dumps(pages)
+
         def ok_runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            self.assertEqual(argv[:3], ["gh", "api", "--paginate"])
-            path = argv[3]
+            self.assertEqual(argv[:4], ["gh", "api", "--paginate", "--slurp"])
+            path = argv[4]
             seen_paths.append(path)
             if path.endswith("/reviews"):
                 payload = [
@@ -495,7 +498,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                     }
                 ]
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps(payload), stderr=""
+                    argv, 0, stdout=slurp([payload]), stderr=""
                 )
             if "/pulls/" in path and path.endswith("/comments"):
                 payload = [
@@ -510,7 +513,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                     }
                 ]
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps(payload), stderr=""
+                    argv, 0, stdout=slurp([payload]), stderr=""
                 )
             if "/issues/" in path and path.endswith("/comments"):
                 payload = [
@@ -522,7 +525,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                     }
                 ]
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps(payload), stderr=""
+                    argv, 0, stdout=slurp([payload]), stderr=""
                 )
             raise AssertionError(argv)
 
@@ -546,12 +549,87 @@ class CodexAuditProviderTests(unittest.TestCase):
             ],
         )
 
+    def test_pr_review_evidence_preserves_later_page_findings(self):
+        """Two slurped pages must flatten so page-2 actionable findings survive."""
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(argv[:4], ["gh", "api", "--paginate", "--slurp"])
+            path = argv[4]
+            if "/pulls/" in path and path.endswith("/comments"):
+                page1 = [
+                    {
+                        "id": 1,
+                        "user": {"login": "reviewer"},
+                        "body": "page1 noise",
+                        "path": "atlas/codex_audit.py",
+                        "line": 1,
+                        "commit_id": HEAD,
+                        "created_at": "2026-09-21T00:00:00Z",
+                    }
+                ]
+                page2 = [
+                    {
+                        "id": 2,
+                        "user": {"login": "reviewer"},
+                        "body": "P1 later-page actionable finding",
+                        "path": "atlas/codex_audit.py",
+                        "line": 99,
+                        "commit_id": HEAD,
+                        "created_at": "2026-09-21T00:01:00Z",
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps([page1, page2]), stderr=""
+                )
+            # Empty single slurped page for other sections.
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps([[]]), stderr=""
+            )
+
+        result = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=15,
+            command_runner=runner,
+        )
+        self.assertEqual(result["status"], "OK")
+        bodies = [c["body"] for c in result["inline_comments"]]
+        self.assertEqual(
+            bodies,
+            ["page1 noise", "P1 later-page actionable finding"],
+        )
+        self.assertEqual(result["inline_comments"][1]["id"], 2)
+
+    def test_pr_review_evidence_fail_closed_on_non_list_slurp_page(self):
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(argv[:4], ["gh", "api", "--paginate", "--slurp"])
+            path = argv[4]
+            if path.endswith("/reviews"):
+                # Outer array present, but page 0 is an object — fail closed.
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps([{"id": 1, "body": "not a list page"}]),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps([[]]), stderr=""
+            )
+
+        err = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=15,
+            command_runner=runner,
+        )
+        self.assertEqual(err["status"], "ERROR")
+        self.assertEqual(err["failed_section"], "reviews")
+        self.assertIn("page 0 is not a JSON array", err["detail"])
+
     def test_pr_review_evidence_fail_closed_when_section_truncated(self):
         big_body = "P1 finding " + ("x" * 3000)
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            self.assertIn("--paginate", argv)
-            path = argv[3]
+            self.assertEqual(argv[:4], ["gh", "api", "--paginate", "--slurp"])
+            path = argv[4]
             if path.endswith("/reviews"):
                 payload = [
                     {
@@ -565,9 +643,11 @@ class CodexAuditProviderTests(unittest.TestCase):
                     for i in range(1, 4)
                 ]
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps(payload), stderr=""
+                    argv, 0, stdout=json.dumps([payload]), stderr=""
                 )
-            return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps([[]]), stderr=""
+            )
 
         result = collect_pr_review_evidence(
             repository="datarelay-labs/datarelay-atlas",
@@ -672,24 +752,28 @@ class CodexAuditProviderTests(unittest.TestCase):
                     argv, 0, stdout="check\tpass\n", stderr=""
                 )
             if argv[:2] == ["gh", "api"]:
-                self.assertEqual(argv[2], "--paginate")
-                path = argv[3]
+                self.assertEqual(argv[2:4], ["--paginate", "--slurp"])
+                path = argv[4]
                 if path.endswith("/reviews"):
-                    return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout=json.dumps([[]]), stderr=""
+                    )
                 if "/pulls/" in path and path.endswith("/comments"):
                     return subprocess.CompletedProcess(
                         argv,
                         0,
                         stdout=json.dumps(
                             [
-                                {
-                                    "id": 1,
-                                    "user": {"login": "bot"},
-                                    "body": "P1 finding",
-                                    "path": "atlas/codex_audit.py",
-                                    "line": 1,
-                                    "commit_id": HEAD,
-                                }
+                                [
+                                    {
+                                        "id": 1,
+                                        "user": {"login": "bot"},
+                                        "body": "P1 finding",
+                                        "path": "atlas/codex_audit.py",
+                                        "line": 1,
+                                        "commit_id": HEAD,
+                                    }
+                                ]
                             ]
                         ),
                         stderr="",
@@ -700,11 +784,13 @@ class CodexAuditProviderTests(unittest.TestCase):
                         0,
                         stdout=json.dumps(
                             [
-                                {
-                                    "id": 7,
-                                    "user": {"login": "owner"},
-                                    "body": "conversation note",
-                                }
+                                [
+                                    {
+                                        "id": 7,
+                                        "user": {"login": "owner"},
+                                        "body": "conversation note",
+                                    }
+                                ]
                             ]
                         ),
                         stderr="",

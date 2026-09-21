@@ -425,6 +425,28 @@ def _bounded_review_items(
     return items, truncated
 
 
+def _flatten_slurped_gh_pages(
+    raw: object, *, path: str
+) -> tuple[list[object], str | None]:
+    """Flatten ``gh api --paginate --slurp`` output into one list.
+
+    ``--paginate`` alone emits each page as a separate JSON value; ``--slurp``
+    wraps those pages in one outer JSON array. Every page must itself be a JSON
+    array (list endpoints). Returns ``(flat_items, error_detail)``; on any
+    malformation ``error_detail`` is set and callers must fail closed.
+    """
+    if not isinstance(raw, list):
+        return [], f"gh api {path} --slurp returned non-array"
+    flat: list[object] = []
+    for page_idx, page in enumerate(raw):
+        if not isinstance(page, list):
+            return [], (
+                f"gh api {path} --slurp page {page_idx} is not a JSON array"
+            )
+        flat.extend(page)
+    return flat, None
+
+
 def collect_pr_review_evidence(
     *,
     repository: str,
@@ -435,7 +457,8 @@ def collect_pr_review_evidence(
     """Collect machine-observable PR review feedback (fail closed).
 
     Surfaces: submitted reviews, inline review comments, and top-level PR
-    conversation comments. Each GitHub list endpoint is paginated. When a
+    conversation comments. Each GitHub list endpoint is fetched with
+    ``gh api --paginate --slurp``, pages are flattened, then bounded. When a
     section budget truncates uninspected entries, status is INCOMPLETE so the
     auditor fails closed instead of terminal PASS.
     """
@@ -454,7 +477,7 @@ def collect_pr_review_evidence(
         ("inline_comments", f"{pull_base}/comments"),
         ("conversation_comments", f"{issue_base}/comments"),
     ):
-        argv = ["gh", "api", "--paginate", path]
+        argv = ["gh", "api", "--paginate", "--slurp", path]
         try:
             completed = _run_capture(
                 argv, cwd, timeout_sec=60, runner=command_runner
@@ -478,12 +501,22 @@ def collect_pr_review_evidence(
                 "failed_section": label,
             }
         try:
-            payload = json.loads(completed.stdout or "[]")
+            slurped = json.loads(completed.stdout or "[]")
         except json.JSONDecodeError:
             return {
                 "collector": "atlas.codex_audit.collect_pr_review_evidence",
                 "status": "ERROR",
                 "detail": f"gh api {path} returned non-JSON",
+                "repository": repository,
+                "pr_number": pr_number,
+                "failed_section": label,
+            }
+        payload, flatten_error = _flatten_slurped_gh_pages(slurped, path=path)
+        if flatten_error:
+            return {
+                "collector": "atlas.codex_audit.collect_pr_review_evidence",
+                "status": "ERROR",
+                "detail": flatten_error,
                 "repository": repository,
                 "pr_number": pr_number,
                 "failed_section": label,
