@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="README.ko.md">한국어</a> ·
+  <strong>English</strong> · <a href="README.ko.md">한국어</a> ·
   <a href="https://github.com/datarelay-labs/engineering-system">Engineering System</a> ·
   <a href="https://github.com/datarelay-labs/datarelay-atlas-docs">Documentation</a>
 </p>
@@ -20,16 +20,9 @@
 
 DataRelay Atlas is an AI-assisted engineering platform that connects project knowledge, methodology, lifecycle state, and AI context.
 
-Atlas is designed to give humans and AI agents one consistent view of:
+Atlas gives humans and AI agents one consistent view of engineering methodology, registered products and repositories, architecture/specifications/ADRs, validation and release evidence, current lifecycle state, searchable cross-project knowledge, and trusted context for MCP-capable AI clients.
 
-- engineering methodology and standards
-- registered products and repositories
-- architecture, specifications, ADRs, tests, releases, and operational evidence
-- current lifecycle and delivery state
-- searchable cross-project engineering knowledge
-- trusted context for Cursor, ChatGPT, and other MCP-capable agents
-
-Atlas does **not** replace GitHub, CI/CD, issue trackers, or coding agents. It connects and explains the engineering state that already exists in those systems.
+Atlas does **not** replace GitHub, CI/CD, issue trackers, or coding agents. It connects, validates, indexes, and explains the engineering state that already exists in those systems.
 
 ## Core model
 
@@ -52,21 +45,21 @@ GitHub / OpenSpec / Code / Tests / ADR / CI
 ## Product principles
 
 1. **GitHub remains normative.** Derived knowledge never overrides canonical repository state.
-2. **Engineering System defines the methodology.** Atlas applies, observes, and explains it; Atlas does not create a competing engineering standard.
-3. **Knowledge engines are replaceable.** Athena may provide indexing, Wiki, semantic retrieval, and MCP infrastructure, but Atlas is the product boundary.
-4. **Provenance is mandatory.** Derived knowledge must retain repository, ref, path, and source revision where applicable.
+2. **Engineering System defines the methodology.** Atlas applies, observes, validates, and explains it; Atlas does not create a competing engineering standard.
+3. **Knowledge engines are replaceable.** Athena can provide Wiki/search/vector/MCP infrastructure, but Atlas is the product boundary.
+4. **Provenance is mandatory.** Derived knowledge keeps repository, ref, path, and source revision where applicable.
 5. **Start self-hosted and single-organization.** Multi-organization/SaaS behavior is future scope, not an MVP assumption.
-6. **Do not rebuild tools that already work.** Git hosting, CI/CD, coding agents, and issue tracking stay external unless a clear product requirement changes that boundary.
+6. **Do not rebuild tools that already work.** Git hosting, CI/CD, coding agents, and issue tracking remain external unless an explicit product requirement changes that boundary.
 
 ## Current status
 
-DataRelay Atlas is in initial product definition and architecture bootstrap.
+DataRelay Atlas is in initial product-definition and architecture bootstrap.
 
-The current phase establishes the product contract, Engineering System adoption, knowledge architecture, and migration path from the existing Athena proof of concept.
+The first milestone establishes the product contract, Engineering System adoption, knowledge architecture, and a bounded migration path from the existing Athena proof of concept.
 
 ## Engineering
 
-This repository follows the canonical [Data Relay Labs Engineering System](https://github.com/datarelay-labs/engineering-system).
+This repository follows the canonical [Data Relay Labs Engineering System](https://github.com/datarelay-labs/engineering-system), pinned by `.engineering/project.yaml`.
 
 Start with:
 
@@ -80,4 +73,4 @@ Human-facing documentation lives in [datarelay-atlas-docs](https://github.com/da
 
 ## License
 
-Source-available. The project license will follow the Data Relay Source Available License model used by Data Relay Labs products, with third-party components continuing under their own licenses.
+The repository is currently all-rights-reserved pending the dependency/license compatibility audit. The intended Data Relay Labs model is source-available with internal commercial use permitted and productization/SaaS restrictions, while third-party components retain their own licenses.
