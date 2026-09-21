@@ -123,6 +123,36 @@ def _trim_marked(text: str, limit: int) -> tuple[str, bool]:
     return raw[:limit] + "\n...[truncated]...\n", True
 
 
+def _untracked_paths_from_status(status_text: str) -> list[str]:
+    """Parse ``git status --short`` lines for untracked (``??``) paths only.
+
+    Returns path names only; never reads file contents.
+    """
+    paths: list[str] = []
+    for line in str(status_text or "").splitlines():
+        if line.startswith("?? "):
+            path = line[3:].strip()
+            if path:
+                paths.append(path)
+    return paths
+
+
+def _bounded_path_list(paths: list[str], *, max_chars: int = 2000) -> list[str]:
+    """Bound a list of path strings without reading file contents."""
+    bounded: list[str] = []
+    remaining = max_chars
+    for path in paths:
+        entry = path if len(path) <= 240 else path[:240] + "..."
+        encoded_len = len(entry) + (1 if bounded else 0)
+        if encoded_len > remaining and bounded:
+            break
+        bounded.append(entry)
+        remaining = max(0, remaining - encoded_len)
+        if remaining <= 0:
+            break
+    return bounded
+
+
 def collect_git_evidence(
     worktree_path: str,
     *,
@@ -134,7 +164,8 @@ def collect_git_evidence(
 
     Porcelain ``status`` remains the ``git status`` output. Completeness is
     reported separately as ``evidence_status`` (OK / INCOMPLETE / ERROR) so a
-    truncated committed/workdir/staged diff cannot silently permit PASS.
+    truncated committed/workdir/staged diff, or untracked paths whose contents
+    are not included, cannot silently permit PASS.
     """
     runner = git_runner or default_git_runner
     cwd = str(Path(worktree_path).resolve())
@@ -182,6 +213,10 @@ def collect_git_evidence(
         except ValidationError as exc:
             evidence[label] = f"ERROR: {exc}"
 
+    untracked = _untracked_paths_from_status(str(evidence.get("status") or ""))
+    if untracked:
+        evidence["untracked_files"] = _bounded_path_list(untracked)
+
     audited_keys = (
         "status",
         "head",
@@ -206,13 +241,21 @@ def collect_git_evidence(
             f"error fields={','.join(error_fields)}"
         )
         evidence["error_fields"] = error_fields
-    elif truncated_fields:
+    elif truncated_fields or untracked:
         evidence["evidence_status"] = "INCOMPLETE"
-        evidence["detail"] = (
-            "git diff truncated under max_diff_chars budget; "
-            f"truncated fields={','.join(truncated_fields)}"
-        )
-        evidence["truncated_fields"] = truncated_fields
+        details: list[str] = []
+        if truncated_fields:
+            details.append(
+                "git diff truncated under max_diff_chars budget; "
+                f"truncated fields={','.join(truncated_fields)}"
+            )
+            evidence["truncated_fields"] = truncated_fields
+        if untracked:
+            details.append(
+                "untracked files present; contents not included in git evidence "
+                f"(count={len(untracked)})"
+            )
+        evidence["detail"] = "; ".join(details)
     else:
         evidence["evidence_status"] = "OK"
     return evidence

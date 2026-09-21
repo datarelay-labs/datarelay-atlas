@@ -480,6 +480,61 @@ class CodexAuditProviderTests(unittest.TestCase):
         # Porcelain status field remains git status output, not completeness.
         self.assertEqual(evidence["status"], "## feature/x")
 
+    def test_untracked_file_marks_git_incomplete_and_skips_codex(self):
+        """?? new_file.py ⇒ INCOMPLETE (names only); Codex runner not invoked."""
+        secret_contents = "SECRET_SHOULD_NEVER_APPEAR_IN_EVIDENCE = 1\n"
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "status", "--short", "--branch"): (
+                    "## feature/x\n?? new_file.py\n"
+                ),
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "diff", "--stat", "origin/main...HEAD"): "",
+                ("git", "diff", "--find-renames", "origin/main...HEAD"): "",
+                ("git", "diff", "--stat", "HEAD"): "",
+                ("git", "diff", "--find-renames", "HEAD"): "",
+                ("git", "diff", "--cached", "--stat"): "",
+                ("git", "diff", "--cached", "--find-renames"): "",
+            }
+            try:
+                return mapping[tuple(argv)]
+            except KeyError as exc:
+                raise AssertionError(argv) from exc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Untracked file exists on disk but must not be read into evidence.
+            Path(tmp, "new_file.py").write_text(secret_contents, encoding="utf-8")
+            evidence = collect_git_evidence(tmp, git_runner=fake_git)
+            self.assertEqual(evidence["evidence_status"], "INCOMPLETE")
+            self.assertEqual(evidence["untracked_files"], ["new_file.py"])
+            self.assertIn("untracked files present", evidence["detail"])
+            self.assertNotIn(secret_contents.strip(), json.dumps(evidence))
+            self.assertNotIn("SECRET_SHOULD_NEVER_APPEAR", json.dumps(evidence))
+
+            def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+                raise AssertionError("codex runner must not be called")
+
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": evidence,
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("git evidence status=INCOMPLETE", result.findings)
+            self.assertIsNone(provider.last_command)
+            self.assertIsNone(provider.last_prompt)
+
     def test_run_capture_maps_missing_executable(self):
         from atlas.codex_audit import _run_capture
 
