@@ -1,5 +1,5 @@
 version: 1
-setup_command: ""
+setup_command: "python3 -m pip install --quiet 'jsonschema>=4.0'"
 
 paths:
   "AGENTS.md":
