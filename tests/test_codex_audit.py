@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from atlas.codex_audit import (
+    CODEX_DISABLED_FEATURES,
     CodexAuditProvider,
     build_codex_audit_command,
     build_codex_audit_prompt,
+    collect_audit_evidence_bundle,
+    collect_ci_evidence,
+    collect_test_evidence,
+    collect_work_packet_evidence,
 )
 from atlas.provenance import ValidationError
 from atlas.work_controller import (
     CompletionEvent,
     WorkstreamRecord,
+    WorktreeIdentity,
     heads_match,
     normalize_github_repository,
     validate_worktree_identity,
@@ -49,10 +57,7 @@ class WorktreeIdentityTests(unittest.TestCase):
         self.assertFalse(heads_match(HEAD, HEAD2))
 
     def test_validate_worktree_identity_success_and_failures(self):
-        calls: list[tuple[tuple[str, ...], str]] = []
-
         def fake_git(argv: list[str], cwd: str) -> str:
-            calls.append((tuple(argv), cwd))
             key = tuple(argv)
             mapping = {
                 ("git", "rev-parse", "--show-toplevel"): cwd,
@@ -126,42 +131,112 @@ class CodexAuditProviderTests(unittest.TestCase):
             max_attempts=3,
         )
 
-    def test_build_command_is_read_only_and_targets_worktree(self):
+    def _identity(self, worktree: str) -> WorktreeIdentity:
+        return WorktreeIdentity(
+            worktree_path=worktree,
+            repository="datarelay-labs/datarelay-atlas",
+            branch="feature/x",
+            head=HEAD,
+            toplevel=worktree,
+        )
+
+    def _bundle(self) -> dict:
+        return {
+            "schema": "awc.codex_evidence_bundle.v1",
+            "git": {"status": " M atlas/codex_audit.py", "head": HEAD},
+            "work_packet": {"status": "OK", "body": "STATUS=ACTIVE"},
+            "tests": {"status": "PASS", "exit_code": 0},
+            "ci": {"status": "OK", "checks": "affected-tests\tpass"},
+        }
+
+    def test_build_command_disables_tools_apps_browser_shell(self):
         with tempfile.TemporaryDirectory() as tmp:
             cmd = build_codex_audit_command(
                 tmp, last_message_path=str(Path(tmp) / "out.txt")
             )
         self.assertEqual(cmd[0:2], ["codex", "exec"])
         self.assertIn("-C", cmd)
-        self.assertIn("-s", cmd)
         self.assertIn("read-only", cmd)
         self.assertIn("--ephemeral", cmd)
-        self.assertIn("-o", cmd)
+        self.assertIn('web_search="disabled"', cmd)
+        for feature in CODEX_DISABLED_FEATURES:
+            self.assertIn(feature, cmd)
+        self.assertIn("shell_tool", cmd)
+        self.assertIn("browser_use", cmd)
+        self.assertIn("apps", cmd)
         self.assertEqual(cmd[-1], "-")
-        self.assertNotIn("OPENAI_API_KEY", " ".join(cmd))
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", cmd)
 
-    def test_prompt_is_bounded_and_credential_free(self):
+    def test_prompt_is_judge_bundle_only_and_credential_free(self):
         with tempfile.TemporaryDirectory() as tmp:
-            from atlas.work_controller import WorktreeIdentity
-
-            identity = WorktreeIdentity(
-                worktree_path=tmp,
-                repository="datarelay-labs/datarelay-atlas",
-                branch="feature/x",
-                head=HEAD,
-                toplevel=tmp,
-            )
             prompt = build_codex_audit_prompt(
-                self._event(), self._record(tmp), identity=identity
+                self._event(),
+                self._record(tmp),
+                identity=self._identity(tmp),
+                evidence_bundle=self._bundle(),
             )
+        self.assertIn("judge_evidence_bundle_only", prompt)
+        self.assertIn("EVIDENCE_BUNDLE_JSON", prompt)
+        self.assertIn("tools_disabled", prompt)
+        self.assertIn("no_shell", prompt)
         self.assertIn("/work-resume", prompt)
-        self.assertIn("read_only", prompt)
-        self.assertIn("no_edits", prompt)
         self.assertNotIn("OPENAI_API_KEY", prompt)
         self.assertNotIn("sk-", prompt)
 
-    def test_provider_parses_rework_and_records_command(self):
+    def test_collect_bundle_uses_injected_collectors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                mapping = {
+                    ("git", "status", "--short", "--branch"): "## feature/x",
+                    ("git", "rev-parse", "HEAD"): HEAD,
+                    ("git", "branch", "--show-current"): "feature/x",
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "diff", "--stat", "origin/main...HEAD"): "1 file",
+                    ("git", "diff", "--find-renames", "origin/main...HEAD"): "diff",
+                    ("git", "diff", "--stat", "HEAD"): "workdir",
+                    ("git", "diff", "--find-renames", "HEAD"): "workdir-diff",
+                    ("git", "diff", "--cached", "--stat"): "",
+                    ("git", "diff", "--cached", "--find-renames"): "",
+                }
+                return mapping[tuple(argv)]
+
+            def fake_cmd(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+                if argv[:3] == ["gh", "issue", "view"]:
+                    payload = {
+                        "number": 12,
+                        "title": "[AI Work] x",
+                        "state": "OPEN",
+                        "updatedAt": "2026-09-21T00:00:00Z",
+                        "body": "STATUS=ACTIVE\n",
+                    }
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout=json.dumps(payload), stderr=""
+                    )
+                if argv[:3] == ["gh", "pr", "list"]:
+                    return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+                if argv[:3] == ["python3", "-m", "unittest"]:
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout="Ran 1 test\nOK\n", stderr=""
+                    )
+                raise AssertionError(f"unexpected argv {argv}")
+
+            bundle = collect_audit_evidence_bundle(
+                self._event(),
+                self._record(tmp),
+                identity=self._identity(tmp),
+                git_runner=fake_git,
+                command_runner=fake_cmd,
+            )
+            self.assertEqual(bundle["schema"], "awc.codex_evidence_bundle.v1")
+            self.assertEqual(bundle["git"]["head"], HEAD)
+            self.assertEqual(bundle["work_packet"]["status"], "OK")
+            self.assertEqual(bundle["tests"]["status"], "PASS")
+            self.assertEqual(bundle["ci"]["status"], "ABSENT")
+
+    def test_provider_parses_rework_and_records_tool_disabled_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             observed: dict = {}
 
@@ -179,12 +254,14 @@ class CodexAuditProviderTests(unittest.TestCase):
             def fake_runner(command: list[str], prompt: str, cwd: str) -> str:
                 observed["command"] = command
                 observed["prompt"] = prompt
-                observed["cwd"] = cwd
-                self.assertEqual(cwd, str(Path(tmp).resolve()))
-                self.assertIn("read-only", command)
+                self.assertIn("shell_tool", command)
+                self.assertIn("browser_use", command)
+                self.assertIn("apps", command)
+                self.assertIn("judge_evidence_bundle_only", prompt)
+                self.assertIn("EVIDENCE_BUNDLE_JSON", prompt)
                 out = Path(command[command.index("-o") + 1])
                 out.write_text(
-                    '{"verdict":"REWORK","findings":"/resume drift; non-autonomous dispatch"}',
+                    '{"verdict":"REWORK","findings":"bundle shows gaps"}',
                     encoding="utf-8",
                 )
                 return out.read_text(encoding="utf-8")
@@ -192,15 +269,14 @@ class CodexAuditProviderTests(unittest.TestCase):
             provider = CodexAuditProvider(
                 runner=fake_runner,
                 git_runner=fake_git,
-                evidence="synthetic fixture evidence",
+                evidence_bundle=self._bundle(),
             )
             result = provider.audit(self._event(), self._record(tmp))
             self.assertEqual(result.verdict, "REWORK")
-            self.assertIn("/resume drift", result.findings)
-            self.assertIsNotNone(provider.last_command)
+            self.assertIn("bundle shows gaps", result.findings)
             assert provider.last_command is not None
-            self.assertEqual(provider.last_command[0:2], ["codex", "exec"])
-            self.assertIn("read-only", provider.last_command)
+            self.assertIn("--disable", provider.last_command)
+            self.assertIn("shell_tool", provider.last_command)
             self.assertNotIn("OPENAI_API_KEY", observed["prompt"])
 
     def test_provider_maps_runner_failure_to_human_required(self):
@@ -223,7 +299,7 @@ class CodexAuditProviderTests(unittest.TestCase):
             provider = CodexAuditProvider(
                 runner=boom,
                 git_runner=fake_git,
-                evidence="synthetic fixture evidence",
+                evidence_bundle=self._bundle(),
             )
             result = provider.audit(self._event(), self._record(tmp))
             self.assertEqual(result.verdict, "HUMAN_REQUIRED")
@@ -249,21 +325,40 @@ class CodexAuditProviderTests(unittest.TestCase):
             provider = CodexAuditProvider(
                 runner=bad_runner,
                 git_runner=fake_git,
-                evidence="synthetic fixture evidence",
+                evidence_bundle=self._bundle(),
             )
             result = provider.audit(self._event(), self._record(tmp))
             self.assertEqual(result.verdict, "HUMAN_REQUIRED")
             self.assertIn("parse failed", result.findings)
 
-    def test_default_runner_refuses_non_readonly_command(self):
+    def test_default_runner_refuses_enabled_shell_tool(self):
         from atlas.codex_audit import default_codex_runner
 
         with self.assertRaises(ValidationError):
             default_codex_runner(
-                ["codex", "exec", "-C", ".", "-s", "workspace-write", "-o", "x", "-"],
+                ["codex", "exec", "-C", ".", "-s", "read-only", "-o", "x", "-"],
                 "prompt",
                 ".",
             )
+
+    def test_work_packet_and_ci_collectors_surface_errors(self):
+        def boom(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 2, stdout="", stderr="nope")
+
+        packet = collect_work_packet_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            issue_number=12,
+            command_runner=boom,
+        )
+        self.assertEqual(packet["status"], "ERROR")
+        ci = collect_ci_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            head=HEAD,
+            command_runner=boom,
+        )
+        self.assertEqual(ci["status"], "ERROR")
+        tests = collect_test_evidence("/tmp", command_runner=boom)
+        self.assertEqual(tests["status"], "FAIL")
 
 
 if __name__ == "__main__":

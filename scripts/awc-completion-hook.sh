@@ -46,14 +46,20 @@ python3 -m atlas --data-root "$DATA_ROOT" work-controller enqueue-completion "$T
 
 if [[ "${AWC_DRAIN:-1}" == "1" ]]; then
   EXTRA=()
-  if [[ "${AWC_AUDIT_ADAPTER:-fixed}" == "openai" ]]; then
-    EXTRA+=(--audit-adapter openai)
-  else
-    EXTRA+=(--audit-adapter fixed --audit-verdict "${AWC_AUDIT_VERDICT:-PASS}")
-    if [[ -n "${AWC_AUDIT_FINDINGS:-}" ]]; then
-      EXTRA+=(--audit-findings "$AWC_AUDIT_FINDINGS")
-    fi
-  fi
+  case "${AWC_AUDIT_ADAPTER:-fixed}" in
+    openai)
+      EXTRA+=(--audit-adapter openai)
+      ;;
+    codex)
+      EXTRA+=(--audit-adapter codex)
+      ;;
+    fixed|*)
+      EXTRA+=(--audit-adapter fixed --audit-verdict "${AWC_AUDIT_VERDICT:-PASS}")
+      if [[ -n "${AWC_AUDIT_FINDINGS:-}" ]]; then
+        EXTRA+=(--audit-findings "$AWC_AUDIT_FINDINGS")
+      fi
+      ;;
+  esac
   if [[ "${AWC_SPAWN_DISPATCH:-0}" == "1" ]]; then
     EXTRA+=(--spawn-dispatch)
   fi
