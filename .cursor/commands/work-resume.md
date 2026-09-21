@@ -1,3 +1,7 @@
+---
+name: work-resume
+description: Resume the active repository-scoped DataRelay AI Work Packet
+---
 Resume the current engineering workstream from repository-scoped durable state.
 
 Use maximum available reasoning/context.
@@ -43,7 +47,7 @@ Work sequentially in a single agent context.
    - Resolve each actionable finding by fixing it and rerunning affected validation, or by recording a concise evidence-backed disposition explaining why it is non-actionable, out of scope, or incorrect. Do not merge or claim terminal completion while actionable review feedback remains unaddressed.
    - When required CI or another machine-observable external condition is pending, actively monitor it at a reasonable interval (normally 30-60 seconds) and keep the CLI session in a working/waiting state. Print concise progress such as `WAITING_FOR_CI`; do not present a final completion summary while STATUS=ACTIVE.
    - If progress requires a human decision/approval, credentials, or another non-machine-resolvable action, set STATUS=BLOCKED, record the exact required action, then return a non-completion status.
-   - If a machine-observable external wait remains pending for about 30 minutes without a state change, keep STATUS=ACTIVE, record `WAITING_FOR_<CONDITION>` in Current State/Latest Evidence, and return without claiming completion; a later /resume continues from that durable state.
+   - If a machine-observable external wait remains pending for about 30 minutes without a state change, keep STATUS=ACTIVE, record `WAITING_FOR_<CONDITION>` in Current State/Latest Evidence, and return without claiming completion; a later /work-resume continues from that durable state.
 12. Follow affected-test-first and release-preflight rules. Never weaken valid tests, reuse different-HEAD evidence, or claim unexecuted work as PASS.
 13. When the Work Packet explicitly references one or more non-`[AI Work]` product issues in the same TARGET_REPO, keep those issues synchronized at meaningful implementation milestones.
     - Do not rewrite or remove the product issue's problem statement, acceptance criteria, or non-goals.

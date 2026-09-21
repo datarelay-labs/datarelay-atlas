@@ -47,6 +47,7 @@ class WorkControllerTests(unittest.TestCase):
             work_packet=packets,
             dispatcher=dispatcher,
             observer=observer,
+            enforce_worktree_identity=False,
         )
         ctl.register_workstream(
             workstream="awc-poc",
@@ -121,11 +122,15 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
             self.assertEqual(outcome["action"], "rework_dispatched")
             self.assertEqual(outcome["next_attempt"], 2)
-            self.assertEqual(outcome["resume_prompt"], "/resume")
+            self.assertEqual(outcome["resume_prompt"], "/work-resume")
             self.assertEqual(len(dispatcher.requests), 1)
             req = dispatcher.requests[0]
-            self.assertEqual(req.resume_prompt, "/resume")
+            self.assertEqual(req.resume_prompt, "/work-resume")
             self.assertEqual(req.attempt, 2)
+            self.assertEqual(
+                build_persist_resume_command(req),
+                ["agent", "persist", "--trust", "/work-resume"],
+            )
             self.assertEqual(
                 build_persist_resume_command(req),
                 outcome["dispatch_command"],
@@ -196,6 +201,7 @@ class WorkControllerTests(unittest.TestCase):
                 audit=FixedAuditAdapter(AuditResult(verdict="PASS", findings="recovered")),
                 work_packet=packets,
                 dispatcher=dispatcher,
+                enforce_worktree_identity=False,
             )
             outcomes = ctl.reconcile("awc-poc")
             self.assertEqual(len(outcomes), 1)

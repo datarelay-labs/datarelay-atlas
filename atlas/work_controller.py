@@ -1,25 +1,41 @@
 """Autonomous Work Controller PoC v0 (ADR-0006).
 
 Persists one local workstream, accepts idempotent Cursor completion events,
-runs an independent audit, and either stops or dispatches a fresh /resume.
+runs an independent audit, and either stops or dispatches a fresh /work-resume.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import pty
 import re
+import shlex
+import subprocess
+import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
 from atlas.provenance import ValidationError
 
+GitRunner = Callable[[list[str], str], str]
+
 CONTROLLER_SCHEMA_VERSION = 1
 DEFAULT_MAX_ATTEMPTS = 3
-RESUME_PROMPT = "/resume"
+RESUME_PROMPT = "/work-resume"
 HEAD_RE = re.compile(r"^[0-9a-f]{7,40}$")
 WORKSTREAM_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+COMPLETION_INBOX_DIRNAME = "completion-inbox"
+COMPLETION_PROCESSED_DIRNAME = "completion-processed"
+DEFAULT_OPENAI_API_BASE = "https://api.openai.com/v1"
+DEFAULT_AUDIT_MODEL = "gpt-4.1-mini"
+OPENAI_TERMINAL_STATUSES = frozenset(
+    {"completed", "failed", "cancelled", "incomplete"}
+)
+OPENAI_PENDING_STATUSES = frozenset({"queued", "in_progress"})
 
 AuditVerdict = str  # PASS | REWORK | HUMAN_REQUIRED
 ControllerState = str
@@ -37,6 +53,113 @@ ALLOWED_STATES = frozenset(
 )
 TERMINAL_STATES = frozenset({"PASSED", "HUMAN_REQUIRED"})
 AUDIT_VERDICTS = frozenset({"PASS", "REWORK", "HUMAN_REQUIRED"})
+
+
+@dataclass(frozen=True)
+class WorktreeIdentity:
+    worktree_path: str
+    repository: str
+    branch: str
+    head: str
+    toplevel: str
+
+
+def normalize_github_repository(value: str) -> str:
+    """Normalize clone URL or slug to `owner/repo`."""
+    raw = value.strip()
+    if not raw:
+        raise ValidationError("repository identity is empty")
+    cleaned = raw.removesuffix(".git")
+    if cleaned.startswith("git@"):
+        cleaned = cleaned.split(":", 1)[-1]
+    elif "github.com/" in cleaned:
+        cleaned = cleaned.split("github.com/", 1)[1]
+    cleaned = cleaned.strip().strip("/")
+    if cleaned.count("/") != 1:
+        raise ValidationError(f"unsupported repository identity: {value!r}")
+    owner, repo = cleaned.split("/", 1)
+    if not owner or not repo:
+        raise ValidationError(f"unsupported repository identity: {value!r}")
+    return f"{owner}/{repo}"
+
+
+def heads_match(expected: str, observed: str) -> bool:
+    exp = expected.strip().lower()
+    obs = observed.strip().lower()
+    if not HEAD_RE.match(exp) or not HEAD_RE.match(obs):
+        return False
+    return exp == obs or exp.startswith(obs) or obs.startswith(exp)
+
+
+def default_git_runner(argv: list[str], cwd: str) -> str:
+    completed = subprocess.run(
+        argv,
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise ValidationError(
+            f"git command failed ({' '.join(argv)}): {detail or completed.returncode}"
+        )
+    return completed.stdout.strip()
+
+
+def validate_worktree_identity(
+    worktree_path: str,
+    *,
+    repository: str,
+    branch: str,
+    expected_head: str,
+    git_runner: GitRunner | None = None,
+) -> WorktreeIdentity:
+    """Fail closed unless local worktree matches exact repo/branch/HEAD."""
+    runner = git_runner or default_git_runner
+    worktree = Path(worktree_path).resolve()
+    if not worktree.is_dir():
+        raise ValidationError(f"worktree_path is not a directory: {worktree}")
+    cwd = str(worktree)
+
+    toplevel = Path(runner(["git", "rev-parse", "--show-toplevel"], cwd)).resolve()
+    if toplevel != worktree:
+        raise ValidationError(
+            f"worktree toplevel mismatch: observed={toplevel} expected={worktree}"
+        )
+
+    origin = runner(["git", "remote", "get-url", "origin"], cwd)
+    observed_repo = normalize_github_repository(origin)
+    expected_repo = normalize_github_repository(repository)
+    if observed_repo != expected_repo:
+        raise ValidationError(
+            f"repository mismatch: observed={observed_repo} expected={expected_repo}"
+        )
+
+    observed_branch = runner(["git", "branch", "--show-current"], cwd)
+    if not observed_branch:
+        raise ValidationError(
+            "worktree is detached; expected an exact branch checkout "
+            f"matching {branch!r}"
+        )
+    if observed_branch != branch:
+        raise ValidationError(
+            f"branch mismatch: observed={observed_branch} expected={branch}"
+        )
+
+    observed_head = runner(["git", "rev-parse", "HEAD"], cwd).lower()
+    if not heads_match(expected_head, observed_head):
+        raise ValidationError(
+            f"head mismatch: observed={observed_head} expected={expected_head.lower()}"
+        )
+
+    return WorktreeIdentity(
+        worktree_path=cwd,
+        repository=expected_repo,
+        branch=observed_branch,
+        head=observed_head,
+        toplevel=str(toplevel),
+    )
 
 
 @dataclass(frozen=True)
@@ -223,21 +346,82 @@ class RecordingCursorDispatcher:
         )
 
 
-def build_persist_resume_command(request: DispatchRequest) -> list[str]:
-    """Fixed argv surface for a fresh persistent resume in a validated worktree.
+@dataclass(frozen=True)
+class PersistSession:
+    session_id: str
+    workspace: str
+    status: str = ""
+    task: str = ""
 
-    Long-term native mechanism (Cursor CLI docs/changelog): interactive
-    `agent persist` in the worktree, then manage via list/attach/stop.
-    Prompt-create is intentionally not assumed reliable on CLI
-    2026.09.18-9a7762b; runners may attach and submit RESUME_PROMPT.
+
+def build_persist_resume_command(request: DispatchRequest) -> list[str]:
+    """Fixed argv for a fresh persistent /work-resume in a validated worktree.
+
+    Installed Cursor CLI 2026.09.18-9a7762b create-with-prompt form (live process
+    evidence): `agent persist --trust <prompt>` with cwd set to the worktree.
+    The argv form `agent --trust persist` is incorrect and must not be used.
+    Non-interactive `agent -p` is not an acceptable persistence substitute.
     """
-    return [
-        "agent",
-        "--workspace",
-        request.worktree_path,
-        "--trust",
-        "persist",
-    ]
+    prompt = request.resume_prompt or RESUME_PROMPT
+    if prompt != RESUME_PROMPT:
+        raise ValidationError(
+            f"resume_prompt must be {RESUME_PROMPT!r}, got {prompt!r}"
+        )
+    return ["agent", "persist", "--trust", RESUME_PROMPT]
+
+
+def parse_persist_list(output: str) -> list[PersistSession]:
+    """Parse `agent persist list` text into session records."""
+    sessions: list[PersistSession] = []
+    task = ""
+    status = ""
+    session_id = ""
+    workspace = ""
+
+    def flush() -> None:
+        nonlocal task, status, session_id, workspace
+        if session_id and workspace:
+            sessions.append(
+                PersistSession(
+                    session_id=session_id,
+                    workspace=workspace,
+                    status=status,
+                    task=task,
+                )
+            )
+        task = ""
+        status = ""
+        session_id = ""
+        workspace = ""
+
+    for raw_line in output.splitlines():
+        line = raw_line.rstrip()
+        if line.startswith("Task:"):
+            flush()
+            task = line.split(":", 1)[1].strip()
+        elif line.strip().startswith("Status:"):
+            status = line.split(":", 1)[1].strip()
+        elif line.strip().startswith("Session:"):
+            session_id = line.split(":", 1)[1].strip()
+        elif line.strip().startswith("Workspace:"):
+            workspace = line.split(":", 1)[1].strip()
+    flush()
+    return sessions
+
+
+def sessions_for_worktree(
+    sessions: list[PersistSession], worktree_path: str
+) -> list[PersistSession]:
+    target = str(Path(worktree_path).resolve())
+    matched: list[PersistSession] = []
+    for item in sessions:
+        try:
+            if str(Path(item.workspace).resolve()) == target:
+                matched.append(item)
+        except OSError:
+            if item.workspace == target or item.workspace == worktree_path:
+                matched.append(item)
+    return matched
 
 
 class SubprocessCursorDispatcher:
@@ -245,7 +429,7 @@ class SubprocessCursorDispatcher:
 
     def __init__(
         self,
-        runner: Callable[[list[str]], str] | None = None,
+        runner: Callable[[list[str], str], str] | None = None,
     ) -> None:
         self._runner = runner or _default_spawn_runner
         self.requests: list[DispatchRequest] = []
@@ -253,17 +437,173 @@ class SubprocessCursorDispatcher:
     def start_resume(self, request: DispatchRequest) -> DispatchResult:
         self.requests.append(request)
         command = build_persist_resume_command(request)
-        session_id = self._runner(command)
+        session_id = self._runner(command, request.worktree_path)
         if not session_id or not str(session_id).strip():
             raise ValidationError("cursor dispatcher returned empty session id")
         return DispatchResult(session_id=str(session_id).strip(), command=command)
 
 
-def _default_spawn_runner(command: list[str]) -> str:
-    """Fail closed in library default: operators must inject a real runner."""
+class PtyPersistCursorDispatcher:
+    """Create a fresh observable `agent persist` session that runs /work-resume.
+
+    Transport only: PTY/`script` spawn + observation via `agent persist list`
+    (preferred) or a target-worktree process scan (fallback). Does not attach
+    to, stop, or otherwise mutate sessions outside the target worktree.
+    """
+
+    def __init__(
+        self,
+        *,
+        list_sessions: Callable[[], list[PersistSession]] | None = None,
+        spawn: Callable[[list[str], str], int] | None = None,
+        list_target_procs: Callable[[str], list[tuple[int, str]]] | None = None,
+        poll_interval_sec: float = 0.5,
+        poll_timeout_sec: float = 45.0,
+        sleeper: Callable[[float], None] | None = None,
+    ) -> None:
+        self._list_sessions = list_sessions or default_list_persist_sessions
+        self._spawn = spawn or script_pty_spawn_persist
+        self._list_target_procs = list_target_procs or list_persist_trust_processes
+        self._poll_interval_sec = poll_interval_sec
+        self._poll_timeout_sec = poll_timeout_sec
+        self._sleep = sleeper or time.sleep
+        self.requests: list[DispatchRequest] = []
+        self.spawned_pids: list[int] = []
+
+    def start_resume(self, request: DispatchRequest) -> DispatchResult:
+        self.requests.append(request)
+        worktree = str(Path(request.worktree_path).resolve())
+        if not Path(worktree).is_dir():
+            raise ValidationError(f"worktree_path is not a directory: {worktree}")
+        command = build_persist_resume_command(request)
+        before_ids = {
+            item.session_id
+            for item in sessions_for_worktree(self._list_sessions(), worktree)
+        }
+        before_pids = {pid for pid, _cmd in self._list_target_procs(worktree)}
+        pid = self._spawn(command, worktree)
+        self.spawned_pids.append(pid)
+        deadline = time.monotonic() + self._poll_timeout_sec
+        while time.monotonic() < deadline:
+            current = sessions_for_worktree(self._list_sessions(), worktree)
+            new_sessions = [
+                item for item in current if item.session_id not in before_ids
+            ]
+            if new_sessions:
+                chosen = new_sessions[-1]
+                return DispatchResult(session_id=chosen.session_id, command=command)
+            new_procs = [
+                (proc_pid, cmd)
+                for proc_pid, cmd in self._list_target_procs(worktree)
+                if proc_pid not in before_pids
+            ]
+            if new_procs:
+                proc_pid, _cmd = new_procs[-1]
+                return DispatchResult(
+                    session_id=f"proc:{proc_pid}",
+                    command=command,
+                )
+            self._sleep(self._poll_interval_sec)
+        raise ValidationError(
+            "cursor persist session/process for target worktree did not appear "
+            f"within {self._poll_timeout_sec}s "
+            f"(cwd={worktree}, argv={command!r}, pid={pid})"
+        )
+
+
+def list_persist_trust_processes(worktree_path: str) -> list[tuple[int, str]]:
+    """List `agent persist --trust /work-resume` processes for one worktree only."""
+    target = str(Path(worktree_path).resolve())
+    found: list[tuple[int, str]] = []
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return found
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            cwd = str((entry / "cwd").resolve())
+            cmdline = (entry / "cmdline").read_bytes().decode("utf-8", "replace")
+        except OSError:
+            continue
+        if cwd != target:
+            continue
+        if "persist" not in cmdline or "--trust" not in cmdline:
+            continue
+        if RESUME_PROMPT not in cmdline and "/work-resume" not in cmdline:
+            continue
+        found.append((pid, cmdline.replace("\x00", " ").strip()))
+    return found
+
+
+def default_list_persist_sessions() -> list[PersistSession]:
+    completed = subprocess.run(
+        ["agent", "persist", "list"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise ValidationError(
+            "agent persist list failed: "
+            + (completed.stderr or completed.stdout or f"exit {completed.returncode}")
+        )
+    return parse_persist_list(completed.stdout)
+
+
+def script_pty_spawn_persist(command: list[str], worktree_path: str) -> int:
+    """Spawn argv under `script(1)` PTY in the target worktree (host-proven).
+
+    Live Cursor CLI sessions on this host are started as:
+    `script -qec 'agent persist --trust <prompt>' /dev/null` with cwd=worktree.
+    """
+    if not command or command[0] != "agent":
+        raise ValidationError(f"refusing to spawn non-agent command: {command!r}")
+    quoted = " ".join(shlex.quote(part) for part in command)
+    script_cmd = ["script", "-qec", quoted, "/dev/null"]
+    proc = subprocess.Popen(
+        script_cmd,
+        cwd=worktree_path,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    if proc.pid <= 0:
+        raise ValidationError("script pty spawn failed to start agent persist")
+    return int(proc.pid)
+
+
+def pty_spawn_persist(command: list[str], worktree_path: str) -> int:
+    """Spawn argv under a raw PTY in the target worktree; do not wait for exit."""
+    if not command or command[0] != "agent":
+        raise ValidationError(f"refusing to spawn non-agent command: {command!r}")
+    master_fd, slave_fd = pty.openpty()
+    try:
+        proc = subprocess.Popen(
+            command,
+            cwd=worktree_path,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            start_new_session=True,
+            close_fds=True,
+        )
+    finally:
+        os.close(slave_fd)
+        os.close(master_fd)
+    if proc.pid <= 0:
+        raise ValidationError("pty spawn failed to start agent persist")
+    return int(proc.pid)
+
+
+def _default_spawn_runner(command: list[str], worktree_path: str) -> str:
+    """Fail closed unless a real runner/dispatcher is injected."""
     raise ValidationError(
-        "no cursor spawn runner configured; inject a runner or use the dogfood "
-        f"runbook for native `agent persist` (planned argv: {command!r})"
+        "no cursor spawn runner configured; use PtyPersistCursorDispatcher "
+        f"or inject a runner (planned argv={command!r} cwd={worktree_path!r})"
     )
 
 
@@ -374,12 +714,16 @@ class WorkController:
         work_packet: WorkPacketPort,
         dispatcher: CursorDispatchPort,
         observer: ObserverPort | None = None,
+        enforce_worktree_identity: bool = True,
+        git_runner: GitRunner | None = None,
     ) -> None:
         self.store = WorkControllerStore(data_root)
         self.audit = audit
         self.work_packet = work_packet
         self.dispatcher = dispatcher
         self.observer = observer or NullObserver()
+        self.enforce_worktree_identity = enforce_worktree_identity
+        self._git_runner = git_runner
 
     def register_workstream(
         self,
@@ -399,6 +743,19 @@ class WorkController:
         worktree = Path(worktree_path).resolve()
         if not worktree.is_dir():
             raise ValidationError(f"worktree_path is not a directory: {worktree}")
+        repository_norm = normalize_github_repository(repository)
+        if self.enforce_worktree_identity:
+            identity = validate_worktree_identity(
+                str(worktree),
+                repository=repository_norm,
+                branch=branch.strip(),
+                expected_head=expected_head.strip().lower(),
+                git_runner=self._git_runner,
+            )
+            worktree = Path(identity.worktree_path)
+            expected_head = identity.head
+            branch = identity.branch
+            repository_norm = identity.repository
         existing = {
             item.workstream for item in self.store.list_workstreams()
         }
@@ -406,7 +763,7 @@ class WorkController:
             raise ValidationError(f"workstream already registered: {workstream}")
         record = WorkstreamRecord(
             workstream=workstream,
-            repository=repository.strip(),
+            repository=repository_norm,
             issue_number=int(issue_number),
             branch=branch.strip(),
             worktree_path=str(worktree),
@@ -600,6 +957,14 @@ class WorkController:
             raise ValidationError(
                 f"branch mismatch: event={event.branch} registered={record.branch}"
             )
+        if self.enforce_worktree_identity:
+            validate_worktree_identity(
+                record.worktree_path,
+                repository=record.repository,
+                branch=event.branch,
+                expected_head=event.head,
+                git_runner=self._git_runner,
+            )
         if record.state == "REWORK_DISPATCHED":
             # Rework may produce a new HEAD; accept any well-formed sha and
             # lock it as expected_head once this event is accepted.
@@ -651,29 +1016,307 @@ def load_completion_event(path: Path) -> dict:
     return raw
 
 
-class OpenAIAuditAdapter:
-    """Replaceable production audit port.
+def completion_inbox_dir(data_root: Path) -> Path:
+    return Path(data_root) / COMPLETION_INBOX_DIRNAME
 
-    Credentials stay in runtime env (`OPENAI_API_KEY`). This PoC adapter does
-    not embed network I/O in unit tests; inject FixedAuditAdapter there.
-    When enabled, callers must supply an `execute` callable that performs the
-    HTTP call and returns an AuditResult.
+
+def completion_processed_dir(data_root: Path) -> Path:
+    return Path(data_root) / COMPLETION_PROCESSED_DIRNAME
+
+
+def enqueue_completion_event(data_root: Path, event: dict, *, filename: str | None = None) -> Path:
+    """Write a completion event into the local inbox (Cursor hook path)."""
+    CompletionEvent.from_dict(event)  # validate early
+    inbox = completion_inbox_dir(data_root)
+    inbox.mkdir(parents=True, exist_ok=True)
+    name = filename or f"{event['event_id']}.json"
+    if "/" in name or name.startswith("."):
+        raise ValidationError(f"invalid completion inbox filename: {name}")
+    path = inbox / name
+    if path.exists():
+        raise ValidationError(f"completion inbox file already exists: {path.name}")
+    path.write_text(json.dumps(event, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def drain_completion_inbox(controller: WorkController, data_root: Path) -> list[dict]:
+    """Process queued completion events from the local inbox directory."""
+    inbox = completion_inbox_dir(data_root)
+    processed = completion_processed_dir(data_root)
+    processed.mkdir(parents=True, exist_ok=True)
+    if not inbox.exists():
+        return []
+    outcomes: list[dict] = []
+    for path in sorted(inbox.glob("*.json")):
+        event = load_completion_event(path)
+        outcome = controller.handle_completion(event)
+        outcome = dict(outcome)
+        outcome["inbox_file"] = path.name
+        dest = processed / path.name
+        if dest.exists():
+            dest = processed / f"{path.stem}-{os.getpid()}{path.suffix}"
+        path.replace(dest)
+        outcomes.append(outcome)
+    return outcomes
+
+
+AUDIT_DEVELOPER_PROMPT = """You are an independent engineering auditor for DataRelay Atlas.
+Return ONLY a JSON object with keys:
+  verdict: one of PASS, REWORK, HUMAN_REQUIRED
+  findings: concise evidence-backed string
+Do not include secrets, credentials, or absolute local home paths.
+PASS only when the stated completion evidence satisfies the workstream goal.
+REWORK when actionable defects remain that a fresh /work-resume cycle can fix.
+HUMAN_REQUIRED when owner judgment, credentials, or out-of-scope decisions are needed.
+"""
+
+
+def build_openai_audit_request(
+    event: CompletionEvent,
+    record: WorkstreamRecord,
+    *,
+    model: str = DEFAULT_AUDIT_MODEL,
+) -> dict:
+    """Construct a Responses API background request body (no credentials)."""
+    user_payload = {
+        "workstream": record.workstream,
+        "repository": record.repository,
+        "issue_number": record.issue_number,
+        "branch": event.branch,
+        "head": event.head,
+        "attempt": event.attempt,
+        "max_attempts": record.max_attempts,
+        "event_id": event.event_id,
+        "controller_state_before_audit": record.state,
+        "resume_prompt": RESUME_PROMPT,
+    }
+    return {
+        "model": model,
+        "background": True,
+        "store": False,
+        "input": [
+            {
+                "role": "developer",
+                "content": AUDIT_DEVELOPER_PROMPT,
+            },
+            {
+                "role": "user",
+                "content": json.dumps(user_payload, sort_keys=True),
+            },
+        ],
+    }
+
+
+def extract_response_output_text(payload: dict) -> str:
+    if isinstance(payload.get("output_text"), str) and payload["output_text"].strip():
+        return payload["output_text"].strip()
+    chunks: list[str] = []
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for part in item.get("content") or []:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                chunks.append(text.strip())
+    return "\n".join(chunks).strip()
+
+
+def parse_audit_verdict_payload(text: str) -> AuditResult:
+    """Normalize model output into AuditResult; fail closed on ambiguity."""
+    raw = text.strip()
+    if not raw:
+        raise ValidationError("audit response output was empty")
+    candidate = raw
+    if not candidate.startswith("{"):
+        match = re.search(r"\{.*\}", candidate, flags=re.DOTALL)
+        if not match:
+            raise ValidationError("audit response did not contain a JSON object")
+        candidate = match.group(0)
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise ValidationError("audit response JSON was invalid") from exc
+    if not isinstance(data, dict):
+        raise ValidationError("audit response JSON must be an object")
+    verdict = str(data.get("verdict", "")).strip().upper()
+    findings = str(data.get("findings", "")).strip()
+    if verdict not in AUDIT_VERDICTS:
+        raise ValidationError(f"audit response verdict invalid: {verdict!r}")
+    return AuditResult(verdict=verdict, findings=findings)
+
+
+class OpenAIHttpTransport:
+    """Minimal HTTPS JSON transport for the OpenAI Responses API."""
+
+    def __init__(
+        self,
+        *,
+        api_base: str = DEFAULT_OPENAI_API_BASE,
+        opener: Callable[..., object] | None = None,
+        timeout_sec: float = 60.0,
+    ) -> None:
+        self.api_base = api_base.rstrip("/")
+        self._opener = opener or urllib.request.urlopen
+        self.timeout_sec = timeout_sec
+
+    def request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        api_key: str,
+        body: dict | None = None,
+    ) -> dict:
+        if not api_key:
+            raise ValidationError("OpenAI API key is required")
+        url = f"{self.api_base}{path}"
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "datarelay-atlas-work-controller",
+        }
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with self._opener(req, timeout=self.timeout_sec) as response:  # type: ignore[arg-type]
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            raise ValidationError(
+                f"OpenAI HTTP {exc.code} for {method} {path}: {detail[:300]}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise ValidationError(f"OpenAI network error: {exc.reason}") from exc
+        if not raw.strip():
+            return {}
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValidationError("OpenAI response must be a JSON object")
+        return payload
+
+
+class OpenAIResponsesAuditAdapter:
+    """Production audit adapter using OpenAI Responses background lifecycle.
+
+    Credentials are read from the runtime environment only and never returned or
+    persisted. Deterministic tests must inject a fake transport or use
+    FixedAuditAdapter.
     """
 
     def __init__(
         self,
         *,
-        execute: Callable[[CompletionEvent, WorkstreamRecord, str], AuditResult],
+        transport: OpenAIHttpTransport | None = None,
         api_key_env: str = "OPENAI_API_KEY",
+        model: str = DEFAULT_AUDIT_MODEL,
+        poll_interval_sec: float = 2.0,
+        max_polls: int = 60,
+        create_retries: int = 2,
+        sleeper: Callable[[float], None] | None = None,
     ) -> None:
-        self._execute = execute
+        self.transport = transport or OpenAIHttpTransport()
         self._api_key_env = api_key_env
+        self.model = model
+        self.poll_interval_sec = poll_interval_sec
+        self.max_polls = max_polls
+        self.create_retries = create_retries
+        self._sleep = sleeper or time.sleep
+        self.last_request_body: dict | None = None
+        self.last_response_id: str | None = None
+        self.poll_statuses: list[str] = []
 
     def audit(self, event: CompletionEvent, record: WorkstreamRecord) -> AuditResult:
         api_key = os.environ.get(self._api_key_env, "").strip()
         if not api_key:
             raise ValidationError(
-                f"{self._api_key_env} is required for OpenAI audit adapter"
+                f"{self._api_key_env} is required for OpenAI Responses audit adapter"
             )
-        # Never persist or return the key.
-        return self._execute(event, record, api_key)
+        body = build_openai_audit_request(event, record, model=self.model)
+        self.last_request_body = body
+        created = self._create_with_retries(api_key, body)
+        response_id = str(created.get("id", "")).strip()
+        if not response_id:
+            raise ValidationError("OpenAI create response missing id")
+        self.last_response_id = response_id
+        status = str(created.get("status", "")).strip()
+        payload = created
+        polls = 0
+        while status in OPENAI_PENDING_STATUSES:
+            if polls >= self.max_polls:
+                return AuditResult(
+                    verdict="HUMAN_REQUIRED",
+                    findings=f"openai response {response_id} still {status} after max polls",
+                )
+            self._sleep(self.poll_interval_sec)
+            payload = self.transport.request_json(
+                "GET", f"/responses/{response_id}", api_key=api_key
+            )
+            status = str(payload.get("status", "")).strip()
+            self.poll_statuses.append(status)
+            polls += 1
+        return self._map_terminal(response_id, status, payload)
+
+    def _create_with_retries(self, api_key: str, body: dict) -> dict:
+        last_error: Exception | None = None
+        attempts = max(1, self.create_retries + 1)
+        for index in range(attempts):
+            try:
+                return self.transport.request_json(
+                    "POST", "/responses", api_key=api_key, body=body
+                )
+            except ValidationError as exc:
+                last_error = exc
+                if index + 1 >= attempts:
+                    break
+                self._sleep(self.poll_interval_sec)
+        assert last_error is not None
+        raise ValidationError(f"openai create failed after retries: {last_error}") from last_error
+
+    def _map_terminal(self, response_id: str, status: str, payload: dict) -> AuditResult:
+        if status == "completed":
+            text = extract_response_output_text(payload)
+            try:
+                return parse_audit_verdict_payload(text)
+            except ValidationError as exc:
+                return AuditResult(
+                    verdict="HUMAN_REQUIRED",
+                    findings=f"openai response {response_id} completed but verdict parse failed: {exc}",
+                )
+        if status in {"failed", "cancelled", "incomplete"}:
+            detail = str(payload.get("error") or payload.get("incomplete_details") or status)
+            return AuditResult(
+                verdict="HUMAN_REQUIRED",
+                findings=f"openai response {response_id} terminal status={status}: {detail}",
+            )
+        return AuditResult(
+            verdict="HUMAN_REQUIRED",
+            findings=f"openai response {response_id} unknown status={status!r}",
+        )
+
+
+class OpenAIAuditAdapter(OpenAIResponsesAuditAdapter):
+    """Backward-compatible name for the production Responses audit adapter."""
+
+    def __init__(
+        self,
+        *,
+        execute: Callable[[CompletionEvent, WorkstreamRecord, str], AuditResult] | None = None,
+        api_key_env: str = "OPENAI_API_KEY",
+        **kwargs,
+    ) -> None:
+        # Legacy injectable execute callback remains supported for older callers.
+        self._execute = execute
+        super().__init__(api_key_env=api_key_env, **kwargs)
+
+    def audit(self, event: CompletionEvent, record: WorkstreamRecord) -> AuditResult:
+        if self._execute is not None:
+            api_key = os.environ.get(self._api_key_env, "").strip()
+            if not api_key:
+                raise ValidationError(
+                    f"{self._api_key_env} is required for OpenAI audit adapter"
+                )
+            return self._execute(event, record, api_key)
+        return super().audit(event, record)
