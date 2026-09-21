@@ -4,12 +4,14 @@ This roadmap defines bounded product phases, not delivery dates. Each phase must
 
 ## Phase 0 — Product Foundation
 
-- Engineering System 1.6 adoption
-- Product Charter and architecture boundary
-- repository and documentation foundations
-- dependency/license compatibility audit
-- evaluate and classify existing Athena PoC assets
-- define source/provider and provenance contracts
+- [x] Engineering System 1.6 adoption
+- [x] Product Charter and architecture boundary
+- [x] repository and documentation foundations
+- [x] create Data Relay Athena upstream-tracking fork and pin source snapshots
+- [x] preserve the validated Athena Engineering Knowledge PoC at an immutable commit/tag
+- [ ] complete dependency/license compatibility audit beyond Athena's top-level Apache-2.0 license
+- [ ] classify and migrate Athena PoC changes into Atlas-owned vs generic fork-owned code
+- [ ] define source/provider and provenance contracts
 
 Exit: canonical product boundaries are clear and the repository can be safely resumed by AI agents.
 
