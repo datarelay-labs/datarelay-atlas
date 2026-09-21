@@ -1,0 +1,37 @@
+engineering_system:
+  version: "1.6.0"
+  mode: adopted
+  baseline: "673c3b339a0765657214d40a22400a04ed54425b"
+  ci_mode: shared
+  native_ci_workflows: []
+  merge_gate_status: unknown
+
+project:
+  name: "datarelay-atlas"
+  type: "engineering-platform"
+  maturity: "development"
+
+domains:
+  - methodology
+  - project-registry
+  - lifecycle
+  - knowledge
+  - ai-context
+  - integrations
+  - product-docs
+
+platforms:
+  - linux
+  - web
+
+operations:
+  production_oriented: false
+  runbook_required: false
+  incident_response_required: false
+  persistent_state: false
+  runbook_paths: []
+  health_command: ""
+  backup_command: ""
+  restore_test_command: ""
+  upgrade_command: ""
+  rollback_command: ""
