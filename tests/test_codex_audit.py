@@ -682,6 +682,41 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertEqual(bundle["ci"]["status"], "OK")
         self.assertEqual(bundle["pr_reviews"]["status"], "ERROR")
 
+    def test_provider_skips_codex_when_pr_reviews_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                mapping = {
+                    ("git", "rev-parse", "--show-toplevel"): cwd,
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "branch", "--show-current"): "feature/x",
+                    ("git", "rev-parse", "HEAD"): HEAD,
+                }
+                return mapping[tuple(argv)]
+
+            def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+                raise AssertionError("codex runner must not be called")
+
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD},
+                    "pr_reviews": {
+                        "status": "ERROR",
+                        "detail": "api failed",
+                    },
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("PR review evidence status=ERROR", result.findings)
+            self.assertIsNone(provider.last_command)
+            self.assertIsNone(provider.last_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

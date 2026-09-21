@@ -803,6 +803,17 @@ class CodexAuditProvider:
                 bundle["legacy_evidence_text"] = self.evidence
         self.last_evidence_bundle = bundle
 
+        reviews = bundle.get("pr_reviews")
+        if isinstance(reviews, dict) and reviews.get("status") == "ERROR":
+            detail = str(reviews.get("detail") or "PR review evidence unavailable")
+            return AuditResult(
+                verdict="HUMAN_REQUIRED",
+                findings=(
+                    "codex audit skipped: PR review evidence status=ERROR "
+                    f"({detail[:300]})"
+                ),
+            )
+
         prompt = build_codex_audit_prompt(
             event,
             record,
