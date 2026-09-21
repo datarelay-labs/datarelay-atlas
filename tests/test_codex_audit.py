@@ -518,6 +518,35 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertEqual(ok["reviews"][0]["body"], "P1 collect reviews")
         self.assertEqual(ok["inline_comments"][0]["id"], 99)
 
+    def test_bounded_review_items_preserve_original_commit_and_line(self):
+        from atlas.codex_audit import _bounded_review_items
+
+        remapped = HEAD
+        original = "2a502eec7f267814fed3de46da7db88b474446b1"
+        items = _bounded_review_items(
+            [
+                {
+                    "id": 4064109451,
+                    "user": {"login": "chatgpt-codex-connector[bot]"},
+                    "body": "stale mapped comment",
+                    "path": "docs/runbooks/autonomous-work-controller-poc.md",
+                    "line": 141,
+                    "original_line": 138,
+                    "commit_id": remapped,
+                    "original_commit_id": original,
+                    "created_at": "2026-09-21T16:18:48Z",
+                    "updated_at": "2026-09-21T16:45:00Z",
+                }
+            ],
+            max_chars=4000,
+        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["commit_id"], remapped)
+        self.assertEqual(items[0]["original_commit_id"], original)
+        self.assertEqual(items[0]["line"], 141)
+        self.assertEqual(items[0]["original_line"], 138)
+        self.assertEqual(items[0]["updated_at"], "2026-09-21T16:45:00Z")
+
         def boom(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(argv, 1, stdout="", stderr="denied")
 

@@ -397,10 +397,13 @@ def _bounded_review_items(raw: object, *, max_chars: int) -> list[dict]:
             ),
             "state": entry.get("state"),
             "commit_id": entry.get("commit_id"),
+            "original_commit_id": entry.get("original_commit_id"),
             "submitted_at": entry.get("submitted_at"),
             "created_at": entry.get("created_at"),
+            "updated_at": entry.get("updated_at"),
             "path": entry.get("path"),
             "line": entry.get("line"),
+            "original_line": entry.get("original_line"),
             "body": _trim(body, min(1200, max(200, remaining))),
         }
         encoded = json.dumps(item, sort_keys=True)
