@@ -48,10 +48,10 @@ Owns project identity, repository mappings, Engineering System baseline/adoption
 Reads the canonical Engineering System contract and project-local `.engineering/*` metadata. It does not redefine the standard.
 
 ### Source Synchronization
-Fetches approved canonical sources through authenticated provider integrations. GitHub is the first provider.
+Fetches approved canonical sources through authenticated provider integrations. GitHub is the first provider. The durable field contract is defined by ADR-0003 and `docs/contracts/source-provider-provenance.md`.
 
 ### Knowledge Projection
-Creates rebuildable project-scoped representations of canonical content with repository/ref/path/revision provenance.
+Creates rebuildable project-scoped representations of canonical content with repository/ref/path/revision provenance. Projection identity is an Atlas rebuild key, not a Wiki.js/Athena page id.
 
 ### Retrieval
 Provides exact/keyword and semantic retrieval. Retrieval implementation may initially be supplied by Athena/Wiki.js/PostgreSQL/pgvector.
@@ -102,4 +102,10 @@ No public Atlas contract should require Athena-specific concepts unless explicit
 
 ## Persistence
 
-Persistent schemas are not yet frozen. Before implementation introduces durable Atlas-owned state, an ADR/design gate must define schema ownership, migration, backup, restore, upgrade, and rollback behavior.
+Source/provider/provenance **semantics** are frozen by ADR-0003 for Phase 1 design. Durable storage schemas, migrations, backup, restore, upgrade, and rollback behavior still require an implementation ADR before Atlas-owned persistent state is introduced.
+
+## Related decisions
+
+- ADR-0001 — canonical state and Athena boundary
+- ADR-0002 — Athena source preservation
+- ADR-0003 — source/provider/provenance contracts

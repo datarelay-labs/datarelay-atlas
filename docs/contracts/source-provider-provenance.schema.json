@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datarelay.local/contracts/source-provider-provenance.schema.json",
+  "title": "DataRelay Atlas Source Provider Provenance Contract Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "project",
+    "provider",
+    "source",
+    "sync_result",
+    "derived_record",
+    "retrieval_hit"
+  ],
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "const": "1"
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "namespace"],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "display_name": { "type": "string" },
+        "namespace": { "type": "string", "minLength": 1 }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "auth_mode"],
+      "properties": {
+        "provider": { "type": "string", "const": "github" },
+        "provider_api_base": { "type": "string", "minLength": 1 },
+        "auth_mode": {
+          "type": "string",
+          "enum": ["github_app", "installation_token", "personal_token"]
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "project_id",
+        "provider",
+        "repository",
+        "ref",
+        "source_path",
+        "enabled"
+      ],
+      "properties": {
+        "source_id": { "type": "string", "minLength": 1 },
+        "project_id": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "const": "github" },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "ref": { "type": "string", "minLength": 1 },
+        "source_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repository-relative path. No leading slash; no '..' segments.",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "media_type": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "integration_projection_key": { "type": "string", "minLength": 1 }
+      }
+    },
+    "sync_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "state"],
+      "properties": {
+        "source_id": { "type": "string", "minLength": 1 },
+        "state": {
+          "type": "string",
+          "enum": ["success", "unchanged", "error", "unknown", "disabled"]
+        },
+        "source_revision": { "type": "string", "minLength": 1 },
+        "resolved_commit": { "type": "string", "minLength": 1 },
+        "fetched_at": { "type": "string", "minLength": 1 },
+        "content_digest": { "type": "string", "minLength": 1 },
+        "error_code": { "type": "string" },
+        "error_message": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "state": { "const": "success" } },
+            "required": ["state"]
+          },
+          "then": {
+            "required": ["source_revision", "fetched_at"]
+          }
+        }
+      ]
+    },
+    "derived_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projection_id",
+        "rebuild_key",
+        "projector",
+        "project_id",
+        "provider",
+        "repository",
+        "ref",
+        "source_path",
+        "source_revision",
+        "canonical",
+        "provenance_complete"
+      ],
+      "properties": {
+        "projection_id": { "type": "string", "minLength": 1 },
+        "rebuild_key": { "type": "string", "minLength": 1 },
+        "projector": { "type": "string", "minLength": 1 },
+        "source_id": { "type": "string", "minLength": 1 },
+        "project_id": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1 },
+        "repository": { "type": "string", "minLength": 1 },
+        "ref": { "type": "string", "minLength": 1 },
+        "source_path": { "type": "string", "minLength": 1 },
+        "source_revision": { "type": "string", "minLength": 1 },
+        "resolved_commit": { "type": "string", "minLength": 1 },
+        "fetched_at": { "type": "string", "minLength": 1 },
+        "canonical": { "type": "boolean", "const": false },
+        "provenance_complete": { "type": "boolean" }
+      }
+    },
+    "retrieval_hit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "provider",
+        "repository",
+        "ref",
+        "source_path",
+        "canonical",
+        "provenance_complete"
+      ],
+      "properties": {
+        "project_id": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1 },
+        "repository": { "type": "string", "minLength": 1 },
+        "ref": { "type": "string", "minLength": 1 },
+        "source_path": { "type": "string", "minLength": 1 },
+        "source_revision": { "type": "string", "minLength": 1 },
+        "source_id": { "type": "string", "minLength": 1 },
+        "projection_id": { "type": "string", "minLength": 1 },
+        "canonical": { "type": "boolean", "const": false },
+        "provenance_complete": { "type": "boolean" },
+        "snippet": { "type": "string" }
+      }
+    }
+  }
+}
