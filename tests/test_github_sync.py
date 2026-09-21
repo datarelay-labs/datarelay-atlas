@@ -50,7 +50,8 @@ class GitHubSyncTests(unittest.TestCase):
 
             first = store.sync_one(SOURCE, fetch=fetch)
             second = store.sync_one(SOURCE, fetch=fetch)
-            self.assertEqual(first.sync_state, "ok")
+            self.assertEqual(first.sync_state, "success")
+            self.assertEqual(second.sync_state, "unchanged")
             self.assertEqual(first.content_digest, second.content_digest)
             text = (Path(tmp) / first.projection_path).read_text(encoding="utf-8")
             self.assertIn("Derived knowledge", text)
@@ -66,6 +67,9 @@ class GitHubSyncTests(unittest.TestCase):
 
             record = store.sync_one(SOURCE, fetch=fetch)
             self.assertEqual(record.sync_state, "error")
+            # Stale projection must not be marked newly current.
+            docs = store.list_documents(SOURCE.project_id)
+            self.assertEqual(docs, [])
 
 
 if __name__ == "__main__":

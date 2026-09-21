@@ -27,15 +27,18 @@ Phase 0 evidence:
 
 ## Phase 1 — Project Registry & Canonical Sync
 
-- register a project/repository
-- read Engineering System adoption metadata
-- configure canonical source paths
-- authenticated GitHub synchronization (Atlas-owned `atlas/` library as starting implementation)
-- source revision/provenance retention
-- project-scoped namespace
-- deterministic re-sync/rebuild behavior
+- [x] register a project/repository (`atlas/registry.py`, `python -m atlas project …`)
+- [x] read Engineering System adoption metadata (`atlas/adoption.py`)
+- [x] configure canonical source paths
+- [x] authenticated GitHub synchronization (Atlas-owned `atlas/` library)
+- [x] source revision/provenance retention
+- [x] project-scoped namespace
+- [x] deterministic re-sync/rebuild behavior
+- [x] Phase 1 persistence ADR (ADR-0005)
 
 Exit: one project can be registered and its selected canonical knowledge is reproducibly projected.
+
+Phase 1 evidence (implementation + deterministic tests + operator E2E against `datarelay-labs/datarelay-atlas`) is recorded in the landing PR for this phase. Do not treat roadmap checkboxes alone as release qualification.
 
 ## Phase 2 — Knowledge Retrieval & MCP
 
