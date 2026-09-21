@@ -676,6 +676,56 @@ class CodexAuditProviderTests(unittest.TestCase):
             result = provider.audit(self._event(), self._record(tmp))
             self.assertEqual(result.verdict, "HUMAN_REQUIRED")
             self.assertIn("PASS rejected", result.findings)
+
+    def test_head_change_after_codex_rework_rejects_stale_dispatch(self):
+        """HEAD mutation after Codex returns REWORK ⇒ HUMAN_REQUIRED, never REWORK."""
+        heads = {"value": HEAD}
+        status = "## feature/x"
+        digest = hashlib.sha256(status.encode("utf-8")).hexdigest()
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            if argv[:2] == ["git", "rev-parse"] and argv[-1] == "HEAD":
+                return heads["value"]
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "status", "--short", "--branch"): status,
+                ("git", "status", "--porcelain"): " M dirty.py\n",
+            }
+            return mapping[tuple(argv)]
+
+        def rework_runner(command: list[str], prompt: str, cwd: str) -> str:
+            heads["value"] = "dddddddddddddddddddddddddddddddddddddddd"
+            out = Path(command[command.index("-o") + 1])
+            out.write_text(
+                '{"verdict":"REWORK","findings":"fix something"}',
+                encoding="utf-8",
+            )
+            return out.read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=rework_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {
+                        "head": HEAD,
+                        "evidence_status": "OK",
+                        "status": status,
+                        "status_digest": digest,
+                    },
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("REWORK rejected", result.findings)
+            self.assertNotEqual(result.verdict, "REWORK")
+
     def test_run_capture_maps_missing_executable(self):
         from atlas.codex_audit import _run_capture
 

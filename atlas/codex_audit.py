@@ -1004,7 +1004,8 @@ class CodexAuditProvider:
     2. Gather deterministic evidence (git/work packet/tests/CI).
     3. Revalidate exact repo/branch/HEAD (+ status snapshot) before Codex.
     4. Invoke Codex with tools/apps/browser/shell disabled to judge the bundle.
-    5. Before accepting PASS, revalidate identity/snapshot and require a clean tree.
+    5. Before accepting PASS or REWORK, revalidate identity/snapshot again;
+       PASS additionally requires a clean worktree.
     """
 
     def __init__(
@@ -1181,20 +1182,23 @@ class CodexAuditProvider:
                 findings=f"codex returned invalid verdict: {result.verdict!r}",
             )
 
-        if self.require_identity and result.verdict == "PASS":
+        # Fail closed before returning PASS or REWORK: never dispatch/accept
+        # stale evidence if the audited worktree advanced during Codex.
+        if self.require_identity and result.verdict in {"PASS", "REWORK"}:
             drift = _revalidate_audited_snapshot(
                 event,
                 record,
                 git_runner=self._git_runner,
                 expected_status_digest=status_digest,
-                require_clean_porcelain=True,
+                require_clean_porcelain=(result.verdict == "PASS"),
             )
             if drift:
+                label = result.verdict
                 return AuditResult(
                     verdict="HUMAN_REQUIRED",
                     findings=(
-                        "codex PASS rejected: audited worktree snapshot drift "
-                        f"or dirty tree at PASS gate ({drift[:300]})"
+                        f"codex {label} rejected: audited worktree snapshot "
+                        f"drift at {label} gate ({drift[:300]})"
                     ),
                 )
         return result
