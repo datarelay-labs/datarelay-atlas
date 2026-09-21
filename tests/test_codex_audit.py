@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -274,6 +275,8 @@ class CodexAuditProviderTests(unittest.TestCase):
                     ),
                     ("git", "branch", "--show-current"): "feature/x",
                     ("git", "rev-parse", "HEAD"): HEAD,
+                    ("git", "status", "--short", "--branch"): "## feature/x",
+                    ("git", "status", "--porcelain"): "",
                 }
                 return mapping[tuple(argv)]
 
@@ -319,6 +322,8 @@ class CodexAuditProviderTests(unittest.TestCase):
                     ),
                     ("git", "branch", "--show-current"): "feature/x",
                     ("git", "rev-parse", "HEAD"): HEAD,
+                    ("git", "status", "--short", "--branch"): "## feature/x",
+                    ("git", "status", "--porcelain"): "",
                 }
                 return mapping[tuple(argv)]
 
@@ -345,6 +350,8 @@ class CodexAuditProviderTests(unittest.TestCase):
                     ),
                     ("git", "branch", "--show-current"): "feature/x",
                     ("git", "rev-parse", "HEAD"): HEAD,
+                    ("git", "status", "--short", "--branch"): "## feature/x",
+                    ("git", "status", "--porcelain"): "",
                 }
                 return mapping[tuple(argv)]
 
@@ -535,6 +542,140 @@ class CodexAuditProviderTests(unittest.TestCase):
             self.assertIsNone(provider.last_command)
             self.assertIsNone(provider.last_prompt)
 
+    def test_git_status_is_bounded_for_many_untracked_paths(self):
+        """Many ?? paths: evidence status stays bounded; INCOMPLETE; no contents."""
+        lines = ["## feature/x"]
+        for i in range(200):
+            lines.append(f"?? generated/path_{i:04d}_" + ("x" * 40) + ".py")
+        raw = "\n".join(lines) + "\n"
+        self.assertGreater(len(raw), 2000)
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            mapping = {
+                ("git", "status", "--short", "--branch"): raw,
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "diff", "--stat", "origin/main...HEAD"): "",
+                ("git", "diff", "--find-renames", "origin/main...HEAD"): "",
+                ("git", "diff", "--stat", "HEAD"): "",
+                ("git", "diff", "--find-renames", "HEAD"): "",
+                ("git", "diff", "--cached", "--stat"): "",
+                ("git", "diff", "--cached", "--find-renames"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = collect_git_evidence(
+                tmp, git_runner=fake_git, max_status_chars=2000
+            )
+        self.assertEqual(evidence["evidence_status"], "INCOMPLETE")
+        self.assertIn("status", evidence["truncated_fields"])
+        self.assertLessEqual(len(evidence["status"]), 2000 + 40)
+        self.assertIn("...[truncated]...", evidence["status"])
+        self.assertIn("untracked_files", evidence)
+        self.assertLess(len(evidence["untracked_files"]), 200)
+        # Raw unbounded status must not appear in the evidence payload.
+        self.assertNotEqual(evidence["status"], raw.strip())
+        self.assertLess(len(json.dumps(evidence)), len(raw) + 5000)
+
+    def test_head_change_after_evidence_blocks_codex(self):
+        """HEAD mutation after evidence collection ⇒ HUMAN_REQUIRED, no Codex."""
+        status = "## feature/x"
+        head_reads = {"n": 0}
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            if argv[:2] == ["git", "rev-parse"] and argv[-1] == "HEAD":
+                head_reads["n"] += 1
+                # First read: initial identity. Later reads: post-evidence gate.
+                if head_reads["n"] >= 2:
+                    return "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                return HEAD
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "status", "--short", "--branch"): status,
+                ("git", "status", "--porcelain"): "",
+            }
+            return mapping[tuple(argv)]
+
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {
+                        "head": HEAD,
+                        "evidence_status": "OK",
+                        "status": status,
+                        "status_digest": hashlib.sha256(
+                            status.encode("utf-8")
+                        ).hexdigest(),
+                    },
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("snapshot drift", result.findings)
+            self.assertIsNone(provider.last_command)
+
+    def test_head_change_after_codex_pass_rejects_terminal_pass(self):
+        """HEAD mutation after Codex returns PASS ⇒ HUMAN_REQUIRED, never PASS."""
+        heads = {"value": HEAD}
+        status = "## feature/x"
+        digest = hashlib.sha256(status.encode("utf-8")).hexdigest()
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            if argv[:2] == ["git", "rev-parse"] and argv[-1] == "HEAD":
+                return heads["value"]
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "status", "--short", "--branch"): status,
+                ("git", "status", "--porcelain"): "",
+            }
+            return mapping[tuple(argv)]
+
+        def pass_runner(command: list[str], prompt: str, cwd: str) -> str:
+            heads["value"] = "cccccccccccccccccccccccccccccccccccccccc"
+            out = Path(command[command.index("-o") + 1])
+            out.write_text(
+                '{"verdict":"PASS","findings":"looks good"}',
+                encoding="utf-8",
+            )
+            return out.read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=pass_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {
+                        "head": HEAD,
+                        "evidence_status": "OK",
+                        "status": status,
+                        "status_digest": digest,
+                    },
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("PASS rejected", result.findings)
     def test_run_capture_maps_missing_executable(self):
         from atlas.codex_audit import _run_capture
 

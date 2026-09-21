@@ -146,11 +146,24 @@ Offline/deterministic mode requires explicit `--audit-adapter fixed`.
 and enqueues/drains the local inbox without Telegram. Default audit adapter is
 `codex`. Unknown `AWC_AUDIT_ADAPTER` values fail closed.
 
+Production default is **unattended**: when draining, the hook passes
+`--spawn-dispatch` so a `REWORK` verdict can launch a fresh Cursor session with
+exact argv `agent persist --trust /work-resume`. Set
+`AWC_SPAWN_DISPATCH=0` only for audit-only / operator opt-out (drain without
+auto-dispatch).
+
 ```bash
-# Production default (Codex / ChatGPT plan)
+# Production default (Codex / ChatGPT plan; auto-dispatch on REWORK)
 AWC_WORKSTREAM=autonomous-work-controller-poc \
 AWC_ISSUE_NUMBER=12 \
 AWC_ATTEMPT=1 \
+./scripts/awc-completion-hook.sh
+
+# Audit-only opt-out: drain without spawning REWORK dispatch
+AWC_WORKSTREAM=autonomous-work-controller-poc \
+AWC_ISSUE_NUMBER=12 \
+AWC_ATTEMPT=1 \
+AWC_SPAWN_DISPATCH=0 \
 ./scripts/awc-completion-hook.sh
 
 # Explicit offline/fixed only when deliberately requested

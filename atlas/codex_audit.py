@@ -10,6 +10,7 @@ tools/apps/browser/shell disabled. Codex local shell is not required.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -42,6 +43,7 @@ DEFAULT_MAX_PACKET_CHARS = 8000
 DEFAULT_MAX_TEST_CHARS = 8000
 DEFAULT_MAX_CI_CHARS = 4000
 DEFAULT_MAX_REVIEW_CHARS = 8000
+DEFAULT_MAX_STATUS_CHARS = 2000
 
 # Features disabled so Codex judges the supplied bundle only.
 # Deliberately omits skill_search / skill_mcp_dependency_install: nonessential
@@ -159,19 +161,37 @@ def collect_git_evidence(
     base_ref: str | None = None,
     git_runner: GitRunner | None = None,
     max_diff_chars: int = DEFAULT_MAX_DIFF_CHARS,
+    max_status_chars: int = DEFAULT_MAX_STATUS_CHARS,
 ) -> dict:
     """Collect bounded local git evidence outside Codex.
 
-    Porcelain ``status`` remains the ``git status`` output. Completeness is
-    reported separately as ``evidence_status`` (OK / INCOMPLETE / ERROR) so a
-    truncated committed/workdir/staged diff, or untracked paths whose contents
-    are not included, cannot silently permit PASS.
+    Porcelain ``status`` is stored only in bounded form. Completeness is
+    reported as ``evidence_status`` (OK / INCOMPLETE / ERROR) so truncated
+    diffs/status or untracked paths whose contents are not included cannot
+    silently permit PASS. ``status_digest`` fingerprints the temporary raw
+    status for TOCTOU snapshot checks without retaining unbounded text.
     """
     runner = git_runner or default_git_runner
     cwd = str(Path(worktree_path).resolve())
     evidence: dict = {"collector": "atlas.codex_audit.collect_git_evidence"}
+    truncated_fields: list[str] = []
+    raw_status = ""
+    try:
+        raw_status = runner(["git", "status", "--short", "--branch"], cwd)
+        evidence["status_digest"] = hashlib.sha256(
+            raw_status.encode("utf-8")
+        ).hexdigest()
+        bounded_status, status_truncated = _trim_marked(
+            raw_status, max_status_chars
+        )
+        evidence["status"] = bounded_status
+        if status_truncated:
+            truncated_fields.append("status")
+    except ValidationError as exc:
+        evidence["status"] = f"ERROR: {exc}"
+        evidence["status_digest"] = ""
+
     for label, argv in (
-        ("status", ["git", "status", "--short", "--branch"]),
         ("head", ["git", "rev-parse", "HEAD"]),
         ("branch", ["git", "branch", "--show-current"]),
         ("origin", ["git", "remote", "get-url", "origin"]),
@@ -182,7 +202,6 @@ def collect_git_evidence(
             evidence[label] = f"ERROR: {exc}"
     diff_ref = base_ref or "origin/main"
     evidence["base_ref"] = diff_ref
-    truncated_fields: list[str] = []
     try:
         evidence["diff_stat"] = runner(
             ["git", "diff", "--stat", f"{diff_ref}...HEAD"], cwd
@@ -213,9 +232,11 @@ def collect_git_evidence(
         except ValidationError as exc:
             evidence[label] = f"ERROR: {exc}"
 
-    untracked = _untracked_paths_from_status(str(evidence.get("status") or ""))
+    # Parse untracked from temporary raw status only; never retain raw.
+    untracked = _untracked_paths_from_status(raw_status)
     if untracked:
         evidence["untracked_files"] = _bounded_path_list(untracked)
+    del raw_status
 
     audited_keys = (
         "status",
@@ -246,7 +267,7 @@ def collect_git_evidence(
         details: list[str] = []
         if truncated_fields:
             details.append(
-                "git diff truncated under max_diff_chars budget; "
+                "git evidence truncated under section budget; "
                 f"truncated fields={','.join(truncated_fields)}"
             )
             evidence["truncated_fields"] = truncated_fields
@@ -908,6 +929,72 @@ def _looks_like_secret(text: str) -> bool:
     return False
 
 
+def _git_run(
+    argv: list[str],
+    cwd: str,
+    *,
+    git_runner: GitRunner | None,
+) -> str:
+    runner = git_runner or default_git_runner
+    return runner(argv, cwd)
+
+
+def _status_digest(raw_status: str) -> str:
+    return hashlib.sha256(raw_status.encode("utf-8")).hexdigest()
+
+
+def _revalidate_audited_snapshot(
+    event: CompletionEvent,
+    record: WorkstreamRecord,
+    *,
+    git_runner: GitRunner | None,
+    expected_status_digest: str | None,
+    require_clean_porcelain: bool,
+) -> str | None:
+    """Revalidate exact repo/branch/HEAD (and optional status snapshot).
+
+    Returns an error detail string on mismatch; None when the snapshot still
+    matches the audited completion event. Never raises for expected drift.
+    """
+    try:
+        validate_worktree_identity(
+            record.worktree_path,
+            repository=record.repository,
+            branch=event.branch,
+            expected_head=event.head,
+            git_runner=git_runner,
+        )
+    except ValidationError as exc:
+        return f"worktree identity drift: {exc}"
+
+    cwd = str(Path(record.worktree_path).resolve())
+    try:
+        raw_status = _git_run(
+            ["git", "status", "--short", "--branch"],
+            cwd,
+            git_runner=git_runner,
+        )
+    except ValidationError as exc:
+        return f"git status revalidation failed: {exc}"
+
+    if expected_status_digest:
+        observed = _status_digest(raw_status)
+        if observed != expected_status_digest:
+            return "git status snapshot changed during audit"
+
+    if require_clean_porcelain:
+        try:
+            porcelain = _git_run(
+                ["git", "status", "--porcelain"],
+                cwd,
+                git_runner=git_runner,
+            )
+        except ValidationError as exc:
+            return f"git porcelain revalidation failed: {exc}"
+        if porcelain.strip():
+            return "worktree dirty at PASS gate; git status --porcelain not empty"
+    return None
+
 
 class CodexAuditProvider:
     """AuditPort implementation backed by Codex CLI + ChatGPT plan auth.
@@ -915,7 +1002,9 @@ class CodexAuditProvider:
     Default behavior:
     1. Validate worktree identity.
     2. Gather deterministic evidence (git/work packet/tests/CI).
-    3. Invoke Codex with tools/apps/browser/shell disabled to judge the bundle.
+    3. Revalidate exact repo/branch/HEAD (+ status snapshot) before Codex.
+    4. Invoke Codex with tools/apps/browser/shell disabled to judge the bundle.
+    5. Before accepting PASS, revalidate identity/snapshot and require a clean tree.
     """
 
     def __init__(
@@ -1022,6 +1111,37 @@ class CodexAuditProvider:
                 ),
             )
 
+        status_digest = None
+        if isinstance(git, dict):
+            digest = git.get("status_digest")
+            if isinstance(digest, str) and digest:
+                status_digest = digest
+
+        if self.require_identity:
+            drift = _revalidate_audited_snapshot(
+                event,
+                record,
+                git_runner=self._git_runner,
+                expected_status_digest=status_digest,
+                require_clean_porcelain=False,
+            )
+            if drift:
+                return AuditResult(
+                    verdict="HUMAN_REQUIRED",
+                    findings=(
+                        "codex audit skipped: audited worktree snapshot drift "
+                        f"after evidence collection ({drift[:300]})"
+                    ),
+                )
+            identity = validate_worktree_identity(
+                record.worktree_path,
+                repository=record.repository,
+                branch=event.branch,
+                expected_head=event.head,
+                git_runner=self._git_runner,
+            )
+            self.last_identity = identity
+
         prompt = build_codex_audit_prompt(
             event,
             record,
@@ -1060,4 +1180,21 @@ class CodexAuditProvider:
                 verdict="HUMAN_REQUIRED",
                 findings=f"codex returned invalid verdict: {result.verdict!r}",
             )
+
+        if self.require_identity and result.verdict == "PASS":
+            drift = _revalidate_audited_snapshot(
+                event,
+                record,
+                git_runner=self._git_runner,
+                expected_status_digest=status_digest,
+                require_clean_porcelain=True,
+            )
+            if drift:
+                return AuditResult(
+                    verdict="HUMAN_REQUIRED",
+                    findings=(
+                        "codex PASS rejected: audited worktree snapshot drift "
+                        f"or dirty tree at PASS gate ({drift[:300]})"
+                    ),
+                )
         return result

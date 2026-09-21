@@ -65,7 +65,7 @@ if [[ "${AWC_DRAIN:-1}" == "1" ]]; then
       exit 1
       ;;
   esac
-  if [[ "${AWC_SPAWN_DISPATCH:-0}" == "1" ]]; then
+  if [[ "${AWC_SPAWN_DISPATCH:-1}" == "1" ]]; then
     EXTRA+=(--spawn-dispatch)
   fi
   python3 -m atlas --data-root "$DATA_ROOT" work-controller drain-inbox "${EXTRA[@]}"
