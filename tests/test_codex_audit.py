@@ -15,6 +15,7 @@ from atlas.codex_audit import (
     build_codex_audit_prompt,
     collect_audit_evidence_bundle,
     collect_ci_evidence,
+    collect_git_evidence,
     collect_pr_review_evidence,
     collect_test_evidence,
     collect_work_packet_evidence,
@@ -414,6 +415,70 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertEqual(ci["status"], "ERROR")
         tests = collect_test_evidence("/tmp", command_runner=boom)
         self.assertEqual(tests["status"], "FAIL")
+
+    def test_work_packet_fail_closed_when_body_trimmed(self):
+        """Acceptance text only in trimmed Work Packet tail ⇒ INCOMPLETE."""
+        marker = "ACCEPTANCE_ONLY_IN_TRIMMED_TAIL"
+        long_body = ("y" * 8000) + marker
+        self.assertGreater(len(long_body), 8000)
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            payload = {
+                "number": 12,
+                "title": "[AI Work] x",
+                "state": "OPEN",
+                "updatedAt": "2026-09-21T00:00:00Z",
+                "body": long_body,
+            }
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        packet = collect_work_packet_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            issue_number=12,
+            command_runner=runner,
+            max_chars=8000,
+        )
+        self.assertEqual(packet["status"], "INCOMPLETE")
+        self.assertTrue(packet["truncated"])
+        self.assertIn("truncated under max_chars", packet["detail"])
+        self.assertNotIn(marker, packet["body"])
+        self.assertIn("...[truncated]...", packet["body"])
+
+    def test_git_evidence_fail_closed_when_diff_trimmed(self):
+        """Actionable text only after max_diff_chars ⇒ evidence_status INCOMPLETE."""
+        marker = "P1_ACTIONABLE_ONLY_IN_TRIMMED_DIFF_TAIL"
+        long_diff = ("z" * 500) + marker
+        self.assertGreater(len(long_diff), 500)
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            mapping = {
+                ("git", "status", "--short", "--branch"): "## feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "diff", "--stat", "origin/main...HEAD"): "1 file changed",
+                ("git", "diff", "--find-renames", "origin/main...HEAD"): long_diff,
+                ("git", "diff", "--stat", "HEAD"): "",
+                ("git", "diff", "--find-renames", "HEAD"): "",
+                ("git", "diff", "--cached", "--stat"): "",
+                ("git", "diff", "--cached", "--find-renames"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = collect_git_evidence(
+                tmp, git_runner=fake_git, max_diff_chars=500
+            )
+        self.assertEqual(evidence["evidence_status"], "INCOMPLETE")
+        self.assertIn("diff", evidence["truncated_fields"])
+        self.assertNotIn(marker, evidence["diff"])
+        self.assertIn("...[truncated]...", evidence["diff"])
+        # Porcelain status field remains git status output, not completeness.
+        self.assertEqual(evidence["status"], "## feature/x")
 
     def test_run_capture_maps_missing_executable(self):
         from atlas.codex_audit import _run_capture
@@ -980,7 +1045,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 git_runner=fake_git,
                 evidence_bundle={
                     "schema": "awc.codex_evidence_bundle.v1",
-                    "git": {"head": HEAD},
+                    "git": {"head": HEAD, "evidence_status": "OK"},
                     "pr_reviews": {
                         "status": "INCOMPLETE",
                         "detail": "review evidence truncated under section budget",
@@ -993,6 +1058,40 @@ class CodexAuditProviderTests(unittest.TestCase):
                 "PR review evidence status=INCOMPLETE", incomplete.findings
             )
             self.assertIsNone(provider_incomplete.last_command)
+
+            provider_packet = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "work_packet": {
+                        "status": "INCOMPLETE",
+                        "detail": "work packet body truncated under max_chars budget",
+                    },
+                },
+            )
+            packet = provider_packet.audit(self._event(), self._record(tmp))
+            self.assertEqual(packet.verdict, "HUMAN_REQUIRED")
+            self.assertIn("Work Packet evidence status=INCOMPLETE", packet.findings)
+            self.assertIsNone(provider_packet.last_command)
+
+            provider_git = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {
+                        "head": HEAD,
+                        "evidence_status": "INCOMPLETE",
+                        "detail": "git diff truncated under max_diff_chars budget",
+                    },
+                },
+            )
+            git_incomplete = provider_git.audit(self._event(), self._record(tmp))
+            self.assertEqual(git_incomplete.verdict, "HUMAN_REQUIRED")
+            self.assertIn("git evidence status=INCOMPLETE", git_incomplete.findings)
+            self.assertIsNone(provider_git.last_command)
 
 
 if __name__ == "__main__":

@@ -115,6 +115,14 @@ def _trim(text: str, limit: int) -> str:
     return raw[:limit] + "\n...[truncated]...\n"
 
 
+def _trim_marked(text: str, limit: int) -> tuple[str, bool]:
+    """Return ``(bounded_text, truncated)`` for fail-closed collectors."""
+    raw = text.strip()
+    if len(raw) <= limit:
+        return raw, False
+    return raw[:limit] + "\n...[truncated]...\n", True
+
+
 def collect_git_evidence(
     worktree_path: str,
     *,
@@ -122,7 +130,12 @@ def collect_git_evidence(
     git_runner: GitRunner | None = None,
     max_diff_chars: int = DEFAULT_MAX_DIFF_CHARS,
 ) -> dict:
-    """Collect bounded local git evidence outside Codex."""
+    """Collect bounded local git evidence outside Codex.
+
+    Porcelain ``status`` remains the ``git status`` output. Completeness is
+    reported separately as ``evidence_status`` (OK / INCOMPLETE / ERROR) so a
+    truncated committed/workdir/staged diff cannot silently permit PASS.
+    """
     runner = git_runner or default_git_runner
     cwd = str(Path(worktree_path).resolve())
     evidence: dict = {"collector": "atlas.codex_audit.collect_git_evidence"}
@@ -138,12 +151,16 @@ def collect_git_evidence(
             evidence[label] = f"ERROR: {exc}"
     diff_ref = base_ref or "origin/main"
     evidence["base_ref"] = diff_ref
+    truncated_fields: list[str] = []
     try:
         evidence["diff_stat"] = runner(
             ["git", "diff", "--stat", f"{diff_ref}...HEAD"], cwd
         )
         diff = runner(["git", "diff", "--find-renames", f"{diff_ref}...HEAD"], cwd)
-        evidence["diff"] = _trim(diff, max_diff_chars)
+        bounded, was_truncated = _trim_marked(diff, max_diff_chars)
+        evidence["diff"] = bounded
+        if was_truncated:
+            truncated_fields.append("diff")
     except ValidationError as exc:
         evidence["diff_stat"] = f"ERROR: {exc}"
         evidence["diff"] = f"ERROR: {exc}"
@@ -157,10 +174,47 @@ def collect_git_evidence(
         try:
             value = runner(argv, cwd)
             if label.endswith("_diff"):
-                value = _trim(value, max_diff_chars)
+                bounded, was_truncated = _trim_marked(value, max_diff_chars)
+                value = bounded
+                if was_truncated:
+                    truncated_fields.append(label)
             evidence[label] = value
         except ValidationError as exc:
             evidence[label] = f"ERROR: {exc}"
+
+    audited_keys = (
+        "status",
+        "head",
+        "branch",
+        "origin",
+        "diff_stat",
+        "diff",
+        "workdir_diff_stat",
+        "workdir_diff",
+        "staged_diff_stat",
+        "staged_diff",
+    )
+    error_fields = [
+        key
+        for key in audited_keys
+        if str(evidence.get(key) or "").startswith("ERROR:")
+    ]
+    if error_fields:
+        evidence["evidence_status"] = "ERROR"
+        evidence["detail"] = (
+            "git evidence collection failed; "
+            f"error fields={','.join(error_fields)}"
+        )
+        evidence["error_fields"] = error_fields
+    elif truncated_fields:
+        evidence["evidence_status"] = "INCOMPLETE"
+        evidence["detail"] = (
+            "git diff truncated under max_diff_chars budget; "
+            f"truncated fields={','.join(truncated_fields)}"
+        )
+        evidence["truncated_fields"] = truncated_fields
+    else:
+        evidence["evidence_status"] = "OK"
     return evidence
 
 
@@ -209,15 +263,26 @@ def collect_work_packet_evidence(
             "detail": "gh issue view returned non-JSON",
         }
     body = str(payload.get("body") or "")
-    return {
+    bounded_body, truncated = _trim_marked(body, max_chars)
+    result: dict = {
         "collector": "atlas.codex_audit.collect_work_packet_evidence",
-        "status": "OK",
         "number": payload.get("number"),
         "title": payload.get("title"),
         "state": payload.get("state"),
         "updated_at": payload.get("updatedAt"),
-        "body": _trim(body, max_chars),
+        "body": bounded_body,
     }
+    if truncated:
+        result["status"] = "INCOMPLETE"
+        result["detail"] = (
+            "work packet body truncated under max_chars budget"
+        )
+        result["truncated"] = True
+        result["original_body_chars"] = len(body.strip())
+        result["max_chars"] = max_chars
+    else:
+        result["status"] = "OK"
+    return result
 
 
 def collect_test_evidence(
@@ -878,17 +943,38 @@ class CodexAuditProvider:
                 bundle["legacy_evidence_text"] = self.evidence
         self.last_evidence_bundle = bundle
 
-        reviews = bundle.get("pr_reviews")
-        if isinstance(reviews, dict) and reviews.get("status") in {
+        for section_key, label in (
+            ("pr_reviews", "PR review"),
+            ("work_packet", "Work Packet"),
+        ):
+            section = bundle.get(section_key)
+            if isinstance(section, dict) and section.get("status") in {
+                "ERROR",
+                "INCOMPLETE",
+            }:
+                status = str(section.get("status"))
+                detail = str(
+                    section.get("detail") or f"{label} evidence unavailable"
+                )
+                return AuditResult(
+                    verdict="HUMAN_REQUIRED",
+                    findings=(
+                        f"codex audit skipped: {label} evidence "
+                        f"status={status} ({detail[:300]})"
+                    ),
+                )
+
+        git = bundle.get("git")
+        if isinstance(git, dict) and git.get("evidence_status") in {
             "ERROR",
             "INCOMPLETE",
         }:
-            status = str(reviews.get("status"))
-            detail = str(reviews.get("detail") or "PR review evidence unavailable")
+            status = str(git.get("evidence_status"))
+            detail = str(git.get("detail") or "git evidence unavailable")
             return AuditResult(
                 verdict="HUMAN_REQUIRED",
                 findings=(
-                    f"codex audit skipped: PR review evidence status={status} "
+                    f"codex audit skipped: git evidence status={status} "
                     f"({detail[:300]})"
                 ),
             )
