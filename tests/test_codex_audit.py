@@ -15,6 +15,7 @@ from atlas.codex_audit import (
     build_codex_audit_prompt,
     collect_audit_evidence_bundle,
     collect_ci_evidence,
+    collect_pr_review_evidence,
     collect_test_evidence,
     collect_work_packet_evidence,
 )
@@ -258,6 +259,7 @@ class CodexAuditProviderTests(unittest.TestCase):
             self.assertEqual(bundle["work_packet"]["status"], "OK")
             self.assertEqual(bundle["tests"]["status"], "PASS")
             self.assertEqual(bundle["ci"]["status"], "ABSENT")
+            self.assertEqual(bundle["pr_reviews"]["status"], "ABSENT")
 
     def test_provider_parses_rework_and_records_tool_disabled_command(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -430,6 +432,9 @@ class CodexAuditProviderTests(unittest.TestCase):
         def fake(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
             calls.append(argv)
             if argv[:3] == ["gh", "pr", "list"]:
+                # Documented raw SHA search (not hash:<SHA>).
+                self.assertIn(HEAD, argv)
+                self.assertTrue(all(not str(part).startswith("hash:") for part in argv))
                 payload = [
                     {
                         "number": 15,
@@ -454,6 +459,228 @@ class CodexAuditProviderTests(unittest.TestCase):
         )
         self.assertEqual(ci["status"], "PENDING")
         self.assertEqual(ci["checks_exit_code"], 8)
+
+    def test_ci_collector_uses_raw_sha_search(self):
+        seen: list[list[str]] = []
+
+        def fake(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+        ci = collect_ci_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            head=HEAD,
+            command_runner=fake,
+        )
+        self.assertEqual(ci["status"], "ABSENT")
+        self.assertEqual(seen[0][seen[0].index("--search") + 1], HEAD)
+        self.assertNotIn(f"hash:{HEAD[:12]}", seen[0])
+
+    def test_pr_review_evidence_ok_and_fail_closed(self):
+        def ok_runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == ["gh", "api"] and argv[2].endswith("/reviews"):
+                payload = [
+                    {
+                        "id": 1,
+                        "user": {"login": "reviewer"},
+                        "state": "COMMENTED",
+                        "body": "P1 collect reviews",
+                        "commit_id": HEAD,
+                        "submitted_at": "2026-09-21T00:00:00Z",
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and argv[2].endswith("/comments"):
+                payload = [
+                    {
+                        "id": 99,
+                        "user": {"login": "reviewer"},
+                        "body": "actionable finding",
+                        "path": "atlas/codex_audit.py",
+                        "line": 10,
+                        "commit_id": HEAD,
+                        "created_at": "2026-09-21T00:00:00Z",
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            raise AssertionError(argv)
+
+        ok = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=15,
+            command_runner=ok_runner,
+        )
+        self.assertEqual(ok["status"], "OK")
+        self.assertEqual(ok["reviews"][0]["body"], "P1 collect reviews")
+        self.assertEqual(ok["inline_comments"][0]["id"], 99)
+
+        def boom(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="denied")
+
+        err = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=15,
+            command_runner=boom,
+        )
+        self.assertEqual(err["status"], "ERROR")
+
+    def test_bundle_includes_pr_reviews_when_ci_finds_pr(self):
+        def fake_git(argv: list[str], cwd: str) -> str:
+            mapping = {
+                ("git", "status", "--short", "--branch"): "## feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "remote", "get-url", "origin"): "datarelay-labs/datarelay-atlas",
+                ("git", "diff", "--stat", "origin/main...HEAD"): "",
+                ("git", "diff", "--find-renames", "origin/main...HEAD"): "",
+                ("git", "diff", "--stat", "HEAD"): "",
+                ("git", "diff", "--find-renames", "HEAD"): "",
+                ("git", "diff", "--cached", "--stat"): "",
+                ("git", "diff", "--cached", "--find-renames"): "",
+            }
+            return mapping[tuple(argv)]
+
+        def fake_cmd(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "view"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "number": 12,
+                            "title": "[AI Work] x",
+                            "state": "OPEN",
+                            "updatedAt": "2026-09-21T00:00:00Z",
+                            "body": "STATUS=ACTIVE\n",
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "pr", "list"]:
+                self.assertEqual(argv[argv.index("--search") + 1], HEAD)
+                payload = [
+                    {
+                        "number": 15,
+                        "url": "https://example.invalid/pr/15",
+                        "state": "OPEN",
+                        "title": "x",
+                        "headRefOid": HEAD,
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout="check\tpass\n", stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "/reviews" in argv[2]:
+                return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+            if argv[:2] == ["gh", "api"] and argv[2].endswith("/comments"):
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        [
+                            {
+                                "id": 1,
+                                "user": {"login": "bot"},
+                                "body": "P1 finding",
+                                "path": "atlas/codex_audit.py",
+                                "line": 1,
+                                "commit_id": HEAD,
+                            }
+                        ]
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["python3", "-m", "unittest"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout="OK\n", stderr=""
+                )
+            raise AssertionError(argv)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = collect_audit_evidence_bundle(
+                self._event(),
+                self._record(tmp),
+                identity=self._identity(tmp),
+                git_runner=fake_git,
+                command_runner=fake_cmd,
+            )
+        self.assertEqual(bundle["ci"]["status"], "OK")
+        self.assertEqual(bundle["pr_reviews"]["status"], "OK")
+        self.assertEqual(bundle["pr_reviews"]["inline_comments"][0]["body"], "P1 finding")
+
+    def test_bundle_fail_closed_when_review_api_errors(self):
+        def fake_git(argv: list[str], cwd: str) -> str:
+            mapping = {
+                ("git", "status", "--short", "--branch"): "## feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "remote", "get-url", "origin"): "datarelay-labs/datarelay-atlas",
+                ("git", "diff", "--stat", "origin/main...HEAD"): "",
+                ("git", "diff", "--find-renames", "origin/main...HEAD"): "",
+                ("git", "diff", "--stat", "HEAD"): "",
+                ("git", "diff", "--find-renames", "HEAD"): "",
+                ("git", "diff", "--cached", "--stat"): "",
+                ("git", "diff", "--cached", "--find-renames"): "",
+            }
+            return mapping[tuple(argv)]
+
+        def fake_cmd(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "view"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "number": 12,
+                            "title": "x",
+                            "state": "OPEN",
+                            "updatedAt": "2026-09-21T00:00:00Z",
+                            "body": "STATUS=ACTIVE\n",
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "pr", "list"]:
+                payload = [
+                    {
+                        "number": 15,
+                        "url": "https://example.invalid/pr/15",
+                        "state": "OPEN",
+                        "title": "x",
+                        "headRefOid": HEAD,
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
+            if argv[:2] == ["gh", "api"]:
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="api failed"
+                )
+            if argv[:3] == ["python3", "-m", "unittest"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="OK\n", stderr="")
+            raise AssertionError(argv)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = collect_audit_evidence_bundle(
+                self._event(),
+                self._record(tmp),
+                identity=self._identity(tmp),
+                git_runner=fake_git,
+                command_runner=fake_cmd,
+            )
+        self.assertEqual(bundle["ci"]["status"], "OK")
+        self.assertEqual(bundle["pr_reviews"]["status"], "ERROR")
 
 
 if __name__ == "__main__":

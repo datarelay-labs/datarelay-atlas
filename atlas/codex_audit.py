@@ -41,6 +41,7 @@ DEFAULT_MAX_DIFF_CHARS = 12000
 DEFAULT_MAX_PACKET_CHARS = 8000
 DEFAULT_MAX_TEST_CHARS = 8000
 DEFAULT_MAX_CI_CHARS = 4000
+DEFAULT_MAX_REVIEW_CHARS = 8000
 
 # Features disabled so Codex judges the supplied bundle only.
 # Deliberately omits skill_search / skill_mcp_dependency_install: nonessential
@@ -69,10 +70,13 @@ Do not edit files, commit, push, or request additional runtime access.
 Return ONLY a JSON object with keys:
   verdict: one of PASS, REWORK, HUMAN_REQUIRED
   findings: concise evidence-backed string (include paths/lines when useful)
-PASS only when the bundle satisfies the workstream goal and acceptance constraints.
+PASS only when the bundle satisfies the workstream goal and acceptance constraints,
+including that PR review evidence is inspectable and shows no unresolved actionable
+review feedback when a PR is in scope.
 REWORK when actionable defects remain that a fresh /work-resume cycle can fix.
 HUMAN_REQUIRED when owner judgment, credentials, or out-of-scope decisions are needed,
-or when the bundle is insufficient to judge safely.
+or when the bundle is insufficient to judge safely, or when PR review evidence is
+ERROR/unavailable (fail closed; never PASS when review feedback cannot be inspected).
 """
 
 
@@ -279,7 +283,7 @@ def collect_ci_evidence(
         "--state",
         "all",
         "--search",
-        f"hash:{head[:12]}",
+        head,
         "--json",
         "number,url,state,title,headRefOid",
         "--limit",
@@ -376,6 +380,97 @@ def collect_ci_evidence(
     }
 
 
+def _bounded_review_items(raw: object, *, max_chars: int) -> list[dict]:
+    """Normalize review/comment payloads into a bounded list of dicts."""
+    if not isinstance(raw, list):
+        return []
+    items: list[dict] = []
+    remaining = max_chars
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        body = str(entry.get("body") or "")
+        item = {
+            "id": entry.get("id"),
+            "user": ((entry.get("user") or {}) if isinstance(entry.get("user"), dict) else {}).get(
+                "login"
+            ),
+            "state": entry.get("state"),
+            "commit_id": entry.get("commit_id"),
+            "submitted_at": entry.get("submitted_at"),
+            "created_at": entry.get("created_at"),
+            "path": entry.get("path"),
+            "line": entry.get("line"),
+            "body": _trim(body, min(1200, max(200, remaining))),
+        }
+        encoded = json.dumps(item, sort_keys=True)
+        if len(encoded) > remaining and items:
+            break
+        items.append(item)
+        remaining = max(0, remaining - len(encoded))
+        if remaining <= 0:
+            break
+    return items
+
+
+def collect_pr_review_evidence(
+    *,
+    repository: str,
+    pr_number: int,
+    command_runner: CommandRunner | None = None,
+    max_chars: int = DEFAULT_MAX_REVIEW_CHARS,
+) -> dict:
+    """Collect machine-observable PR reviews + inline comments (fail closed)."""
+    cwd = str(Path.cwd())
+    base = f"repos/{repository}/pulls/{pr_number}"
+    sections: dict[str, object] = {
+        "collector": "atlas.codex_audit.collect_pr_review_evidence",
+        "repository": repository,
+        "pr_number": pr_number,
+    }
+    for label, path in (
+        ("reviews", f"{base}/reviews"),
+        ("inline_comments", f"{base}/comments"),
+    ):
+        argv = ["gh", "api", path]
+        try:
+            completed = _run_capture(
+                argv, cwd, timeout_sec=60, runner=command_runner
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "collector": "atlas.codex_audit.collect_pr_review_evidence",
+                "status": "ERROR",
+                "detail": f"gh api {path} timed out",
+                "repository": repository,
+                "pr_number": pr_number,
+            }
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            return {
+                "collector": "atlas.codex_audit.collect_pr_review_evidence",
+                "status": "ERROR",
+                "detail": detail[:500] or f"exit {completed.returncode}",
+                "repository": repository,
+                "pr_number": pr_number,
+                "failed_section": label,
+            }
+        try:
+            payload = json.loads(completed.stdout or "[]")
+        except json.JSONDecodeError:
+            return {
+                "collector": "atlas.codex_audit.collect_pr_review_evidence",
+                "status": "ERROR",
+                "detail": f"gh api {path} returned non-JSON",
+                "repository": repository,
+                "pr_number": pr_number,
+                "failed_section": label,
+            }
+        sections[label] = _bounded_review_items(payload, max_chars=max_chars // 2)
+    sections["status"] = "OK"
+    return sections
+
+
 def collect_audit_evidence_bundle(
     event: CompletionEvent,
     record: WorkstreamRecord,
@@ -437,11 +532,33 @@ def collect_audit_evidence_bundle(
             command_runner=command_runner,
         )
     if include_ci:
-        bundle["ci"] = collect_ci_evidence(
+        ci = collect_ci_evidence(
             repository=identity.repository,
             head=identity.head,
             command_runner=command_runner,
         )
+        bundle["ci"] = ci
+        # Fail closed: when a PR is in scope, review feedback must be inspectable.
+        pr = ci.get("pr") if isinstance(ci.get("pr"), dict) else None
+        pr_number = pr.get("number") if pr else None
+        if ci.get("status") in {"OK", "PENDING", "FAIL"} and pr_number is not None:
+            bundle["pr_reviews"] = collect_pr_review_evidence(
+                repository=identity.repository,
+                pr_number=int(pr_number),
+                command_runner=command_runner,
+            )
+        elif ci.get("status") == "ABSENT":
+            bundle["pr_reviews"] = {
+                "collector": "atlas.codex_audit.collect_pr_review_evidence",
+                "status": "ABSENT",
+                "detail": "no PR found for head; review evidence not applicable",
+            }
+        else:
+            bundle["pr_reviews"] = {
+                "collector": "atlas.codex_audit.collect_pr_review_evidence",
+                "status": "ERROR",
+                "detail": "ci evidence unavailable; review evidence fail-closed",
+            }
     return bundle
 
 
