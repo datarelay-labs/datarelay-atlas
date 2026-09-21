@@ -412,6 +412,48 @@ class CodexAuditProviderTests(unittest.TestCase):
         tests = collect_test_evidence("/tmp", command_runner=boom)
         self.assertEqual(tests["status"], "FAIL")
 
+    def test_run_capture_maps_missing_executable(self):
+        from atlas.codex_audit import _run_capture
+
+        completed = _run_capture(
+            ["gh-definitely-missing-awc", "issue", "view", "1"],
+            ".",
+            timeout_sec=5,
+        )
+        self.assertEqual(completed.returncode, 127)
+        self.assertIn("not found", completed.stderr)
+
+    def test_ci_collector_maps_pending_exit_code(self):
+        calls: list[list[str]] = []
+
+        def fake(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            calls.append(argv)
+            if argv[:3] == ["gh", "pr", "list"]:
+                payload = [
+                    {
+                        "number": 15,
+                        "url": "https://example.invalid/pr/15",
+                        "state": "OPEN",
+                        "headRefOid": HEAD,
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(
+                    argv, 8, stdout="check\tpending\n", stderr=""
+                )
+            raise AssertionError(argv)
+
+        ci = collect_ci_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            head=HEAD,
+            command_runner=fake,
+        )
+        self.assertEqual(ci["status"], "PENDING")
+        self.assertEqual(ci["checks_exit_code"], 8)
+
 
 if __name__ == "__main__":
     unittest.main()

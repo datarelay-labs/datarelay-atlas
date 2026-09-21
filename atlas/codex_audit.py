@@ -56,7 +56,6 @@ CODEX_DISABLED_FEATURES = (
     "plugins",
     "plugin_sharing",
     "remote_plugin",
-    "recommended_plugins",
     "hooks",
     "multi_agent",
     "multi_agent_v2",
@@ -87,14 +86,23 @@ def _run_capture(
 ) -> subprocess.CompletedProcess[str]:
     if runner is not None:
         return runner(argv, cwd)
-    return subprocess.run(
-        argv,
-        cwd=cwd,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout_sec,
-    )
+    try:
+        return subprocess.run(
+            argv,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+    except FileNotFoundError as exc:
+        missing = argv[0] if argv else "command"
+        return subprocess.CompletedProcess(
+            argv,
+            127,
+            stdout="",
+            stderr=f"{missing} not found on PATH: {exc}",
+        )
 
 
 def _trim(text: str, limit: int) -> str:
@@ -347,9 +355,16 @@ def collect_ci_evidence(
             "detail": "gh pr checks timed out",
             "pr": chosen,
         }
+    # gh pr checks: 0=pass, 8=pending, other=fail (see `gh pr checks --help`).
+    if checks.returncode == 0:
+        status = "OK"
+    elif checks.returncode == 8:
+        status = "PENDING"
+    else:
+        status = "FAIL"
     return {
         "collector": "atlas.codex_audit.collect_ci_evidence",
-        "status": "OK" if checks.returncode == 0 else "FAIL",
+        "status": status,
         "head": head,
         "pr": chosen,
         "checks_exit_code": checks.returncode,

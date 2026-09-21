@@ -79,7 +79,8 @@ EOF
 
 # PASS path via inbox ingestion (Cursor hook shape)
 python3 -m atlas work-controller enqueue-completion /tmp/awc-completion.json
-python3 -m atlas work-controller drain-inbox --audit-verdict PASS
+python3 -m atlas work-controller drain-inbox \
+  --audit-adapter fixed --audit-verdict PASS
 
 # Re-register in a fresh data root to exercise REWORK dispatch argv:
 rm -rf "$ATLAS_DATA_ROOT"
@@ -90,6 +91,7 @@ python3 -m atlas work-controller register autonomous-work-controller-poc \
   --worktree "$WT" \
   --expected-head "$HEAD"
 python3 -m atlas work-controller completion /tmp/awc-completion.json \
+  --audit-adapter fixed \
   --audit-verdict REWORK \
   --audit-findings "deterministic rework finding"
 
@@ -105,6 +107,7 @@ this worktree only):
 
 ```bash
 python3 -m atlas work-controller completion /tmp/awc-completion.json \
+  --audit-adapter fixed \
   --audit-verdict REWORK \
   --audit-findings "launcher dogfood" \
   --spawn-dispatch
