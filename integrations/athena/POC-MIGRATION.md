@@ -1,64 +1,97 @@
 # Athena PoC Migration Classification
 
-Source snapshot: `datarelay-labs/athena@atlas-poc-20260921`  
+Source snapshot: `datarelay-labs/athena@atlas-poc-20260921`
 HEAD: `f38e20ec4d4ea22c71f1457d9a5361da1e92773a`
+Upstream baseline: `6720b948744d42f1332f86f9a8157ff588e40d6e`
+Delta: four commits ahead of upstream
 
-The PoC is four commits ahead of upstream. This document is the initial ownership classification; implementation migration still requires affected-code review and tests.
+Disposition vocabulary:
 
-## Commit inventory
+| Code | Meaning |
+|---|---|
+| `ATLAS-OWNED` | Product contract/behavior belongs in `datarelay-atlas` |
+| `ATHENA-FORK-OWNED` | Generic Athena improvement retained on a focused fork branch |
+| `UPSTREAM-CANDIDATE` | Suitable to propose to `jannismilz/athena` after fork validation |
+| `DROP` | Do not carry forward into Atlas or fork `main` |
+| `SPLIT` | Exact boundary documented below |
+
+Rules honored:
+
+- do not wholesale merge the PoC branch into Athena fork `main`
+- Atlas product contracts must not depend on Wiki.js/Athena page identity
+- generic Athena fixes remain separately reviewable from Atlas product behavior
+- historical PoC evidence remains immutable
+
+## Commit inventory (summary)
 
 ### `4327edf` — harden MCP and project-scoped search
 
-Touched core vector search, indexer endpoints/client, MCP auth/server/tools, tests and dependency metadata.
-
-**Initial classification: SPLIT / REVIEW REQUIRED**
-
-- Project-scoped retrieval and provenance-aware tool behavior are Atlas requirements.
-- Generic auth correctness, vector/indexer fixes, and reusable MCP hardening may belong in the Athena fork or upstream.
-- Do not wholesale copy this commit into Atlas. Separate product contract from generic engine changes first.
+**SPLIT** — generic auth/search hardening vs Atlas project-scope product need.
 
 ### `4e99fc7` — sync canonical GitHub knowledge into Athena
 
-Added `knowledge-sources.json` and `scripts/sync-github-knowledge.*`.
-
-**Initial classification: ATLAS-OWNED CONCEPT**
-
-The canonical-source sync model, project namespace, repository/ref/path/blob provenance, and GitHub/OpenSpec authority model are Atlas product behavior.
-
-The current code is tightly coupled to Athena/Wiki.js APIs and may be reused as migration input, but the durable source/provider contract belongs in Atlas.
+**ATLAS-OWNED** concept and migration input; do not land on fork `main`.
 
 ### `5e84ba6` — pin actions and enforce dependency audit
 
-Changed Athena CI only.
-
-**Initial classification: GENERIC FORK / UPSTREAM CANDIDATE**
-
-This is build/supply-chain hardening rather than Atlas product behavior. Keep it out of Atlas unless Atlas independently needs equivalent controls.
+**ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE**.
 
 ### `f38e20e` — document KB governance and clean auth lint
 
-Added Engineering Knowledge governance documentation and removed an auth lint issue.
+**SPLIT** — governance principles → Atlas; unused-var cleanup → fork.
 
-**Initial classification: SPLIT**
+## Per-file / per-capability disposition
 
-- Governance principles belong in Atlas canonical docs/architecture.
-- Generic auth/lint cleanup belongs in the Athena fork/upstream if still applicable.
+| Path | Capability | Disposition | Boundary / action |
+|---|---|---|---|
+| `knowledge-sources.json` | Canonical source list with Wiki path mapping | **SPLIT** | Atlas owns source/provider config semantics (`project`, `repository`, `ref`, `source_path`, revision). `wiki_path` is PoC projection detail → **DROP** from Atlas public contract. |
+| `scripts/sync-github-knowledge.ts` | GitHub fetch + Wiki page upsert + reindex | **SPLIT** | GitHub fetch + provenance rendering concepts → **ATLAS-OWNED**. Wiki.js client upsert/reindex path → migration input only; not an Atlas public API. |
+| `scripts/sync-github-knowledge.test.ts` | Sync validation | **ATLAS-OWNED** | Reuse as regression evidence when Atlas sync is implemented; adapt away from Wiki identity. |
+| `docs/RICK_ENGINEERING_KB.md` | Authority model / namespaces / hardening notes | **SPLIT** | Canonical-vs-derived, project namespace, provenance expectations → **ATLAS-OWNED** docs/ADR. Athena-specific operator runbook content → **DROP** from Atlas contracts. |
+| `packages/core/src/vectors.ts` | Optional `pathPrefix` filter for vector search | **ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE** | Generic engine capability. Atlas may consume via integration; must not hard-code Wiki path layout in Atlas contracts. |
+| `packages/indexer/src/indexer.ts` | Pass-through path prefix | **ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE** | Same as vectors. |
+| `packages/indexer/src/server.ts` | HTTP search accepts path prefix | **ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE** | Same as vectors. |
+| `packages/mcp/src/indexer-client.ts` | Client forwards path prefix | **ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE** | Same as vectors. |
+| `packages/mcp/src/tools.ts` | `path_prefix` search arg + write-tool scope gating | **SPLIT** | Write-scope gating + optional path filter APIs → **ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE**. Atlas retrieval contract uses project/namespace scope, not Wiki path as public identity. |
+| `packages/mcp/src/tools.test.ts` | Regression for scoped search / tool registration | **ATHENA-FORK-OWNED** | Keep with generic fork patch; reuse ideas for Atlas MCP tests later. |
+| `packages/mcp/src/auth/provider.ts` | `wiki.read` / `wiki.write` scopes | **ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE** | Generic auth hardening. Atlas authz model remains Atlas-owned and must not require Wiki scope names publicly. |
+| `packages/mcp/src/auth/provider.test.ts` | Scope defaults tests | **ATHENA-FORK-OWNED** | Keep with generic fork patch. |
+| `packages/mcp/src/auth/routes.ts` | Remove unused pending lookup after failed login | **ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE** | Lint/correctness cleanup only. |
+| `packages/mcp/src/server.ts` | Wire `currentScopes` into tool context | **ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE** | Supports write gating. |
+| `.github/workflows/ci.yml` | Pin Actions SHAs + `bun audit` | **ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE** | Supply-chain hygiene; not Atlas product behavior. |
+| `package.json` | Dependency overrides (`fast-uri`, `hono`, `qs`) | **ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE** | Security overrides accompany generic hardening. |
+| `bun.lock` | Lockfile for overrides/deps | **ATHENA-FORK-OWNED** | Travel with the generic fork patch only. |
 
-## Migration rules
+## Extracted generic Athena fork branch
 
-1. Migrate **contracts before code**: define Atlas provider, project, source, provenance, retrieval, and lifecycle interfaces before extracting implementation.
-2. Never make Wiki.js/Athena page identity a public Atlas contract unless explicitly accepted.
-3. Preserve exact provenance fields used by the PoC where they remain useful: project, repository, ref, source path, source revision.
-4. Reuse PoC tests as regression evidence when moving behavior, but adapt them to the Atlas-owned boundary.
-5. Keep generic Athena fixes separately reviewable so upstream updates remain manageable.
+Generic (non-Atlas-product) changes are retained on:
 
-## First extraction targets
+- Repository: `datarelay-labs/athena`
+- Branch: `fix/generic-mcp-search-hardening`
+- Based on: `atlas-upstream-20260921` / `6720b948744d42f1332f86f9a8157ff588e40d6e`
+- Commit: `5b90969a7e0fecadae587144a0bd7f444352799f`
+- PR: https://github.com/datarelay-labs/athena/pull/1
+- Includes only the **ATHENA-FORK-OWNED** / **UPSTREAM-CANDIDATE** files above
+- Excludes Atlas-owned sync config/scripts and PoC governance doc
 
-1. source/provider configuration schema
+Fork `main` remains upstream-tracking and is **not** fast-forwarded to the PoC branch.
+The Athena PR is intentionally review/upstream-candidate continuity, not a requirement to merge before Atlas Phase 0 closure.
+
+## Atlas extraction targets (contracts before code)
+
+1. source/provider configuration schema → [`docs/contracts/source-provider-provenance.md`](../../docs/contracts/source-provider-provenance.md)
 2. project registry identity and namespace
 3. canonical GitHub source fetch + immutable revision metadata
 4. derived projection contract
 5. retrieval result provenance contract
 6. MCP-facing Atlas context contract
 
-Actual runtime framework/language choices remain a design decision and should not be inferred from the PoC merely because Athena currently uses Bun/TypeScript.
+Actual runtime framework/language choices remain a design decision and must not be inferred from the PoC merely because Athena currently uses Bun/TypeScript.
+
+## Migration rules
+
+1. Migrate **contracts before code**.
+2. Never make Wiki.js/Athena page identity a public Atlas contract unless explicitly accepted.
+3. Preserve provenance fields: project, repository, ref, source path, source revision/blob identity.
+4. Reuse PoC tests as regression evidence when moving behavior, adapted to the Atlas-owned boundary.
+5. Keep generic Athena fixes separately reviewable so upstream updates remain manageable.

@@ -1,0 +1,60 @@
+{
+  "contract_version": "1",
+  "project": {
+    "project_id": "data-relay-link",
+    "display_name": "Data Relay Link",
+    "namespace": "data-relay-link"
+  },
+  "provider": {
+    "provider": "github",
+    "auth_mode": "installation_token"
+  },
+  "source": {
+    "source_id": "canonical-source-of-truth",
+    "project_id": "data-relay-link",
+    "provider": "github",
+    "repository": "datarelay-labs/data-relay-link",
+    "ref": "main",
+    "source_path": "knowledge/CANONICAL_SOURCE_OF_TRUTH.md",
+    "media_type": "text/markdown",
+    "enabled": true,
+    "integration_projection_key": "projects/data-relay-link/canonical-source-of-truth"
+  },
+  "sync_result": {
+    "source_id": "canonical-source-of-truth",
+    "state": "success",
+    "source_revision": "0123456789abcdef0123456789abcdef01234567",
+    "resolved_commit": "abcdef0123456789abcdef0123456789abcdef01",
+    "fetched_at": "2026-09-21T00:00:00Z",
+    "content_digest": "sha256:demo"
+  },
+  "derived_record": {
+    "projection_id": "proj_demo_1",
+    "rebuild_key": "data-relay-link|canonical-source-of-truth|0123456789abcdef0123456789abcdef01234567|athena-projector@0",
+    "projector": "athena-projector@0",
+    "source_id": "canonical-source-of-truth",
+    "project_id": "data-relay-link",
+    "provider": "github",
+    "repository": "datarelay-labs/data-relay-link",
+    "ref": "main",
+    "source_path": "knowledge/CANONICAL_SOURCE_OF_TRUTH.md",
+    "source_revision": "0123456789abcdef0123456789abcdef01234567",
+    "resolved_commit": "abcdef0123456789abcdef0123456789abcdef01",
+    "fetched_at": "2026-09-21T00:00:00Z",
+    "canonical": false,
+    "provenance_complete": true
+  },
+  "retrieval_hit": {
+    "project_id": "data-relay-link",
+    "provider": "github",
+    "repository": "datarelay-labs/data-relay-link",
+    "ref": "main",
+    "source_path": "knowledge/CANONICAL_SOURCE_OF_TRUTH.md",
+    "source_revision": "0123456789abcdef0123456789abcdef01234567",
+    "source_id": "canonical-source-of-truth",
+    "projection_id": "proj_demo_1",
+    "canonical": false,
+    "provenance_complete": true,
+    "snippet": "GitHub remains authoritative."
+  }
+}

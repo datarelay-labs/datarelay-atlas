@@ -47,6 +47,14 @@ It is preserved because it already contains working evidence for:
 
 The preserved branch is an implementation input, **not** the final Atlas architecture.
 
+## Migration status
+
+Per-file ownership for the four PoC commits is recorded in [`POC-MIGRATION.md`](POC-MIGRATION.md).
+
+- Atlas-owned contracts: ADR-0003 + `docs/contracts/source-provider-provenance.md`
+- Generic Athena hardening: retained on `datarelay-labs/athena` branch `fix/generic-mcp-search-hardening` (not merged into fork `main`)
+- Dependency/license evidence: [`DEPENDENCY-LICENSE-AUDIT.md`](DEPENDENCY-LICENSE-AUDIT.md)
+
 ## Next migration boundary
 
-Use [`POC-MIGRATION.md`](POC-MIGRATION.md) to decide which changes move into Atlas and which remain generic Athena patches.
+Implement Phase 1 registry/sync against the accepted contracts. Reuse PoC sync/tests as migration input only after removing Wiki.js public identity.

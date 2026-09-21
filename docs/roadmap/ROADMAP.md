@@ -9,11 +9,18 @@ This roadmap defines bounded product phases, not delivery dates. Each phase must
 - [x] repository and documentation foundations
 - [x] create Data Relay Athena upstream-tracking fork and pin source snapshots
 - [x] preserve the validated Athena Engineering Knowledge PoC at an immutable commit/tag
-- [ ] complete dependency/license compatibility audit beyond Athena's top-level Apache-2.0 license
-- [ ] classify and migrate Athena PoC changes into Atlas-owned vs generic fork-owned code
-- [ ] define source/provider and provenance contracts
+- [x] complete dependency/license compatibility audit beyond Athena's top-level Apache-2.0 license
+- [x] classify and migrate Athena PoC changes into Atlas-owned vs generic fork-owned code
+- [x] define source/provider and provenance contracts
 
 Exit: canonical product boundaries are clear and the repository can be safely resumed by AI agents.
+
+Phase 0 evidence:
+
+- license audit: `integrations/athena/DEPENDENCY-LICENSE-AUDIT.md`
+- PoC ownership: `integrations/athena/POC-MIGRATION.md`
+- provenance contracts: ADR-0003 + `docs/contracts/source-provider-provenance.md`
+- open redistribution review items remain documented (Wiki.js AGPL-3.0; Bun LGPL-linked components) and do not block Phase 1 contract work
 
 ## Phase 1 — Project Registry & Canonical Sync
 
