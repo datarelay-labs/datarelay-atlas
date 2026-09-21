@@ -43,7 +43,8 @@ DEFAULT_MAX_TEST_CHARS = 8000
 DEFAULT_MAX_CI_CHARS = 4000
 
 # Features disabled so Codex judges the supplied bundle only.
-# Keep this aligned with the measured ~11k-input tool-disabled probe profile.
+# Deliberately omits skill_search / skill_mcp_dependency_install: nonessential
+# for bounded audits and unsupported on some older Codex builds.
 CODEX_DISABLED_FEATURES = (
     "shell_tool",
     "browser_use",
@@ -517,8 +518,8 @@ def build_codex_audit_command(
     """Fixed non-interactive Codex argv for judge-only bundle audits.
 
     Ignores user config/rules while preserving ChatGPT-plan auth. Disables
-    shell/apps/browser/computer/plugins/hooks/multi-agent/skill-search so Codex
-    judges only the pre-collected evidence bundle. Prompt is on stdin (`-`).
+    shell/apps/browser/computer/plugins/hooks/multi-agent so Codex judges only
+    the pre-collected evidence bundle. Prompt is on stdin (`-`).
     """
     cmd = [
         "codex",
