@@ -1,0 +1,36 @@
+version: 1
+setup_command: ""
+
+paths:
+  "AGENTS.md":
+    domains: [methodology]
+  ".engineering/**":
+    domains: [methodology]
+  ".github/**":
+    domains: [methodology]
+  ".cursor/**":
+    domains: [methodology]
+  "docs/product/**":
+    domains: [product-docs]
+  "docs/architecture/**":
+    domains: [knowledge, integrations]
+  "docs/roadmap/**":
+    domains: [lifecycle, product-docs]
+  "docs/decisions/**":
+    domains: [knowledge, integrations]
+  "README.md":
+    domains: [product-docs]
+  "README.ko.md":
+    domains: [product-docs]
+
+scenarios:
+  - id: ATLAS-STATIC-001
+    name: Git whitespace validation
+    level: static
+    domains: [methodology, project-registry, lifecycle, knowledge, ai-context, integrations, product-docs]
+    triggers: [affected, pr, preflight, release]
+    platforms: [linux]
+    command: "git diff --check"
+    invariants:
+      - "repository text and metadata remain free of whitespace errors"
+    release_gate: true
