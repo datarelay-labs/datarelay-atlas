@@ -1,0 +1,204 @@
+{
+  "sources": [
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 current \u2014 access-policy/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/specs/access-policy/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/current/access-policy/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 current \u2014 configuration-bundle/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/specs/configuration-bundle/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/current/configuration-bundle/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 current \u2014 fixed-tcp/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/specs/fixed-tcp/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/current/fixed-tcp/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 current \u2014 management-security/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/specs/management-security/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/current/management-security/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 current \u2014 product-model/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/specs/product-model/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/current/product-model/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 current \u2014 remote-service/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/specs/remote-service/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/current/remote-service/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-automate-decision-capture/design",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-automate-decision-capture/design.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-automate-decision-capture/design"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-automate-decision-capture/proposal",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-automate-decision-capture/proposal.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-automate-decision-capture/proposal"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-automate-decision-capture/tasks",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-automate-decision-capture/tasks.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-automate-decision-capture/tasks"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-automate-development-governance/design",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-automate-development-governance/design.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-automate-development-governance/design"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-automate-development-governance/proposal",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-automate-development-governance/proposal.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-automate-development-governance/proposal"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-automate-development-governance/tasks",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-automate-development-governance/tasks.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-automate-development-governance/tasks"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-automate-tela-knowledge-sync/design",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-automate-tela-knowledge-sync/design.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-automate-tela-knowledge-sync/design"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-automate-tela-knowledge-sync/proposal",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-automate-tela-knowledge-sync/proposal.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-automate-tela-knowledge-sync/proposal"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-automate-tela-knowledge-sync/tasks",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-automate-tela-knowledge-sync/tasks.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-automate-tela-knowledge-sync/tasks"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-bootstrap-v2-4-source-of-truth/design",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-bootstrap-v2-4-source-of-truth/design.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-bootstrap-v2-4-source-of-truth/design"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-bootstrap-v2-4-source-of-truth/proposal",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-bootstrap-v2-4-source-of-truth/proposal.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-bootstrap-v2-4-source-of-truth/proposal"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-bootstrap-v2-4-source-of-truth/specs/access-policy/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/access-policy/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/access-policy/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-bootstrap-v2-4-source-of-truth/specs/configuration-bundle/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/configuration-bundle/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/configuration-bundle/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-bootstrap-v2-4-source-of-truth/specs/fixed-tcp/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/fixed-tcp/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/fixed-tcp/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-bootstrap-v2-4-source-of-truth/specs/management-security/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/management-security/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/management-security/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-bootstrap-v2-4-source-of-truth/specs/product-model/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/product-model/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/product-model/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-bootstrap-v2-4-source-of-truth/specs/remote-service/spec",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/remote-service/spec.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-bootstrap-v2-4-source-of-truth/specs/remote-service/spec"
+    },
+    {
+      "project": "data-relay-link",
+      "title": "DRLink OpenSpec \u2014 archive \u2014 2026-09-18-bootstrap-v2-4-source-of-truth/tasks",
+      "repository": "datarelay-labs/data-relay-link",
+      "ref": "feat/decision-capture-automation-clean",
+      "source_path": "openspec/changes/archive/2026-09-18-bootstrap-v2-4-source-of-truth/tasks.md",
+      "wiki_path": "projects/data-relay-link/openspec/archive/2026-09-18-bootstrap-v2-4-source-of-truth/tasks"
+    },
+    {
+      "project": "dp-os-upgrade",
+      "title": "DP OS Upgrade \u2014 Architecture",
+      "repository": "xdr-labs/ubuntu-mirror-automation",
+      "ref": "main",
+      "source_path": "docs/architecture.md",
+      "wiki_path": "projects/dp-os-upgrade/architecture"
+    }
+  ]
+}
