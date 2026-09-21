@@ -386,7 +386,9 @@ def _bounded_review_items(
     """Normalize review/comment payloads into a bounded list of dicts.
 
     Returns ``(items, truncated)``. ``truncated`` is True when at least one
-    eligible entry was omitted because the character budget was exhausted.
+    eligible entry was omitted because the character budget was exhausted, or
+    when any included body was shortened by the per-item cap (so actionable
+    text in a trimmed tail is never silently dropped under status=OK).
     Callers must fail closed on truncation rather than report status=OK.
     """
     if not isinstance(raw, list):
@@ -397,6 +399,11 @@ def _bounded_review_items(
     truncated = False
     for idx, entry in enumerate(eligible):
         body = str(entry.get("body") or "")
+        body_limit = min(1200, max(200, remaining))
+        bounded_body = _trim(body, body_limit)
+        if len(body.strip()) > body_limit:
+            # Per-item cap dropped a tail; keep the bounded body but fail closed.
+            truncated = True
         item = {
             "id": entry.get("id"),
             "user": ((entry.get("user") or {}) if isinstance(entry.get("user"), dict) else {}).get(
@@ -411,7 +418,7 @@ def _bounded_review_items(
             "path": entry.get("path"),
             "line": entry.get("line"),
             "original_line": entry.get("original_line"),
-            "body": _trim(body, min(1200, max(200, remaining))),
+            "body": bounded_body,
         }
         encoded = json.dumps(item, sort_keys=True)
         if len(encoded) > remaining and items:

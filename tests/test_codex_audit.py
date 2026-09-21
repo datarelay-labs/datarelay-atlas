@@ -624,6 +624,63 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertEqual(err["failed_section"], "reviews")
         self.assertIn("page 0 is not a JSON array", err["detail"])
 
+    def test_pr_review_evidence_fail_closed_when_single_body_trimmed(self):
+        """One long comment: actionable marker in trimmed tail ⇒ INCOMPLETE."""
+        marker = "P1_ACTIONABLE_IN_TRIMMED_TAIL"
+        # Per-item body cap is 1200; put the marker only after that prefix.
+        long_body = ("x" * 1200) + marker
+        self.assertGreater(len(long_body), 1200)
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(argv[:4], ["gh", "api", "--paginate", "--slurp"])
+            path = argv[4]
+            if "/pulls/" in path and path.endswith("/comments"):
+                page = [
+                    {
+                        "id": 77,
+                        "user": {"login": "reviewer"},
+                        "body": long_body,
+                        "path": "atlas/codex_audit.py",
+                        "line": 10,
+                        "commit_id": HEAD,
+                        "created_at": "2026-09-21T00:00:00Z",
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps([page]), stderr=""
+                )
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps([[]]), stderr=""
+            )
+
+        result = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=15,
+            command_runner=runner,
+        )
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertIn("inline_comments", result["truncated_sections"])
+        self.assertEqual(len(result["inline_comments"]), 1)
+        bounded = result["inline_comments"][0]["body"]
+        self.assertNotIn(marker, bounded)
+        self.assertIn("...[truncated]...", bounded)
+
+        from atlas.codex_audit import _bounded_review_items
+
+        items, truncated = _bounded_review_items(
+            [
+                {
+                    "id": 77,
+                    "user": {"login": "reviewer"},
+                    "body": long_body,
+                }
+            ],
+            max_chars=8000,
+        )
+        self.assertTrue(truncated)
+        self.assertEqual(len(items), 1)
+        self.assertNotIn(marker, items[0]["body"])
+
     def test_pr_review_evidence_fail_closed_when_section_truncated(self):
         big_body = "P1 finding " + ("x" * 3000)
 
