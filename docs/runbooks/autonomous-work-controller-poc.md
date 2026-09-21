@@ -1,47 +1,50 @@
 # Autonomous Work Controller PoC — dogfood runbook
 
 Bounded self-dogfood loop for ADR-0006: Cursor completion event → independent
-audit → `PASS` / `REWORK` / `HUMAN_REQUIRED`, with optional fresh `/resume`
-dispatch on rework.
+audit → `PASS` / `REWORK` / `HUMAN_REQUIRED`, with automatic fresh
+`/work-resume` dispatch on rework.
 
 ## Prerequisites
 
 - This repository checkout (validated worktree path)
 - Python 3.11+
-- Cursor CLI (investigate with `agent persist --help` / `agent help persist`)
-- Optional: `OPENAI_API_KEY` only when wiring a live OpenAI audit adapter
+- Cursor CLI (`agent persist --help` / `agent persist list`)
+- Optional: `OPENAI_API_KEY` when using `--audit-adapter openai`
 - Never place secrets in Git, Issue bodies, or `.atlas-data/`
 
 ## Data root
 
 - Default: `./.atlas-data/` (gitignored)
 - Controller state: `<data-root>/work-controller.json`
+- Completion inbox: `<data-root>/completion-inbox/`
+- Processed events: `<data-root>/completion-processed/`
 - Override: `--data-root` or `ATLAS_DATA_ROOT`
 - Backup: copy the data root directory (same implication as ADR-0005)
 
 ## Canonical resume command
 
-Engineering System / repository command file is `.cursor/commands/resume.md`.
-Slash command: `/resume`. Do not invent a divergent repository-local name.
+Engineering System / repository command file is
+`.cursor/commands/work-resume.md`). `.cursor/commands/resume.md` remains only as an Engineering System adoption-compliance shim and must not redefine `/resume` as canonical.
+Slash command: `/work-resume`. Do not redefine built-in `/resume` as canonical.
 
-## Cursor persistence finding (CLI 2026.09.18-9a7762b)
+## Cursor persistence launcher (CLI 2026.09.18-9a7762b)
 
 | Mechanism | Status |
 | --- | --- |
-| `agent persist list\|attach\|stop` | Available |
-| Interactive `agent persist` in a trusted worktree | Documented long-term native start path |
-| `agent persist <prompt>` create-with-prompt | Not reliable on this build (`help persist` lists only list/attach/stop) |
-| `agent -p` print mode | Must **not** be used as a silent persistence substitute |
-| tmux PTY bootstrap | Packet-only bootstrap exception; not a product dependency |
+| `agent persist --trust /work-resume` (cwd = validated worktree, PTY) | Supported create-with-prompt path |
+| `agent persist list\|attach\|stop` | Available for observe/manage |
+| `agent --workspace <path> --trust persist` | Incorrect argv; do not use |
+| `agent -p` print mode | Must **not** be used as a persistence substitute |
+| PTY spawn | Transport only for unattended create; not business state |
 
-Controller dispatch records fixed argv:
+Controller dispatch argv:
 
 ```text
-agent --workspace <validated-worktree> --trust persist
+agent persist --trust /work-resume
 ```
 
-Operators then attach and submit `/resume` for a fresh cycle. Do not reuse
-unrelated persist sessions from other worktrees.
+with `cwd=<validated-worktree>`. The PTY dispatcher observes a newly listed
+session for that worktree only and must not stop/attach unrelated sessions.
 
 ## Offline deterministic dogfood (no network)
 
@@ -74,11 +77,11 @@ cat > /tmp/awc-completion.json <<EOF
 }
 EOF
 
-# PASS path
-python3 -m atlas work-controller completion /tmp/awc-completion.json \
-  --audit-verdict PASS
+# PASS path via inbox ingestion (Cursor hook shape)
+python3 -m atlas work-controller enqueue-completion /tmp/awc-completion.json
+python3 -m atlas work-controller drain-inbox --audit-verdict PASS
 
-# Re-register in a fresh data root to exercise REWORK argv recording:
+# Re-register in a fresh data root to exercise REWORK dispatch argv:
 rm -rf "$ATLAS_DATA_ROOT"
 python3 -m atlas work-controller register autonomous-work-controller-poc \
   --repository datarelay-labs/datarelay-atlas \
@@ -93,11 +96,54 @@ python3 -m atlas work-controller completion /tmp/awc-completion.json \
 python3 -m atlas work-controller show autonomous-work-controller-poc
 ```
 
-## Live audit adapter
+Expected REWORK outcome includes:
+`dispatch_command = ["agent", "persist", "--trust", "/work-resume"]`
+and `resume_prompt = "/work-resume"`.
 
-Inject `OpenAIAuditAdapter` with an `execute` callable that performs HTTPS calls
-using `OPENAI_API_KEY` from the environment. Unit tests must continue to use
-`FixedAuditAdapter` only.
+To exercise the real PTY launcher (creates a live Cursor persist session in
+this worktree only):
+
+```bash
+python3 -m atlas work-controller completion /tmp/awc-completion.json \
+  --audit-verdict REWORK \
+  --audit-findings "launcher dogfood" \
+  --spawn-dispatch
+```
+
+Stop only the newly created target session afterward via
+`agent persist stop <session>` if needed. Do not stop unrelated sessions.
+
+## Live Codex audit adapter (default production)
+
+Codex CLI must be installed and logged in with the owner's ChatGPT account
+(`codex login status` => Logged in using ChatGPT). No `OPENAI_API_KEY` is
+required for the default path.
+
+```bash
+python3 -m atlas work-controller completion /tmp/awc-completion.json \
+  --audit-adapter codex
+```
+
+Contract:
+- `codex exec -C <worktree> -s read-only --ephemeral -o <last-message> -`
+- structured JSON verdict `PASS|REWORK|HUMAN_REQUIRED`
+- exact worktree identity validation (repo/branch/HEAD) before audit
+- no edits/commits/pushes
+
+OpenAI Responses API (`--audit-adapter openai`) is optional fallback only.
+
+## Completion hook helper
+
+`scripts/awc-completion-hook.sh` builds an event from the current git identity
+and enqueues/drains the local inbox without Telegram:
+
+```bash
+AWC_WORKSTREAM=autonomous-work-controller-poc \
+AWC_ISSUE_NUMBER=12 \
+AWC_ATTEMPT=1 \
+AWC_AUDIT_VERDICT=PASS \
+./scripts/awc-completion-hook.sh
+```
 
 ## Telegram / notify
 

@@ -82,7 +82,7 @@ Durable local state defaults to `.atlas-data/` (gitignored). Credentials use `GI
 ## Autonomous Work Controller PoC
 
 Persist one local workstream, accept an idempotent Cursor completion event, run a
-replaceable audit adapter, and stop or dispatch a fresh `/resume` on rework.
+replaceable audit adapter, and stop or dispatch a fresh `/work-resume` on rework.
 See ADR-0006 and `docs/runbooks/autonomous-work-controller-poc.md`.
 
 ```bash

@@ -9,15 +9,19 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from atlas.codex_audit import CodexAuditProvider
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
 from atlas.work_controller import (
     AuditResult,
     FixedAuditAdapter,
+    OpenAIResponsesAuditAdapter,
+    PtyPersistCursorDispatcher,
     RecordingCursorDispatcher,
     RecordingWorkPacketAdapter,
-    SubprocessCursorDispatcher,
     WorkController,
+    drain_completion_inbox,
+    enqueue_completion_event,
     load_completion_event,
 )
 
@@ -126,16 +130,22 @@ def cmd_projections(args: argparse.Namespace) -> int:
 def _controller_from_args(args: argparse.Namespace) -> WorkController:
     """Build a controller with operator-selected adapters.
 
-    Default audit is fixed/offline so the CLI stays deterministic without
-    network credentials. Dispatch defaults to argv recording unless
-    --spawn-dispatch is set (fail-closed without an injected runner).
+    Default audit is fixed/offline so the CLI stays deterministic. Prefer
+    `--audit-adapter codex` for the ChatGPT-plan Codex CLI auditor (no OpenAI
+    API key). `--audit-adapter openai` remains optional fallback only.
     """
-    verdict = getattr(args, "audit_verdict", "PASS")
-    findings = getattr(args, "audit_findings", "") or ""
-    audit = FixedAuditAdapter(AuditResult(verdict=verdict, findings=findings))
+    adapter = getattr(args, "audit_adapter", "fixed")
+    if adapter == "codex":
+        audit = CodexAuditProvider()
+    elif adapter == "openai":
+        audit = OpenAIResponsesAuditAdapter()
+    else:
+        verdict = getattr(args, "audit_verdict", "PASS")
+        findings = getattr(args, "audit_findings", "") or ""
+        audit = FixedAuditAdapter(AuditResult(verdict=verdict, findings=findings))
     work_packet = RecordingWorkPacketAdapter()
     if getattr(args, "spawn_dispatch", False):
-        dispatcher = SubprocessCursorDispatcher()
+        dispatcher = PtyPersistCursorDispatcher()
     else:
         dispatcher = RecordingCursorDispatcher()
     return WorkController(
@@ -143,6 +153,7 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
         audit=audit,
         work_packet=work_packet,
         dispatcher=dispatcher,
+        enforce_worktree_identity=True,
     )
 
 
@@ -177,6 +188,23 @@ def cmd_wc_completion(args: argparse.Namespace) -> int:
     ctl = _controller_from_args(args)
     event = load_completion_event(Path(args.event_file))
     _print_json(ctl.handle_completion(event))
+    return 0
+
+
+def cmd_wc_enqueue(args: argparse.Namespace) -> int:
+    event = load_completion_event(Path(args.event_file))
+    path = enqueue_completion_event(
+        Path(args.data_root),
+        event,
+        filename=args.filename,
+    )
+    _print_json({"enqueued": str(path.name), "data_root": str(Path(args.data_root))})
+    return 0
+
+
+def cmd_wc_drain_inbox(args: argparse.Namespace) -> int:
+    ctl = _controller_from_args(args)
+    _print_json(drain_completion_inbox(ctl, Path(args.data_root)))
     return 0
 
 
@@ -284,6 +312,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wc_comp.add_argument("event_file")
     wc_comp.add_argument(
+        "--audit-adapter",
+        choices=["fixed", "openai"],
+        default="fixed",
+        help="fixed=offline verdict flags; openai=Responses background lifecycle",
+    )
+    wc_comp.add_argument(
         "--audit-verdict",
         choices=["PASS", "REWORK", "HUMAN_REQUIRED"],
         default="PASS",
@@ -293,15 +327,46 @@ def build_parser() -> argparse.ArgumentParser:
     wc_comp.add_argument(
         "--spawn-dispatch",
         action="store_true",
-        help="Use fail-closed subprocess dispatcher instead of recording dispatcher",
+        help="Use PTY persist dispatcher to create a fresh /work-resume session",
     )
     wc_comp.set_defaults(func=cmd_wc_completion)
+
+    wc_enq = wc_sub.add_parser(
+        "enqueue-completion",
+        help="Write a completion event into the local inbox for hook ingestion",
+    )
+    wc_enq.add_argument("event_file")
+    wc_enq.add_argument("--filename", default=None)
+    wc_enq.set_defaults(func=cmd_wc_enqueue)
+
+    wc_drain = wc_sub.add_parser(
+        "drain-inbox",
+        help="Drain local completion-inbox events into the controller",
+    )
+    wc_drain.add_argument(
+        "--audit-adapter",
+        choices=["fixed", "openai"],
+        default="fixed",
+    )
+    wc_drain.add_argument(
+        "--audit-verdict",
+        choices=["PASS", "REWORK", "HUMAN_REQUIRED"],
+        default="PASS",
+    )
+    wc_drain.add_argument("--audit-findings", default="")
+    wc_drain.add_argument("--spawn-dispatch", action="store_true")
+    wc_drain.set_defaults(func=cmd_wc_drain_inbox)
 
     wc_rec = wc_sub.add_parser(
         "reconcile",
         help="Reconcile unfinished audit state after controller restart",
     )
     wc_rec.add_argument("workstream", nargs="?")
+    wc_rec.add_argument(
+        "--audit-adapter",
+        choices=["fixed", "openai"],
+        default="fixed",
+    )
     wc_rec.add_argument(
         "--audit-verdict",
         choices=["PASS", "REWORK", "HUMAN_REQUIRED"],
