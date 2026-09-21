@@ -380,15 +380,22 @@ def collect_ci_evidence(
     }
 
 
-def _bounded_review_items(raw: object, *, max_chars: int) -> list[dict]:
-    """Normalize review/comment payloads into a bounded list of dicts."""
+def _bounded_review_items(
+    raw: object, *, max_chars: int
+) -> tuple[list[dict], bool]:
+    """Normalize review/comment payloads into a bounded list of dicts.
+
+    Returns ``(items, truncated)``. ``truncated`` is True when at least one
+    eligible entry was omitted because the character budget was exhausted.
+    Callers must fail closed on truncation rather than report status=OK.
+    """
     if not isinstance(raw, list):
-        return []
+        return [], False
+    eligible = [entry for entry in raw if isinstance(entry, dict)]
     items: list[dict] = []
     remaining = max_chars
-    for entry in raw:
-        if not isinstance(entry, dict):
-            continue
+    truncated = False
+    for idx, entry in enumerate(eligible):
         body = str(entry.get("body") or "")
         item = {
             "id": entry.get("id"),
@@ -408,12 +415,14 @@ def _bounded_review_items(raw: object, *, max_chars: int) -> list[dict]:
         }
         encoded = json.dumps(item, sort_keys=True)
         if len(encoded) > remaining and items:
+            truncated = True
             break
         items.append(item)
         remaining = max(0, remaining - len(encoded))
-        if remaining <= 0:
+        if remaining <= 0 and idx + 1 < len(eligible):
+            truncated = True
             break
-    return items
+    return items, truncated
 
 
 def collect_pr_review_evidence(
@@ -423,19 +432,29 @@ def collect_pr_review_evidence(
     command_runner: CommandRunner | None = None,
     max_chars: int = DEFAULT_MAX_REVIEW_CHARS,
 ) -> dict:
-    """Collect machine-observable PR reviews + inline comments (fail closed)."""
+    """Collect machine-observable PR review feedback (fail closed).
+
+    Surfaces: submitted reviews, inline review comments, and top-level PR
+    conversation comments. Each GitHub list endpoint is paginated. When a
+    section budget truncates uninspected entries, status is INCOMPLETE so the
+    auditor fails closed instead of terminal PASS.
+    """
     cwd = str(Path.cwd())
-    base = f"repos/{repository}/pulls/{pr_number}"
+    pull_base = f"repos/{repository}/pulls/{pr_number}"
+    issue_base = f"repos/{repository}/issues/{pr_number}"
     sections: dict[str, object] = {
         "collector": "atlas.codex_audit.collect_pr_review_evidence",
         "repository": repository,
         "pr_number": pr_number,
     }
+    section_budget = max(1, max_chars // 3)
+    truncated_sections: list[str] = []
     for label, path in (
-        ("reviews", f"{base}/reviews"),
-        ("inline_comments", f"{base}/comments"),
+        ("reviews", f"{pull_base}/reviews"),
+        ("inline_comments", f"{pull_base}/comments"),
+        ("conversation_comments", f"{issue_base}/comments"),
     ):
-        argv = ["gh", "api", path]
+        argv = ["gh", "api", "--paginate", path]
         try:
             completed = _run_capture(
                 argv, cwd, timeout_sec=60, runner=command_runner
@@ -469,8 +488,21 @@ def collect_pr_review_evidence(
                 "pr_number": pr_number,
                 "failed_section": label,
             }
-        sections[label] = _bounded_review_items(payload, max_chars=max_chars // 2)
-    sections["status"] = "OK"
+        items, truncated = _bounded_review_items(
+            payload, max_chars=section_budget
+        )
+        sections[label] = items
+        if truncated:
+            truncated_sections.append(label)
+    if truncated_sections:
+        sections["status"] = "INCOMPLETE"
+        sections["detail"] = (
+            "review evidence truncated under section budget; "
+            f"incomplete sections={','.join(truncated_sections)}"
+        )
+        sections["truncated_sections"] = truncated_sections
+    else:
+        sections["status"] = "OK"
     return sections
 
 
@@ -807,12 +839,16 @@ class CodexAuditProvider:
         self.last_evidence_bundle = bundle
 
         reviews = bundle.get("pr_reviews")
-        if isinstance(reviews, dict) and reviews.get("status") == "ERROR":
+        if isinstance(reviews, dict) and reviews.get("status") in {
+            "ERROR",
+            "INCOMPLETE",
+        }:
+            status = str(reviews.get("status"))
             detail = str(reviews.get("detail") or "PR review evidence unavailable")
             return AuditResult(
                 verdict="HUMAN_REQUIRED",
                 findings=(
-                    "codex audit skipped: PR review evidence status=ERROR "
+                    f"codex audit skipped: PR review evidence status={status} "
                     f"({detail[:300]})"
                 ),
             )

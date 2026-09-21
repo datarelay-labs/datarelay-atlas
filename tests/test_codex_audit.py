@@ -477,8 +477,13 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertNotIn(f"hash:{HEAD[:12]}", seen[0])
 
     def test_pr_review_evidence_ok_and_fail_closed(self):
+        seen_paths: list[str] = []
+
         def ok_runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            if argv[:2] == ["gh", "api"] and argv[2].endswith("/reviews"):
+            self.assertEqual(argv[:3], ["gh", "api", "--paginate"])
+            path = argv[3]
+            seen_paths.append(path)
+            if path.endswith("/reviews"):
                 payload = [
                     {
                         "id": 1,
@@ -492,7 +497,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     argv, 0, stdout=json.dumps(payload), stderr=""
                 )
-            if argv[:2] == ["gh", "api"] and argv[2].endswith("/comments"):
+            if "/pulls/" in path and path.endswith("/comments"):
                 payload = [
                     {
                         "id": 99,
@@ -501,6 +506,18 @@ class CodexAuditProviderTests(unittest.TestCase):
                         "path": "atlas/codex_audit.py",
                         "line": 10,
                         "commit_id": HEAD,
+                        "created_at": "2026-09-21T00:00:00Z",
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if "/issues/" in path and path.endswith("/comments"):
+                payload = [
+                    {
+                        "id": 42,
+                        "user": {"login": "reviewer"},
+                        "body": "conversation P1 finding",
                         "created_at": "2026-09-21T00:00:00Z",
                     }
                 ]
@@ -517,13 +534,59 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertEqual(ok["status"], "OK")
         self.assertEqual(ok["reviews"][0]["body"], "P1 collect reviews")
         self.assertEqual(ok["inline_comments"][0]["id"], 99)
+        self.assertEqual(
+            ok["conversation_comments"][0]["body"], "conversation P1 finding"
+        )
+        self.assertEqual(
+            seen_paths,
+            [
+                "repos/datarelay-labs/datarelay-atlas/pulls/15/reviews",
+                "repos/datarelay-labs/datarelay-atlas/pulls/15/comments",
+                "repos/datarelay-labs/datarelay-atlas/issues/15/comments",
+            ],
+        )
+
+    def test_pr_review_evidence_fail_closed_when_section_truncated(self):
+        big_body = "P1 finding " + ("x" * 3000)
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            self.assertIn("--paginate", argv)
+            path = argv[3]
+            if path.endswith("/reviews"):
+                payload = [
+                    {
+                        "id": i,
+                        "user": {"login": "reviewer"},
+                        "state": "COMMENTED",
+                        "body": big_body,
+                        "commit_id": HEAD,
+                        "submitted_at": "2026-09-21T00:00:00Z",
+                    }
+                    for i in range(1, 4)
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+        result = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=15,
+            command_runner=runner,
+            max_chars=2400,
+        )
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertIn("reviews", result["truncated_sections"])
+        self.assertIn("truncated under section budget", result["detail"])
+        self.assertGreaterEqual(len(result["reviews"]), 1)
+        self.assertLess(len(result["reviews"]), 3)
 
     def test_bounded_review_items_preserve_original_commit_and_line(self):
         from atlas.codex_audit import _bounded_review_items
 
         remapped = HEAD
         original = "2a502eec7f267814fed3de46da7db88b474446b1"
-        items = _bounded_review_items(
+        items, truncated = _bounded_review_items(
             [
                 {
                     "id": 4064109451,
@@ -540,6 +603,7 @@ class CodexAuditProviderTests(unittest.TestCase):
             ],
             max_chars=4000,
         )
+        self.assertFalse(truncated)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["commit_id"], remapped)
         self.assertEqual(items[0]["original_commit_id"], original)
@@ -607,26 +671,44 @@ class CodexAuditProviderTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     argv, 0, stdout="check\tpass\n", stderr=""
                 )
-            if argv[:2] == ["gh", "api"] and "/reviews" in argv[2]:
-                return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
-            if argv[:2] == ["gh", "api"] and argv[2].endswith("/comments"):
-                return subprocess.CompletedProcess(
-                    argv,
-                    0,
-                    stdout=json.dumps(
-                        [
-                            {
-                                "id": 1,
-                                "user": {"login": "bot"},
-                                "body": "P1 finding",
-                                "path": "atlas/codex_audit.py",
-                                "line": 1,
-                                "commit_id": HEAD,
-                            }
-                        ]
-                    ),
-                    stderr="",
-                )
+            if argv[:2] == ["gh", "api"]:
+                self.assertEqual(argv[2], "--paginate")
+                path = argv[3]
+                if path.endswith("/reviews"):
+                    return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+                if "/pulls/" in path and path.endswith("/comments"):
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            [
+                                {
+                                    "id": 1,
+                                    "user": {"login": "bot"},
+                                    "body": "P1 finding",
+                                    "path": "atlas/codex_audit.py",
+                                    "line": 1,
+                                    "commit_id": HEAD,
+                                }
+                            ]
+                        ),
+                        stderr="",
+                    )
+                if "/issues/" in path and path.endswith("/comments"):
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            [
+                                {
+                                    "id": 7,
+                                    "user": {"login": "owner"},
+                                    "body": "conversation note",
+                                }
+                            ]
+                        ),
+                        stderr="",
+                    )
             if argv[:3] == ["python3", "-m", "unittest"]:
                 return subprocess.CompletedProcess(
                     argv, 0, stdout="OK\n", stderr=""
@@ -644,6 +726,10 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertEqual(bundle["ci"]["status"], "OK")
         self.assertEqual(bundle["pr_reviews"]["status"], "OK")
         self.assertEqual(bundle["pr_reviews"]["inline_comments"][0]["body"], "P1 finding")
+        self.assertEqual(
+            bundle["pr_reviews"]["conversation_comments"][0]["body"],
+            "conversation note",
+        )
 
     def test_bundle_fail_closed_when_review_api_errors(self):
         def fake_git(argv: list[str], cwd: str) -> str:
@@ -745,6 +831,25 @@ class CodexAuditProviderTests(unittest.TestCase):
             self.assertIn("PR review evidence status=ERROR", result.findings)
             self.assertIsNone(provider.last_command)
             self.assertIsNone(provider.last_prompt)
+
+            provider_incomplete = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD},
+                    "pr_reviews": {
+                        "status": "INCOMPLETE",
+                        "detail": "review evidence truncated under section budget",
+                    },
+                },
+            )
+            incomplete = provider_incomplete.audit(self._event(), self._record(tmp))
+            self.assertEqual(incomplete.verdict, "HUMAN_REQUIRED")
+            self.assertIn(
+                "PR review evidence status=INCOMPLETE", incomplete.findings
+            )
+            self.assertIsNone(provider_incomplete.last_command)
 
 
 if __name__ == "__main__":
