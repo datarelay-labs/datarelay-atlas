@@ -79,7 +79,7 @@ Engineering System resume workflow; the canonical slash command is
    the owner's ChatGPT-plan login. The controller gathers a deterministic
    evidence bundle (git, Work Packet, tests, CI) and invokes
    `codex exec -s read-only --ignore-user-config` with
-   apps/browser/computer/shell/plugins/hooks/multi-agent/skill-search disabled
+   apps/browser/computer/shell/plugins/hooks/multi-agent disabled
    so Codex judges only that bundle. Codex local shell is not required. OpenAI
    Responses API remains an optional fallback adapter only and is not required
    for PoC PASS. `fixed` is explicit offline/test mode only and must never

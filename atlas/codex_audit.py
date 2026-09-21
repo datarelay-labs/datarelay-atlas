@@ -59,8 +59,6 @@ CODEX_DISABLED_FEATURES = (
     "hooks",
     "multi_agent",
     "multi_agent_v2",
-    "skill_search",
-    "skill_mcp_dependency_install",
 )
 
 CODEX_AUDIT_INSTRUCTIONS = """You are an independent read-only engineering auditor for DataRelay Atlas.

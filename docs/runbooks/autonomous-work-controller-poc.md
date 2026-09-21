@@ -130,8 +130,8 @@ python3 -m atlas work-controller completion /tmp/awc-completion.json \
 Contract:
 - Controller gathers deterministic evidence (git, Work Packet, tests, CI)
 - `codex exec -C <worktree> -s read-only --ephemeral --ignore-user-config
-  --ignore-rules` with apps/browser/computer/shell/plugins/hooks/multi-agent/
-  skill-search disabled (`--disable …`, `web_search="disabled"`)
+  --ignore-rules` with apps/browser/computer/shell/plugins/hooks/multi-agent
+  disabled (`--disable …`, `web_search="disabled"`)
 - Codex judges only the embedded evidence bundle (no Codex local shell required)
 - structured JSON verdict `PASS|REWORK|HUMAN_REQUIRED`
 - exact worktree identity validation (repo/branch/HEAD) before audit

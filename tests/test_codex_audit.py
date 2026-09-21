@@ -169,7 +169,8 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertIn("plugins", cmd)
         self.assertIn("hooks", cmd)
         self.assertIn("multi_agent", cmd)
-        self.assertIn("skill_search", cmd)
+        self.assertNotIn("skill_search", cmd)
+        self.assertNotIn("skill_mcp_dependency_install", cmd)
         self.assertEqual(cmd[-1], "-")
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", cmd)
 
