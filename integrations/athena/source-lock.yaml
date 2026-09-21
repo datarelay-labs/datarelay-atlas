@@ -1,0 +1,35 @@
+schema_version: 1
+component: athena
+role: knowledge-engine
+recorded_at: "2026-09-21"
+
+upstream:
+  repository: "jannismilz/athena"
+  branch: "main"
+  commit: "6720b948744d42f1332f86f9a8157ff588e40d6e"
+  license: "Apache-2.0"
+  notice_file_present: false
+
+datarelay_fork:
+  repository: "datarelay-labs/athena"
+  branch: "main"
+  commit: "6720b948744d42f1332f86f9a8157ff588e40d6e"
+  upstream_tracking: true
+  snapshot_tag: "atlas-upstream-20260921"
+
+preserved_poc:
+  original_repository: "xdr-labs/athena"
+  original_branch: "feature/rick-kb-hardening"
+  preserved_repository: "datarelay-labs/athena"
+  preserved_branch: "poc/engineering-kb-20260921"
+  commit: "f38e20ec4d4ea22c71f1457d9a5361da1e92773a"
+  snapshot_tag: "atlas-poc-20260921"
+  commits_ahead_of_upstream: 4
+
+policy:
+  vendor_source_into_atlas_repo: false
+  fork_main_policy: "track upstream without Atlas-specific product code"
+  atlas_specific_code_owner: "datarelay-labs/datarelay-atlas"
+  generic_athena_patch_owner: "datarelay-labs/athena"
+  derived_knowledge_is_canonical: false
+  canonical_engineering_state: "GitHub/repository artifacts per Engineering System"
