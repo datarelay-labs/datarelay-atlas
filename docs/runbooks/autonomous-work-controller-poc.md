@@ -24,7 +24,7 @@ audit → `PASS` / `REWORK` / `HUMAN_REQUIRED`, with automatic fresh
 ## Canonical resume command
 
 Engineering System / repository command file is
-`.cursor/commands/work-resume.md`.
+`.cursor/commands/work-resume.md`). `.cursor/commands/resume.md` remains only as an Engineering System adoption-compliance shim and must not redefine `/resume` as canonical.
 Slash command: `/work-resume`. Do not redefine built-in `/resume` as canonical.
 
 ## Cursor persistence launcher (CLI 2026.09.18-9a7762b)
