@@ -43,6 +43,7 @@ DEFAULT_MAX_TEST_CHARS = 8000
 DEFAULT_MAX_CI_CHARS = 4000
 
 # Features disabled so Codex judges the supplied bundle only.
+# Keep this aligned with the measured ~11k-input tool-disabled probe profile.
 CODEX_DISABLED_FEATURES = (
     "shell_tool",
     "browser_use",
@@ -52,7 +53,15 @@ CODEX_DISABLED_FEATURES = (
     "apps",
     "computer_use",
     "code_mode_host",
+    "plugins",
+    "plugin_sharing",
+    "remote_plugin",
+    "recommended_plugins",
+    "hooks",
+    "multi_agent",
+    "multi_agent_v2",
     "skill_search",
+    "skill_mcp_dependency_install",
 )
 
 CODEX_AUDIT_INSTRUCTIONS = """You are an independent read-only engineering auditor for DataRelay Atlas.
@@ -494,7 +503,9 @@ def build_codex_audit_command(
 ) -> list[str]:
     """Fixed non-interactive Codex argv for judge-only bundle audits.
 
-    Tools/apps/browser/shell are disabled. Prompt is supplied on stdin (`-`).
+    Ignores user config/rules while preserving ChatGPT-plan auth. Disables
+    shell/apps/browser/computer/plugins/hooks/multi-agent/skill-search so Codex
+    judges only the pre-collected evidence bundle. Prompt is on stdin (`-`).
     """
     cmd = [
         "codex",
@@ -504,6 +515,8 @@ def build_codex_audit_command(
         "-s",
         "read-only",
         "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
         "--color",
         "never",
         "-c",
@@ -524,8 +537,12 @@ def default_codex_runner(command: list[str], prompt: str, cwd: str) -> str:
         raise ValidationError(f"refusing non-codex command: {command!r}")
     if "-s" not in command or "read-only" not in command:
         raise ValidationError("codex audit runner requires read-only sandbox")
+    if "--ignore-user-config" not in command:
+        raise ValidationError("codex audit runner requires --ignore-user-config")
     if "--disable" not in command or "shell_tool" not in command:
         raise ValidationError("codex audit runner requires shell_tool disabled")
+    if "apps" not in command or "browser_use" not in command:
+        raise ValidationError("codex audit runner requires apps/browser disabled")
     if "-o" not in command:
         raise ValidationError("codex audit runner requires -o last-message path")
     out_idx = command.index("-o") + 1

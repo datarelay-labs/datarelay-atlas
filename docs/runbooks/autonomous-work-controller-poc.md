@@ -126,24 +126,35 @@ python3 -m atlas work-controller completion /tmp/awc-completion.json \
 
 Contract:
 - Controller gathers deterministic evidence (git, Work Packet, tests, CI)
-- `codex exec -C <worktree> -s read-only --ephemeral` with tools/apps/browser/shell
-  disabled (`--disable shell_tool` etc., `web_search="disabled"`)
+- `codex exec -C <worktree> -s read-only --ephemeral --ignore-user-config
+  --ignore-rules` with apps/browser/computer/shell/plugins/hooks/multi-agent/
+  skill-search disabled (`--disable …`, `web_search="disabled"`)
 - Codex judges only the embedded evidence bundle (no Codex local shell required)
 - structured JSON verdict `PASS|REWORK|HUMAN_REQUIRED`
 - exact worktree identity validation (repo/branch/HEAD) before audit
 - no edits/commits/pushes
 
 OpenAI Responses API (`--audit-adapter openai`) is optional fallback only.
+Offline/deterministic mode requires explicit `--audit-adapter fixed`.
 
 ## Completion hook helper
 
 `scripts/awc-completion-hook.sh` builds an event from the current git identity
-and enqueues/drains the local inbox without Telegram:
+and enqueues/drains the local inbox without Telegram. Default audit adapter is
+`codex`. Unknown `AWC_AUDIT_ADAPTER` values fail closed.
 
 ```bash
+# Production default (Codex / ChatGPT plan)
 AWC_WORKSTREAM=autonomous-work-controller-poc \
 AWC_ISSUE_NUMBER=12 \
 AWC_ATTEMPT=1 \
+./scripts/awc-completion-hook.sh
+
+# Explicit offline/fixed only when deliberately requested
+AWC_WORKSTREAM=autonomous-work-controller-poc \
+AWC_ISSUE_NUMBER=12 \
+AWC_ATTEMPT=1 \
+AWC_AUDIT_ADAPTER=fixed \
 AWC_AUDIT_VERDICT=PASS \
 ./scripts/awc-completion-hook.sh
 ```

@@ -158,12 +158,18 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertIn("-C", cmd)
         self.assertIn("read-only", cmd)
         self.assertIn("--ephemeral", cmd)
+        self.assertIn("--ignore-user-config", cmd)
+        self.assertIn("--ignore-rules", cmd)
         self.assertIn('web_search="disabled"', cmd)
         for feature in CODEX_DISABLED_FEATURES:
             self.assertIn(feature, cmd)
         self.assertIn("shell_tool", cmd)
         self.assertIn("browser_use", cmd)
         self.assertIn("apps", cmd)
+        self.assertIn("plugins", cmd)
+        self.assertIn("hooks", cmd)
+        self.assertIn("multi_agent", cmd)
+        self.assertIn("skill_search", cmd)
         self.assertEqual(cmd[-1], "-")
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", cmd)
 
@@ -182,6 +188,22 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertIn("/work-resume", prompt)
         self.assertNotIn("OPENAI_API_KEY", prompt)
         self.assertNotIn("sk-", prompt)
+
+    def test_secret_detection_allows_env_var_name_mention(self):
+        from atlas.codex_audit import _looks_like_secret
+
+        docs_mention = (
+            "Optional: set OPENAI_API_KEY when using --audit-adapter openai. "
+            "Default Codex path needs no API key."
+        )
+        self.assertFalse(_looks_like_secret(docs_mention))
+        # Build trigger strings dynamically so committed sources do not embed
+        # credential-shaped literals into future evidence-bundle diffs.
+        assigned = "OPENAI_API_KEY" + "=" + "redacted-value"
+        sk_shaped = "sk-" + ("a" * 24)
+        self.assertTrue(_looks_like_secret(assigned))
+        self.assertTrue(_looks_like_secret("token " + sk_shaped))
+
 
     def test_collect_bundle_uses_injected_collectors(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -254,9 +276,12 @@ class CodexAuditProviderTests(unittest.TestCase):
             def fake_runner(command: list[str], prompt: str, cwd: str) -> str:
                 observed["command"] = command
                 observed["prompt"] = prompt
+                self.assertIn("--ignore-user-config", command)
                 self.assertIn("shell_tool", command)
                 self.assertIn("browser_use", command)
                 self.assertIn("apps", command)
+                self.assertIn("plugins", command)
+                self.assertIn("hooks", command)
                 self.assertIn("judge_evidence_bundle_only", prompt)
                 self.assertIn("EVIDENCE_BUNDLE_JSON", prompt)
                 out = Path(command[command.index("-o") + 1])
@@ -340,6 +365,33 @@ class CodexAuditProviderTests(unittest.TestCase):
                 "prompt",
                 ".",
             )
+
+    def test_default_runner_requires_ignore_user_config(self):
+        from atlas.codex_audit import default_codex_runner
+
+        with self.assertRaises(ValidationError) as ctx:
+            default_codex_runner(
+                [
+                    "codex",
+                    "exec",
+                    "-C",
+                    ".",
+                    "-s",
+                    "read-only",
+                    "--disable",
+                    "shell_tool",
+                    "--disable",
+                    "apps",
+                    "--disable",
+                    "browser_use",
+                    "-o",
+                    "x",
+                    "-",
+                ],
+                "prompt",
+                ".",
+            )
+        self.assertIn("ignore-user-config", str(ctx.exception))
 
     def test_work_packet_and_ci_collectors_surface_errors(self):
         def boom(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:

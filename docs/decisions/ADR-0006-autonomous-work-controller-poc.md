@@ -78,11 +78,13 @@ Engineering System resume workflow; the canonical slash command is
    (plus concise findings). **Default production auditor** is Codex CLI using
    the owner's ChatGPT-plan login. The controller gathers a deterministic
    evidence bundle (git, Work Packet, tests, CI) and invokes
-   `codex exec -s read-only` with tools/apps/browser/shell disabled so Codex
-   judges only that bundle. Codex local shell is not required. OpenAI
+   `codex exec -s read-only --ignore-user-config` with
+   apps/browser/computer/shell/plugins/hooks/multi-agent/skill-search disabled
+   so Codex judges only that bundle. Codex local shell is not required. OpenAI
    Responses API remains an optional fallback adapter only and is not required
-   for PoC PASS. Tests use deterministic fakes/transports. Credentials never
-   enter durable state.
+   for PoC PASS. `fixed` is explicit offline/test mode only and must never
+   silently default production completions to PASS. Tests use deterministic
+   fakes/transports. Credentials never enter durable state.
 8. **REWORK**: update the same Work Packet via adapter (findings + next action),
    then dispatch a **fresh** Cursor session in the validated worktree using the
    fixed resume surface `/work-resume`. Never attach/reuse unrelated sessions.
