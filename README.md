@@ -62,6 +62,7 @@ Milestones:
 - Athena absorption inventory + Atlas-native sync/retrieval/MCP context library
 - Athena independence gate + retirement checklist (owner delete is separate)
 - Phase 1 project registry + canonical sync operator surface (`python -m atlas`)
+- Autonomous Work Controller PoC (`python -m atlas work-controller`, ADR-0006)
 
 ## Phase 1 operator surface
 
@@ -77,6 +78,23 @@ PYTHONPATH=. python3 -m atlas rebuild datarelay-atlas
 ```
 
 Durable local state defaults to `.atlas-data/` (gitignored). Credentials use `GITHUB_TOKEN` / runtime env only. See `docs/runbooks/phase1-project-registry-canonical-sync.md`.
+
+## Autonomous Work Controller PoC
+
+Persist one local workstream, accept an idempotent Cursor completion event, run a
+replaceable audit adapter, and stop or dispatch a fresh `/resume` on rework.
+See ADR-0006 and `docs/runbooks/autonomous-work-controller-poc.md`.
+
+```bash
+PYTHONPATH=. python3 -m atlas work-controller register <workstream> \
+  --repository datarelay-labs/datarelay-atlas \
+  --issue-number <n> \
+  --branch <branch> \
+  --worktree "$(pwd)" \
+  --expected-head "$(git rev-parse HEAD)"
+PYTHONPATH=. python3 -m atlas work-controller completion /path/to/event.json \
+  --audit-verdict PASS
+```
 
 ## Engineering
 

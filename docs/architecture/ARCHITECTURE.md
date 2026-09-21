@@ -104,6 +104,10 @@ Source/provider/provenance **semantics** are frozen by ADR-0003. Phase 1 durable
 - Secrets remain outside Git and outside registry/projection payloads
 - Backup implication: copy the data root; rebuild/sync refreshes derived content
 
+Autonomous Work Controller PoC state (ADR-0006) extends the same data root with
+`work-controller.json` (one local workstream control loop). It does not replace
+GitHub AI Work Packets as canonical coordination state.
+
 Postgres/pgvector/Bun/Wiki.js are not Phase 1 persistence choices.
 
 ## Related decisions
@@ -113,3 +117,4 @@ Postgres/pgvector/Bun/Wiki.js are not Phase 1 persistence choices.
 - ADR-0003 — source/provider/provenance contracts
 - ADR-0004 — Athena absorption and repository retirement
 - ADR-0005 — Phase 1 persistence model (local filesystem JSON)
+- ADR-0006 — Autonomous Work Controller PoC (completion → audit → rework/pass)

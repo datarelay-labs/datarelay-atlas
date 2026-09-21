@@ -11,6 +11,15 @@ from pathlib import Path
 
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
+from atlas.work_controller import (
+    AuditResult,
+    FixedAuditAdapter,
+    RecordingCursorDispatcher,
+    RecordingWorkPacketAdapter,
+    SubprocessCursorDispatcher,
+    WorkController,
+    load_completion_event,
+)
 
 
 def _default_data_root() -> Path:
@@ -114,6 +123,69 @@ def cmd_projections(args: argparse.Namespace) -> int:
     return 0
 
 
+def _controller_from_args(args: argparse.Namespace) -> WorkController:
+    """Build a controller with operator-selected adapters.
+
+    Default audit is fixed/offline so the CLI stays deterministic without
+    network credentials. Dispatch defaults to argv recording unless
+    --spawn-dispatch is set (fail-closed without an injected runner).
+    """
+    verdict = getattr(args, "audit_verdict", "PASS")
+    findings = getattr(args, "audit_findings", "") or ""
+    audit = FixedAuditAdapter(AuditResult(verdict=verdict, findings=findings))
+    work_packet = RecordingWorkPacketAdapter()
+    if getattr(args, "spawn_dispatch", False):
+        dispatcher = SubprocessCursorDispatcher()
+    else:
+        dispatcher = RecordingCursorDispatcher()
+    return WorkController(
+        Path(args.data_root),
+        audit=audit,
+        work_packet=work_packet,
+        dispatcher=dispatcher,
+    )
+
+
+def cmd_wc_register(args: argparse.Namespace) -> int:
+    ctl = _controller_from_args(args)
+    record = ctl.register_workstream(
+        workstream=args.workstream,
+        repository=args.repository,
+        issue_number=args.issue_number,
+        branch=args.branch,
+        worktree_path=args.worktree,
+        expected_head=args.expected_head,
+        max_attempts=args.max_attempts,
+    )
+    _print_json(asdict(record))
+    return 0
+
+
+def cmd_wc_show(args: argparse.Namespace) -> int:
+    ctl = _controller_from_args(args)
+    _print_json(ctl.show(args.workstream))
+    return 0
+
+
+def cmd_wc_list(args: argparse.Namespace) -> int:
+    ctl = _controller_from_args(args)
+    _print_json(ctl.list_workstreams())
+    return 0
+
+
+def cmd_wc_completion(args: argparse.Namespace) -> int:
+    ctl = _controller_from_args(args)
+    event = load_completion_event(Path(args.event_file))
+    _print_json(ctl.handle_completion(event))
+    return 0
+
+
+def cmd_wc_reconcile(args: argparse.Namespace) -> int:
+    ctl = _controller_from_args(args)
+    _print_json(ctl.reconcile(args.workstream))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="atlas",
@@ -182,6 +254,62 @@ def build_parser() -> argparse.ArgumentParser:
     projections = sub.add_parser("projections", help="Show projection/provenance records")
     projections.add_argument("project_id")
     projections.set_defaults(func=cmd_projections)
+
+    wc = sub.add_parser(
+        "work-controller",
+        help="Autonomous Work Controller PoC (ADR-0006)",
+    )
+    wc_sub = wc.add_subparsers(dest="wc_command", required=True)
+
+    wc_reg = wc_sub.add_parser("register", help="Register one local workstream")
+    wc_reg.add_argument("workstream")
+    wc_reg.add_argument("--repository", required=True)
+    wc_reg.add_argument("--issue-number", type=int, required=True)
+    wc_reg.add_argument("--branch", required=True)
+    wc_reg.add_argument("--worktree", required=True)
+    wc_reg.add_argument("--expected-head", required=True)
+    wc_reg.add_argument("--max-attempts", type=int, default=3)
+    wc_reg.set_defaults(func=cmd_wc_register)
+
+    wc_show = wc_sub.add_parser("show", help="Show one workstream controller record")
+    wc_show.add_argument("workstream")
+    wc_show.set_defaults(func=cmd_wc_show)
+
+    wc_list = wc_sub.add_parser("list", help="List registered workstreams")
+    wc_list.set_defaults(func=cmd_wc_list)
+
+    wc_comp = wc_sub.add_parser(
+        "completion",
+        help="Handle one Cursor completion event JSON file",
+    )
+    wc_comp.add_argument("event_file")
+    wc_comp.add_argument(
+        "--audit-verdict",
+        choices=["PASS", "REWORK", "HUMAN_REQUIRED"],
+        default="PASS",
+        help="Offline/fixed audit verdict for PoC CLI (tests use injected adapters)",
+    )
+    wc_comp.add_argument("--audit-findings", default="")
+    wc_comp.add_argument(
+        "--spawn-dispatch",
+        action="store_true",
+        help="Use fail-closed subprocess dispatcher instead of recording dispatcher",
+    )
+    wc_comp.set_defaults(func=cmd_wc_completion)
+
+    wc_rec = wc_sub.add_parser(
+        "reconcile",
+        help="Reconcile unfinished audit state after controller restart",
+    )
+    wc_rec.add_argument("workstream", nargs="?")
+    wc_rec.add_argument(
+        "--audit-verdict",
+        choices=["PASS", "REWORK", "HUMAN_REQUIRED"],
+        default="PASS",
+    )
+    wc_rec.add_argument("--audit-findings", default="")
+    wc_rec.add_argument("--spawn-dispatch", action="store_true")
+    wc_rec.set_defaults(func=cmd_wc_reconcile)
 
     return parser
 

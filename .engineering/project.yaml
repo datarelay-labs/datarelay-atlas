@@ -28,10 +28,12 @@ operations:
   production_oriented: false
   runbook_required: false
   incident_response_required: false
-  persistent_state: false
-  runbook_paths: []
+  persistent_state: true
+  runbook_paths:
+    - docs/runbooks/phase1-project-registry-canonical-sync.md
+    - docs/runbooks/autonomous-work-controller-poc.md
   health_command: ""
-  backup_command: ""
-  restore_test_command: ""
+  backup_command: "cp -a \"${ATLAS_DATA_ROOT:-.atlas-data}\" \"${ATLAS_DATA_ROOT:-.atlas-data}.bak\""
+  restore_test_command: "test -f \"${ATLAS_DATA_ROOT:-.atlas-data}/registry.json\" -o ! -e \"${ATLAS_DATA_ROOT:-.atlas-data}/registry.json\""
   upgrade_command: ""
   rollback_command: ""

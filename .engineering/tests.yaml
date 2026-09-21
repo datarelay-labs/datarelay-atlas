@@ -73,6 +73,7 @@ scenarios:
       - "Phase 1 project registry/adoption/sync/rebuild regressions pass"
       - "hybrid retrieval fusion regressions pass"
       - "MCP context scope and provenance regressions pass"
+      - "Autonomous Work Controller PoC control-loop regressions pass"
     release_gate: true
 
   - id: ATLAS-INDEPENDENCE-001
