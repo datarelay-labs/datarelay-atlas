@@ -12,22 +12,25 @@ This roadmap defines bounded product phases, not delivery dates. Each phase must
 - [x] complete dependency/license compatibility audit beyond Athena's top-level Apache-2.0 license
 - [x] classify and migrate Athena PoC changes into Atlas-owned vs generic fork-owned code
 - [x] define source/provider and provenance contracts
+- [x] supersede long-term Athena external-runtime strategy (ADR-0004)
+- [x] absorb required PoC capabilities into Atlas-owned code with independence gate
 
-Exit: canonical product boundaries are clear and the repository can be safely resumed by AI agents.
+Exit: canonical product boundaries are clear, Athena is not an Atlas runtime dependency, and the repository can be safely resumed by AI agents.
 
 Phase 0 evidence:
 
 - license audit: `integrations/athena/DEPENDENCY-LICENSE-AUDIT.md`
 - PoC ownership: `integrations/athena/POC-MIGRATION.md`
 - provenance contracts: ADR-0003 + `docs/contracts/source-provider-provenance.md`
-- open redistribution review items remain documented (Wiki.js AGPL-3.0; Bun LGPL-linked components) and do not block Phase 1 contract work
+- absorption/retirement: ADR-0004 + `docs/migration/athena-capability-inventory.md` + `docs/migration/athena-retirement-checklist.md`
+- open redistribution review items remain documented for any future image reuse (Wiki.js AGPL-3.0; Bun LGPL-linked components) and do not reintroduce an Athena-repo dependency
 
 ## Phase 1 — Project Registry & Canonical Sync
 
 - register a project/repository
 - read Engineering System adoption metadata
 - configure canonical source paths
-- authenticated GitHub synchronization
+- authenticated GitHub synchronization (Atlas-owned `atlas/` library as starting implementation)
 - source revision/provenance retention
 - project-scoped namespace
 - deterministic re-sync/rebuild behavior

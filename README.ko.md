@@ -46,16 +46,21 @@ GitHub / OpenSpec / Code / Tests / ADR / CI
 
 1. **GitHub가 canonical입니다.** Derived knowledge는 canonical repository state를 덮어쓰지 않습니다.
 2. **Engineering System이 방법론을 정의합니다.** Atlas는 이를 적용·관찰·검증·설명하며 별도의 경쟁 방법론을 만들지 않습니다.
-3. **Knowledge Engine은 교체 가능합니다.** Athena는 Wiki/Search/Vector/MCP 기반 기능을 제공할 수 있지만 제품 경계는 DataRelay Atlas입니다.
+3. **Atlas가 Knowledge 동작을 소유합니다.** 과거 Athena/Wiki.js 작업은 migration evidence이며, Atlas는 build/test/runtime에서 Athena 저장소에 의존하지 않습니다 (ADR-0004).
 4. **Provenance는 필수입니다.** Derived knowledge에는 가능한 경우 repository/ref/path/source revision을 유지합니다.
 5. **초기 범위는 self-hosted single-organization입니다.** Multi-organization/SaaS는 향후 범위이며 MVP 전제가 아닙니다.
 6. **이미 잘 동작하는 도구를 다시 만들지 않습니다.** Git hosting, CI/CD, Coding Agent, Issue Tracking은 명시적인 제품 요구가 생기기 전까지 외부 시스템으로 유지합니다.
 
 ## 현재 상태
 
-현재는 초기 제품 정의 및 Architecture bootstrap 단계입니다.
+DataRelay Atlas는 Engineering Knowledge PoC에서 필요한 능력을 Atlas 소유 코드로 흡수하고, Athena를 제품 의존성에서 제거하는 작업 중입니다 (ADR-0004).
 
-첫 번째 milestone은 제품 계약, Engineering System adoption, Knowledge Architecture, 기존 Athena PoC에서 제품으로 이동하기 위한 bounded migration path를 확정하는 것입니다.
+Milestone:
+
+- 제품 계약 + Engineering System adoption
+- source/provider/provenance 계약 (ADR-0003)
+- Athena absorption inventory + Atlas-native sync/retrieval/MCP context library
+- Athena independence gate + retirement checklist (삭제 자체는 owner 승인 후 별도)
 
 ## Engineering
 

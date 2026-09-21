@@ -1,7 +1,12 @@
 # ADR-0002: Athena Source Preservation and Fork Strategy
 
-Status: Accepted
+Status: Superseded (long-term fork strategy only)
 Date: 2026-09-21
+Superseded-by: ADR-0004
+
+Historical note: this ADR records why Athena was forked and pinned. ADR-0004
+supersedes the long-term external-knowledge-engine / upstream-tracking runtime
+strategy. Preserve this document; do not rewrite accepted history.
 
 ## Context
 

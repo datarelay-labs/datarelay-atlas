@@ -47,7 +47,7 @@ Tool-specific adapters must not weaken these rules.
 
 1. GitHub/OpenSpec/code/tests/ADR/CI are canonical engineering state. Atlas knowledge projections are derived and rebuildable.
 2. `datarelay-labs/engineering-system` is the canonical methodology. Atlas may apply, observe, validate, visualize, or automate that methodology but must not silently fork or redefine it.
-3. DataRelay Atlas is the product boundary. Athena is a replaceable integration/runtime dependency, not the product identity or canonical source of truth.
+3. DataRelay Atlas is the product boundary. Athena is historical migration evidence only (ADR-0004), not a product identity and not a build/test/deploy/runtime dependency.
 4. Provenance must be preserved for derived engineering knowledge: repository, ref, source path, and source revision where available.
 5. The initial product scope is self-hosted and single-organization. Multi-tenant SaaS, generic enterprise search, Git hosting, CI/CD replacement, issue-tracker replacement, and general-purpose chat/RAG are out of scope unless explicitly approved.
 6. Prefer existing GitHub and project-native capabilities over custom infrastructure.

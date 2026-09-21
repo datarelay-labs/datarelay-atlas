@@ -23,7 +23,8 @@ The Athena Engineering Knowledge PoC demonstrated useful fields
 (`project`, `repository`, `ref`, `source_path`, Git blob SHA) but also coupled
 them to Wiki.js page paths. ADR-0001 already established that Athena/Wiki.js
 must not become required public product concepts. ADR-0002 preserved Athena
-source without vendoring it into Atlas.
+source without vendoring it into Atlas. ADR-0004 supersedes the long-term
+Athena external-runtime strategy and requires Atlas-owned absorption.
 
 This ADR freezes the minimum durable Atlas contracts before any Atlas-owned
 persistent schema or Phase 1 runtime implementation.
@@ -35,7 +36,7 @@ persistent schema or Phase 1 runtime implementation.
 3. **Affected public contract** — Atlas project/source configuration, derived-record provenance, retrieval provenance, and sync failure semantics.
 4. **State / migration impact** — Future persistent-state-adjacent. This ADR accepts the contract semantics first; durable storage schemas must conform later and require their own migration/backup design when implemented.
 5. **Security / operations impact** — Provider credentials remain outside Git and outside provenance payloads. Sync must fail closed to `unknown`/`error` rather than inventing canonical content.
-6. **Architecture boundary** — Atlas owns the contracts. Knowledge-engine integrations (including Athena) are replaceable projectors/indexers that must preserve Atlas provenance fields.
+6. **Architecture boundary** — Atlas owns the contracts. Retrieval/projection backends are Atlas-owned or EXTERNAL-DEPENDENCY services that preserve Atlas provenance fields; the Athena repository is not a runtime dependency (ADR-0004).
 7. **Acceptance / regression criteria** — Canonical contract document + machine-checkable schema fixture validate; roadmap Phase 0 item checked; architecture/THIRD_PARTY/migration docs remain consistent.
 
 ## Decision
@@ -49,11 +50,11 @@ persistent schema or Phase 1 runtime implementation.
 4. Provider authentication is a runtime secret boundary, not part of stored provenance claims.
 5. When canonical fetch fails or revision identity cannot be established, Atlas records explicit `error`/`unknown` sync state and MUST NOT present fabricated canonical content as current.
 6. Projection identity is a derived rebuild key (project + source configuration + source revision + projector version/parameters), not a Wiki.js page id.
-7. Athena/Wiki.js path identities may appear only as private integration mapping, never as the Atlas public provenance primary key unless a future ADR explicitly accepts that.
+7. Athena/Wiki.js path identities may appear only as private historical mapping evidence, never as the Atlas public provenance primary key unless a future ADR explicitly accepts that.
 
 ## Consequences
 
 - Phase 1 can implement registry/sync against a stable contract.
-- PoC sync code can be reused as migration input after removing Wiki-public identity.
-- Future knowledge-engine replacements must map into the same provenance fields.
-- Packaging/legal review of Athena/Wiki.js remains independent (see third-party audit); this ADR does not authorize redistribution choices.
+- PoC sync ideas are migration input only; Atlas-owned sync must not require the Athena repository (ADR-0004).
+- Future retrieval backends must map into the same provenance fields.
+- Packaging/legal review of any retained third-party images remains independent (see third-party audit).

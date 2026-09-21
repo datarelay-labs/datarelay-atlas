@@ -77,21 +77,18 @@ Generic (non-Atlas-product) changes are retained on:
 Fork `main` remains upstream-tracking and is **not** fast-forwarded to the PoC branch.
 The Athena PR is intentionally review/upstream-candidate continuity, not a requirement to merge before Atlas Phase 0 closure.
 
-## Atlas extraction targets (contracts before code)
+## Migration status (updated by ADR-0004)
 
-1. source/provider configuration schema → [`docs/contracts/source-provider-provenance.md`](../../docs/contracts/source-provider-provenance.md)
-2. project registry identity and namespace
-3. canonical GitHub source fetch + immutable revision metadata
-4. derived projection contract
-5. retrieval result provenance contract
-6. MCP-facing Atlas context contract
+Per-file ownership for the four PoC commits remains in this document as Phase 0
+historical classification. ADR-0004 changes the target state:
 
-Actual runtime framework/language choices remain a design decision and must not be inferred from the PoC merely because Athena currently uses Bun/TypeScript.
+- Athena is **not** a maintained Atlas runtime/fork dependency
+- Required capabilities are absorbed as Atlas-native code under `atlas/`
+- Durable inventory: [`docs/migration/athena-capability-inventory.md`](../../docs/migration/athena-capability-inventory.md)
+- Retirement checklist: [`docs/migration/athena-retirement-checklist.md`](../../docs/migration/athena-retirement-checklist.md)
+- Athena PR #1 is closed unmerged as superseded
 
-## Migration rules
+## Next migration boundary
 
-1. Migrate **contracts before code**.
-2. Never make Wiki.js/Athena page identity a public Atlas contract unless explicitly accepted.
-3. Preserve provenance fields: project, repository, ref, source path, source revision/blob identity.
-4. Reuse PoC tests as regression evidence when moving behavior, adapted to the Atlas-owned boundary.
-5. Keep generic Athena fixes separately reviewable so upstream updates remain manageable.
+Extend Phase 1 registry/persistence against ADR-0003 using Atlas-owned modules.
+Do not reintroduce Wiki.js public identity or an Athena-repo dependency.
