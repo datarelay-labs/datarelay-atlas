@@ -20,8 +20,14 @@ paths:
     domains: [knowledge, integrations]
   "docs/contracts/**":
     domains: [knowledge, integrations, project-registry]
+  "docs/migration/**":
+    domains: [knowledge, integrations]
   "integrations/athena/**":
     domains: [integrations]
+  "atlas/**":
+    domains: [knowledge, integrations, project-registry, ai-context]
+  "tests/**":
+    domains: [knowledge, integrations, project-registry, ai-context, methodology]
   "scripts/**":
     domains: [methodology, integrations]
   "THIRD_PARTY.md":
@@ -53,4 +59,29 @@ scenarios:
     invariants:
       - "accepted source/provider/provenance fixture validates against the published schema"
       - "example provenance payloads remain non-canonical and credential-free"
+    release_gate: true
+
+  - id: ATLAS-UNIT-001
+    name: Atlas-owned absorption unit tests
+    level: unit
+    domains: [knowledge, integrations, project-registry, ai-context]
+    triggers: [affected, pr, preflight, release]
+    platforms: [linux]
+    command: "python3 -m unittest discover -s tests -v"
+    invariants:
+      - "GitHub sync/provenance projection regressions pass"
+      - "hybrid retrieval fusion regressions pass"
+      - "MCP context scope and provenance regressions pass"
+    release_gate: true
+
+  - id: ATLAS-INDEPENDENCE-001
+    name: Athena repository independence gate
+    level: static
+    domains: [integrations, methodology, knowledge]
+    triggers: [affected, pr, preflight, release]
+    platforms: [linux]
+    command: "python3 scripts/validate-athena-independence.py"
+    invariants:
+      - "Atlas build/test paths do not require datarelay-labs/athena"
+      - "public provenance schema does not expose Wiki.js identity fields"
     release_gate: true

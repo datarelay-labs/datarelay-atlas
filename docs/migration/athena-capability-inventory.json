@@ -1,0 +1,817 @@
+{
+  "schema_version": 1,
+  "work_packet": "datarelay-labs/datarelay-atlas#7",
+  "adr": "ADR-0004",
+  "source_refs": {
+    "upstream": "6720b948744d42f1332f86f9a8157ff588e40d6e",
+    "poc": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+    "generic_hardening": "5b90969a7e0fecadae587144a0bd7f444352799f",
+    "athena_pr_1": "https://github.com/datarelay-labs/athena/pull/1",
+    "athena_pr_1_state": "CLOSED_UNMERGED_SUPERSEDED"
+  },
+  "disposition_vocabulary": [
+    "ATLAS-NATIVE",
+    "THIRD-PARTY-EMBEDDED",
+    "EXTERNAL-DEPENDENCY",
+    "DROP",
+    "HISTORICAL-EVIDENCE"
+  ],
+  "third_party_embedded_files": [],
+  "capabilities": [
+    {
+      "id": "mcp-transport-auth-tools",
+      "athena_paths": [
+        "packages/mcp/**"
+      ],
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Retrieval/context tool semantics and scope gating reimplemented in atlas.mcp_context + atlas.security. Full OAuth/HTTPS transport deferred as Atlas-owned/EXTERNAL, not via Athena repo.",
+      "atlas_targets": [
+        "atlas/mcp_context.py",
+        "atlas/security.py",
+        "tests/test_mcp_context.py",
+        "tests/test_security.py"
+      ]
+    },
+    {
+      "id": "wikijs-coupling",
+      "athena_paths": [
+        "packages/core/src/wiki.ts",
+        "packages/core/src/bootstrap.ts",
+        "packages/mcp/src/tools.ts",
+        "docker-compose.yml",
+        "themes/**",
+        "website/**"
+      ],
+      "disposition": "DROP",
+      "rationale": "Wiki.js is not an Atlas public product concept. Projection is Atlas-owned filesystem/JSON, not Wiki pages.",
+      "atlas_targets": []
+    },
+    {
+      "id": "postgresql-pgvector",
+      "athena_paths": [
+        "packages/core/src/db.ts",
+        "packages/core/src/vectors.ts",
+        "docker/**"
+      ],
+      "disposition": "EXTERNAL-DEPENDENCY",
+      "rationale": "Optional future vector store via direct package/image dependency. Atlas exposes SemanticProvider interface now; no Athena repo required.",
+      "atlas_targets": [
+        "atlas/retrieval.py"
+      ]
+    },
+    {
+      "id": "embedding-provider-client",
+      "athena_paths": [
+        "packages/core/src/embeddings.ts"
+      ],
+      "disposition": "EXTERNAL-DEPENDENCY",
+      "rationale": "TEI/other embedding providers may be wired later as EXTERNAL-DEPENDENCY. Not required Athena repo code.",
+      "atlas_targets": [
+        "atlas/retrieval.py"
+      ]
+    },
+    {
+      "id": "keyword-semantic-fusion",
+      "athena_paths": [
+        "packages/core/src/search.ts",
+        "packages/core/src/search.test.ts"
+      ],
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "RRF hybrid fusion and keyword retrieval reimplemented in Python with PoC-parity regression tests. No Athena source copied.",
+      "atlas_targets": [
+        "atlas/retrieval.py",
+        "tests/test_retrieval.py"
+      ]
+    },
+    {
+      "id": "indexing-chunking",
+      "athena_paths": [
+        "packages/indexer/**"
+      ],
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Deterministic chunking for keyword index implemented in Atlas projection/retrieval path. Athena indexer HTTP service dropped as product dependency.",
+      "atlas_targets": [
+        "atlas/projection.py",
+        "atlas/retrieval.py"
+      ]
+    },
+    {
+      "id": "github-canonical-sync-provenance",
+      "athena_paths": [
+        "scripts/sync-github-knowledge.ts",
+        "scripts/sync-github-knowledge.test.ts",
+        "knowledge-sources.json"
+      ],
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "GitHub fetch, validation, derived projection rendering, and provenance fields owned by Atlas. wiki_path dropped from public contract.",
+      "atlas_targets": [
+        "atlas/github_sync.py",
+        "atlas/provenance.py",
+        "atlas/projection.py",
+        "tests/test_github_sync.py",
+        "tests/test_provenance.py"
+      ]
+    },
+    {
+      "id": "project-namespace-scoping",
+      "athena_paths": [
+        "packages/mcp/src/tools.ts",
+        "packages/core/src/vectors.ts",
+        "docs/RICK_ENGINEERING_KB.md"
+      ],
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "project_id namespace is Atlas public contract (ADR-0003). Enforced in retrieval/MCP context.",
+      "atlas_targets": [
+        "atlas/retrieval.py",
+        "atlas/mcp_context.py",
+        "atlas/security.py"
+      ]
+    },
+    {
+      "id": "dashboard-metrics",
+      "athena_paths": [
+        "packages/dashboard/**"
+      ],
+      "disposition": "DROP",
+      "rationale": "Athena operator dashboard is not required for Atlas MVP absorption. Atlas human UI is a later phase.",
+      "atlas_targets": []
+    },
+    {
+      "id": "backup-restore",
+      "athena_paths": [
+        "docker/**",
+        "packages/core/src/db.ts"
+      ],
+      "disposition": "DROP",
+      "rationale": "Athena backup patterns tied to Wiki/Postgres packaging. Atlas backup/restore waits for persistence ADR / Phase 5.",
+      "atlas_targets": []
+    },
+    {
+      "id": "docker-compose-runtime-packaging",
+      "athena_paths": [
+        "Dockerfile",
+        "docker-compose.yml",
+        "docker/**"
+      ],
+      "disposition": "DROP",
+      "rationale": "Athena packaging is not Atlas packaging. Future Atlas deploy contract is separate and must not fetch Athena repo.",
+      "atlas_targets": []
+    },
+    {
+      "id": "auth-rate-limiting-security",
+      "athena_paths": [
+        "packages/core/src/throttle.ts",
+        "packages/core/src/session.ts",
+        "packages/mcp/src/auth/**"
+      ],
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Path traversal rejection, project scope gating, and non-canonical write refusal absorbed as Atlas security regressions. Full OAuth server deferred.",
+      "atlas_targets": [
+        "atlas/security.py",
+        "tests/test_security.py"
+      ]
+    },
+    {
+      "id": "tests-ci-supply-chain",
+      "athena_paths": [
+        ".github/workflows/**",
+        "package.json",
+        "bun.lock",
+        "biome.json"
+      ],
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Athena CI/audit evidence retained via pinned refs. Atlas uses Engineering System shared CI + repository tests.yaml. Generic hardening PR #1 closed superseded.",
+      "atlas_targets": [
+        ".engineering/tests.yaml",
+        ".github/workflows/engineering-system.yml"
+      ]
+    }
+  ],
+  "poc_files": [
+    {
+      "path": ".env.example",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Retained only via pinned Athena snapshot refs.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": ".git",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Retained only via pinned Athena snapshot refs.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Athena toolchain/CI evidence only.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": ".github/workflows/website.yml",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Athena toolchain/CI evidence only.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": ".gitignore",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Retained only via pinned Athena snapshot refs.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "Dockerfile",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "LICENSE",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Pinned PoC documentation/license retained via Athena refs/tags; selective concepts moved into Atlas ADRs/docs.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "README.md",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Pinned PoC documentation/license retained via Athena refs/tags; selective concepts moved into Atlas ADRs/docs.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "biome.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Athena toolchain/CI evidence only.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "bun.lock",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Athena toolchain/CI evidence only.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "docker-compose.yml",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "docker/backup/Dockerfile",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "docker/backup/backup.sh",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "docker/backup/entrypoint.sh",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "docker/backup/restore.sh",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "docs/RICK_ENGINEERING_KB.md",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Pinned PoC documentation/license retained via Athena refs/tags; selective concepts moved into Atlas ADRs/docs.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "knowledge-sources.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "GitHub sync/provenance reimplemented without wiki_path public identity.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "package.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Athena toolchain/CI evidence only.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/package.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Retained only via pinned Athena snapshot refs.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/actor.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/actor.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/append.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/bootstrap.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/config.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/config.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/db.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/embeddings.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "EXTERNAL-DEPENDENCY",
+      "rationale": "Embedding/vector backends may be consumed directly later; no Athena repo dependency.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/events.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/footer.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/footer.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/http.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/index.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Retained only via pinned Athena snapshot refs.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/log.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/login-page.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/markdown.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/markdown.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/roles.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/search.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Behavior reimplemented in Atlas Python modules with regression tests; Athena file not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/search.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Behavior reimplemented in Atlas Python modules with regression tests; Athena file not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/session.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/session.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/throttle.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Behavior reimplemented in Atlas Python modules with regression tests; Athena file not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/throttle.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Behavior reimplemented in Atlas Python modules with regression tests; Athena file not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/vectors.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "EXTERNAL-DEPENDENCY",
+      "rationale": "Embedding/vector backends may be consumed directly later; no Athena repo dependency.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/wiki.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/src/wiki.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Wiki.js/Athena runtime helpers not required; Atlas uses native projection/retrieval.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/core/tsconfig.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Retained only via pinned Athena snapshot refs.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/package.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/src/charts.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/src/html.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/src/html.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/src/main.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/src/metrics.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/src/metrics.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/src/page.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/src/preview.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/src/server.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/src/styles.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/dashboard/tsconfig.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/indexer/package.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Indexing/chunking concepts reimplemented in Atlas projection/retrieval; Athena indexer service not vendored.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/indexer/src/indexer.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Indexing/chunking concepts reimplemented in Atlas projection/retrieval; Athena indexer service not vendored.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/indexer/src/indexer.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Indexing/chunking concepts reimplemented in Atlas projection/retrieval; Athena indexer service not vendored.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/indexer/src/main.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Indexing/chunking concepts reimplemented in Atlas projection/retrieval; Athena indexer service not vendored.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/indexer/src/server.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Indexing/chunking concepts reimplemented in Atlas projection/retrieval; Athena indexer service not vendored.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/indexer/src/state.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Indexing/chunking concepts reimplemented in Atlas projection/retrieval; Athena indexer service not vendored.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/indexer/src/state.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Indexing/chunking concepts reimplemented in Atlas projection/retrieval; Athena indexer service not vendored.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/indexer/tsconfig.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Indexing/chunking concepts reimplemented in Atlas projection/retrieval; Athena indexer service not vendored.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/package.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena MCP transport/server packaging not required for absorption gate; Atlas owns future transport.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/src/auth/provider.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Scope gating / retrieval tool ideas absorbed into Atlas mcp_context/security; source not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/src/auth/provider.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Scope gating / retrieval tool ideas absorbed into Atlas mcp_context/security; source not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/src/auth/routes.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Scope gating / retrieval tool ideas absorbed into Atlas mcp_context/security; source not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/src/auth/state.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Scope gating / retrieval tool ideas absorbed into Atlas mcp_context/security; source not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/src/indexer-client.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena MCP transport/server packaging not required for absorption gate; Atlas owns future transport.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/src/main.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena MCP transport/server packaging not required for absorption gate; Atlas owns future transport.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/src/paths.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Scope gating / retrieval tool ideas absorbed into Atlas mcp_context/security; source not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/src/paths.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Scope gating / retrieval tool ideas absorbed into Atlas mcp_context/security; source not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/src/server.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena MCP transport/server packaging not required for absorption gate; Atlas owns future transport.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/src/tools.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Scope gating / retrieval tool ideas absorbed into Atlas mcp_context/security; source not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/src/tools.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "Scope gating / retrieval tool ideas absorbed into Atlas mcp_context/security; source not copied.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "packages/mcp/tsconfig.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena MCP transport/server packaging not required for absorption gate; Atlas owns future transport.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "scripts/sync-github-knowledge.test.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "GitHub sync/provenance reimplemented without wiki_path public identity.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "scripts/sync-github-knowledge.ts",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "ATLAS-NATIVE",
+      "rationale": "GitHub sync/provenance reimplemented without wiki_path public identity.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "themes/wikijs/athena.css",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "themes/wikijs/athena.js",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "themes/wikijs/tablesort.min.js",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "tsconfig.base.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Athena toolchain/CI evidence only.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "tsconfig.json",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "HISTORICAL-EVIDENCE",
+      "rationale": "Athena toolchain/CI evidence only.",
+      "copied_into_atlas": false
+    },
+    {
+      "path": "website/index.html",
+      "ref": "f38e20ec4d4ea22c71f1457d9a5361da1e92773a",
+      "disposition": "DROP",
+      "rationale": "Athena UI/packaging/Wiki themes not required by Atlas product absorption.",
+      "copied_into_atlas": false
+    }
+  ],
+  "counts": {
+    "poc_files": 88,
+    "by_disposition": {
+      "HISTORICAL-EVIDENCE": 16,
+      "DROP": 47,
+      "ATLAS-NATIVE": 23,
+      "EXTERNAL-DEPENDENCY": 2
+    }
+  }
+}

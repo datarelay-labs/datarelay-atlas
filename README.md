@@ -46,16 +46,21 @@ GitHub / OpenSpec / Code / Tests / ADR / CI
 
 1. **GitHub remains normative.** Derived knowledge never overrides canonical repository state.
 2. **Engineering System defines the methodology.** Atlas applies, observes, validates, and explains it; Atlas does not create a competing engineering standard.
-3. **Knowledge engines are replaceable.** Athena can provide Wiki/search/vector/MCP infrastructure, but Atlas is the product boundary.
+3. **Atlas owns knowledge behavior.** Historical Athena/Wiki.js work is migration evidence only; Atlas must not depend on the Athena repository at build/test/runtime (ADR-0004).
 4. **Provenance is mandatory.** Derived knowledge keeps repository, ref, path, and source revision where applicable.
 5. **Start self-hosted and single-organization.** Multi-organization/SaaS behavior is future scope, not an MVP assumption.
 6. **Do not rebuild tools that already work.** Git hosting, CI/CD, coding agents, and issue tracking remain external unless an explicit product requirement changes that boundary.
 
 ## Current status
 
-DataRelay Atlas is in initial product-definition and architecture bootstrap.
+DataRelay Atlas is absorbing required Engineering Knowledge PoC capabilities into Atlas-owned code while retiring Athena as a product dependency (ADR-0004).
 
-The first milestone establishes the product contract, Engineering System adoption, knowledge architecture, and a bounded migration path from the existing Athena proof of concept.
+Milestones:
+
+- product contract + Engineering System adoption
+- source/provider/provenance contracts (ADR-0003)
+- Athena absorption inventory + Atlas-native sync/retrieval/MCP context library
+- Athena independence gate + retirement checklist (owner delete is separate)
 
 ## Engineering
 

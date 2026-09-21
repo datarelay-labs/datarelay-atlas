@@ -65,7 +65,7 @@ Future:
 - authenticated source synchronization
 - web management/navigation UI
 - HTTPS MCP access
-- replaceable knowledge-engine integration
+- Atlas-owned knowledge projection/retrieval (Athena repository is not a runtime dependency)
 
 ## Product success for MVP
 

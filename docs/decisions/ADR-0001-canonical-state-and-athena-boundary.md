@@ -14,12 +14,12 @@ Upstream Athena treats Wiki.js as the knowledge truth. Data Relay Labs Engineeri
 1. GitHub/repository canonical artifacts remain the source of truth.
 2. Atlas knowledge projections and synthesis are derived, attributable, and rebuildable.
 3. DataRelay Atlas is the product identity and public architecture boundary.
-4. Athena is a replaceable integration/runtime dependency and must not become a required public product concept.
-5. The existing Athena PoC is evidence/reusable implementation input, not the Atlas canonical product repository.
+4. Athena is historical migration evidence only (ADR-0004). Atlas must not require the Athena repository at build, test, deploy, upgrade, restore, or runtime.
+5. The existing Athena PoC remains immutable evidence/reusable implementation input, not the Atlas canonical product repository and not a maintained external dependency.
 
 ## Consequences
 
 - Atlas must preserve repository/ref/path/revision provenance.
 - Sync can safely replace derived pages because canonical state is elsewhere.
-- Athena can be upgraded, forked minimally, or replaced without renaming the product.
-- Product-specific features should live in Atlas unless a change is genuinely generic and belongs upstream.
+- Athena can be archived after ADR-0004 independence/retirement gates without renaming the product.
+- Product-specific features live in Atlas; Engineering System remains a separate canonical repository.

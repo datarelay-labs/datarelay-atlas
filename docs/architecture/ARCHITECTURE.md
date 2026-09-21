@@ -2,7 +2,9 @@
 
 ## Architecture boundary
 
-DataRelay Atlas is the product. The Engineering System is the canonical methodology. Athena is an optional/replaceable knowledge-engine integration.
+DataRelay Atlas is the product. The Engineering System is the canonical methodology.
+Atlas owns its runtime, contracts, and tests. `datarelay-labs/athena` is migration
+input only and is not a build/test/deploy/runtime dependency (ADR-0004).
 
 ```text
                  DataRelay Atlas
@@ -48,13 +50,13 @@ Owns project identity, repository mappings, Engineering System baseline/adoption
 Reads the canonical Engineering System contract and project-local `.engineering/*` metadata. It does not redefine the standard.
 
 ### Source Synchronization
-Fetches approved canonical sources through authenticated provider integrations. GitHub is the first provider. The durable field contract is defined by ADR-0003 and `docs/contracts/source-provider-provenance.md`.
+Fetches approved canonical sources through authenticated provider integrations. GitHub is the first provider. The durable field contract is defined by ADR-0003 and `docs/contracts/source-provider-provenance.md`. Atlas-owned implementation lives under `atlas/`.
 
 ### Knowledge Projection
-Creates rebuildable project-scoped representations of canonical content with repository/ref/path/revision provenance. Projection identity is an Atlas rebuild key, not a Wiki.js/Athena page id.
+Creates rebuildable project-scoped representations of canonical content with repository/ref/path/revision provenance. Projection identity is an Atlas rebuild key, never a Wiki.js/Athena page id.
 
 ### Retrieval
-Provides exact/keyword and semantic retrieval. Retrieval implementation may initially be supplied by Athena/Wiki.js/PostgreSQL/pgvector.
+Provides exact/keyword retrieval and hybrid fusion with a pluggable semantic provider. Semantic backends may be EXTERNAL-DEPENDENCY services (for example pgvector/TEI) consumed directly by Atlas—not via the Athena repository.
 
 ### Derived Synthesis
 Future bounded layer for concepts, entities, cross-project links, contradiction detection, and knowledge-gap detection. Synthesized content is always marked derived and attributable.
@@ -63,49 +65,43 @@ Future bounded layer for concepts, entities, cross-project links, contradiction 
 Normalizes observable GitHub/CI/test/release evidence into project status. It must distinguish observed fact from inferred/unknown state.
 
 ### AI Context / MCP
-Exposes scoped retrieval and project state to Cursor, ChatGPT, and other agents over authenticated MCP.
+Exposes scoped retrieval and project state to Cursor, ChatGPT, and other agents. Tool semantics are Atlas-owned (`atlas/mcp_context.py`); HTTPS/OAuth transport remains a later Atlas packaging concern.
 
 ### Human UI
 Shows project inventory, lifecycle state, source provenance, knowledge coverage, gaps, and relationships.
 
-## Athena relationship
+## Athena relationship (historical)
 
-The existing `xdr-labs/athena` work is treated as PoC evidence and a candidate runtime integration.
+Pinned Athena revisions remain **historical migration evidence** only:
 
-Atlas should reuse Athena capabilities where they reduce work:
-- Wiki.js human browsing
-- PostgreSQL/pgvector
-- hybrid retrieval/indexing
-- HTTPS MCP infrastructure
-- dashboard/backup patterns
+- upstream `6720b948744d42f1332f86f9a8157ff588e40d6e`
+- PoC `f38e20ec4d4ea22c71f1457d9a5361da1e92773a`
+- generic-hardening evidence `5b90969a7e0fecadae587144a0bd7f444352799f`
 
-Atlas-specific behavior should move to the Atlas product boundary:
-- Engineering System integration
-- project registry
-- GitHub/OpenSpec source contracts
-- canonical/derived separation
-- provenance rules
-- lifecycle state
-- knowledge compiler/synthesis
-- product deployment and upgrade contract
+Inventory and retirement checklist:
 
-No public Atlas contract should require Athena-specific concepts unless explicitly accepted.
+- `docs/migration/athena-capability-inventory.md`
+- `docs/migration/athena-retirement-checklist.md`
+
+Wiki.js is not an Atlas public product concept. Required PoC behaviors were reimplemented as Atlas-native modules rather than vendoring the Athena tree.
 
 ## Security baseline
 
 - authenticated provider access
 - least-privilege source tokens
-- HTTPS for remote MCP/UI
+- HTTPS for remote MCP/UI (when exposed)
 - secrets outside Git
 - project/source authorization boundaries before multi-user expansion
 - no AI-generated provenance claims; provenance derives from authenticated source metadata
+- path-traversal rejection and scope gating for retrieval/context tools
 
 ## Persistence
 
-Source/provider/provenance **semantics** are frozen by ADR-0003 for Phase 1 design. Durable storage schemas, migrations, backup, restore, upgrade, and rollback behavior still require an implementation ADR before Atlas-owned persistent state is introduced.
+Source/provider/provenance **semantics** are frozen by ADR-0003. Durable storage schemas, migrations, backup, restore, upgrade, and rollback behavior still require an implementation ADR before Atlas-owned persistent state is introduced. The current absorption uses a rebuildable local projection store for deterministic tests only.
 
 ## Related decisions
 
-- ADR-0001 — canonical state and Athena boundary
-- ADR-0002 — Athena source preservation
+- ADR-0001 — canonical state and product boundary
+- ADR-0002 — historical Athena fork/pin evidence (superseded long-term strategy)
 - ADR-0003 — source/provider/provenance contracts
+- ADR-0004 — Athena absorption and repository retirement
