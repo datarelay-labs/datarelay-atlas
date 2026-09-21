@@ -53,7 +53,7 @@ GitHub / OpenSpec / Code / Tests / ADR / CI
 
 ## 현재 상태
 
-DataRelay Atlas는 Engineering Knowledge PoC에서 필요한 능력을 Atlas 소유 코드로 흡수하고, Athena를 제품 의존성에서 제거하는 작업 중입니다 (ADR-0004).
+DataRelay Atlas는 Engineering Knowledge PoC에서 필요한 능력을 Atlas 소유 코드로 흡수하고, Athena를 제품 의존성에서 제거하는 작업 중입니다 (ADR-0004). Phase 1은 로컬 Project Registry와 authenticated canonical sync를 추가합니다 (ADR-0005).
 
 Milestone:
 
@@ -61,6 +61,22 @@ Milestone:
 - source/provider/provenance 계약 (ADR-0003)
 - Athena absorption inventory + Atlas-native sync/retrieval/MCP context library
 - Athena independence gate + retirement checklist (삭제 자체는 owner 승인 후 별도)
+- Phase 1 project registry + canonical sync operator surface (`python -m atlas`)
+
+## Phase 1 operator surface
+
+프로젝트를 등록하고 canonical source path를 설정한 뒤 sync/rebuild와 Engineering System adoption metadata 조회를 수행합니다.
+
+```bash
+PYTHONPATH=. python3 -m atlas project register datarelay-atlas \
+  --repository datarelay-labs/datarelay-atlas
+PYTHONPATH=. python3 -m atlas source add datarelay-atlas charter \
+  --path docs/product/PRODUCT-CHARTER.md
+PYTHONPATH=. python3 -m atlas sync datarelay-atlas
+PYTHONPATH=. python3 -m atlas rebuild datarelay-atlas
+```
+
+로컬 durable state 기본 경로는 `.atlas-data/`(gitignore)입니다. 자격 증명은 `GITHUB_TOKEN`/런타임 환경만 사용합니다. 상세: `docs/runbooks/phase1-project-registry-canonical-sync.md`.
 
 ## Engineering
 

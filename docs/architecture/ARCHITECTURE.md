@@ -44,7 +44,7 @@ Every derived record must retain enough provenance to return to the canonical so
 ## Major logical components
 
 ### Project Registry
-Owns project identity, repository mappings, Engineering System baseline/adoption state, and configured knowledge sources.
+Owns project identity, repository mappings, Engineering System baseline/adoption state, and configured knowledge sources. Phase 1 implementation: `atlas/registry.py` + `python -m atlas` operator commands (`project` / `source` / `sync` / `rebuild` / `adoption`).
 
 ### Methodology Integration
 Reads the canonical Engineering System contract and project-local `.engineering/*` metadata. It does not redefine the standard.
@@ -97,7 +97,14 @@ Wiki.js is not an Atlas public product concept. Required PoC behaviors were reim
 
 ## Persistence
 
-Source/provider/provenance **semantics** are frozen by ADR-0003. Durable storage schemas, migrations, backup, restore, upgrade, and rollback behavior still require an implementation ADR before Atlas-owned persistent state is introduced. The current absorption uses a rebuildable local projection store for deterministic tests only.
+Source/provider/provenance **semantics** are frozen by ADR-0003. Phase 1 durable state is defined by ADR-0005:
+
+- Atlas-owned registry/configuration: local `registry.json` under a configurable data root (default `.atlas-data/`)
+- Derived projections: rebuildable files under `<data-root>/projections/`
+- Secrets remain outside Git and outside registry/projection payloads
+- Backup implication: copy the data root; rebuild/sync refreshes derived content
+
+Postgres/pgvector/Bun/Wiki.js are not Phase 1 persistence choices.
 
 ## Related decisions
 
@@ -105,3 +112,4 @@ Source/provider/provenance **semantics** are frozen by ADR-0003. Durable storage
 - ADR-0002 — historical Athena fork/pin evidence (superseded long-term strategy)
 - ADR-0003 — source/provider/provenance contracts
 - ADR-0004 — Athena absorption and repository retirement
+- ADR-0005 — Phase 1 persistence model (local filesystem JSON)

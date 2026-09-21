@@ -70,6 +70,7 @@ scenarios:
     command: "python3 -m unittest discover -s tests -v"
     invariants:
       - "GitHub sync/provenance projection regressions pass"
+      - "Phase 1 project registry/adoption/sync/rebuild regressions pass"
       - "hybrid retrieval fusion regressions pass"
       - "MCP context scope and provenance regressions pass"
     release_gate: true

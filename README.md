@@ -53,7 +53,7 @@ GitHub / OpenSpec / Code / Tests / ADR / CI
 
 ## Current status
 
-DataRelay Atlas is absorbing required Engineering Knowledge PoC capabilities into Atlas-owned code while retiring Athena as a product dependency (ADR-0004).
+DataRelay Atlas is absorbing required Engineering Knowledge PoC capabilities into Atlas-owned code while retiring Athena as a product dependency (ADR-0004). Phase 1 adds a local project registry and authenticated canonical sync (ADR-0005).
 
 Milestones:
 
@@ -61,6 +61,22 @@ Milestones:
 - source/provider/provenance contracts (ADR-0003)
 - Athena absorption inventory + Atlas-native sync/retrieval/MCP context library
 - Athena independence gate + retirement checklist (owner delete is separate)
+- Phase 1 project registry + canonical sync operator surface (`python -m atlas`)
+
+## Phase 1 operator surface
+
+Register one project, configure canonical source paths, sync/rebuild derived projections, and read Engineering System adoption metadata:
+
+```bash
+PYTHONPATH=. python3 -m atlas project register datarelay-atlas \
+  --repository datarelay-labs/datarelay-atlas
+PYTHONPATH=. python3 -m atlas source add datarelay-atlas charter \
+  --path docs/product/PRODUCT-CHARTER.md
+PYTHONPATH=. python3 -m atlas sync datarelay-atlas
+PYTHONPATH=. python3 -m atlas rebuild datarelay-atlas
+```
+
+Durable local state defaults to `.atlas-data/` (gitignored). Credentials use `GITHUB_TOKEN` / runtime env only. See `docs/runbooks/phase1-project-registry-canonical-sync.md`.
 
 ## Engineering
 
