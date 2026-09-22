@@ -174,6 +174,22 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             sanitize_rework_findings("client_secret=another-secret-value")
 
+    def test_colon_and_json_credential_forms_are_detected_and_redacted(self):
+        from atlas.work_controller import _looks_like_secret
+
+        colon = "access_token: bare-secret-value-12345"
+        quoted = 'client_secret: "quoted-secret-value-12345"'
+        json_secret = '{"client_secret": "json-secret-value-12345"}'
+        json_token = '{"access_token":"tokensecretvalue12345"}'
+        for sample in (colon, quoted, json_secret, json_token):
+            self.assertTrue(_looks_like_secret(sample), sample)
+            with self.assertRaises(ValidationError):
+                sanitize_rework_findings(sample)
+            redacted = redact_sensitive_audit_text(sample)
+            self.assertIn("<redacted>", redacted)
+            self.assertNotIn("secret-value", redacted)
+            self.assertNotIn("tokensecretvalue", redacted)
+
     def test_audit_redaction_covers_aws_credential_assignments(self):
         aws_secret = "AWS_SECRET_ACCESS_KEY" + "=" + ("y" * 24)
         aws_key_id = "AWS_ACCESS_KEY_ID" + "=" + ("Z" * 20)

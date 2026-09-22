@@ -288,6 +288,10 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertTrue(
             _looks_like_secret("service_token" + "=" + "supersecretvalue123")
         )
+        self.assertTrue(_looks_like_secret("access_token: bare-secret-value"))
+        self.assertTrue(
+            _looks_like_secret('{"client_secret": "json-secret-value"}')
+        )
 
 
     def test_collect_bundle_uses_injected_collectors(self):
