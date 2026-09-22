@@ -218,6 +218,19 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         self.assertEqual(len(re.findall(r"(?m)^## Next Action\s*$", updated)), 1)
         self.assertEqual(len(re.findall(r"(?m)^## Blockers\s*$", updated)), 1)
 
+    def test_section_replacement_keeps_backslash_sequences_literal(self):
+        """Findings with \\d+ / \\1 must not raise or expand via re.sub templates."""
+        findings = "regex hint uses \\d+ and group \\1 literally"
+        updated = _render(findings=findings)
+        self.assertIn("\\d+", updated)
+        self.assertIn("\\1", updated)
+        self.assertIn("Address the REWORK findings below", updated)
+        # Ensure the literal sequences survived into Latest Evidence as well.
+        self.assertRegex(
+            updated,
+            r"(?ms)^## Latest Evidence\n.*\\d\+.*\\1",
+        )
+
     def test_sanitize_strips_controls_and_bounds(self):
         dirty = "ok\x00line\n" + ("a" * 5000)
         clean = sanitize_rework_findings(dirty, max_chars=100)

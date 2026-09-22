@@ -559,7 +559,9 @@ def _replace_packet_section(body: str, heading: str, content: str) -> str:
         re.MULTILINE | re.DOTALL,
     )
     if pattern.search(body):
-        return pattern.sub(replacement, body, count=1)
+        # Callable replacement keeps content literal: backslash sequences such as
+        # \d+ or \1 must not be parsed as re.sub templates/backreferences.
+        return pattern.sub(lambda _match: replacement, body, count=1)
     return body.rstrip() + "\n\n" + replacement
 
 
