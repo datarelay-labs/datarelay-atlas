@@ -51,7 +51,7 @@ class CursorLauncherTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "rev-parse", "HEAD"): head,
-                ("git", "status", "--porcelain"): dirty,
+                ("git", "status", "--porcelain", "--untracked-files=all"): dirty,
             }
             return mapping[tuple(argv)]
 
@@ -277,7 +277,7 @@ class CursorLauncherTests(unittest.TestCase):
                     ),
                     ("git", "branch", "--show-current"): "feature/x",
                     ("git", "rev-parse", "HEAD"): git_state["head"],
-                    ("git", "status", "--porcelain"): git_state["dirty"],
+                    ("git", "status", "--porcelain", "--untracked-files=all"): git_state["dirty"],
                 }
                 return mapping[tuple(argv)]
 
@@ -327,7 +327,7 @@ class CursorLauncherTests(unittest.TestCase):
                     ),
                     ("git", "branch", "--show-current"): "feature/x",
                     ("git", "rev-parse", "HEAD"): git_state["head"],
-                    ("git", "status", "--porcelain"): git_state["dirty"],
+                    ("git", "status", "--porcelain", "--untracked-files=all"): git_state["dirty"],
                 }
                 return mapping[tuple(argv)]
 
@@ -357,6 +357,55 @@ class CursorLauncherTests(unittest.TestCase):
             self.assertGreaterEqual(state["procs"], 1)
             self.assertEqual(state["spawn_calls"], 0)
             self.assertEqual(dispatcher.spawned_pids, [])
+
+    def test_dispatch_boundary_rejects_untracked_when_plain_porcelain_empty(self):
+        """Forced untracked reporting at spawn boundary ⇒ zero spawn."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+            state = {"spawn_calls": 0, "seen": []}
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                state["seen"].append(list(argv))
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                if argv == ["git", "status", "--porcelain"]:
+                    return ""
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "https://github.com/datarelay-labs/datarelay-atlas.git"
+                    ),
+                    ("git", "branch", "--show-current"): "feature/x",
+                    ("git", "rev-parse", "HEAD"): (
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    ),
+                    ("git", "status", "--porcelain", "--untracked-files=all"): (
+                        "?? sneak.py\n"
+                    ),
+                }
+                return mapping[tuple(argv)]
+
+            def spawn(command: list[str], worktree_path: str) -> int:
+                state["spawn_calls"] += 1
+                raise AssertionError("spawn must not run on forced-untracked dirty")
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=lambda: [],
+                list_target_procs=lambda _wt: [],
+                spawn=spawn,
+                git_runner=fake_git,
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                dispatcher.start_resume(self._dispatch_request(str(target)))
+            self.assertIn("dirty", str(ctx.exception).lower())
+            self.assertIn(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                state["seen"],
+            )
+            self.assertEqual(state["spawn_calls"], 0)
 
     def test_fake_agent_integration_creates_only_target_session(self):
         """End-to-end launcher against a fake `agent` on PATH."""

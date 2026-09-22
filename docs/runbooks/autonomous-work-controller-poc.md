@@ -129,7 +129,7 @@ python3 -m atlas work-controller completion /tmp/awc-completion.json \
 
 Contract:
 - Controller gathers deterministic evidence (git, Work Packet, tests, CI)
-- Autonomous path requires clean `git status --porcelain` after evidence and
+- Autonomous path requires clean `git status --porcelain --untracked-files=all` after evidence and
   before deterministic gates or Codex (dirty/drift ⇒ `HUMAN_REQUIRED`; never
   map dirty + tests/CI FAIL to autonomous `REWORK`)
 - Deterministic gates from a clean snapshot only: tests FAIL / CI FAIL ⇒

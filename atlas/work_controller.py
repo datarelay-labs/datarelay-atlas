@@ -167,17 +167,23 @@ def require_clean_porcelain(
     *,
     git_runner: GitRunner | None = None,
 ) -> None:
-    """Fail closed unless ``git status --porcelain`` is empty.
+    """Fail closed unless ``git status --porcelain --untracked-files=all`` is empty.
 
     Autonomous audit/dispatch paths require a committed, clean worktree.
-    A status digest is not accepted as a substitute for clean porcelain.
+    Explicit ``--untracked-files=all`` prevents ``status.showUntrackedFiles=no``
+    (or similar config) from hiding untracked files. A status digest is not
+    accepted as a substitute for clean porcelain.
     """
     runner = git_runner or default_git_runner
     cwd = str(Path(worktree_path).resolve())
-    porcelain = runner(["git", "status", "--porcelain"], cwd)
+    porcelain = runner(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd,
+    )
     if str(porcelain or "").strip():
         raise ValidationError(
-            "worktree is dirty; git status --porcelain is not empty"
+            "worktree is dirty; git status --porcelain --untracked-files=all "
+            "is not empty"
         )
 
 

@@ -28,6 +28,7 @@ from atlas.work_controller import (
     WorktreeIdentity,
     heads_match,
     normalize_github_repository,
+    require_clean_porcelain,
     validate_worktree_identity,
 )
 
@@ -108,6 +109,77 @@ class WorktreeIdentityTests(unittest.TestCase):
                     expected_head=HEAD,
                     git_runner=detached_git,
                 )
+
+    def test_require_clean_porcelain_forces_untracked_files_all_argv(self):
+        """Fake git must see --untracked-files=all; config cannot suppress ??."""
+        seen: list[list[str]] = []
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            seen.append(list(argv))
+            if argv == ["git", "status", "--porcelain"]:
+                return ""  # would hide untracked under showUntrackedFiles=no
+            if argv == ["git", "status", "--porcelain", "--untracked-files=all"]:
+                return "?? hidden_untracked.py\n"
+            raise ValidationError(f"unexpected git argv: {argv}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValidationError) as ctx:
+                require_clean_porcelain(tmp, git_runner=fake_git)
+        self.assertIn("dirty", str(ctx.exception).lower())
+        self.assertIn(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            seen,
+        )
+        self.assertNotIn(["git", "status", "--porcelain"], seen)
+
+    def test_require_clean_porcelain_detects_untracked_despite_config(self):
+        """Real repo with status.showUntrackedFiles=no still fails on untracked."""
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init"], cwd=tmp, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "awc@example.com"],
+                cwd=tmp,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "awc"],
+                cwd=tmp,
+                check=True,
+                capture_output=True,
+            )
+            Path(tmp, "tracked.txt").write_text("ok\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "tracked.txt"], cwd=tmp, check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "init"],
+                cwd=tmp,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "status.showUntrackedFiles", "no"],
+                cwd=tmp,
+                check=True,
+                capture_output=True,
+            )
+            Path(tmp, "secret_untracked.py").write_text("x=1\n", encoding="utf-8")
+            # Default porcelain (no --untracked-files=all) appears clean.
+            default = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=tmp,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            self.assertEqual(default.strip(), "")
+            with self.assertRaises(ValidationError) as ctx:
+                require_clean_porcelain(tmp)
+            self.assertIn("dirty", str(ctx.exception).lower())
+            self.assertIn("untracked-files=all", str(ctx.exception))
 
 
 class CodexAuditProviderTests(unittest.TestCase):
@@ -276,7 +348,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                     ("git", "branch", "--show-current"): "feature/x",
                     ("git", "rev-parse", "HEAD"): HEAD,
                     ("git", "status", "--short", "--branch"): "## feature/x",
-                    ("git", "status", "--porcelain"): "",
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
                 }
                 return mapping[tuple(argv)]
 
@@ -323,7 +395,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                     ("git", "branch", "--show-current"): "feature/x",
                     ("git", "rev-parse", "HEAD"): HEAD,
                     ("git", "status", "--short", "--branch"): "## feature/x",
-                    ("git", "status", "--porcelain"): "",
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
                 }
                 return mapping[tuple(argv)]
 
@@ -351,7 +423,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                     ("git", "branch", "--show-current"): "feature/x",
                     ("git", "rev-parse", "HEAD"): HEAD,
                     ("git", "status", "--short", "--branch"): "## feature/x",
-                    ("git", "status", "--porcelain"): "",
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
                 }
                 return mapping[tuple(argv)]
 
@@ -601,7 +673,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "status", "--short", "--branch"): status,
-                ("git", "status", "--porcelain"): "",
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
             }
             return mapping[tuple(argv)]
 
@@ -645,7 +717,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "status", "--short", "--branch"): status,
-                ("git", "status", "--porcelain"): "",
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
             }
             return mapping[tuple(argv)]
 
@@ -691,7 +763,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "status", "--short", "--branch"): status,
-                ("git", "status", "--porcelain"): "",
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
             }
             return mapping[tuple(argv)]
 
@@ -734,7 +806,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "rev-parse", "HEAD"): HEAD,
                 ("git", "status", "--short", "--branch"): "## feature/x\n M dirty.py",
-                ("git", "status", "--porcelain"): " M dirty.py\n",
+                ("git", "status", "--porcelain", "--untracked-files=all"): " M dirty.py\n",
             }
             return mapping[tuple(argv)]
 
@@ -769,7 +841,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "rev-parse", "HEAD"): HEAD,
-                ("git", "status", "--porcelain"): " M dirty.py\n",
+                ("git", "status", "--porcelain", "--untracked-files=all"): " M dirty.py\n",
             }
             return mapping[tuple(argv)]
 
@@ -794,6 +866,45 @@ class CodexAuditProviderTests(unittest.TestCase):
             self.assertNotIn("tests FAIL", result.findings)
             self.assertIsNone(provider.last_command)
 
+    def test_untracked_dirty_skips_codex_even_when_plain_porcelain_empty(self):
+        """Forced --untracked-files=all dirtiness ⇒ HUMAN_REQUIRED; no Codex."""
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            if argv == ["git", "status", "--porcelain"]:
+                return ""
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): (
+                    "?? sneak.py\n"
+                ),
+            }
+            return mapping[tuple(argv)]
+
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "PASS"},
+                    "ci": {"status": "ABSENT"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("dirty", result.findings.lower())
+            self.assertIsNone(provider.last_command)
+
     def test_dirty_porcelain_after_codex_rework_rejects_autonomous_rework(self):
         """Dirty tree after Codex REWORK ⇒ HUMAN_REQUIRED, never REWORK."""
         porcelain = {"value": ""}
@@ -808,7 +919,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "rev-parse", "HEAD"): HEAD,
                 ("git", "status", "--short", "--branch"): "## feature/x",
-                ("git", "status", "--porcelain"): porcelain["value"],
+                ("git", "status", "--porcelain", "--untracked-files=all"): porcelain["value"],
             }
             return mapping[tuple(argv)]
 
@@ -850,7 +961,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "rev-parse", "HEAD"): HEAD,
-                ("git", "status", "--porcelain"): "",
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
             }
             return mapping[tuple(argv)]
 
@@ -883,7 +994,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "rev-parse", "HEAD"): HEAD,
-                ("git", "status", "--porcelain"): "",
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
             }
             return mapping[tuple(argv)]
 
@@ -916,7 +1027,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "rev-parse", "HEAD"): HEAD,
-                ("git", "status", "--porcelain"): "",
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
             }
             return mapping[tuple(argv)]
 
@@ -951,7 +1062,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "rev-parse", "HEAD"): HEAD,
-                ("git", "status", "--porcelain"): "",
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
             }
             return mapping[tuple(argv)]
 
@@ -984,7 +1095,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "rev-parse", "HEAD"): HEAD,
-                ("git", "status", "--porcelain"): "",
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
             }
             return mapping[tuple(argv)]
 
