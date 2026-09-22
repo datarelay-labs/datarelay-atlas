@@ -390,9 +390,10 @@ def _credential_name_pattern() -> str:
         r"OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|"
         r"AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|"
         r"AZURE_CLIENT_SECRET|NPM_TOKEN|"
-        # Standalone names first so bare `password` / `secret` / `token` match.
-        r"PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY_ID|ACCESS_KEY|"
-        r"[A-Za-z_][A-Za-z0-9_]*?(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|ACCESS_KEY_ID)"
+        # Standalone names first so bare `password` / `secret` / `token` /
+        # camelCase `apiKey` match (`API_KEY` alone does not cover camelCase).
+        r"PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY_ID|ACCESS_KEY|apiKey|"
+        r"[A-Za-z_][A-Za-z0-9_]*?(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|ACCESS_KEY_ID|ApiKey)"
         r")"
     )
 

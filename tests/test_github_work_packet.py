@@ -223,6 +223,19 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             self.assertNotIn("horse", redacted)
             self.assertNotIn('say "hi" secret', redacted)
 
+    def test_camel_case_api_key_assignments_are_redacted(self):
+        from atlas.work_controller import _looks_like_secret
+
+        camel = '{"apiKey":"correct horse battery"}'
+        prefixed = '{"openaiApiKey":"correct horse battery"}'
+        for sample in (camel, prefixed):
+            self.assertTrue(_looks_like_secret(sample), sample)
+            with self.assertRaises(ValidationError):
+                sanitize_rework_findings(sample)
+            redacted = redact_sensitive_audit_text(sample)
+            self.assertIn("<redacted>", redacted)
+            self.assertNotIn("correct horse battery", redacted)
+
     def test_audit_redaction_covers_aws_credential_assignments(self):
         aws_secret = "AWS_SECRET_ACCESS_KEY" + "=" + ("y" * 24)
         aws_key_id = "AWS_ACCESS_KEY_ID" + "=" + ("Z" * 20)
