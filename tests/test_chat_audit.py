@@ -449,6 +449,46 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(out["action"], "slice_complete")
             self.assertEqual(out["unit"], "changed_code")
 
+    def test_19_empty_completed_unit_entries_cannot_finalize_pass(self):
+        from atlas.chat_audit import AuditControlPacket, build_audit_queue
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            packet = AuditControlPacket.from_dict(ctl.show())
+            forged = {
+                f"{packet.idempotency_run_key}:{unit}:{HEAD_A}": {}
+                for unit in build_audit_queue()
+            }
+            with self.assertRaises(ValidationError):
+                AuditControlPacket.from_dict(
+                    {**packet.to_dict(), "completed_units": forged}
+                )
+
+    def test_20_head_advance_clears_stale_open_findings(self):
+        handoff = RecordingWorkPacketHandoff()
+        executor = FixedUnitExecutor(
+            outcomes={"changed_code": "FINDING"},
+            finding_summaries={"changed_code": "bug"},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp, executor=executor, handoff=handoff)
+            out = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(out["outcome"], "FINDING")
+            self.assertEqual(len(ctl.show()["open_findings"]), 1)
+            ctl._test_head["head"] = HEAD_B  # type: ignore[attr-defined]
+            ctl.executor = FixedUnitExecutor()
+            nxt = ctl.run_slice()
+            self.assertEqual(nxt["unit"], "changed_code")
+            self.assertEqual(nxt["packet"]["open_findings"], [])
+            # Drain remaining units on HEAD_B and ensure PASSED is reachable.
+            while True:
+                result = ctl.run_slice()
+                if result["action"] == "queue_complete":
+                    break
+            self.assertEqual(ctl.show()["audit_status"], "PASSED")
+            self.assertEqual(ctl.show()["last_audited_sha"], HEAD_B)
+
 
 if __name__ == "__main__":
     unittest.main()

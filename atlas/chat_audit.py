@@ -271,7 +271,11 @@ class AuditControlPacket:
             ),
             session=SessionState.from_dict(raw.get("session")),
             schema_version=version,
-            completed_units=copy.deepcopy(raw.get("completed_units") or {}),
+            completed_units=validate_completed_units_map(
+                raw.get("completed_units") or {},
+                expected_run_key=run_key,
+                expected_target_sha=str(raw["current_target_sha"]),
+            ),
             no_change_runs=int(raw.get("no_change_runs", 0)),
             slice_claim=copy.deepcopy(raw.get("slice_claim")),
         )
@@ -280,6 +284,101 @@ class AuditControlPacket:
 def make_run_key(repository: str, branch: str, target_sha: str) -> str:
     material = f"{repository}|{branch}|{target_sha.lower()}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def parse_unit_key(unit_key: str) -> tuple[str, str, str]:
+    parts = unit_key.split(":")
+    if len(parts) != 3:
+        raise ValidationError(f"invalid completed unit key: {unit_key!r}")
+    run_key, unit, target_sha = parts
+    if not run_key or not unit or not HEAD_RE.match(target_sha.lower()):
+        raise ValidationError(f"invalid completed unit key: {unit_key!r}")
+    return run_key, unit, target_sha.lower()
+
+
+def validate_completed_unit_entry(
+    unit_key: str,
+    entry: Any,
+    *,
+    expected_run_key: str | None = None,
+    expected_target_sha: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        raise ValidationError(
+            f"completed_units[{unit_key!r}] must be an object"
+        )
+    run_key, unit, target_sha = parse_unit_key(unit_key)
+    if expected_run_key is not None and run_key != expected_run_key:
+        raise ValidationError(
+            f"completed_units key run_key mismatch for {unit_key!r}"
+        )
+    if expected_target_sha is not None and not heads_match(
+        target_sha, expected_target_sha
+    ):
+        raise ValidationError(
+            f"completed_units key target SHA mismatch for {unit_key!r}"
+        )
+    outcome = str(entry.get("outcome", ""))
+    if outcome not in {"PASS", "FINDING"}:
+        raise ValidationError(
+            f"completed_units[{unit_key!r}] has unsupported outcome {outcome!r}"
+        )
+    if str(entry.get("unit", "")) != unit:
+        raise ValidationError(
+            f"completed_units[{unit_key!r}] unit does not match key"
+        )
+    if not heads_match(str(entry.get("target_sha", "")), target_sha):
+        raise ValidationError(
+            f"completed_units[{unit_key!r}] target_sha does not match key"
+        )
+    raw_evidence = entry.get("evidence")
+    if not isinstance(raw_evidence, dict):
+        raise ValidationError(
+            f"completed_units[{unit_key!r}] requires evidence object"
+        )
+    evidence = AuditEvidence.from_dict(raw_evidence)
+    if not evidence.is_passable():
+        raise ValidationError(
+            f"completed_units[{unit_key!r}] evidence is not COMPLETE"
+        )
+    if evidence.unit != unit or not heads_match(evidence.target_sha, target_sha):
+        raise ValidationError(
+            f"completed_units[{unit_key!r}] evidence identity mismatch"
+        )
+    findings_raw = entry.get("findings", [])
+    if not isinstance(findings_raw, list):
+        raise ValidationError(
+            f"completed_units[{unit_key!r}] findings must be a list"
+        )
+    findings = [AuditFinding.from_dict(item) for item in findings_raw]
+    if outcome == "FINDING" and not findings:
+        raise ValidationError(
+            f"completed_units[{unit_key!r}] FINDING requires findings"
+        )
+    if outcome == "PASS" and findings:
+        raise ValidationError(
+            f"completed_units[{unit_key!r}] PASS cannot include findings"
+        )
+    return entry
+
+
+def validate_completed_units_map(
+    completed_units: dict[str, Any],
+    *,
+    expected_run_key: str | None = None,
+    expected_target_sha: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(completed_units, dict):
+        raise ValidationError("completed_units must be an object")
+    validated: dict[str, dict[str, Any]] = {}
+    for unit_key, entry in completed_units.items():
+        validated[str(unit_key)] = validate_completed_unit_entry(
+            str(unit_key),
+            entry,
+            expected_run_key=expected_run_key,
+            expected_target_sha=expected_target_sha,
+        )
+    return validated
 
 
 def build_audit_request(packet: AuditControlPacket, unit: str) -> str:
@@ -820,7 +919,7 @@ class ChatAuditController:
 
             run_key = packet.idempotency_run_key
             unit_key = f"{run_key}:{unit}:{packet.current_target_sha}"
-            if unit_key in packet.completed_units:
+            if self._has_valid_completed_unit(packet, unit_key):
                 prior = packet.completed_units[unit_key]
                 return {
                     "action": "idempotent_replay",
@@ -859,7 +958,7 @@ class ChatAuditController:
                 raise ValidationError(
                     "slice claim lost or stolen; refuse to apply stale result"
                 )
-            if unit_key in latest.completed_units:
+            if self._has_valid_completed_unit(latest, unit_key):
                 prior = latest.completed_units[unit_key]
                 return {
                     "action": "idempotent_replay",
@@ -988,6 +1087,9 @@ class ChatAuditController:
         packet.current_unit_index = 0
         packet.completed_units = {}
         packet.slice_claim = None
+        # Prior findings belonged to the previous target SHA / handoff cycle.
+        # Fresh HEAD requires a fresh audit verdict; clear stale open findings.
+        packet.open_findings = []
         packet.audit_status = "IDLE"
         packet.next_action = "run_next_audit_slice"
         packet.mode = "delta"
@@ -1000,9 +1102,22 @@ class ChatAuditController:
                 f"{packet.idempotency_run_key}:{unit}:"
                 f"{packet.current_target_sha}"
             )
-            if unit_key not in packet.completed_units:
+            if not self._has_valid_completed_unit(packet, unit_key):
                 return unit
         return None
+
+    def _has_valid_completed_unit(
+        self, packet: AuditControlPacket, unit_key: str
+    ) -> bool:
+        if unit_key not in packet.completed_units:
+            return False
+        validate_completed_unit_entry(
+            unit_key,
+            packet.completed_units[unit_key],
+            expected_run_key=packet.idempotency_run_key,
+            expected_target_sha=packet.current_target_sha,
+        )
+        return True
 
     def _cheap_no_change(self, packet: AuditControlPacket) -> dict[str, Any]:
         packet.no_change_runs += 1
@@ -1027,6 +1142,17 @@ class ChatAuditController:
             raise ValidationError(
                 "cannot finalize empty audit_queue without evidence"
             )
+        # Every queued unit must have validated completion evidence.
+        for unit in packet.audit_queue:
+            unit_key = (
+                f"{packet.idempotency_run_key}:{unit}:"
+                f"{packet.current_target_sha}"
+            )
+            if not self._has_valid_completed_unit(packet, unit_key):
+                raise ValidationError(
+                    f"cannot finalize without validated evidence for {unit}"
+                )
+        # After HEAD reconcile, open_findings only contains this run's findings.
         if packet.open_findings:
             packet.audit_status = "FINDINGS"
             packet.next_action = "await_cursor_implementation_handoff"
