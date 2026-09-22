@@ -525,7 +525,15 @@ def sanitize_rework_findings(
             line = line.replace("```", "'''")
         neutralized.append(line)
     cleaned = redact_absolute_paths("\n".join(neutralized).strip())
-    if _looks_like_secret(cleaned):
+    # Already-sanitized placeholders such as OPENAI_API_KEY=<redacted> are safe
+    # to persist; remove those exact assignments before credential rejection.
+    probe = re.sub(
+        rf'(?i)((?:\\)?["\']?)({_credential_name_pattern()})\1\s*[:=]\s*'
+        rf'((?:\\)?["\']?)<redacted>\3',
+        "",
+        cleaned,
+    )
+    if _looks_like_secret(probe):
         raise ValidationError(
             "refusing to persist findings that look like secrets"
         )
@@ -588,6 +596,28 @@ def _require_unique_managed_sections(body: str) -> None:
             raise ValidationError(f"duplicate work packet section: {heading}")
 
 
+def _require_v2_packet_metadata(body: str) -> None:
+    """Enforce version-specific required fields before mutation/dispatch."""
+    version_raw = _packet_metadata_value(body, "PACKET_VERSION")
+    if version_raw is None or not str(version_raw).strip():
+        return
+    try:
+        version = int(str(version_raw).strip())
+    except ValueError as exc:
+        raise ValidationError(
+            f"invalid PACKET_VERSION metadata: {version_raw!r}"
+        ) from exc
+    if version < 2:
+        return
+    for key in ("TASK_KIND", "OWNER_INTENT"):
+        value = _packet_metadata_value(body, key)
+        if value is None or not value.strip():
+            raise ValidationError(
+                f"work packet missing {key} metadata required for "
+                f"PACKET_VERSION>={version}"
+            )
+
+
 def _replace_packet_section(body: str, heading: str, content: str) -> str:
     if heading not in _WORK_PACKET_SECTION_HEADINGS:
         raise ValidationError(f"unsupported work packet section: {heading}")
@@ -625,6 +655,7 @@ def render_rework_work_packet_body(
     if not raw:
         raise ValidationError("work packet body is empty")
     _require_unique_managed_sections(raw)
+    _require_v2_packet_metadata(raw)
     status = _packet_metadata_value(raw, "STATUS")
     if status != "ACTIVE":
         raise ValidationError(
@@ -725,6 +756,7 @@ def render_dispatch_blocked_work_packet_body(
     if not raw:
         raise ValidationError("work packet body is empty")
     _require_unique_managed_sections(raw)
+    _require_v2_packet_metadata(raw)
     status = _packet_metadata_value(raw, "STATUS")
     if status != "ACTIVE":
         raise ValidationError(
@@ -911,7 +943,6 @@ class GitHubWorkPacketAdapter:
             repo,
             issue_number=int(issue_number),
             branch=expected_branch,
-            workstream=expected_workstream,
         )
         payload = self._view_issue(repo, int(issue_number))
         original_body = str(payload.get("body") or "")
@@ -958,18 +989,26 @@ class GitHubWorkPacketAdapter:
             handle.write(new_body)
             body_path = handle.name
         try:
-            edit = self._run(
-                [
-                    "gh",
-                    "issue",
-                    "edit",
-                    str(int(issue_number)),
-                    "--repo",
-                    repo,
-                    "--body-file",
-                    body_path,
-                ]
-            )
+            try:
+                edit = self._run(
+                    [
+                        "gh",
+                        "issue",
+                        "edit",
+                        str(int(issue_number)),
+                        "--repo",
+                        repo,
+                        "--body-file",
+                        body_path,
+                    ]
+                )
+            except ValidationError as exc:
+                # Timeout after GitHub may have accepted the body: reconcile.
+                if "timed out" in str(exc).lower():
+                    landed = self._view_issue(repo, int(issue_number))
+                    if str(landed.get("body") or "") == new_body:
+                        return
+                raise
         finally:
             Path(body_path).unlink(missing_ok=True)
         if edit.returncode != 0:
@@ -1004,7 +1043,6 @@ class GitHubWorkPacketAdapter:
             repo,
             issue_number=int(issue_number),
             branch=expected_branch,
-            workstream=expected_workstream,
         )
         payload = self._view_issue(repo, int(issue_number))
         original_body = str(payload.get("body") or "")
@@ -1046,18 +1084,25 @@ class GitHubWorkPacketAdapter:
             handle.write(new_body)
             body_path = handle.name
         try:
-            edit = self._run(
-                [
-                    "gh",
-                    "issue",
-                    "edit",
-                    str(int(issue_number)),
-                    "--repo",
-                    repo,
-                    "--body-file",
-                    body_path,
-                ]
-            )
+            try:
+                edit = self._run(
+                    [
+                        "gh",
+                        "issue",
+                        "edit",
+                        str(int(issue_number)),
+                        "--repo",
+                        repo,
+                        "--body-file",
+                        body_path,
+                    ]
+                )
+            except ValidationError as exc:
+                if "timed out" in str(exc).lower():
+                    landed = self._view_issue(repo, int(issue_number))
+                    if str(landed.get("body") or "") == new_body:
+                        return
+                raise
         finally:
             Path(body_path).unlink(missing_ok=True)
         if edit.returncode != 0:
@@ -1137,8 +1182,8 @@ class GitHubWorkPacketAdapter:
         *,
         repository: str,
         branch: str,
-        workstream: str,
     ) -> bool:
+        """Match /work-resume selection: TARGET_REPO + STATUS=ACTIVE + BRANCH."""
         try:
             meta = _parse_leading_packet_metadata(body)
         except ValidationError:
@@ -1155,8 +1200,6 @@ class GitHubWorkPacketAdapter:
             return False
         if meta.get("BRANCH") != branch:
             return False
-        if meta.get("WORKSTREAM") != workstream:
-            return False
         return True
 
     def _require_unique_active_packet(
@@ -1165,9 +1208,13 @@ class GitHubWorkPacketAdapter:
         *,
         issue_number: int,
         branch: str,
-        workstream: str,
     ) -> None:
-        """Fail closed unless exactly one ACTIVE packet matches repo/branch/workstream."""
+        """Fail closed unless exactly one ACTIVE packet matches repo/branch.
+
+        Selection criteria mirror `.cursor/commands/work-resume.md` (TARGET_REPO,
+        STATUS=ACTIVE, BRANCH). WORKSTREAM is validated separately on the
+        configured issue before mutation.
+        """
         matches: list[int] = []
         for issue in self._list_open_ai_work_issues(repository):
             number = issue.get("number")
@@ -1180,17 +1227,16 @@ class GitHubWorkPacketAdapter:
                 body,
                 repository=repository,
                 branch=branch,
-                workstream=workstream,
             ):
                 matches.append(number_i)
         if not matches:
             raise ValidationError(
-                "no ACTIVE Work Packet matches repository/branch/workstream"
+                "no ACTIVE Work Packet matches repository/branch"
             )
         if len(matches) > 1:
             listed = ", ".join(f"#{n}" for n in sorted(matches))
             raise ValidationError(
-                f"ambiguous ACTIVE Work Packets for repository/branch/workstream: {listed}"
+                f"ambiguous ACTIVE Work Packets for repository/branch: {listed}"
             )
         if matches[0] != int(issue_number):
             raise ValidationError(

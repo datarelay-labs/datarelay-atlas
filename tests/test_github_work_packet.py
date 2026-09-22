@@ -532,6 +532,63 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
         self.assertIn("ambiguous ACTIVE Work Packets", str(ctx.exception))
 
+    def test_safe_redacted_placeholders_are_allowed(self):
+        safe = "OPENAI_API_KEY=<redacted>\npassword=<redacted>"
+        cleaned = sanitize_rework_findings(safe)
+        self.assertIn("<redacted>", cleaned)
+        updated = _render(findings=safe)
+        self.assertIn("<redacted>", updated)
+
+    def test_rejects_missing_v2_task_kind_or_owner_intent(self):
+        missing_task = "\n".join(
+            line for line in SAMPLE_BODY.splitlines() if not line.startswith("TASK_KIND=")
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            _render(body=missing_task)
+        self.assertIn("TASK_KIND", str(ctx.exception))
+        missing_intent = "\n".join(
+            line
+            for line in SAMPLE_BODY.splitlines()
+            if not line.startswith("OWNER_INTENT=")
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            _render(body=missing_intent)
+        self.assertIn("OWNER_INTENT", str(ctx.exception))
+
+    def test_edit_timeout_reconciles_when_body_landed(self):
+        views = [
+            self._payload(),  # uniqueness list uses separate path
+        ]
+        # After timeout, reconcile view returns the intended new body.
+        landed_bodies: list[str] = []
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "list"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(self._list_payload()), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "view"]:
+                if landed_bodies:
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(self._payload(body=landed_bodies[-1])),
+                        stderr="",
+                    )
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(self._payload()), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                path = argv[argv.index("--body-file") + 1]
+                landed_bodies.append(Path(path).read_text(encoding="utf-8"))
+                raise ValidationError("gh timed out after 60s")
+            self.fail(f"unexpected argv: {argv}")
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        # Must not raise: timeout + landed body == success.
+        adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
+        self.assertEqual(len(landed_bodies), 1)
+
     def test_hyphenated_api_key_json_escaped_in_prompt_is_detected(self):
         from atlas.codex_audit import build_codex_audit_prompt
         from atlas.work_controller import (
