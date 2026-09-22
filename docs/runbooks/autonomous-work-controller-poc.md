@@ -129,6 +129,14 @@ python3 -m atlas work-controller completion /tmp/awc-completion.json \
 
 Contract:
 - Controller gathers deterministic evidence (git, Work Packet, tests, CI)
+- Autonomous path requires clean `git status --porcelain` after evidence and
+  before deterministic gates or Codex (dirty/drift ⇒ `HUMAN_REQUIRED`; never
+  map dirty + tests/CI FAIL to autonomous `REWORK`)
+- Deterministic gates from a clean snapshot only: tests FAIL / CI FAIL ⇒
+  `REWORK`; tests ERROR / CI PENDING|ERROR ⇒ `HUMAN_REQUIRED`; CI ABSENT allowed
+- Dispatch boundary revalidates exact repo/branch/HEAD + clean porcelain
+  immediately before spawning Cursor; boundary `ValidationError` finalizes
+  `HUMAN_REQUIRED` (no spawn)
 - `codex exec -C <worktree> -s read-only --ephemeral --ignore-user-config
   --ignore-rules` with apps/browser/computer/shell/plugins/hooks/multi-agent
   disabled (`--disable …`, `web_search="disabled"`)

@@ -127,6 +127,8 @@ class WorkControllerTests(unittest.TestCase):
             req = dispatcher.requests[0]
             self.assertEqual(req.resume_prompt, "/work-resume")
             self.assertEqual(req.attempt, 2)
+            self.assertEqual(req.repository, "datarelay-labs/datarelay-atlas")
+            self.assertEqual(req.expected_head, HEAD_A)
             self.assertEqual(
                 build_persist_resume_command(req),
                 ["agent", "persist", "--trust", "/work-resume"],
@@ -138,6 +140,53 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(len(packets.updates), 1)
             self.assertIn("fix gaps", packets.updates[0]["findings"])
             self.assertEqual(ctl.show("awc-poc")["attempt"], 2)
+
+    def test_dispatch_boundary_validation_error_finalizes_human_required(self):
+        """Dispatcher ValidationError after REWORK ⇒ HUMAN_REQUIRED, no dispatch."""
+
+        class FailingDispatcher:
+            def __init__(self) -> None:
+                self.requests = []
+
+            def start_resume(self, request):
+                self.requests.append(request)
+                raise ValidationError("worktree is dirty; git status --porcelain is not empty")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            dispatcher = FailingDispatcher()
+            packets = RecordingWorkPacketAdapter()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=dispatcher,
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["action"], "stop")
+            self.assertEqual(outcome["reason"], "dispatch_boundary_failed")
+            self.assertIn("dispatch blocked at boundary", outcome["findings"])
+            self.assertEqual(len(dispatcher.requests), 1)
+            self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
+            shown = ctl.show("awc-poc")
+            self.assertEqual(shown["state"], "HUMAN_REQUIRED")
+            self.assertEqual(shown["attempt"], 0)
 
     def test_retry_exhaustion(self):
         with tempfile.TemporaryDirectory() as tmp:

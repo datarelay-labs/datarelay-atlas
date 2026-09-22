@@ -626,14 +626,13 @@ class CodexAuditProviderTests(unittest.TestCase):
             )
             result = provider.audit(self._event(), self._record(tmp))
             self.assertEqual(result.verdict, "HUMAN_REQUIRED")
-            self.assertIn("snapshot drift", result.findings)
+            self.assertIn("clean autonomous snapshot", result.findings)
             self.assertIsNone(provider.last_command)
 
     def test_head_change_after_codex_pass_rejects_terminal_pass(self):
         """HEAD mutation after Codex returns PASS ⇒ HUMAN_REQUIRED, never PASS."""
         heads = {"value": HEAD}
         status = "## feature/x"
-        digest = hashlib.sha256(status.encode("utf-8")).hexdigest()
 
         def fake_git(argv: list[str], cwd: str) -> str:
             if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
@@ -669,7 +668,6 @@ class CodexAuditProviderTests(unittest.TestCase):
                         "head": HEAD,
                         "evidence_status": "OK",
                         "status": status,
-                        "status_digest": digest,
                     },
                 },
             )
@@ -681,7 +679,6 @@ class CodexAuditProviderTests(unittest.TestCase):
         """HEAD mutation after Codex returns REWORK ⇒ HUMAN_REQUIRED, never REWORK."""
         heads = {"value": HEAD}
         status = "## feature/x"
-        digest = hashlib.sha256(status.encode("utf-8")).hexdigest()
 
         def fake_git(argv: list[str], cwd: str) -> str:
             if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
@@ -694,7 +691,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "status", "--short", "--branch"): status,
-                ("git", "status", "--porcelain"): " M dirty.py\n",
+                ("git", "status", "--porcelain"): "",
             }
             return mapping[tuple(argv)]
 
@@ -717,7 +714,6 @@ class CodexAuditProviderTests(unittest.TestCase):
                         "head": HEAD,
                         "evidence_status": "OK",
                         "status": status,
-                        "status_digest": digest,
                     },
                 },
             )
@@ -725,6 +721,295 @@ class CodexAuditProviderTests(unittest.TestCase):
             self.assertEqual(result.verdict, "HUMAN_REQUIRED")
             self.assertIn("REWORK rejected", result.findings)
             self.assertNotEqual(result.verdict, "REWORK")
+
+    def test_dirty_porcelain_before_codex_is_human_required(self):
+        """Dirty tracked/untracked state before Codex ⇒ HUMAN_REQUIRED, no Codex."""
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--short", "--branch"): "## feature/x\n M dirty.py",
+                ("git", "status", "--porcelain"): " M dirty.py\n",
+            }
+            return mapping[tuple(argv)]
+
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "PASS"},
+                    "ci": {"status": "ABSENT"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("dirty", result.findings.lower())
+            self.assertIsNone(provider.last_command)
+
+    def test_dirty_plus_tests_fail_is_human_required_not_rework(self):
+        """Dirty porcelain + tests FAIL ⇒ HUMAN_REQUIRED; never REWORK; no Codex."""
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain"): " M dirty.py\n",
+            }
+            return mapping[tuple(argv)]
+
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "FAIL", "transcript": "AssertionError"},
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertNotEqual(result.verdict, "REWORK")
+            self.assertIn("dirty", result.findings.lower())
+            self.assertNotIn("tests FAIL", result.findings)
+            self.assertIsNone(provider.last_command)
+
+    def test_dirty_porcelain_after_codex_rework_rejects_autonomous_rework(self):
+        """Dirty tree after Codex REWORK ⇒ HUMAN_REQUIRED, never REWORK."""
+        porcelain = {"value": ""}
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--short", "--branch"): "## feature/x",
+                ("git", "status", "--porcelain"): porcelain["value"],
+            }
+            return mapping[tuple(argv)]
+
+        def rework_runner(command: list[str], prompt: str, cwd: str) -> str:
+            porcelain["value"] = "?? surprise.py\n"
+            out = Path(command[command.index("-o") + 1])
+            out.write_text(
+                '{"verdict":"REWORK","findings":"fix something"}',
+                encoding="utf-8",
+            )
+            return out.read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=rework_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "PASS"},
+                    "ci": {"status": "ABSENT"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("REWORK rejected", result.findings)
+            self.assertIn("dirty", result.findings.lower())
+
+    def test_deterministic_tests_fail_returns_rework_without_codex(self):
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "FAIL", "transcript": "AssertionError"},
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "REWORK")
+            self.assertIn("tests FAIL", result.findings)
+            self.assertIsNone(provider.last_command)
+
+    def test_deterministic_tests_error_returns_human_required_without_codex(self):
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "ERROR", "detail": "unittest timed out"},
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("tests ERROR", result.findings)
+            self.assertIsNone(provider.last_command)
+
+    def test_deterministic_ci_fail_returns_rework_without_codex(self):
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "PASS"},
+                    "ci": {"status": "FAIL", "checks": "unit\tfail"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "REWORK")
+            self.assertIn("CI FAIL", result.findings)
+            self.assertIsNone(provider.last_command)
+
+    def test_deterministic_ci_pending_and_error_return_human_required_without_codex(
+        self,
+    ):
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for ci_status in ("PENDING", "ERROR"):
+                provider = CodexAuditProvider(
+                    runner=boom_runner,
+                    git_runner=fake_git,
+                    evidence_bundle={
+                        "schema": "awc.codex_evidence_bundle.v1",
+                        "git": {"head": HEAD, "evidence_status": "OK"},
+                        "tests": {"status": "PASS"},
+                        "ci": {"status": ci_status, "detail": "waiting"},
+                    },
+                )
+                result = provider.audit(self._event(), self._record(tmp))
+                self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+                self.assertIn(f"CI {ci_status}", result.findings)
+                self.assertIsNone(provider.last_command)
+
+    def test_deterministic_ci_absent_allows_codex(self):
+        """Local/no-PR cycle: CI ABSENT continues to Codex."""
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain"): "",
+            }
+            return mapping[tuple(argv)]
+
+        def pass_runner(command: list[str], prompt: str, cwd: str) -> str:
+            out = Path(command[command.index("-o") + 1])
+            out.write_text(
+                '{"verdict":"PASS","findings":"local cycle ok"}',
+                encoding="utf-8",
+            )
+            return out.read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=pass_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "PASS"},
+                    "ci": {"status": "ABSENT"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "PASS")
+            self.assertIsNotNone(provider.last_command)
 
     def test_run_capture_maps_missing_executable(self):
         from atlas.codex_audit import _run_capture

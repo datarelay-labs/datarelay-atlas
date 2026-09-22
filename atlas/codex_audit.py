@@ -29,6 +29,7 @@ from atlas.work_controller import (
     default_git_runner,
     normalize_github_repository,
     parse_audit_verdict_payload,
+    require_clean_porcelain,
     validate_worktree_identity,
 )
 
@@ -168,8 +169,8 @@ def collect_git_evidence(
     Porcelain ``status`` is stored only in bounded form. Completeness is
     reported as ``evidence_status`` (OK / INCOMPLETE / ERROR) so truncated
     diffs/status or untracked paths whose contents are not included cannot
-    silently permit PASS. ``status_digest`` fingerprints the temporary raw
-    status for TOCTOU snapshot checks without retaining unbounded text.
+    silently permit PASS. ``status_digest`` remains informational only;
+    autonomous audit/dispatch gates require clean porcelain instead.
     """
     runner = git_runner or default_git_runner
     cwd = str(Path(worktree_path).resolve())
@@ -929,32 +930,16 @@ def _looks_like_secret(text: str) -> bool:
     return False
 
 
-def _git_run(
-    argv: list[str],
-    cwd: str,
-    *,
-    git_runner: GitRunner | None,
-) -> str:
-    runner = git_runner or default_git_runner
-    return runner(argv, cwd)
-
-
-def _status_digest(raw_status: str) -> str:
-    return hashlib.sha256(raw_status.encode("utf-8")).hexdigest()
-
-
-def _revalidate_audited_snapshot(
+def _revalidate_clean_audited_snapshot(
     event: CompletionEvent,
     record: WorkstreamRecord,
     *,
     git_runner: GitRunner | None,
-    expected_status_digest: str | None,
-    require_clean_porcelain: bool,
 ) -> str | None:
-    """Revalidate exact repo/branch/HEAD (and optional status snapshot).
+    """Revalidate exact repo/branch/HEAD and require clean porcelain.
 
-    Returns an error detail string on mismatch; None when the snapshot still
-    matches the audited completion event. Never raises for expected drift.
+    Returns an error detail string on mismatch/dirty state; None when the
+    autonomous snapshot is still valid. Never raises for expected drift.
     """
     try:
         validate_worktree_identity(
@@ -967,32 +952,83 @@ def _revalidate_audited_snapshot(
     except ValidationError as exc:
         return f"worktree identity drift: {exc}"
 
-    cwd = str(Path(record.worktree_path).resolve())
     try:
-        raw_status = _git_run(
-            ["git", "status", "--short", "--branch"],
-            cwd,
+        require_clean_porcelain(
+            record.worktree_path,
             git_runner=git_runner,
         )
     except ValidationError as exc:
-        return f"git status revalidation failed: {exc}"
+        return f"worktree dirty: {exc}"
+    return None
 
-    if expected_status_digest:
-        observed = _status_digest(raw_status)
-        if observed != expected_status_digest:
-            return "git status snapshot changed during audit"
 
-    if require_clean_porcelain:
-        try:
-            porcelain = _git_run(
-                ["git", "status", "--porcelain"],
-                cwd,
-                git_runner=git_runner,
+def _deterministic_gate_before_codex(bundle: dict) -> AuditResult | None:
+    """Short-circuit known deterministic failures/errors before spending Codex.
+
+    tests PASS / CI OK|ABSENT => continue (return None)
+    tests FAIL / CI FAIL => REWORK
+    tests ERROR / CI PENDING|ERROR => HUMAN_REQUIRED
+    Missing sections are ignored (offline/overrides may omit them).
+    """
+    tests = bundle.get("tests")
+    if isinstance(tests, dict):
+        status = str(tests.get("status") or "")
+        if status == "FAIL":
+            detail = str(tests.get("detail") or tests.get("transcript") or "")
+            return AuditResult(
+                verdict="REWORK",
+                findings=(
+                    "deterministic gate: tests FAIL before Codex; "
+                    f"{detail[:300]}".strip()
+                ),
             )
-        except ValidationError as exc:
-            return f"git porcelain revalidation failed: {exc}"
-        if porcelain.strip():
-            return "worktree dirty at PASS gate; git status --porcelain not empty"
+        if status == "ERROR":
+            detail = str(tests.get("detail") or "")
+            return AuditResult(
+                verdict="HUMAN_REQUIRED",
+                findings=(
+                    "deterministic gate: tests ERROR before Codex; "
+                    f"{detail[:300]}".strip()
+                ),
+            )
+        if status and status != "PASS":
+            return AuditResult(
+                verdict="HUMAN_REQUIRED",
+                findings=(
+                    "deterministic gate: unrecognized tests status "
+                    f"{status!r} before Codex"
+                ),
+            )
+
+    ci = bundle.get("ci")
+    if isinstance(ci, dict):
+        status = str(ci.get("status") or "")
+        if status == "FAIL":
+            detail = str(ci.get("detail") or ci.get("checks") or "")
+            return AuditResult(
+                verdict="REWORK",
+                findings=(
+                    "deterministic gate: CI FAIL before Codex; "
+                    f"{detail[:300]}".strip()
+                ),
+            )
+        if status in {"PENDING", "ERROR"}:
+            detail = str(ci.get("detail") or ci.get("checks") or "")
+            return AuditResult(
+                verdict="HUMAN_REQUIRED",
+                findings=(
+                    f"deterministic gate: CI {status} before Codex; "
+                    f"{detail[:300]}".strip()
+                ),
+            )
+        if status and status not in {"OK", "ABSENT"}:
+            return AuditResult(
+                verdict="HUMAN_REQUIRED",
+                findings=(
+                    "deterministic gate: unrecognized CI status "
+                    f"{status!r} before Codex"
+                ),
+            )
     return None
 
 
@@ -1002,10 +1038,12 @@ class CodexAuditProvider:
     Default behavior:
     1. Validate worktree identity.
     2. Gather deterministic evidence (git/work packet/tests/CI).
-    3. Revalidate exact repo/branch/HEAD (+ status snapshot) before Codex.
-    4. Invoke Codex with tools/apps/browser/shell disabled to judge the bundle.
-    5. Before accepting PASS or REWORK, revalidate identity/snapshot again;
-       PASS additionally requires a clean worktree.
+    3. Revalidate exact repo/branch/HEAD + clean porcelain (dirty/drift ⇒
+       HUMAN_REQUIRED; never autonomous PASS/REWORK from a dirty tree).
+    4. Apply deterministic test/CI gates only from a clean snapshot
+       (skip Codex on known FAIL/ERROR).
+    5. Invoke Codex with tools/apps/browser/shell disabled to judge the bundle.
+    6. Before accepting PASS or REWORK, revalidate identity + clean porcelain.
     """
 
     def __init__(
@@ -1112,26 +1150,20 @@ class CodexAuditProvider:
                 ),
             )
 
-        status_digest = None
-        if isinstance(git, dict):
-            digest = git.get("status_digest")
-            if isinstance(digest, str) and digest:
-                status_digest = digest
-
+        # Clean autonomous snapshot before any deterministic REWORK mapping.
         if self.require_identity:
-            drift = _revalidate_audited_snapshot(
+            drift = _revalidate_clean_audited_snapshot(
                 event,
                 record,
                 git_runner=self._git_runner,
-                expected_status_digest=status_digest,
-                require_clean_porcelain=False,
             )
             if drift:
                 return AuditResult(
                     verdict="HUMAN_REQUIRED",
                     findings=(
-                        "codex audit skipped: audited worktree snapshot drift "
-                        f"after evidence collection ({drift[:300]})"
+                        "codex audit skipped: audited worktree not a clean "
+                        f"autonomous snapshot after evidence collection "
+                        f"({drift[:300]})"
                     ),
                 )
             identity = validate_worktree_identity(
@@ -1142,6 +1174,10 @@ class CodexAuditProvider:
                 git_runner=self._git_runner,
             )
             self.last_identity = identity
+
+        gated = _deterministic_gate_before_codex(bundle)
+        if gated is not None:
+            return gated
 
         prompt = build_codex_audit_prompt(
             event,
@@ -1183,22 +1219,20 @@ class CodexAuditProvider:
             )
 
         # Fail closed before returning PASS or REWORK: never dispatch/accept
-        # stale evidence if the audited worktree advanced during Codex.
+        # from a dirty or drifted worktree after Codex returns.
         if self.require_identity and result.verdict in {"PASS", "REWORK"}:
-            drift = _revalidate_audited_snapshot(
+            drift = _revalidate_clean_audited_snapshot(
                 event,
                 record,
                 git_runner=self._git_runner,
-                expected_status_digest=status_digest,
-                require_clean_porcelain=(result.verdict == "PASS"),
             )
             if drift:
                 label = result.verdict
                 return AuditResult(
                     verdict="HUMAN_REQUIRED",
                     findings=(
-                        f"codex {label} rejected: audited worktree snapshot "
-                        f"drift at {label} gate ({drift[:300]})"
+                        f"codex {label} rejected: audited worktree not a clean "
+                        f"autonomous snapshot at {label} gate ({drift[:300]})"
                     ),
                 )
         return result

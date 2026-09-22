@@ -162,6 +162,45 @@ def validate_worktree_identity(
     )
 
 
+def require_clean_porcelain(
+    worktree_path: str,
+    *,
+    git_runner: GitRunner | None = None,
+) -> None:
+    """Fail closed unless ``git status --porcelain`` is empty.
+
+    Autonomous audit/dispatch paths require a committed, clean worktree.
+    A status digest is not accepted as a substitute for clean porcelain.
+    """
+    runner = git_runner or default_git_runner
+    cwd = str(Path(worktree_path).resolve())
+    porcelain = runner(["git", "status", "--porcelain"], cwd)
+    if str(porcelain or "").strip():
+        raise ValidationError(
+            "worktree is dirty; git status --porcelain is not empty"
+        )
+
+
+def validate_clean_worktree_identity(
+    worktree_path: str,
+    *,
+    repository: str,
+    branch: str,
+    expected_head: str,
+    git_runner: GitRunner | None = None,
+) -> WorktreeIdentity:
+    """Validate exact repo/branch/HEAD and require a clean porcelain worktree."""
+    identity = validate_worktree_identity(
+        worktree_path,
+        repository=repository,
+        branch=branch,
+        expected_head=expected_head,
+        git_runner=git_runner,
+    )
+    require_clean_porcelain(identity.worktree_path, git_runner=git_runner)
+    return identity
+
+
 @dataclass(frozen=True)
 class CompletionEvent:
     event_id: str
@@ -227,6 +266,8 @@ class DispatchRequest:
     branch: str
     issue_number: int
     attempt: int
+    repository: str
+    expected_head: str
     resume_prompt: str = RESUME_PROMPT
 
 
@@ -449,6 +490,9 @@ class PtyPersistCursorDispatcher:
     Transport only: PTY/`script` spawn + observation via `agent persist list`
     (preferred) or a target-worktree process scan (fallback). Does not attach
     to, stop, or otherwise mutate sessions outside the target worktree.
+
+    Immediately before spawn, revalidates exact repository/branch/HEAD and
+    requires clean porcelain so a stale or dirty tree cannot launch Cursor.
     """
 
     def __init__(
@@ -457,6 +501,7 @@ class PtyPersistCursorDispatcher:
         list_sessions: Callable[[], list[PersistSession]] | None = None,
         spawn: Callable[[list[str], str], int] | None = None,
         list_target_procs: Callable[[str], list[tuple[int, str]]] | None = None,
+        git_runner: GitRunner | None = None,
         poll_interval_sec: float = 0.5,
         poll_timeout_sec: float = 45.0,
         sleeper: Callable[[float], None] | None = None,
@@ -464,6 +509,7 @@ class PtyPersistCursorDispatcher:
         self._list_sessions = list_sessions or default_list_persist_sessions
         self._spawn = spawn or script_pty_spawn_persist
         self._list_target_procs = list_target_procs or list_persist_trust_processes
+        self._git_runner = git_runner
         self._poll_interval_sec = poll_interval_sec
         self._poll_timeout_sec = poll_timeout_sec
         self._sleep = sleeper or time.sleep
@@ -475,6 +521,18 @@ class PtyPersistCursorDispatcher:
         worktree = str(Path(request.worktree_path).resolve())
         if not Path(worktree).is_dir():
             raise ValidationError(f"worktree_path is not a directory: {worktree}")
+        if not str(request.repository or "").strip():
+            raise ValidationError("dispatch request missing repository")
+        if not str(request.expected_head or "").strip():
+            raise ValidationError("dispatch request missing expected_head")
+        # Boundary revalidation immediately before spawn (TOCTOU close).
+        validate_clean_worktree_identity(
+            worktree,
+            repository=request.repository,
+            branch=request.branch,
+            expected_head=request.expected_head,
+            git_runner=self._git_runner,
+        )
         command = build_persist_resume_command(request)
         before_ids = {
             item.session_id
@@ -879,32 +937,49 @@ class WorkController:
                     attempt=next_attempt,
                     head=event.head,
                 )
-                dispatch = self.dispatcher.start_resume(
-                    DispatchRequest(
-                        workstream=record.workstream,
-                        worktree_path=record.worktree_path,
-                        branch=record.branch,
-                        issue_number=record.issue_number,
-                        attempt=next_attempt,
-                        resume_prompt=RESUME_PROMPT,
+                try:
+                    dispatch = self.dispatcher.start_resume(
+                        DispatchRequest(
+                            workstream=record.workstream,
+                            worktree_path=record.worktree_path,
+                            branch=record.branch,
+                            issue_number=record.issue_number,
+                            attempt=next_attempt,
+                            repository=record.repository,
+                            expected_head=event.head,
+                            resume_prompt=RESUME_PROMPT,
+                        )
                     )
-                )
-                record.attempt = next_attempt
-                record.last_session_id = dispatch.session_id
-                record.expected_head = event.head
-                outcome = self._finalize(
-                    record,
-                    event,
-                    state="REWORK_DISPATCHED",
-                    action="rework_dispatched",
-                    verdict="REWORK",
-                    extra={
-                        "dispatch_session_id": dispatch.session_id,
-                        "dispatch_command": dispatch.command,
-                        "next_attempt": next_attempt,
-                        "resume_prompt": RESUME_PROMPT,
-                    },
-                )
+                except ValidationError as exc:
+                    record.last_findings = (
+                        f"{audit_result.findings}\n"
+                        f"rework dispatch blocked at boundary: {exc}"
+                    ).strip()
+                    outcome = self._finalize(
+                        record,
+                        event,
+                        state="HUMAN_REQUIRED",
+                        action="stop",
+                        verdict="HUMAN_REQUIRED",
+                        extra={"reason": "dispatch_boundary_failed"},
+                    )
+                else:
+                    record.attempt = next_attempt
+                    record.last_session_id = dispatch.session_id
+                    record.expected_head = event.head
+                    outcome = self._finalize(
+                        record,
+                        event,
+                        state="REWORK_DISPATCHED",
+                        action="rework_dispatched",
+                        verdict="REWORK",
+                        extra={
+                            "dispatch_session_id": dispatch.session_id,
+                            "dispatch_command": dispatch.command,
+                            "next_attempt": next_attempt,
+                            "resume_prompt": RESUME_PROMPT,
+                        },
+                    )
         self.observer.observe("completion_handled", outcome)
         return outcome
 

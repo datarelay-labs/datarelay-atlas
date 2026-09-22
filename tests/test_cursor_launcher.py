@@ -41,28 +41,44 @@ Task: Target Work
 
 
 class CursorLauncherTests(unittest.TestCase):
-    def test_build_persist_resume_command_canonical_argv(self):
-        req = DispatchRequest(
+    def _clean_git(self, *, head: str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", dirty: str = ""):
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "https://github.com/datarelay-labs/datarelay-atlas.git"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): head,
+                ("git", "status", "--porcelain"): dirty,
+            }
+            return mapping[tuple(argv)]
+
+        return fake_git
+
+    def _dispatch_request(self, worktree: str, **overrides) -> DispatchRequest:
+        base = dict(
             workstream="awc",
-            worktree_path="/tmp/wt",
+            worktree_path=worktree,
             branch="feature/x",
             issue_number=12,
             attempt=2,
+            repository="datarelay-labs/datarelay-atlas",
+            expected_head="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
+        base.update(overrides)
+        return DispatchRequest(**base)
+
+    def test_build_persist_resume_command_canonical_argv(self):
+        req = self._dispatch_request("/tmp/wt")
         self.assertEqual(
             build_persist_resume_command(req),
             ["agent", "persist", "--trust", "/work-resume"],
         )
 
     def test_build_persist_resume_command_rejects_divergent_prompt(self):
-        req = DispatchRequest(
-            workstream="awc",
-            worktree_path="/tmp/wt",
-            branch="feature/x",
-            issue_number=12,
-            attempt=2,
-            resume_prompt="/resume",
-        )
+        req = self._dispatch_request("/tmp/wt", resume_prompt="/resume")
         with self.assertRaises(ValidationError):
             build_persist_resume_command(req)
 
@@ -118,19 +134,12 @@ class CursorLauncherTests(unittest.TestCase):
                 list_sessions=list_sessions,
                 list_target_procs=lambda _wt: [],
                 spawn=spawn,
+                git_runner=self._clean_git(),
                 poll_interval_sec=0.01,
                 poll_timeout_sec=1.0,
                 sleeper=lambda _s: None,
             )
-            result = dispatcher.start_resume(
-                DispatchRequest(
-                    workstream="awc",
-                    worktree_path=str(target),
-                    branch="feature/x",
-                    issue_number=12,
-                    attempt=2,
-                )
-            )
+            result = dispatcher.start_resume(self._dispatch_request(str(target)))
             self.assertEqual(result.session_id, "target-new-1")
             self.assertEqual(
                 result.command, ["agent", "persist", "--trust", "/work-resume"]
@@ -184,23 +193,70 @@ class CursorLauncherTests(unittest.TestCase):
                 list_sessions=list_sessions,
                 list_target_procs=list_procs,
                 spawn=spawn,
+                git_runner=self._clean_git(),
                 poll_interval_sec=0.01,
                 poll_timeout_sec=1.0,
                 sleeper=lambda _s: None,
             )
-            result = dispatcher.start_resume(
-                DispatchRequest(
-                    workstream="awc",
-                    worktree_path=str(target),
-                    branch="feature/x",
-                    issue_number=12,
-                    attempt=2,
-                )
-            )
+            result = dispatcher.start_resume(self._dispatch_request(str(target)))
             self.assertEqual(result.session_id, "proc:222")
             self.assertEqual(
                 [item.session_id for item in state["sessions"]], ["unrelated-1"]
             )
+
+    def test_dispatch_boundary_rejects_head_drift_without_spawn(self):
+        """HEAD changes after audit/before dispatch ⇒ zero spawn."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+            state = {"spawn_calls": 0}
+
+            def spawn(command: list[str], worktree_path: str) -> int:
+                state["spawn_calls"] += 1
+                raise AssertionError("spawn must not run on head mismatch")
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=lambda: [],
+                list_target_procs=lambda _wt: [],
+                spawn=spawn,
+                git_runner=self._clean_git(
+                    head="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ),
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                dispatcher.start_resume(self._dispatch_request(str(target)))
+            self.assertIn("head mismatch", str(ctx.exception))
+            self.assertEqual(state["spawn_calls"], 0)
+            self.assertEqual(dispatcher.spawned_pids, [])
+
+    def test_dispatch_boundary_rejects_dirty_tree_without_spawn(self):
+        """Dirty porcelain at dispatch boundary ⇒ zero spawn."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+            state = {"spawn_calls": 0}
+
+            def spawn(command: list[str], worktree_path: str) -> int:
+                state["spawn_calls"] += 1
+                raise AssertionError("spawn must not run on dirty tree")
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=lambda: [],
+                list_target_procs=lambda _wt: [],
+                spawn=spawn,
+                git_runner=self._clean_git(dirty=" M dirty.py\n"),
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                dispatcher.start_resume(self._dispatch_request(str(target)))
+            self.assertIn("dirty", str(ctx.exception).lower())
+            self.assertEqual(state["spawn_calls"], 0)
+            self.assertEqual(dispatcher.spawned_pids, [])
 
     def test_fake_agent_integration_creates_only_target_session(self):
         """End-to-end launcher against a fake `agent` on PATH."""
@@ -266,18 +322,11 @@ class CursorLauncherTests(unittest.TestCase):
                 before = json.loads(state_file.read_text(encoding="utf-8"))
                 dispatcher = PtyPersistCursorDispatcher(
                     list_target_procs=lambda _wt: [],
+                    git_runner=self._clean_git(),
                     poll_interval_sec=0.05,
                     poll_timeout_sec=2.0,
                 )
-                result = dispatcher.start_resume(
-                    DispatchRequest(
-                        workstream="awc",
-                        worktree_path=str(target),
-                        branch="feature/x",
-                        issue_number=12,
-                        attempt=2,
-                    )
-                )
+                result = dispatcher.start_resume(self._dispatch_request(str(target)))
                 after = json.loads(state_file.read_text(encoding="utf-8"))
             finally:
                 os.environ["PATH"] = original_path
