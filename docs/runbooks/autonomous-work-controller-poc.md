@@ -134,9 +134,10 @@ Contract:
   map dirty + tests/CI FAIL to autonomous `REWORK`)
 - Deterministic gates from a clean snapshot only: tests FAIL / CI FAIL ⇒
   `REWORK`; tests ERROR / CI PENDING|ERROR ⇒ `HUMAN_REQUIRED`; CI ABSENT allowed
-- Dispatch boundary revalidates exact repo/branch/HEAD + clean porcelain
-  immediately before spawning Cursor; boundary `ValidationError` finalizes
-  `HUMAN_REQUIRED` (no spawn)
+- Dispatch boundary captures session/proc baselines first, then revalidates
+  exact repo/branch/HEAD + clean porcelain immediately before spawning Cursor
+  (no external observation between validation and spawn); boundary
+  `ValidationError` finalizes `HUMAN_REQUIRED` (no spawn)
 - `codex exec -C <worktree> -s read-only --ephemeral --ignore-user-config
   --ignore-rules` with apps/browser/computer/shell/plugins/hooks/multi-agent
   disabled (`--disable …`, `web_search="disabled"`)

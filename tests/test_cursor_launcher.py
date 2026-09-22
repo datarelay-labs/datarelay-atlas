@@ -258,6 +258,106 @@ class CursorLauncherTests(unittest.TestCase):
             self.assertEqual(state["spawn_calls"], 0)
             self.assertEqual(dispatcher.spawned_pids, [])
 
+    def test_dispatch_boundary_revalidates_after_session_observation(self):
+        """list_sessions mutates HEAD after capture ⇒ ValidationError, zero spawn."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+            expected = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            drifted = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            git_state = {"head": expected, "dirty": ""}
+            state = {"spawn_calls": 0, "listed": 0}
+
+            def mutable_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "https://github.com/datarelay-labs/datarelay-atlas.git"
+                    ),
+                    ("git", "branch", "--show-current"): "feature/x",
+                    ("git", "rev-parse", "HEAD"): git_state["head"],
+                    ("git", "status", "--porcelain"): git_state["dirty"],
+                }
+                return mapping[tuple(argv)]
+
+            def list_sessions() -> list[PersistSession]:
+                state["listed"] += 1
+                # Observation happens before final validation; mutate here.
+                git_state["head"] = drifted
+                return []
+
+            def spawn(command: list[str], worktree_path: str) -> int:
+                state["spawn_calls"] += 1
+                raise AssertionError("spawn must not run after observation drift")
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=list_sessions,
+                list_target_procs=lambda _wt: [],
+                spawn=spawn,
+                git_runner=mutable_git,
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                dispatcher.start_resume(
+                    self._dispatch_request(str(target), expected_head=expected)
+                )
+            self.assertIn("head mismatch", str(ctx.exception))
+            self.assertGreaterEqual(state["listed"], 1)
+            self.assertEqual(state["spawn_calls"], 0)
+            self.assertEqual(dispatcher.spawned_pids, [])
+
+    def test_dispatch_boundary_revalidates_after_proc_observation_dirtiness(self):
+        """list_target_procs dirties porcelain after capture ⇒ zero spawn."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+            expected = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            git_state = {"head": expected, "dirty": ""}
+            state = {"spawn_calls": 0, "procs": 0}
+
+            def mutable_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "https://github.com/datarelay-labs/datarelay-atlas.git"
+                    ),
+                    ("git", "branch", "--show-current"): "feature/x",
+                    ("git", "rev-parse", "HEAD"): git_state["head"],
+                    ("git", "status", "--porcelain"): git_state["dirty"],
+                }
+                return mapping[tuple(argv)]
+
+            def list_procs(worktree_path: str) -> list[tuple[int, str]]:
+                state["procs"] += 1
+                git_state["dirty"] = " M raced.py\n"
+                return []
+
+            def spawn(command: list[str], worktree_path: str) -> int:
+                state["spawn_calls"] += 1
+                raise AssertionError("spawn must not run after dirty observation race")
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=lambda: [],
+                list_target_procs=list_procs,
+                spawn=spawn,
+                git_runner=mutable_git,
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                dispatcher.start_resume(
+                    self._dispatch_request(str(target), expected_head=expected)
+                )
+            self.assertIn("dirty", str(ctx.exception).lower())
+            self.assertGreaterEqual(state["procs"], 1)
+            self.assertEqual(state["spawn_calls"], 0)
+            self.assertEqual(dispatcher.spawned_pids, [])
+
     def test_fake_agent_integration_creates_only_target_session(self):
         """End-to-end launcher against a fake `agent` on PATH."""
         with tempfile.TemporaryDirectory() as tmp:

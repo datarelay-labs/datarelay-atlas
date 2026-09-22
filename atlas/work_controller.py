@@ -525,7 +525,14 @@ class PtyPersistCursorDispatcher:
             raise ValidationError("dispatch request missing repository")
         if not str(request.expected_head or "").strip():
             raise ValidationError("dispatch request missing expected_head")
-        # Boundary revalidation immediately before spawn (TOCTOU close).
+        command = build_persist_resume_command(request)
+        before_ids = {
+            item.session_id
+            for item in sessions_for_worktree(self._list_sessions(), worktree)
+        }
+        before_pids = {pid for pid, _cmd in self._list_target_procs(worktree)}
+        # Final identity/porcelain check immediately before spawn — no external
+        # observation between this validation and _spawn (TOCTOU close).
         validate_clean_worktree_identity(
             worktree,
             repository=request.repository,
@@ -533,12 +540,6 @@ class PtyPersistCursorDispatcher:
             expected_head=request.expected_head,
             git_runner=self._git_runner,
         )
-        command = build_persist_resume_command(request)
-        before_ids = {
-            item.session_id
-            for item in sessions_for_worktree(self._list_sessions(), worktree)
-        }
-        before_pids = {pid for pid, _cmd in self._list_target_procs(worktree)}
         pid = self._spawn(command, worktree)
         self.spawned_pids.append(pid)
         deadline = time.monotonic() + self._poll_timeout_sec
