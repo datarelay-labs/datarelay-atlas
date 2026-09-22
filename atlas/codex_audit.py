@@ -1069,70 +1069,65 @@ def _safe_detail(value: object, *, max_chars: int = 300) -> str:
 def _deterministic_gate_before_codex(bundle: dict) -> AuditResult | None:
     """Short-circuit known deterministic failures/errors before spending Codex.
 
+    Evaluate tests and CI together so infrastructure/pending blockers win:
     tests PASS / CI OK|ABSENT => continue (return None)
-    tests FAIL / CI FAIL => REWORK
-    tests ERROR / CI PENDING|ERROR => HUMAN_REQUIRED
+    tests ERROR / CI PENDING|ERROR / unrecognized => HUMAN_REQUIRED
+    tests FAIL / CI FAIL => REWORK (only when no HUMAN_REQUIRED blocker)
     Missing sections are ignored (offline/overrides may omit them).
     """
+    human_parts: list[str] = []
+    rework_parts: list[str] = []
+
     tests = bundle.get("tests")
     if isinstance(tests, dict):
         status = str(tests.get("status") or "")
-        if status == "FAIL":
-            detail = _safe_detail(tests.get("detail") or tests.get("transcript") or "")
-            return AuditResult(
-                verdict="REWORK",
-                findings=(
-                    "deterministic gate: tests FAIL before Codex; "
-                    f"{detail}".strip()
-                ),
-            )
         if status == "ERROR":
             detail = _safe_detail(tests.get("detail") or "")
-            return AuditResult(
-                verdict="HUMAN_REQUIRED",
-                findings=(
-                    "deterministic gate: tests ERROR before Codex; "
-                    f"{detail}".strip()
-                ),
+            human_parts.append(
+                f"deterministic gate: tests ERROR before Codex; {detail}".strip()
             )
-        if status and status != "PASS":
-            return AuditResult(
-                verdict="HUMAN_REQUIRED",
-                findings=(
-                    "deterministic gate: unrecognized tests status "
-                    f"{status!r} before Codex"
-                ),
+        elif status == "FAIL":
+            detail = _safe_detail(
+                tests.get("detail") or tests.get("transcript") or ""
+            )
+            rework_parts.append(
+                f"deterministic gate: tests FAIL before Codex; {detail}".strip()
+            )
+        elif status and status != "PASS":
+            human_parts.append(
+                "deterministic gate: unrecognized tests status "
+                f"{status!r} before Codex"
             )
 
     ci = bundle.get("ci")
     if isinstance(ci, dict):
         status = str(ci.get("status") or "")
-        if status == "FAIL":
-            detail = _safe_detail(ci.get("detail") or ci.get("checks") or "")
-            return AuditResult(
-                verdict="REWORK",
-                findings=(
-                    "deterministic gate: CI FAIL before Codex; "
-                    f"{detail}".strip()
-                ),
-            )
         if status in {"PENDING", "ERROR"}:
             detail = _safe_detail(ci.get("detail") or ci.get("checks") or "")
-            return AuditResult(
-                verdict="HUMAN_REQUIRED",
-                findings=(
-                    f"deterministic gate: CI {status} before Codex; "
-                    f"{detail}".strip()
-                ),
+            human_parts.append(
+                f"deterministic gate: CI {status} before Codex; {detail}".strip()
             )
-        if status and status not in {"OK", "ABSENT"}:
-            return AuditResult(
-                verdict="HUMAN_REQUIRED",
-                findings=(
-                    "deterministic gate: unrecognized CI status "
-                    f"{status!r} before Codex"
-                ),
+        elif status == "FAIL":
+            detail = _safe_detail(ci.get("detail") or ci.get("checks") or "")
+            rework_parts.append(
+                f"deterministic gate: CI FAIL before Codex; {detail}".strip()
             )
+        elif status and status not in {"OK", "ABSENT"}:
+            human_parts.append(
+                "deterministic gate: unrecognized CI status "
+                f"{status!r} before Codex"
+            )
+
+    if human_parts:
+        return AuditResult(
+            verdict="HUMAN_REQUIRED",
+            findings="\n".join(human_parts),
+        )
+    if rework_parts:
+        return AuditResult(
+            verdict="REWORK",
+            findings="\n".join(rework_parts),
+        )
     return None
 
 

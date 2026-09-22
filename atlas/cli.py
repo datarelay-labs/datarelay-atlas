@@ -13,6 +13,7 @@ from atlas.codex_audit import CodexAuditProvider
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
 from atlas.work_controller import (
+    AuditOnlyCursorDispatcher,
     AuditResult,
     FixedAuditAdapter,
     GitHubWorkPacketAdapter,
@@ -187,7 +188,9 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
     if spawn:
         dispatcher = PtyPersistCursorDispatcher()
     else:
-        dispatcher = RecordingCursorDispatcher()
+        # Do not pair recording packet adapters with a fake successful dispatcher:
+        # audit-only REWORK must stop without claiming REWORK_DISPATCHED.
+        dispatcher = AuditOnlyCursorDispatcher()
     return WorkController(
         Path(args.data_root),
         audit=audit,

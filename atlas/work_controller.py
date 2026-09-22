@@ -1435,6 +1435,22 @@ class RecordingCursorDispatcher:
         )
 
 
+class AuditOnlyCursorDispatcher:
+    """Refuse to claim Cursor dispatch when ``--spawn-dispatch`` is absent.
+
+    Production audit-only CLI wiring uses this instead of
+    ``RecordingCursorDispatcher`` so REWORK cannot finalize as
+    ``REWORK_DISPATCHED`` without a real GitHub mutation + PTY spawn.
+    Offline unit tests may still inject ``RecordingCursorDispatcher``.
+    """
+
+    def start_resume(self, request: DispatchRequest) -> DispatchResult:
+        raise ValidationError(
+            "audit-only mode cannot claim Cursor dispatch; "
+            "pass --spawn-dispatch with --work-packet-adapter github for REWORK"
+        )
+
+
 class DispatchSpawnedButUnobservedError(ValidationError):
     """Raised when a spawn started but no Cursor session/process was confirmed.
 

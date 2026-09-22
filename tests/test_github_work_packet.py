@@ -852,7 +852,10 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
     def test_fixed_defaults_to_recording_adapter(self):
         from atlas import cli as atlas_cli
-        from atlas.work_controller import RecordingWorkPacketAdapter
+        from atlas.work_controller import (
+            AuditOnlyCursorDispatcher,
+            RecordingWorkPacketAdapter,
+        )
 
         parser = build_parser()
         args = parser.parse_args(
@@ -870,6 +873,53 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
             args.spawn_dispatch = False
             ctl = atlas_cli._controller_from_args(args)
             self.assertIsInstance(ctl.work_packet, RecordingWorkPacketAdapter)
+            self.assertIsInstance(ctl.dispatcher, AuditOnlyCursorDispatcher)
+
+    def test_audit_only_rework_does_not_claim_dispatch(self):
+        """Recording + AuditOnlyCursorDispatcher must not claim REWORK_DISPATCHED."""
+        from atlas.work_controller import (
+            AuditOnlyCursorDispatcher,
+            AuditResult,
+            FixedAuditAdapter,
+            RecordingWorkPacketAdapter,
+            WorkController,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="gap")
+                ),
+                work_packet=RecordingWorkPacketAdapter(),
+                dispatcher=AuditOnlyCursorDispatcher(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/x",
+                worktree_path=str(worktree),
+                expected_head="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(
+                {
+                    "event_id": "evt-1",
+                    "workstream": "awc-poc",
+                    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "branch": "feature/x",
+                    "issue_number": 12,
+                    "attempt": 1,
+                }
+            )
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertNotEqual(outcome["action"], "rework_dispatched")
+            findings = str(ctl.show("awc-poc").get("last_findings") or "")
+            self.assertIn("audit-only", findings.lower())
 
     def test_codex_with_spawn_defaults_to_github_adapter(self):
         from atlas import cli as atlas_cli

@@ -1246,6 +1246,33 @@ class CodexAuditProviderTests(unittest.TestCase):
             self.assertIn("tests ERROR", result.findings)
             self.assertIsNone(provider.last_command)
 
+    def test_deterministic_tests_fail_with_ci_pending_is_human_required(self):
+        """CI PENDING/ERROR must beat tests FAIL so REWORK is not dispatched."""
+        from atlas.codex_audit import _deterministic_gate_before_codex
+
+        gated = _deterministic_gate_before_codex(
+            {
+                "tests": {"status": "FAIL", "transcript": "AssertionError"},
+                "ci": {"status": "PENDING", "checks": "unit\tpending"},
+            }
+        )
+        self.assertIsNotNone(gated)
+        assert gated is not None
+        self.assertEqual(gated.verdict, "HUMAN_REQUIRED")
+        self.assertIn("CI PENDING", gated.findings)
+        self.assertNotIn("tests FAIL", gated.findings)
+
+        gated_error = _deterministic_gate_before_codex(
+            {
+                "tests": {"status": "FAIL", "transcript": "AssertionError"},
+                "ci": {"status": "ERROR", "detail": "gh auth failed"},
+            }
+        )
+        self.assertIsNotNone(gated_error)
+        assert gated_error is not None
+        self.assertEqual(gated_error.verdict, "HUMAN_REQUIRED")
+        self.assertIn("CI ERROR", gated_error.findings)
+
     def test_deterministic_ci_fail_returns_rework_without_codex(self):
         def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
             raise AssertionError("codex runner must not be called")
