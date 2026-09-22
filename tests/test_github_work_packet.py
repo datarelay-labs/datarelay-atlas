@@ -114,6 +114,28 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             _render(branch="feature/other-branch")
 
+    def test_rejects_noncanonical_target_repo_clone_url(self):
+        """Clone-URL TARGET_REPO normalizes equal but must not mutate/dispatch.
+
+        /work-resume requires exact owner/repo slug match; accepting URL forms
+        would leave REWORK_DISPATCHED with zero resume matches.
+        """
+        url_body = SAMPLE_BODY.replace(
+            "TARGET_REPO=datarelay-labs/datarelay-atlas",
+            "TARGET_REPO=https://github.com/datarelay-labs/datarelay-atlas.git",
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            _render(body=url_body)
+        self.assertIn("canonical owner/repo slug", str(ctx.exception))
+
+        ssh_body = SAMPLE_BODY.replace(
+            "TARGET_REPO=datarelay-labs/datarelay-atlas",
+            "TARGET_REPO=git@github.com:datarelay-labs/datarelay-atlas.git",
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            _render(body=ssh_body)
+        self.assertIn("canonical owner/repo slug", str(ctx.exception))
+
     def test_rejects_duplicate_managed_packet_sections(self):
         duplicated = SAMPLE_BODY + "\n## Next Action\n\nStale second next action.\n"
         with self.assertRaises(ValidationError) as ctx:
@@ -531,6 +553,38 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         with self.assertRaises(ValidationError) as ctx:
             adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
         self.assertIn("ambiguous ACTIVE Work Packets", str(ctx.exception))
+
+    def test_clone_url_target_repo_does_not_match_active_packet(self):
+        """URL-form TARGET_REPO must not count as the unique ACTIVE packet."""
+        url_body = SAMPLE_BODY.replace(
+            "TARGET_REPO=datarelay-labs/datarelay-atlas",
+            "TARGET_REPO=https://github.com/datarelay-labs/datarelay-atlas.git",
+        )
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "list"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        self._list_payload(
+                            {
+                                "number": 12,
+                                "title": "[AI Work] url form",
+                                "state": "OPEN",
+                                "body": url_body,
+                            }
+                        )
+                    ),
+                    stderr="",
+                )
+            self.fail(f"must not mutate after noncanonical TARGET_REPO: {argv}")
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        with self.assertRaises(ValidationError) as ctx:
+            adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
+        message = str(ctx.exception)
+        self.assertIn("no ACTIVE Work Packet matches", message)
 
     def test_branchless_active_packet_counts_in_uniqueness(self):
         branchless = "\n".join(

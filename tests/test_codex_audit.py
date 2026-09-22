@@ -56,6 +56,23 @@ class WorktreeIdentityTests(unittest.TestCase):
             "datarelay-labs/datarelay-atlas",
         )
 
+    def test_require_canonical_target_repo_rejects_clone_urls(self):
+        from atlas.work_controller import require_canonical_target_repo
+
+        self.assertEqual(
+            require_canonical_target_repo(
+                "datarelay-labs/datarelay-atlas",
+                "datarelay-labs/datarelay-atlas",
+            ),
+            "datarelay-labs/datarelay-atlas",
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            require_canonical_target_repo(
+                "https://github.com/datarelay-labs/datarelay-atlas.git",
+                "datarelay-labs/datarelay-atlas",
+            )
+        self.assertIn("canonical owner/repo slug", str(ctx.exception))
+
     def test_heads_match_prefix(self):
         self.assertTrue(heads_match(HEAD, HEAD[:12]))
         self.assertFalse(heads_match(HEAD, HEAD2))

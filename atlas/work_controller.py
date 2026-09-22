@@ -84,6 +84,36 @@ def normalize_github_repository(value: str) -> str:
     return f"{owner}/{repo}"
 
 
+def require_canonical_target_repo(target: str, repository: str) -> str:
+    """Require TARGET_REPO as exact `owner/repo` matching *repository*.
+
+    `/work-resume` selects packets by exact TARGET_REPO string match against the
+    resolved owner/repo slug. Accepting clone-URL forms here would mutate and
+    dispatch while resume finds zero packets.
+    """
+    repo = normalize_github_repository(repository)
+    raw = (target or "").strip()
+    if not raw:
+        raise ValidationError("work packet missing TARGET_REPO metadata")
+    try:
+        observed = normalize_github_repository(raw)
+    except ValidationError as exc:
+        raise ValidationError(
+            f"work packet TARGET_REPO must be canonical owner/repo slug "
+            f"(got {target!r})"
+        ) from exc
+    if raw != observed:
+        raise ValidationError(
+            f"work packet TARGET_REPO must be canonical owner/repo slug "
+            f"(got {target!r}; expected {repo!r})"
+        )
+    if observed != repo:
+        raise ValidationError(
+            f"work packet TARGET_REPO mismatch: {observed} != {repo}"
+        )
+    return repo
+
+
 def heads_match(expected: str, observed: str) -> bool:
     exp = expected.strip().lower()
     obs = observed.strip().lower()
@@ -741,15 +771,10 @@ def render_rework_work_packet_body(
         raise ValidationError(
             "work packet STATUS must be ACTIVE for REWORK mutation"
         )
-    repo = normalize_github_repository(repository)
-    target = _packet_metadata_value(raw, "TARGET_REPO")
-    if target is None or not target.strip():
-        raise ValidationError("work packet missing TARGET_REPO metadata")
-    observed = normalize_github_repository(target)
-    if observed != repo:
-        raise ValidationError(
-            f"work packet TARGET_REPO mismatch: {observed} != {repo}"
-        )
+    require_canonical_target_repo(
+        _packet_metadata_value(raw, "TARGET_REPO") or "",
+        repository,
+    )
     expected_branch = branch.strip()
     if not expected_branch:
         raise ValidationError("branch is required for Work Packet mutation")
@@ -842,15 +867,10 @@ def render_dispatch_blocked_work_packet_body(
         raise ValidationError(
             "work packet STATUS must be ACTIVE for compensating mutation"
         )
-    repo = normalize_github_repository(repository)
-    target = _packet_metadata_value(raw, "TARGET_REPO")
-    if target is None or not target.strip():
-        raise ValidationError("work packet missing TARGET_REPO metadata")
-    observed = normalize_github_repository(target)
-    if observed != repo:
-        raise ValidationError(
-            f"work packet TARGET_REPO mismatch: {observed} != {repo}"
-        )
+    require_canonical_target_repo(
+        _packet_metadata_value(raw, "TARGET_REPO") or "",
+        repository,
+    )
     expected_branch = branch.strip()
     if not expected_branch:
         raise ValidationError("branch is required for Work Packet mutation")
@@ -1274,8 +1294,7 @@ class GitHubWorkPacketAdapter:
         if not target:
             return False
         try:
-            if normalize_github_repository(target) != repository:
-                return False
+            require_canonical_target_repo(target, repository)
         except ValidationError:
             return False
         packet_branch = meta.get("BRANCH")
