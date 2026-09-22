@@ -22,11 +22,12 @@ from atlas.work_controller import (
 
 
 BRANCH = "feature/autonomous-work-controller-final-hardening"
+WORKSTREAM = "autonomous-work-controller-poc"
 HEAD_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 SAMPLE_BODY = f"""PACKET_VERSION=2
 TARGET_REPO=datarelay-labs/datarelay-atlas
-WORKSTREAM=autonomous-work-controller-poc
+WORKSTREAM={WORKSTREAM}
 STATUS=ACTIVE
 BRANCH={BRANCH}
 TASK_KIND=DEVELOPMENT
@@ -70,6 +71,7 @@ def _render(**overrides):
         "body": SAMPLE_BODY,
         "repository": "datarelay-labs/datarelay-atlas",
         "branch": BRANCH,
+        "workstream": WORKSTREAM,
         "findings": "fix gaps\nneed coverage",
         "attempt": 2,
         "head": HEAD_B,
@@ -333,12 +335,41 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         payload.update(overrides)
         return payload
 
+    def _list_payload(self, *issues: dict) -> list[dict]:
+        if issues:
+            return list(issues)
+        return [
+            {
+                "number": 12,
+                "title": "[AI Work] DRAtlas Autonomous Work Controller PoC",
+                "state": "OPEN",
+                "body": SAMPLE_BODY,
+            }
+        ]
+
+    def _rework_kwargs(self, **overrides):
+        kwargs = {
+            "repository": "datarelay-labs/datarelay-atlas",
+            "issue_number": 12,
+            "branch": BRANCH,
+            "workstream": WORKSTREAM,
+            "findings": "fix gaps; do not $(rm -rf /)",
+            "attempt": 2,
+            "head": HEAD_B,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
     def test_view_recheck_then_edit_with_body_file_argv(self):
         calls: list[list[str]] = []
         body_files: list[str] = []
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
             calls.append(list(argv))
+            if argv[:3] == ["gh", "issue", "list"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(self._list_payload()), stderr=""
+                )
             if argv[:3] == ["gh", "issue", "view"]:
                 return subprocess.CompletedProcess(
                     argv, 0, stdout=json.dumps(self._payload()), stderr=""
@@ -351,17 +382,11 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             self.fail(f"unexpected argv: {argv}")
 
         adapter = GitHubWorkPacketAdapter(command_runner=runner)
-        adapter.apply_rework_findings(
-            repository="datarelay-labs/datarelay-atlas",
-            issue_number=12,
-            branch=BRANCH,
-            findings="fix gaps; do not $(rm -rf /)",
-            attempt=2,
-            head=HEAD_B,
-        )
-        self.assertEqual(len(calls), 3)  # view, recheck view, edit
+        adapter.apply_rework_findings(**self._rework_kwargs())
+        self.assertEqual(len(calls), 4)  # list, view, recheck view, edit
+        self.assertEqual(calls[0][:4], ["gh", "issue", "list", "--repo"])
         self.assertEqual(
-            calls[0],
+            calls[1],
             [
                 "gh",
                 "issue",
@@ -373,17 +398,17 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                 "number,title,state,body,updatedAt",
             ],
         )
-        self.assertEqual(calls[0], calls[1])
+        self.assertEqual(calls[1], calls[2])
         self.assertEqual(
-            calls[2][:6],
+            calls[3][:6],
             ["gh", "issue", "edit", "12", "--repo", "datarelay-labs/datarelay-atlas"],
         )
-        joined = " ".join(calls[2])
+        joined = " ".join(calls[3])
         self.assertNotIn("$(rm -rf /)", joined)
         self.assertEqual(len(body_files), 1)
         self.assertIn("fix gaps", body_files[0])
         self.assertIn("do not $(rm -rf /)", body_files[0])
-        self.assertFalse(Path(calls[2][calls[2].index("--body-file") + 1]).exists())
+        self.assertFalse(Path(calls[3][calls[3].index("--body-file") + 1]).exists())
 
     def test_concurrent_change_fails_closed(self):
         views = [
@@ -395,6 +420,10 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         ]
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "list"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(self._list_payload()), stderr=""
+                )
             if argv[:3] == ["gh", "issue", "view"]:
                 payload = views.pop(0)
                 return subprocess.CompletedProcess(
@@ -404,18 +433,15 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
         adapter = GitHubWorkPacketAdapter(command_runner=runner)
         with self.assertRaises(ValidationError) as ctx:
-            adapter.apply_rework_findings(
-                repository="datarelay-labs/datarelay-atlas",
-                issue_number=12,
-                branch=BRANCH,
-                findings="x",
-                attempt=2,
-                head=HEAD_B,
-            )
+            adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
         self.assertIn("changed during mutation", str(ctx.exception))
 
     def test_edit_failure_raises_validation_error(self):
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "list"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(self._list_payload()), stderr=""
+                )
             if argv[:3] == ["gh", "issue", "view"]:
                 return subprocess.CompletedProcess(
                     argv, 0, stdout=json.dumps(self._payload()), stderr=""
@@ -426,14 +452,7 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
         adapter = GitHubWorkPacketAdapter(command_runner=runner)
         with self.assertRaises(ValidationError) as ctx:
-            adapter.apply_rework_findings(
-                repository="datarelay-labs/datarelay-atlas",
-                issue_number=12,
-                branch=BRANCH,
-                findings="x",
-                attempt=2,
-                head=HEAD_B,
-            )
+            adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
         self.assertIn("edit denied", str(ctx.exception))
 
     def test_run_permission_error_is_validation_error(self):
@@ -448,6 +467,11 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
     def test_rejects_non_ai_work_issue(self):
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "list"]:
+                # Unique match points at #12, but configured issue is #10.
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(self._list_payload()), stderr=""
+                )
             return subprocess.CompletedProcess(
                 argv,
                 0,
@@ -461,15 +485,100 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             )
 
         adapter = GitHubWorkPacketAdapter(command_runner=runner)
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(ValidationError) as ctx:
             adapter.apply_rework_findings(
-                repository="datarelay-labs/datarelay-atlas",
-                issue_number=10,
-                branch=BRANCH,
-                findings="x",
-                attempt=2,
-                head=HEAD_B,
+                **self._rework_kwargs(issue_number=10, findings="x")
             )
+        self.assertIn("not the unique ACTIVE", str(ctx.exception))
+
+    def test_rejects_workstream_mismatch(self):
+        with self.assertRaises(ValidationError) as ctx:
+            _render(workstream="other-workstream")
+        self.assertIn("WORKSTREAM mismatch", str(ctx.exception))
+
+    def test_rejects_ambiguous_active_packets(self):
+        other = SAMPLE_BODY.replace(
+            "OWNER_INTENT=Complete the AWC PoC safely.",
+            "OWNER_INTENT=Other packet.",
+        )
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "list"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        self._list_payload(
+                            {
+                                "number": 12,
+                                "title": "[AI Work] one",
+                                "state": "OPEN",
+                                "body": SAMPLE_BODY,
+                            },
+                            {
+                                "number": 99,
+                                "title": "[AI Work] two",
+                                "state": "OPEN",
+                                "body": other,
+                            },
+                        )
+                    ),
+                    stderr="",
+                )
+            self.fail(f"must not continue after ambiguity: {argv}")
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        with self.assertRaises(ValidationError) as ctx:
+            adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
+        self.assertIn("ambiguous ACTIVE Work Packets", str(ctx.exception))
+
+    def test_hyphenated_api_key_json_escaped_in_prompt_is_detected(self):
+        from atlas.codex_audit import build_codex_audit_prompt
+        from atlas.work_controller import (
+            CompletionEvent,
+            WorkstreamRecord,
+            WorktreeIdentity,
+            _looks_like_secret,
+        )
+
+        secret = '{"api-key":"correct horse battery"}'
+        self.assertTrue(_looks_like_secret(secret))
+        event = CompletionEvent(
+            event_id="e1",
+            workstream=WORKSTREAM,
+            issue_number=12,
+            branch=BRANCH,
+            head=HEAD_B,
+            attempt=1,
+        )
+        record = WorkstreamRecord(
+            workstream=WORKSTREAM,
+            repository="datarelay-labs/datarelay-atlas",
+            worktree_path="/tmp/wt",
+            branch=BRANCH,
+            issue_number=12,
+            max_attempts=3,
+            state="AUDITING",
+            attempt=1,
+            expected_head=HEAD_B,
+        )
+        identity = WorktreeIdentity(
+            worktree_path="/tmp/wt",
+            repository="datarelay-labs/datarelay-atlas",
+            branch=BRANCH,
+            head=HEAD_B,
+            toplevel="/tmp/wt",
+        )
+        prompt = build_codex_audit_prompt(
+            event,
+            record,
+            identity=identity,
+            evidence_bundle={"tests": {"output": secret}},
+        )
+        self.assertIn('\\"api-key\\"', prompt)
+        self.assertTrue(_looks_like_secret(prompt), prompt[:500])
+        redacted = redact_sensitive_audit_text(prompt)
+        self.assertNotIn("correct horse battery", redacted)
 
 
 class CliWorkPacketAdapterSelectionTests(unittest.TestCase):

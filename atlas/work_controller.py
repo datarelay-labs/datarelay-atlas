@@ -316,6 +316,7 @@ class WorkPacketPort(Protocol):
         repository: str,
         issue_number: int,
         branch: str,
+        workstream: str,
         findings: str,
         attempt: int,
         head: str,
@@ -328,6 +329,7 @@ class WorkPacketPort(Protocol):
         repository: str,
         issue_number: int,
         branch: str,
+        workstream: str,
         findings: str,
         attempt: int,
         head: str,
@@ -404,14 +406,16 @@ def _looks_like_secret(text: str) -> bool:
     name = _credential_name_pattern()
     # Quoted values may contain whitespace/commas and the opposite quote
     # character; only the selected delimiter ends the value (escapes allowed).
+    # Optional leading backslash covers JSON-serialized evidence
+    # (`{\"api-key\":\"...\"}` inside EVIDENCE_BUNDLE_JSON).
     if re.search(
-        rf'(?i)(["\']?)({name})\1\s*[:=]\s*(["\'])((?:\\.|(?!\3).)*)\3',
+        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*((?:\\)?["\'])((?:\\.|(?!\3).)*)\3',
         text,
     ):
         return True
     # Bare equals/colon assignments without whitespace in the value.
     if re.search(
-        rf'(?i)(["\']?)({name})\1\s*[:=]\s*([^\s,"\'}}\]]+)',
+        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*([^\s,"\'}}\]]+)',
         text,
     ):
         return True
@@ -439,13 +443,14 @@ _URL_RE = re.compile(r"https?://[^\s\"'`]+", re.IGNORECASE)
 _CREDENTIAL_NAME = _credential_name_pattern()
 # Quoted value first so whitespace/commas and the opposite quote inside the
 # selected delimiter are fully captured (including escaped delimiters).
+# Optional backslash before quotes matches JSON-serialized credential dumps.
 _SECRET_KV_QUOTED_RE = re.compile(
-    rf'(?i)(?P<kq>["\']?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
-    rf'\s*[:=]\s*(?P<vq>["\'])(?P<val>(?:\\.|(?!(?P=vq)).)*)(?P=vq)'
+    rf'(?i)(?P<kq>(?:\\)?["\']?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
+    rf'\s*[:=]\s*(?P<vq>(?:\\)?["\'])(?P<val>(?:\\.|(?!(?P=vq)).)*)(?P=vq)'
 )
 # Bare key=value / key:value without whitespace in the value.
 _SECRET_KV_BARE_RE = re.compile(
-    rf'(?i)(?P<kq>["\']?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
+    rf'(?i)(?P<kq>(?:\\)?["\']?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
     rf'\s*[:=]\s*(?P<val>[^\s,"\'}}\]]+)'
 )
 _SECRET_TOKEN_RE = re.compile(
@@ -606,6 +611,7 @@ def render_rework_work_packet_body(
     *,
     repository: str,
     branch: str,
+    workstream: str,
     findings: str,
     attempt: int,
     head: str,
@@ -642,6 +648,17 @@ def render_rework_work_packet_body(
     if packet_branch != expected_branch:
         raise ValidationError(
             f"work packet BRANCH mismatch: {packet_branch!r} != {expected_branch!r}"
+        )
+    expected_workstream = workstream.strip()
+    if not expected_workstream:
+        raise ValidationError("workstream is required for Work Packet mutation")
+    packet_workstream = _packet_metadata_value(raw, "WORKSTREAM")
+    if packet_workstream is None:
+        raise ValidationError("work packet missing WORKSTREAM metadata")
+    if packet_workstream != expected_workstream:
+        raise ValidationError(
+            f"work packet WORKSTREAM mismatch: "
+            f"{packet_workstream!r} != {expected_workstream!r}"
         )
     # Sanitize before any section rewrite so findings cannot inject headings.
     safe_findings = sanitize_rework_findings(findings)
@@ -697,6 +714,7 @@ def render_dispatch_blocked_work_packet_body(
     *,
     repository: str,
     branch: str,
+    workstream: str,
     findings: str,
     attempt: int,
     head: str,
@@ -730,6 +748,17 @@ def render_dispatch_blocked_work_packet_body(
     if packet_branch != expected_branch:
         raise ValidationError(
             f"work packet BRANCH mismatch: {packet_branch!r} != {expected_branch!r}"
+        )
+    expected_workstream = workstream.strip()
+    if not expected_workstream:
+        raise ValidationError("workstream is required for Work Packet mutation")
+    packet_workstream = _packet_metadata_value(raw, "WORKSTREAM")
+    if packet_workstream is None:
+        raise ValidationError("work packet missing WORKSTREAM metadata")
+    if packet_workstream != expected_workstream:
+        raise ValidationError(
+            f"work packet WORKSTREAM mismatch: "
+            f"{packet_workstream!r} != {expected_workstream!r}"
         )
     safe_findings = sanitize_rework_findings(findings) or "(no findings text provided)"
     safe_reason = sanitize_rework_findings(reason, max_chars=1000) or "dispatch blocked"
@@ -793,6 +822,7 @@ class RecordingWorkPacketAdapter:
         repository: str,
         issue_number: int,
         branch: str,
+        workstream: str,
         findings: str,
         attempt: int,
         head: str,
@@ -803,6 +833,7 @@ class RecordingWorkPacketAdapter:
                 "repository": repository,
                 "issue_number": issue_number,
                 "branch": branch,
+                "workstream": workstream,
                 "findings": findings,
                 "attempt": attempt,
                 "head": head,
@@ -815,6 +846,7 @@ class RecordingWorkPacketAdapter:
         repository: str,
         issue_number: int,
         branch: str,
+        workstream: str,
         findings: str,
         attempt: int,
         head: str,
@@ -826,6 +858,7 @@ class RecordingWorkPacketAdapter:
                 "repository": repository,
                 "issue_number": issue_number,
                 "branch": branch,
+                "workstream": workstream,
                 "findings": findings,
                 "attempt": attempt,
                 "head": head,
@@ -859,6 +892,7 @@ class GitHubWorkPacketAdapter:
         repository: str,
         issue_number: int,
         branch: str,
+        workstream: str,
         findings: str,
         attempt: int,
         head: str,
@@ -869,7 +903,16 @@ class GitHubWorkPacketAdapter:
         expected_branch = branch.strip()
         if not expected_branch:
             raise ValidationError("branch is required for Work Packet mutation")
+        expected_workstream = workstream.strip()
+        if not expected_workstream:
+            raise ValidationError("workstream is required for Work Packet mutation")
 
+        self._require_unique_active_packet(
+            repo,
+            issue_number=int(issue_number),
+            branch=expected_branch,
+            workstream=expected_workstream,
+        )
         payload = self._view_issue(repo, int(issue_number))
         original_body = str(payload.get("body") or "")
         original_updated_at = str(
@@ -880,6 +923,7 @@ class GitHubWorkPacketAdapter:
             original_body,
             repository=repo,
             branch=expected_branch,
+            workstream=expected_workstream,
             findings=sanitize_rework_findings(
                 findings, max_chars=self._max_findings_chars
             ),
@@ -941,6 +985,7 @@ class GitHubWorkPacketAdapter:
         repository: str,
         issue_number: int,
         branch: str,
+        workstream: str,
         findings: str,
         attempt: int,
         head: str,
@@ -952,6 +997,15 @@ class GitHubWorkPacketAdapter:
         expected_branch = branch.strip()
         if not expected_branch:
             raise ValidationError("branch is required for Work Packet mutation")
+        expected_workstream = workstream.strip()
+        if not expected_workstream:
+            raise ValidationError("workstream is required for Work Packet mutation")
+        self._require_unique_active_packet(
+            repo,
+            issue_number=int(issue_number),
+            branch=expected_branch,
+            workstream=expected_workstream,
+        )
         payload = self._view_issue(repo, int(issue_number))
         original_body = str(payload.get("body") or "")
         original_updated_at = str(
@@ -962,6 +1016,7 @@ class GitHubWorkPacketAdapter:
             original_body,
             repository=repo,
             branch=expected_branch,
+            workstream=expected_workstream,
             findings=sanitize_rework_findings(
                 findings, max_chars=self._max_findings_chars
             ),
@@ -1038,6 +1093,110 @@ class GitHubWorkPacketAdapter:
         if not isinstance(payload, dict):
             raise ValidationError("gh issue view returned non-object JSON")
         return payload
+
+    def _list_open_ai_work_issues(self, repository: str) -> list[dict]:
+        listed = self._run(
+            [
+                "gh",
+                "issue",
+                "list",
+                "--repo",
+                repository,
+                "--state",
+                "open",
+                "--limit",
+                "100",
+                "--json",
+                "number,title,body,state",
+            ]
+        )
+        if listed.returncode != 0:
+            detail = (listed.stderr or listed.stdout or "").strip()
+            raise ValidationError(
+                detail[:500]
+                or f"gh issue list failed with exit {listed.returncode}"
+            )
+        try:
+            payload = json.loads(listed.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValidationError("gh issue list returned non-JSON") from exc
+        if not isinstance(payload, list):
+            raise ValidationError("gh issue list returned non-list JSON")
+        issues: list[dict] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise ValidationError("gh issue list returned non-object entry")
+            title = str(item.get("title") or "")
+            if title.startswith("[AI Work]"):
+                issues.append(item)
+        return issues
+
+    @staticmethod
+    def _active_packet_matches(
+        body: str,
+        *,
+        repository: str,
+        branch: str,
+        workstream: str,
+    ) -> bool:
+        try:
+            meta = _parse_leading_packet_metadata(body)
+        except ValidationError:
+            return False
+        if meta.get("STATUS") != "ACTIVE":
+            return False
+        target = meta.get("TARGET_REPO")
+        if not target:
+            return False
+        try:
+            if normalize_github_repository(target) != repository:
+                return False
+        except ValidationError:
+            return False
+        if meta.get("BRANCH") != branch:
+            return False
+        if meta.get("WORKSTREAM") != workstream:
+            return False
+        return True
+
+    def _require_unique_active_packet(
+        self,
+        repository: str,
+        *,
+        issue_number: int,
+        branch: str,
+        workstream: str,
+    ) -> None:
+        """Fail closed unless exactly one ACTIVE packet matches repo/branch/workstream."""
+        matches: list[int] = []
+        for issue in self._list_open_ai_work_issues(repository):
+            number = issue.get("number")
+            try:
+                number_i = int(number)
+            except (TypeError, ValueError):
+                continue
+            body = str(issue.get("body") or "")
+            if self._active_packet_matches(
+                body,
+                repository=repository,
+                branch=branch,
+                workstream=workstream,
+            ):
+                matches.append(number_i)
+        if not matches:
+            raise ValidationError(
+                "no ACTIVE Work Packet matches repository/branch/workstream"
+            )
+        if len(matches) > 1:
+            listed = ", ".join(f"#{n}" for n in sorted(matches))
+            raise ValidationError(
+                f"ambiguous ACTIVE Work Packets for repository/branch/workstream: {listed}"
+            )
+        if matches[0] != int(issue_number):
+            raise ValidationError(
+                f"configured issue #{issue_number} is not the unique ACTIVE "
+                f"Work Packet match (found #{matches[0]})"
+            )
 
     @staticmethod
     def _assert_ai_work_issue(payload: dict, *, issue_number: int) -> None:
@@ -1719,6 +1878,7 @@ class WorkController:
                         repository=record.repository,
                         issue_number=record.issue_number,
                         branch=record.branch,
+                        workstream=record.workstream,
                         findings=audit_result.findings,
                         attempt=next_attempt,
                         head=event.head,
@@ -1780,6 +1940,7 @@ class WorkController:
                                 repository=record.repository,
                                 issue_number=record.issue_number,
                                 branch=record.branch,
+                                workstream=record.workstream,
                                 findings=audit_result.findings,
                                 attempt=next_attempt,
                                 head=event.head,
