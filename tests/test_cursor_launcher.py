@@ -183,6 +183,30 @@ class CursorLauncherTests(unittest.TestCase):
             self.assertEqual(state["spawn_calls"], 1)
             self.assertEqual(dispatcher.spawned_pids, [7777])
 
+    def test_pre_spawn_oserror_is_validation_error(self):
+        """OSError before a live process exists must stay a boundary ValidationError."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+
+            def spawn(command: list[str], worktree_path: str) -> int:
+                raise FileNotFoundError("script not found")
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=lambda: [],
+                list_target_procs=lambda _wt: [],
+                spawn=spawn,
+                git_runner=self._clean_git(),
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                dispatcher.start_resume(self._dispatch_request(str(target)))
+            self.assertNotIsInstance(ctx.exception, DispatchSpawnedButUnobservedError)
+            self.assertIn("spawn failed before start", str(ctx.exception))
+            self.assertEqual(dispatcher.spawned_pids, [])
+
     def test_pty_dispatcher_falls_back_to_target_process_observation(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "target-wt"

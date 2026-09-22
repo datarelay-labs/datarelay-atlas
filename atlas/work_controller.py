@@ -1111,7 +1111,16 @@ class PtyPersistCursorDispatcher:
             expected_head=request.expected_head,
             git_runner=self._git_runner,
         )
-        pid = self._spawn(command, worktree)
+        try:
+            pid = self._spawn(command, worktree)
+        except DispatchSpawnedButUnobservedError:
+            raise
+        except ValidationError:
+            raise
+        except OSError as exc:
+            # Pre-spawn OS failures must remain boundary ValidationErrors so the
+            # controller can compensate the Work Packet away from PENDING_DISPATCH.
+            raise ValidationError(f"cursor spawn failed before start: {exc}") from exc
         self.spawned_pids.append(pid)
         deadline = time.monotonic() + self._poll_timeout_sec
         while time.monotonic() < deadline:
@@ -1205,15 +1214,20 @@ def script_pty_spawn_persist(command: list[str], worktree_path: str) -> int:
         raise ValidationError(f"refusing to spawn non-agent command: {command!r}")
     quoted = " ".join(shlex.quote(part) for part in command)
     script_cmd = ["script", "-qec", quoted, "/dev/null"]
-    proc = subprocess.Popen(
-        script_cmd,
-        cwd=worktree_path,
-        start_new_session=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-    )
+    try:
+        proc = subprocess.Popen(
+            script_cmd,
+            cwd=worktree_path,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except OSError as exc:
+        raise ValidationError(
+            f"script pty spawn failed to start agent persist: {exc}"
+        ) from exc
     if proc.pid <= 0:
         raise ValidationError("script pty spawn failed to start agent persist")
     return int(proc.pid)
@@ -1223,17 +1237,25 @@ def pty_spawn_persist(command: list[str], worktree_path: str) -> int:
     """Spawn argv under a raw PTY in the target worktree; do not wait for exit."""
     if not command or command[0] != "agent":
         raise ValidationError(f"refusing to spawn non-agent command: {command!r}")
-    master_fd, slave_fd = pty.openpty()
     try:
-        proc = subprocess.Popen(
-            command,
-            cwd=worktree_path,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            start_new_session=True,
-            close_fds=True,
-        )
+        master_fd, slave_fd = pty.openpty()
+    except OSError as exc:
+        raise ValidationError(f"pty open failed: {exc}") from exc
+    try:
+        try:
+            proc = subprocess.Popen(
+                command,
+                cwd=worktree_path,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except OSError as exc:
+            raise ValidationError(
+                f"pty spawn failed to start agent persist: {exc}"
+            ) from exc
     finally:
         os.close(slave_fd)
         os.close(master_fd)
