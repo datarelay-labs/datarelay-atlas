@@ -286,14 +286,25 @@ def make_run_key(repository: str, branch: str, target_sha: str) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
 
 
+def require_exact_commit_sha(value: str, *, label: str) -> str:
+    """Normalize and require a full 40-char commit SHA (no prefix matching)."""
+    normalized = str(value).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", normalized):
+        raise ValidationError(f"{label} must be an exact 40-char commit SHA")
+    return normalized
+
+
 def parse_unit_key(unit_key: str) -> tuple[str, str, str]:
     parts = unit_key.split(":")
     if len(parts) != 3:
         raise ValidationError(f"invalid completed unit key: {unit_key!r}")
     run_key, unit, target_sha = parts
-    if not run_key or not unit or not HEAD_RE.match(target_sha.lower()):
+    if not run_key or not unit:
         raise ValidationError(f"invalid completed unit key: {unit_key!r}")
-    return run_key, unit, target_sha.lower()
+    target_sha = require_exact_commit_sha(
+        target_sha, label=f"completed_units key SHA in {unit_key!r}"
+    )
+    return run_key, unit, target_sha
 
 
 def validate_completed_unit_entry(
@@ -312,12 +323,15 @@ def validate_completed_unit_entry(
         raise ValidationError(
             f"completed_units key run_key mismatch for {unit_key!r}"
         )
-    if expected_target_sha is not None and not heads_match(
-        target_sha, expected_target_sha
-    ):
-        raise ValidationError(
-            f"completed_units key target SHA mismatch for {unit_key!r}"
+    if expected_target_sha is not None:
+        expected = require_exact_commit_sha(
+            expected_target_sha,
+            label=f"expected target SHA for {unit_key!r}",
         )
+        if target_sha != expected:
+            raise ValidationError(
+                f"completed_units key target SHA mismatch for {unit_key!r}"
+            )
     outcome = str(entry.get("outcome", ""))
     if outcome not in {"PASS", "FINDING"}:
         raise ValidationError(
@@ -327,7 +341,11 @@ def validate_completed_unit_entry(
         raise ValidationError(
             f"completed_units[{unit_key!r}] unit does not match key"
         )
-    if not heads_match(str(entry.get("target_sha", "")), target_sha):
+    entry_sha = require_exact_commit_sha(
+        str(entry.get("target_sha", "")),
+        label=f"completed_units[{unit_key!r}] target_sha",
+    )
+    if entry_sha != target_sha:
         raise ValidationError(
             f"completed_units[{unit_key!r}] target_sha does not match key"
         )
@@ -341,7 +359,11 @@ def validate_completed_unit_entry(
         raise ValidationError(
             f"completed_units[{unit_key!r}] evidence is not COMPLETE"
         )
-    if evidence.unit != unit or not heads_match(evidence.target_sha, target_sha):
+    evidence_sha = require_exact_commit_sha(
+        evidence.target_sha,
+        label=f"completed_units[{unit_key!r}] evidence.target_sha",
+    )
+    if evidence.unit != unit or evidence_sha != target_sha:
         raise ValidationError(
             f"completed_units[{unit_key!r}] evidence identity mismatch"
         )
@@ -661,6 +683,16 @@ class RecordingWorkPacketHandoff:
         return record
 
 
+def handoff_filename_for_finding_id(finding_id: str) -> str:
+    """Collision-resistant filename: readable stem + digest of original ID."""
+    digest = hashlib.sha256(finding_id.encode("utf-8")).hexdigest()[:16]
+    stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", finding_id).strip("._-")
+    if not stem:
+        stem = "finding"
+    stem = stem[:64]
+    return f"{stem}__{digest}.json"
+
+
 class FileWorkPacketHandoff:
     """Persist finding handoffs under the ADR-0005 data root."""
 
@@ -683,10 +715,10 @@ class FileWorkPacketHandoff:
                 "do not modify product code from Chat."
             ),
             "status": "OPEN",
+            "finding_id": finding.finding_id,
         }
         self.directory.mkdir(parents=True, exist_ok=True)
-        safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "_", finding.finding_id)
-        path = self.directory / f"{safe_id}.json"
+        path = self.directory / handoff_filename_for_finding_id(finding.finding_id)
         path.write_text(
             json.dumps(record, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

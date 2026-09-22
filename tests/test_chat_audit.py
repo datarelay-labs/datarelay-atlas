@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -601,6 +602,104 @@ class ChatAuditTests(unittest.TestCase):
             self.assertTrue(handoff.handoffs)
             path = Path(handoff.handoffs[0]["handoff_path"])
             self.assertTrue(path.exists())
+
+    def test_25_restored_completed_entry_rejects_prefix_sha(self):
+        from atlas.chat_audit import (
+            AuditEvidence,
+            validate_completed_unit_entry,
+        )
+
+        unit = "changed_code"
+        key = f"runkey:{unit}:{HEAD_A}"
+        evidence = AuditEvidence(
+            status="COMPLETE",
+            unit=unit,
+            target_sha=HEAD_A[:7],
+            notes="ok",
+        ).to_dict()
+        entry = {
+            "unit": unit,
+            "target_sha": HEAD_A[:7],
+            "outcome": "PASS",
+            "findings": [],
+            "evidence": evidence,
+            "audit_request": "",
+        }
+        with self.assertRaises(ValidationError):
+            validate_completed_unit_entry(
+                key, entry, expected_run_key="runkey", expected_target_sha=HEAD_A
+            )
+
+    def test_26_restored_completed_evidence_rejects_prefix_sha(self):
+        from atlas.chat_audit import (
+            AuditEvidence,
+            validate_completed_unit_entry,
+        )
+
+        unit = "changed_code"
+        key = f"runkey:{unit}:{HEAD_A}"
+        evidence = AuditEvidence(
+            status="COMPLETE",
+            unit=unit,
+            target_sha=HEAD_A[:7],
+            notes="ok",
+        ).to_dict()
+        entry = {
+            "unit": unit,
+            "target_sha": HEAD_A,
+            "outcome": "PASS",
+            "findings": [],
+            "evidence": evidence,
+            "audit_request": "",
+        }
+        with self.assertRaises(ValidationError):
+            validate_completed_unit_entry(
+                key, entry, expected_run_key="runkey", expected_target_sha=HEAD_A
+            )
+
+    def test_27_handoff_filenames_collision_resistant_and_idempotent(self):
+        from atlas.chat_audit import (
+            AuditControlPacket,
+            AuditFinding,
+            FileWorkPacketHandoff,
+            handoff_filename_for_finding_id,
+        )
+
+        self.assertNotEqual(
+            handoff_filename_for_finding_id("a/b"),
+            handoff_filename_for_finding_id("a_b"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = FileWorkPacketHandoff(Path(tmp) / "data")
+            packet = AuditControlPacket(
+                target_repository=REPO,
+                target_branch=BRANCH,
+                current_target_sha=HEAD_A,
+                audit_queue=[
+                    "changed_code",
+                    "affected_contracts",
+                    "affected_tests_ci",
+                    "security_impact",
+                    "docs_spec_drift",
+                ],
+                idempotency_run_key="runkey",
+            )
+            f1 = AuditFinding(finding_id="a/b", unit="changed_code", summary="one")
+            f2 = AuditFinding(finding_id="a_b", unit="changed_code", summary="two")
+            r1 = handoff.upsert_implementation_packet(packet, f1)
+            r2 = handoff.upsert_implementation_packet(packet, f2)
+            path1 = Path(r1["handoff_path"])
+            path2 = Path(r2["handoff_path"])
+            self.assertNotEqual(path1, path2)
+            self.assertTrue(path1.exists())
+            self.assertTrue(path2.exists())
+            self.assertEqual(json.loads(path1.read_text())["finding_id"], "a/b")
+            self.assertEqual(json.loads(path2.read_text())["finding_id"], "a_b")
+            # Same-ID upsert is stable/idempotent (same path, overwrite in place).
+            r1b = handoff.upsert_implementation_packet(packet, f1)
+            self.assertEqual(Path(r1b["handoff_path"]), path1)
+            self.assertEqual(json.loads(path1.read_text())["finding_id"], "a/b")
+            self.assertEqual(json.loads(path2.read_text())["finding_id"], "a_b")
 
 
 if __name__ == "__main__":
