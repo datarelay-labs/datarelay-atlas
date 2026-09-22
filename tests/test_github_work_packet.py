@@ -99,6 +99,13 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
                     "TARGET_REPO=other-org/other-repo",
                 )
             )
+        missing_target = "\n".join(
+            line
+            for line in SAMPLE_BODY.splitlines()
+            if not line.startswith("TARGET_REPO=")
+        )
+        with self.assertRaises(ValidationError):
+            _render(body=missing_target)
         with self.assertRaises(ValidationError):
             _render(branch="feature/other-branch")
 

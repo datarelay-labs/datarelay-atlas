@@ -455,12 +455,13 @@ def render_rework_work_packet_body(
         )
     repo = normalize_github_repository(repository)
     target = _packet_metadata_value(raw, "TARGET_REPO")
-    if target:
-        observed = normalize_github_repository(target)
-        if observed != repo:
-            raise ValidationError(
-                f"work packet TARGET_REPO mismatch: {observed} != {repo}"
-            )
+    if target is None or not target.strip():
+        raise ValidationError("work packet missing TARGET_REPO metadata")
+    observed = normalize_github_repository(target)
+    if observed != repo:
+        raise ValidationError(
+            f"work packet TARGET_REPO mismatch: {observed} != {repo}"
+        )
     expected_branch = branch.strip()
     if not expected_branch:
         raise ValidationError("branch is required for Work Packet mutation")
