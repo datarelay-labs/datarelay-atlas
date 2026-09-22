@@ -9,6 +9,14 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from atlas.chat_audit import (
+    ChatAuditController,
+    FakeBrowserRolloverProvider,
+    FileCheckpointStore,
+    FixedUnitExecutor,
+    RecordingWorkPacketHandoff,
+    StagehandRolloverProvider,
+)
 from atlas.codex_audit import CodexAuditProvider
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
@@ -216,6 +224,79 @@ def cmd_wc_reconcile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
+    store = FileCheckpointStore(Path(args.data_root))
+    executor = FixedUnitExecutor()
+    handoff = RecordingWorkPacketHandoff()
+    provider = getattr(args, "rollover_provider", "fake")
+    if provider == "stagehand":
+        rollover = StagehandRolloverProvider(
+            provider_approved=bool(getattr(args, "stagehand_approved", False))
+        )
+    else:
+        rollover = FakeBrowserRolloverProvider()
+    worktree = getattr(args, "worktree", None)
+    return ChatAuditController(
+        store,
+        executor=executor,
+        handoff=handoff,
+        rollover=rollover,
+        worktree_path=worktree,
+        enforce_worktree_identity=bool(worktree),
+    )
+
+
+def cmd_ca_init(args: argparse.Namespace) -> int:
+    ctl = _chat_audit_from_args(args)
+    _print_json(
+        ctl.initialize(
+            repository=args.repository,
+            branch=args.branch,
+            head=args.head,
+            include_release_readiness=bool(args.include_release_readiness),
+            mode=args.mode,
+        )
+    )
+    return 0
+
+
+def cmd_ca_show(args: argparse.Namespace) -> int:
+    ctl = _chat_audit_from_args(args)
+    _print_json(ctl.show())
+    return 0
+
+
+def cmd_ca_run_slice(args: argparse.Namespace) -> int:
+    ctl = _chat_audit_from_args(args)
+    _print_json(
+        ctl.run_slice(
+            repository=args.repository,
+            branch=args.branch,
+            head=args.head,
+            include_release_readiness=bool(args.include_release_readiness),
+        )
+    )
+    return 0
+
+
+def cmd_ca_resume_payload(args: argparse.Namespace) -> int:
+    ctl = _chat_audit_from_args(args)
+    _print_json(ctl.resume_instruction_payload())
+    return 0
+
+
+def cmd_ca_mark_session(args: argparse.Namespace) -> int:
+    ctl = _chat_audit_from_args(args)
+    _print_json(ctl.mark_session(args.state, notes=args.notes or ""))
+    return 0
+
+
+def cmd_ca_rollover(args: argparse.Namespace) -> int:
+    ctl = _chat_audit_from_args(args)
+    _print_json(ctl.perform_rollover())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="atlas",
@@ -377,6 +458,73 @@ def build_parser() -> argparse.ArgumentParser:
     wc_rec.add_argument("--audit-findings", default="")
     wc_rec.add_argument("--spawn-dispatch", action="store_true")
     wc_rec.set_defaults(func=cmd_wc_reconcile)
+
+    ca = sub.add_parser(
+        "chat-audit",
+        help="Continuous Chat Audit Supervisor PoC (ADR-0007)",
+    )
+    ca_sub = ca.add_subparsers(dest="ca_command", required=True)
+
+    ca_init = ca_sub.add_parser("init", help="Initialize Audit Control Packet")
+    ca_init.add_argument("--repository", required=True)
+    ca_init.add_argument("--branch", required=True)
+    ca_init.add_argument("--head", required=True)
+    ca_init.add_argument(
+        "--mode",
+        choices=["delta", "full"],
+        default="delta",
+    )
+    ca_init.add_argument(
+        "--include-release-readiness",
+        action="store_true",
+    )
+    ca_init.add_argument("--worktree", default=None)
+    ca_init.set_defaults(func=cmd_ca_init)
+
+    ca_show = ca_sub.add_parser("show", help="Show Audit Control Packet")
+    ca_show.add_argument("--worktree", default=None)
+    ca_show.set_defaults(func=cmd_ca_show)
+
+    ca_run = ca_sub.add_parser("run-slice", help="Run one bounded audit slice")
+    ca_run.add_argument("--repository", default=None)
+    ca_run.add_argument("--branch", default=None)
+    ca_run.add_argument("--head", default=None)
+    ca_run.add_argument("--include-release-readiness", action="store_true")
+    ca_run.add_argument("--worktree", default=None)
+    ca_run.set_defaults(func=cmd_ca_run_slice)
+
+    ca_resume = ca_sub.add_parser(
+        "resume-payload",
+        help="Emit fresh-Chat resume payload from durable checkpoint only",
+    )
+    ca_resume.add_argument("--worktree", default=None)
+    ca_resume.set_defaults(func=cmd_ca_resume_payload)
+
+    ca_mark = ca_sub.add_parser("mark-session", help="Update session supervisor state")
+    ca_mark.add_argument(
+        "state",
+        choices=["ACTIVE", "STALLED", "TIMEOUT", "ROLLOVER_REQUIRED", "RESUMED"],
+    )
+    ca_mark.add_argument("--notes", default="")
+    ca_mark.add_argument("--worktree", default=None)
+    ca_mark.set_defaults(func=cmd_ca_mark_session)
+
+    ca_roll = ca_sub.add_parser(
+        "rollover",
+        help="Perform provider rollover without mutating audit truth",
+    )
+    ca_roll.add_argument(
+        "--rollover-provider",
+        choices=["fake", "stagehand"],
+        default="fake",
+    )
+    ca_roll.add_argument(
+        "--stagehand-approved",
+        action="store_true",
+        help="Required to attempt Stagehand path; still gated/unimplemented in PoC",
+    )
+    ca_roll.add_argument("--worktree", default=None)
+    ca_roll.set_defaults(func=cmd_ca_rollover)
 
     return parser
 

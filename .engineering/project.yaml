@@ -26,6 +26,7 @@ operations:
   incident_response_required: false
   persistent_state: true
   runbook_paths:
+<<<<<<< HEAD
   - docs/runbooks/phase1-project-registry-canonical-sync.md
   - docs/runbooks/autonomous-work-controller-poc.md
   health_command: ''
@@ -34,3 +35,13 @@ operations:
     ! -e "${ATLAS_DATA_ROOT:-.atlas-data}/registry.json"
   upgrade_command: ''
   rollback_command: ''
+=======
+    - docs/runbooks/phase1-project-registry-canonical-sync.md
+    - docs/runbooks/autonomous-work-controller-poc.md
+    - docs/runbooks/continuous-chat-audit-supervisor-poc.md
+  health_command: ""
+  backup_command: "cp -a \"${ATLAS_DATA_ROOT:-.atlas-data}\" \"${ATLAS_DATA_ROOT:-.atlas-data}.bak\""
+  restore_test_command: "test -f \"${ATLAS_DATA_ROOT:-.atlas-data}/registry.json\" -o ! -e \"${ATLAS_DATA_ROOT:-.atlas-data}/registry.json\""
+  upgrade_command: ""
+  rollback_command: ""
+>>>>>>> 01a314f (Add continuous Chat audit supervisor PoC (ADR-0007).)

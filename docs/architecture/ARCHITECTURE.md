@@ -108,6 +108,12 @@ Autonomous Work Controller PoC state (ADR-0006) extends the same data root with
 `work-controller.json` (one local workstream control loop). It does not replace
 GitHub AI Work Packets as canonical coordination state.
 
+Continuous Chat Audit Supervisor PoC state (ADR-0007) extends the same data root
+with `chat-audit.json` (Audit Control Packet / bounded delta-audit cursor). Chat
+conversations remain disposable execution instances; the checkpoint is durable.
+Optional browser rollover adapters must not redefine checkpoint semantics.
+Stagehand remains gated on Issue #19.
+
 Postgres/pgvector/Bun/Wiki.js are not Phase 1 persistence choices.
 
 ## Related decisions
@@ -118,3 +124,4 @@ Postgres/pgvector/Bun/Wiki.js are not Phase 1 persistence choices.
 - ADR-0004 — Athena absorption and repository retirement
 - ADR-0005 — Phase 1 persistence model (local filesystem JSON)
 - ADR-0006 — Autonomous Work Controller PoC (completion → audit → rework/pass)
+- ADR-0007 — Continuous Chat Audit & Session Supervisor PoC
