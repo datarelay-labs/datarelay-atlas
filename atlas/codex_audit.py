@@ -26,6 +26,7 @@ from atlas.work_controller import (
     CompletionEvent,
     WorkstreamRecord,
     WorktreeIdentity,
+    _looks_like_secret,
     default_git_runner,
     normalize_github_repository,
     parse_audit_verdict_payload,
@@ -979,17 +980,6 @@ def _codex_child_env() -> dict[str, str]:
     env = dict(os.environ)
     env.pop("OPENAI_API_KEY", None)
     return env
-
-
-def _looks_like_secret(text: str) -> bool:
-    """Detect likely live credentials, not mere documentation mentions."""
-    if re.search(r"OPENAI_API_KEY\s*=\s*\S+", text):
-        return True
-    if re.search(r"\bsk-[A-Za-z0-9]{20,}\b", text):
-        return True
-    if re.search(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", text):
-        return True
-    return False
 
 
 def _revalidate_clean_audited_snapshot(

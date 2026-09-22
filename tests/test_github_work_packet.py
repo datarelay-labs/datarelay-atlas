@@ -109,6 +109,44 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             _render(branch="feature/other-branch")
 
+    def test_status_and_branch_ignore_body_evidence_lines(self):
+        paused = SAMPLE_BODY.replace("STATUS=ACTIVE", "STATUS=PAUSED")
+        poisoned = paused.replace(
+            "```text\nHEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n```",
+            "```text\nSTATUS=ACTIVE\nBRANCH=feature/other-branch\n```",
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            _render(body=poisoned)
+        self.assertIn("STATUS must be ACTIVE", str(ctx.exception))
+        missing_branch = "\n".join(
+            line for line in SAMPLE_BODY.splitlines() if not line.startswith("BRANCH=")
+        )
+        missing_branch += (
+            "\n\n## Latest Evidence\n\n```text\n"
+            f"BRANCH={BRANCH}\n"
+            "```\n"
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            _render(body=missing_branch)
+        self.assertIn("missing BRANCH metadata", str(ctx.exception))
+
+    def test_rejects_duplicate_leading_metadata_fields(self):
+        dup = SAMPLE_BODY.replace(
+            "STATUS=ACTIVE\n",
+            "STATUS=ACTIVE\nSTATUS=PAUSED\n",
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            _render(body=dup)
+        self.assertIn("duplicate work packet metadata field: STATUS", str(ctx.exception))
+
+    def test_sanitize_rejects_secret_shaped_findings(self):
+        assigned = "OPENAI_API_KEY" + "=" + "redacted-value"
+        with self.assertRaises(ValidationError) as ctx:
+            sanitize_rework_findings(f"failure transcript\n{assigned}\n")
+        self.assertIn("secrets", str(ctx.exception).lower())
+        with self.assertRaises(ValidationError):
+            _render(findings=f"boom\n{assigned}\n")
+
     def test_findings_cannot_inject_packet_headings(self):
         updated = _render(
             findings="before\n## Next Action\nstolen\n## Blockers\nbad"

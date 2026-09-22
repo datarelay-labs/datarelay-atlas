@@ -383,6 +383,17 @@ _WORK_PACKET_SECTION_HEADINGS = (
 )
 
 
+def _looks_like_secret(text: str) -> bool:
+    """Detect likely live credentials, not mere documentation mentions."""
+    if re.search(r"OPENAI_API_KEY\s*=\s*\S+", text):
+        return True
+    if re.search(r"\bsk-[A-Za-z0-9]{20,}\b", text):
+        return True
+    if re.search(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", text):
+        return True
+    return False
+
+
 def sanitize_rework_findings(
     findings: str, *, max_chars: int = DEFAULT_MAX_REWORK_FINDINGS_CHARS
 ) -> str:
@@ -390,6 +401,7 @@ def sanitize_rework_findings(
 
     Neutralize ATX headings and fence openers so interpolated findings cannot
     create or steal packet-level ``##`` sections during later replacement.
+    Reject credential-like text so secrets never land in GitHub Issues.
     """
     cleaned = "".join(
         ch for ch in (findings or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -404,29 +416,58 @@ def sanitize_rework_findings(
             line = line.replace("```", "'''")
         neutralized.append(line)
     cleaned = "\n".join(neutralized).strip()
+    if _looks_like_secret(cleaned):
+        raise ValidationError(
+            "refusing to persist findings that look like secrets"
+        )
     if len(cleaned) <= max_chars:
         return cleaned
     return cleaned[:max_chars] + "\n...[truncated]...\n"
 
 
+def _leading_packet_metadata_text(body: str) -> str:
+    """Return only the leading KEY=VALUE metadata block (before blank/##)."""
+    lines: list[str] = []
+    for line in (body or "").splitlines():
+        if not line.strip() or line.startswith("## "):
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _parse_leading_packet_metadata(body: str) -> dict[str, str]:
+    """Parse unique KEY=VALUE fields from the leading metadata block only."""
+    values: dict[str, str] = {}
+    for line in _leading_packet_metadata_text(body).splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+            continue
+        if key in values:
+            raise ValidationError(f"duplicate work packet metadata field: {key}")
+        values[key] = value.strip()
+    return values
+
+
 def _packet_metadata_value(body: str, key: str) -> str | None:
-    pattern = re.compile(rf"^{re.escape(key)}=(.*)$", re.MULTILINE)
-    match = pattern.search(body)
-    if not match:
-        return None
-    return match.group(1).strip()
+    return _parse_leading_packet_metadata(body).get(key)
 
 
 def _set_packet_metadata_line(body: str, key: str, value: str) -> str:
     line = f"{key}={value}"
+    leading = _leading_packet_metadata_text(body)
+    remainder = (body or "")[len(leading) :]
     pattern = re.compile(rf"^{re.escape(key)}=.*$", re.MULTILINE)
-    if pattern.search(body):
-        return pattern.sub(line, body, count=1)
-    # Insert after the metadata block's first line when possible.
-    first_break = body.find("\n\n")
+    if leading and pattern.search(leading):
+        new_leading = pattern.sub(line, leading, count=1)
+        return new_leading + remainder
+    if leading:
+        return leading.rstrip("\n") + "\n" + line + remainder
+    first_break = (body or "").find("\n\n")
     if first_break == -1:
-        return body.rstrip() + "\n" + line + "\n"
-    return body[:first_break] + "\n" + line + body[first_break:]
+        return (body or "").rstrip() + "\n" + line + "\n"
+    return (body or "")[:first_break] + "\n" + line + (body or "")[first_break:]
 
 
 def _replace_packet_section(body: str, heading: str, content: str) -> str:
@@ -459,10 +500,8 @@ def render_rework_work_packet_body(
     raw = (body or "").strip()
     if not raw:
         raise ValidationError("work packet body is empty")
-    status_lines = [
-        line.strip() for line in raw.splitlines() if line.startswith("STATUS=")
-    ]
-    if "STATUS=ACTIVE" not in status_lines:
+    status = _packet_metadata_value(raw, "STATUS")
+    if status != "ACTIVE":
         raise ValidationError(
             "work packet STATUS must be ACTIVE for REWORK mutation"
         )
@@ -548,10 +587,8 @@ def render_dispatch_blocked_work_packet_body(
     raw = (body or "").strip()
     if not raw:
         raise ValidationError("work packet body is empty")
-    status_lines = [
-        line.strip() for line in raw.splitlines() if line.startswith("STATUS=")
-    ]
-    if "STATUS=ACTIVE" not in status_lines:
+    status = _packet_metadata_value(raw, "STATUS")
+    if status != "ACTIVE":
         raise ValidationError(
             "work packet STATUS must be ACTIVE for compensating mutation"
         )

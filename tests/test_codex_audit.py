@@ -266,7 +266,7 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertNotIn("sk-", prompt)
 
     def test_secret_detection_allows_env_var_name_mention(self):
-        from atlas.codex_audit import _looks_like_secret
+        from atlas.work_controller import _looks_like_secret
 
         docs_mention = (
             "Optional: set OPENAI_API_KEY when using --audit-adapter openai. "
