@@ -67,6 +67,11 @@ if [[ "${AWC_DRAIN:-1}" == "1" ]]; then
   esac
   if [[ "${AWC_SPAWN_DISPATCH:-1}" == "1" ]]; then
     EXTRA+=(--spawn-dispatch)
+  else
+    # Audit-only / no Cursor spawn: never default to GitHub mutation.
+    if [[ -z "${AWC_WORK_PACKET_ADAPTER:-}" ]]; then
+      EXTRA+=(--work-packet-adapter recording)
+    fi
   fi
   if [[ -n "${AWC_WORK_PACKET_ADAPTER:-}" ]]; then
     case "${AWC_WORK_PACKET_ADAPTER}" in

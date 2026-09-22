@@ -322,6 +322,19 @@ class WorkPacketPort(Protocol):
     ) -> None:
         ...
 
+    def apply_dispatch_blocked(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        findings: str,
+        attempt: int,
+        head: str,
+        reason: str,
+    ) -> None:
+        ...
+
 
 class CursorDispatchPort(Protocol):
     def start_resume(self, request: DispatchRequest) -> DispatchResult:
@@ -521,6 +534,96 @@ def render_rework_work_packet_body(
     return updated.rstrip() + "\n"
 
 
+def render_dispatch_blocked_work_packet_body(
+    body: str,
+    *,
+    repository: str,
+    branch: str,
+    findings: str,
+    attempt: int,
+    head: str,
+    reason: str,
+) -> str:
+    """Correct a packet after mutation when Cursor dispatch did not start."""
+    raw = (body or "").strip()
+    if not raw:
+        raise ValidationError("work packet body is empty")
+    status_lines = [
+        line.strip() for line in raw.splitlines() if line.startswith("STATUS=")
+    ]
+    if "STATUS=ACTIVE" not in status_lines:
+        raise ValidationError(
+            "work packet STATUS must be ACTIVE for compensating mutation"
+        )
+    repo = normalize_github_repository(repository)
+    target = _packet_metadata_value(raw, "TARGET_REPO")
+    if target is None or not target.strip():
+        raise ValidationError("work packet missing TARGET_REPO metadata")
+    observed = normalize_github_repository(target)
+    if observed != repo:
+        raise ValidationError(
+            f"work packet TARGET_REPO mismatch: {observed} != {repo}"
+        )
+    expected_branch = branch.strip()
+    if not expected_branch:
+        raise ValidationError("branch is required for Work Packet mutation")
+    packet_branch = _packet_metadata_value(raw, "BRANCH")
+    if packet_branch is None:
+        raise ValidationError("work packet missing BRANCH metadata")
+    if packet_branch != expected_branch:
+        raise ValidationError(
+            f"work packet BRANCH mismatch: {packet_branch!r} != {expected_branch!r}"
+        )
+    safe_findings = sanitize_rework_findings(findings) or "(no findings text provided)"
+    safe_reason = sanitize_rework_findings(reason, max_chars=1000) or "dispatch blocked"
+    quoted = "```text\n" + safe_findings + "\n```"
+    updated = _set_packet_metadata_line(raw, "LAST_VERIFIED_HEAD", head.strip().lower())
+    updated = _replace_packet_section(
+        updated,
+        "Current State",
+        (
+            f"- Controller outcome: HUMAN_REQUIRED (dispatch blocked after packet mutation)\n"
+            f"- Attempt: {attempt}\n"
+            f"- Audited HEAD: `{head.strip().lower()}`\n"
+            f"- Branch: `{expected_branch}`\n"
+            f"- Reason: {safe_reason}\n"
+            f"- Findings:\n{quoted}"
+        ),
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Next Action",
+        (
+            "Dispatch did **not** start. Resolve the dispatch boundary failure, "
+            "then either re-run the completion hook with a real `--spawn-dispatch` "
+            "path or continue manually with `/work-resume` after correcting the tree.\n\n"
+            f"Boundary reason:\n```text\n{safe_reason}\n```\n\n"
+            f"Prior REWORK findings:\n{quoted}"
+        ),
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Latest Evidence",
+        (
+            "```text\n"
+            f"HEAD={head.strip().lower()}\n"
+            f"BRANCH={expected_branch}\n"
+            f"ATTEMPT={attempt}\n"
+            "VERDICT=HUMAN_REQUIRED\n"
+            "WORK_PACKET_MUTATION=DISPATCH_BLOCKED\n"
+            f"REASON={safe_reason}\n"
+            f"FINDINGS=\n{safe_findings}\n"
+            "```"
+        ),
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Blockers",
+        f"Dispatch blocked before Cursor spawn: {safe_reason}",
+    )
+    return updated.rstrip() + "\n"
+
+
 class RecordingWorkPacketAdapter:
     """Test/offline Work Packet adapter. Do not use on the production path."""
 
@@ -539,12 +642,37 @@ class RecordingWorkPacketAdapter:
     ) -> None:
         self.updates.append(
             {
+                "kind": "rework",
                 "repository": repository,
                 "issue_number": issue_number,
                 "branch": branch,
                 "findings": findings,
                 "attempt": attempt,
                 "head": head,
+            }
+        )
+
+    def apply_dispatch_blocked(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        findings: str,
+        attempt: int,
+        head: str,
+        reason: str,
+    ) -> None:
+        self.updates.append(
+            {
+                "kind": "dispatch_blocked",
+                "repository": repository,
+                "issue_number": issue_number,
+                "branch": branch,
+                "findings": findings,
+                "attempt": attempt,
+                "head": head,
+                "reason": reason,
             }
         )
 
@@ -620,6 +748,83 @@ class GitHubWorkPacketAdapter:
             )
 
         # Write body via file path argv only — never shell-interpolate findings.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".md",
+            delete=False,
+        ) as handle:
+            handle.write(new_body)
+            body_path = handle.name
+        try:
+            edit = self._run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(int(issue_number)),
+                    "--repo",
+                    repo,
+                    "--body-file",
+                    body_path,
+                ]
+            )
+        finally:
+            Path(body_path).unlink(missing_ok=True)
+        if edit.returncode != 0:
+            detail = (edit.stderr or edit.stdout or "").strip()
+            raise ValidationError(
+                detail[:500]
+                or f"gh issue edit failed with exit {edit.returncode}"
+            )
+
+    def apply_dispatch_blocked(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        findings: str,
+        attempt: int,
+        head: str,
+        reason: str,
+    ) -> None:
+        repo = normalize_github_repository(repository)
+        if int(issue_number) < 1:
+            raise ValidationError(f"invalid issue_number: {issue_number}")
+        expected_branch = branch.strip()
+        if not expected_branch:
+            raise ValidationError("branch is required for Work Packet mutation")
+        payload = self._view_issue(repo, int(issue_number))
+        original_body = str(payload.get("body") or "")
+        original_updated_at = str(
+            payload.get("updatedAt") or payload.get("updated_at") or ""
+        )
+        self._assert_ai_work_issue(payload, issue_number=int(issue_number))
+        new_body = render_dispatch_blocked_work_packet_body(
+            original_body,
+            repository=repo,
+            branch=expected_branch,
+            findings=sanitize_rework_findings(
+                findings, max_chars=self._max_findings_chars
+            ),
+            attempt=int(attempt),
+            head=head,
+            reason=reason,
+        )
+        recheck = self._view_issue(repo, int(issue_number))
+        recheck_body = str(recheck.get("body") or "")
+        recheck_updated_at = str(
+            recheck.get("updatedAt") or recheck.get("updated_at") or ""
+        )
+        if recheck_body != original_body or (
+            original_updated_at
+            and recheck_updated_at
+            and recheck_updated_at != original_updated_at
+        ):
+            raise ValidationError(
+                "work packet changed during compensating mutation; refusing overwrite"
+            )
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -1371,9 +1576,25 @@ class WorkController:
                             },
                         )
                     except ValidationError as exc:
+                        boundary_reason = str(exc)
+                        try:
+                            self.work_packet.apply_dispatch_blocked(
+                                repository=record.repository,
+                                issue_number=record.issue_number,
+                                branch=record.branch,
+                                findings=audit_result.findings,
+                                attempt=next_attempt,
+                                head=event.head,
+                                reason=boundary_reason,
+                            )
+                        except ValidationError as packet_exc:
+                            boundary_reason = (
+                                f"{boundary_reason}; compensating packet update "
+                                f"also failed: {packet_exc}"
+                            )
                         record.last_findings = (
                             f"{audit_result.findings}\n"
-                            f"rework dispatch blocked at boundary: {exc}"
+                            f"rework dispatch blocked at boundary: {boundary_reason}"
                         ).strip()
                         outcome = self._finalize(
                             record,

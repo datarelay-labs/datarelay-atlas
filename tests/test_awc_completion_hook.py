@@ -83,6 +83,7 @@ exec "{real_python}" "$@"
     def test_opt_out_omits_spawn_dispatch(self):
         argv = self._run_hook(spawn_dispatch="0")
         self.assertNotIn("--spawn-dispatch", argv)
+        self.assertIn("--work-packet-adapter recording", argv)
 
     def test_hook_preserves_work_resume_contract_in_tree(self):
         work_controller = (ROOT / "atlas" / "work_controller.py").read_text(
