@@ -24,11 +24,16 @@ python -m atlas chat-audit init \
 # Show checkpoint
 python -m atlas chat-audit show
 
-# Run one bounded slice (also auto-inits when missing)
+# Run one bounded slice (also auto-inits when missing).
+# Default adapter requires external COMPLETE evidence and will not auto-PASS.
 python -m atlas chat-audit run-slice \
   --repository datarelay-labs/datarelay-atlas \
   --branch main \
-  --head "$(git rev-parse HEAD)"
+  --head "$(git rev-parse HEAD)" \
+  --evidence-file ./evidence/slice.json
+
+# Explicit offline/test synthesizer only (never the operator default):
+python -m atlas chat-audit run-slice --unit-adapter fixed ...
 
 # Resume payload for a fresh Chat (no conversation history required)
 python -m atlas chat-audit resume-payload

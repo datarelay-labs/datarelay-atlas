@@ -7,12 +7,16 @@ Chat conversations are execution instances; checkpoints are canonical.
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import json
 import re
+import threading
+import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterator, Protocol
 
 from atlas.provenance import ValidationError
 from atlas.work_controller import (
@@ -174,6 +178,7 @@ class AuditControlPacket:
     # Completed unit outcomes keyed for idempotent replay within a run.
     completed_units: dict[str, dict[str, Any]] = field(default_factory=dict)
     no_change_runs: int = 0
+    slice_claim: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -195,6 +200,7 @@ class AuditControlPacket:
             "session": self.session.to_dict(),
             "completed_units": copy.deepcopy(self.completed_units),
             "no_change_runs": self.no_change_runs,
+            "slice_claim": copy.deepcopy(self.slice_claim),
         }
 
     @classmethod
@@ -207,6 +213,14 @@ class AuditControlPacket:
         status = str(raw.get("audit_status", "IDLE"))
         if status not in AUDIT_STATUSES:
             raise ValidationError(f"unsupported audit_status: {status}")
+        if "audit_queue" not in raw:
+            raise ValidationError("audit_queue is required")
+        queue = [str(u) for u in raw["audit_queue"]]
+        if not queue:
+            raise ValidationError("audit_queue must be non-empty")
+        run_key = str(raw.get("idempotency_run_key", "")).strip()
+        if not run_key:
+            raise ValidationError("idempotency_run_key is required")
         findings = [
             AuditFinding.from_dict(item)
             for item in raw.get("open_findings", [])
@@ -223,7 +237,7 @@ class AuditControlPacket:
                 else None
             ),
             audit_status=status,
-            audit_queue=[str(u) for u in raw.get("audit_queue", [])],
+            audit_queue=queue,
             current_unit=(
                 str(raw["current_unit"]) if raw.get("current_unit") else None
             ),
@@ -231,7 +245,7 @@ class AuditControlPacket:
             open_findings=findings,
             next_action=str(raw.get("next_action", "")),
             last_completed_slice=copy.deepcopy(raw.get("last_completed_slice")),
-            idempotency_run_key=str(raw.get("idempotency_run_key", "")),
+            idempotency_run_key=run_key,
             mode=str(raw.get("mode", "delta")),
             include_release_readiness=bool(
                 raw.get("include_release_readiness", False)
@@ -240,6 +254,7 @@ class AuditControlPacket:
             schema_version=version,
             completed_units=copy.deepcopy(raw.get("completed_units") or {}),
             no_change_runs=int(raw.get("no_change_runs", 0)),
+            slice_claim=copy.deepcopy(raw.get("slice_claim")),
         )
 
 
@@ -275,6 +290,9 @@ class CheckpointStore(Protocol):
 
     def save(self, packet: AuditControlPacket) -> None: ...
 
+    @contextmanager
+    def lock(self) -> Iterator[None]: ...
+
 
 class FileCheckpointStore:
     """Local durable checkpoint under the ADR-0005 data root."""
@@ -282,6 +300,27 @@ class FileCheckpointStore:
     def __init__(self, data_root: Path):
         self.data_root = Path(data_root)
         self.path = self.data_root / STORE_FILENAME
+        self.lock_path = self.data_root / "chat-audit.lock"
+        self._thread_lock = threading.RLock()
+        self._lock_depth = 0
+        self._lock_handle: Any = None
+
+    @contextmanager
+    def lock(self) -> Iterator[None]:
+        with self._thread_lock:
+            if self._lock_depth == 0:
+                self.data_root.mkdir(parents=True, exist_ok=True)
+                self._lock_handle = open(self.lock_path, "a+", encoding="utf-8")
+                fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_EX)
+            self._lock_depth += 1
+            try:
+                yield
+            finally:
+                self._lock_depth -= 1
+                if self._lock_depth == 0 and self._lock_handle is not None:
+                    fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
+                    self._lock_handle.close()
+                    self._lock_handle = None
 
     def load(self) -> AuditControlPacket | None:
         if not self.path.exists():
@@ -304,6 +343,12 @@ class MemoryCheckpointStore:
 
     def __init__(self, packet: AuditControlPacket | None = None):
         self._packet = copy.deepcopy(packet) if packet else None
+        self._lock = threading.RLock()
+
+    @contextmanager
+    def lock(self) -> Iterator[None]:
+        with self._lock:
+            yield
 
     def load(self) -> AuditControlPacket | None:
         return copy.deepcopy(self._packet)
@@ -319,7 +364,7 @@ class UnitExecutor(Protocol):
 
 
 class FixedUnitExecutor:
-    """Deterministic unit executor for tests / offline PoC."""
+    """Deterministic unit executor for tests / explicit offline mode only."""
 
     def __init__(
         self,
@@ -405,6 +450,55 @@ class FixedUnitExecutor:
             unit=unit,
             target_sha=packet.current_target_sha,
             outcome="PASS",
+            audit_request=audit_request,
+            evidence=evidence,
+        )
+
+
+class ExternalEvidenceUnitExecutor:
+    """CLI/production executor: fail closed unless COMPLETE evidence is supplied."""
+
+    def __init__(self, evidence_payload: dict[str, Any] | None = None):
+        self.evidence_payload = evidence_payload
+        self.calls: list[tuple[str, str]] = []
+
+    def execute(
+        self, packet: AuditControlPacket, unit: str, audit_request: str
+    ) -> SliceResult:
+        self.calls.append((unit, packet.current_target_sha))
+        if not self.evidence_payload:
+            return SliceResult(
+                unit=unit,
+                target_sha=packet.current_target_sha,
+                outcome="AWAITING_EVIDENCE",
+                audit_request=audit_request,
+                evidence=AuditEvidence(
+                    status="MISSING",
+                    unit=unit,
+                    target_sha=packet.current_target_sha,
+                    notes="external COMPLETE evidence required",
+                    truncated=True,
+                ),
+            )
+        raw = self.evidence_payload
+        evidence = AuditEvidence.from_dict(
+            {
+                "status": raw.get("status", "MISSING"),
+                "unit": raw.get("unit", unit),
+                "target_sha": raw.get("target_sha", packet.current_target_sha),
+                "notes": raw.get("notes", ""),
+                "truncated": bool(raw.get("truncated", False)),
+            }
+        )
+        findings = [
+            AuditFinding.from_dict(item) for item in raw.get("findings", [])
+        ]
+        outcome = str(raw.get("outcome", "PASS"))
+        return SliceResult(
+            unit=unit,
+            target_sha=packet.current_target_sha,
+            outcome=outcome,
+            findings=findings,
             audit_request=audit_request,
             evidence=evidence,
         )
@@ -652,129 +746,180 @@ class ChatAuditController:
         identity = self._resolve_identity(
             repository=repository, branch=branch, head=head
         )
-        packet = self.store.load()
-        if packet is None:
-            init = self.initialize(
-                repository=identity.repository,
-                branch=identity.branch,
-                head=identity.head,
-                include_release_readiness=include_release_readiness,
-            )
-            packet = AuditControlPacket.from_dict(init["packet"])
-
-        if packet.target_repository != identity.repository:
-            raise ValidationError("stale repository: checkpoint/repo mismatch")
-        if packet.target_branch != identity.branch:
-            raise ValidationError("stale branch: checkpoint/branch mismatch")
-
-        # Refresh target SHA / queue when HEAD advanced.
-        if not heads_match(packet.current_target_sha, identity.head):
-            if packet.audit_status == "IN_SLICE":
-                raise ValidationError(
-                    "stale HEAD during IN_SLICE: refuse to advance another "
-                    "run's checkpoint"
+        with self.store.lock():
+            packet = self.store.load()
+            if packet is None:
+                init = self.initialize(
+                    repository=identity.repository,
+                    branch=identity.branch,
+                    head=identity.head,
+                    include_release_readiness=include_release_readiness,
                 )
-            packet = self._start_new_delta_run(packet, identity.head)
-        elif packet.last_audited_sha and heads_match(
-            packet.last_audited_sha, identity.head
-        ):
-            return self._cheap_no_change(packet)
+                packet = AuditControlPacket.from_dict(init["packet"])
 
-        # Resume interrupted slice.
-        if packet.audit_status == "IN_SLICE" and packet.current_unit:
-            unit = packet.current_unit
-        else:
-            unit = self._select_next_unit(packet)
-            if unit is None:
-                return self._finalize_queue(packet)
+            if packet.target_repository != identity.repository:
+                raise ValidationError("stale repository: checkpoint/repo mismatch")
+            if packet.target_branch != identity.branch:
+                raise ValidationError("stale branch: checkpoint/branch mismatch")
 
-        run_key = packet.idempotency_run_key
-        unit_key = f"{run_key}:{unit}:{packet.current_target_sha}"
-        if unit_key in packet.completed_units:
-            prior = packet.completed_units[unit_key]
-            return {
-                "action": "idempotent_replay",
+            # Refresh target SHA / queue when HEAD advanced.
+            if not heads_match(packet.current_target_sha, identity.head):
+                if packet.audit_status == "IN_SLICE":
+                    raise ValidationError(
+                        "stale HEAD during IN_SLICE: refuse to advance another "
+                        "run's checkpoint"
+                    )
+                packet = self._start_new_delta_run(packet, identity.head)
+            elif packet.last_audited_sha and heads_match(
+                packet.last_audited_sha, identity.head
+            ):
+                return self._cheap_no_change(packet)
+
+            # Resume interrupted slice.
+            if packet.audit_status == "IN_SLICE" and packet.current_unit:
+                claim = packet.slice_claim or {}
+                if claim.get("state") == "executing":
+                    raise ValidationError(
+                        "active slice claim held; duplicate invocation refused"
+                    )
+                unit = packet.current_unit
+            else:
+                unit = self._select_next_unit(packet)
+                if unit is None:
+                    return self._finalize_queue(packet)
+
+            run_key = packet.idempotency_run_key
+            unit_key = f"{run_key}:{unit}:{packet.current_target_sha}"
+            if unit_key in packet.completed_units:
+                prior = packet.completed_units[unit_key]
+                return {
+                    "action": "idempotent_replay",
+                    "unit": unit,
+                    "outcome": prior.get("outcome"),
+                    "packet": packet.to_dict(),
+                    "cheap_no_change": False,
+                    "idempotent_replay": True,
+                }
+
+            audit_request = build_audit_request(packet, unit)
+            claim_id = str(uuid.uuid4())
+            packet.audit_status = "IN_SLICE"
+            packet.current_unit = unit
+            packet.current_unit_index = packet.audit_queue.index(unit)
+            packet.next_action = f"complete_or_resume_unit:{unit}"
+            packet.slice_claim = {
+                "claim_id": claim_id,
                 "unit": unit,
-                "outcome": prior.get("outcome"),
-                "packet": packet.to_dict(),
-                "cheap_no_change": False,
-                "idempotent_replay": True,
+                "run_key": run_key,
+                "target_sha": packet.current_target_sha,
+                "state": "executing",
             }
-
-        audit_request = build_audit_request(packet, unit)
-        packet.audit_status = "IN_SLICE"
-        packet.current_unit = unit
-        packet.current_unit_index = packet.audit_queue.index(unit)
-        packet.next_action = f"complete_or_resume_unit:{unit}"
-        self.store.save(packet)
+            self.store.save(packet)
 
         result = self.executor.execute(packet, unit, audit_request)
-        return self._apply_slice_result(packet, result)
+
+        with self.store.lock():
+            latest = self.store.load()
+            if latest is None:
+                raise ValidationError("checkpoint disappeared during slice")
+            claim = latest.slice_claim or {}
+            if claim.get("claim_id") != claim_id:
+                raise ValidationError(
+                    "slice claim lost or stolen; refuse to apply stale result"
+                )
+            if unit_key in latest.completed_units:
+                prior = latest.completed_units[unit_key]
+                return {
+                    "action": "idempotent_replay",
+                    "unit": unit,
+                    "outcome": prior.get("outcome"),
+                    "packet": latest.to_dict(),
+                    "cheap_no_change": False,
+                    "idempotent_replay": True,
+                }
+            return self._apply_slice_result(latest, result, claim_id=claim_id)
 
     def mark_session(
         self, state: str, *, notes: str = ""
     ) -> dict[str, Any]:
         if state not in SESSION_STATES:
             raise ValidationError(f"unsupported session state: {state}")
-        packet = self.store.load()
-        if packet is None:
-            raise ValidationError("no chat-audit checkpoint present")
-        packet.session.state = state
-        if notes:
-            packet.session.notes = notes
-        if state == "TIMEOUT":
-            packet.next_action = "resume_from_checkpoint_after_timeout"
-        elif state == "ROLLOVER_REQUIRED":
-            packet.next_action = "run_rollover_then_resume"
-        self.store.save(packet)
-        return packet.to_dict()
+        with self.store.lock():
+            packet = self.store.load()
+            if packet is None:
+                raise ValidationError("no chat-audit checkpoint present")
+            packet.session.state = state
+            if notes:
+                packet.session.notes = notes
+            if state == "TIMEOUT":
+                packet.next_action = "resume_from_checkpoint_after_timeout"
+                if packet.slice_claim:
+                    packet.slice_claim = {
+                        **packet.slice_claim,
+                        "state": "timed_out",
+                    }
+            elif state == "ROLLOVER_REQUIRED":
+                packet.next_action = "run_rollover_then_resume"
+            self.store.save(packet)
+            return packet.to_dict()
 
     def perform_rollover(self) -> dict[str, Any]:
-        packet = self.store.load()
-        if packet is None:
-            raise ValidationError("no chat-audit checkpoint present")
-        if packet.session.state not in {"ROLLOVER_REQUIRED", "TIMEOUT", "STALLED"}:
-            raise ValidationError(
-                "rollover requires ROLLOVER_REQUIRED/TIMEOUT/STALLED session"
-            )
-        # Durability: re-save canonical checkpoint before browser action.
-        audit_snapshot = {
-            "last_audited_sha": packet.last_audited_sha,
-            "current_target_sha": packet.current_target_sha,
-            "audit_status": packet.audit_status,
-            "audit_queue": list(packet.audit_queue),
-            "current_unit": packet.current_unit,
-            "current_unit_index": packet.current_unit_index,
-            "open_findings": [f.to_dict() for f in packet.open_findings],
-            "idempotency_run_key": packet.idempotency_run_key,
-            "completed_units": copy.deepcopy(packet.completed_units),
-            "last_completed_slice": copy.deepcopy(packet.last_completed_slice),
-        }
-        self.store.save(packet)
-        provider_result = self.rollover.rollover(packet, RESUME_COMMAND)
-        # Reload and change only session fields.
-        reloaded = self.store.load()
-        assert reloaded is not None
-        for key, value in audit_snapshot.items():
-            current = getattr(reloaded, key)
-            if key == "open_findings":
-                current = [f.to_dict() for f in current]
-            if current != value:
+        with self.store.lock():
+            packet = self.store.load()
+            if packet is None:
+                raise ValidationError("no chat-audit checkpoint present")
+            if packet.session.state not in {
+                "ROLLOVER_REQUIRED",
+                "TIMEOUT",
+                "STALLED",
+            }:
                 raise ValidationError(
-                    "rollover provider mutated canonical audit state"
+                    "rollover requires ROLLOVER_REQUIRED/TIMEOUT/STALLED session"
                 )
-        reloaded.session.state = "RESUMED"
-        reloaded.session.last_resume_command = RESUME_COMMAND
-        reloaded.session.rollover_count += 1
-        reloaded.session.notes = "fresh chat resumed from durable checkpoint"
-        reloaded.next_action = "run_next_audit_slice"
-        self.store.save(reloaded)
-        return {
-            "action": "rollover_resumed",
-            "provider_result": provider_result,
-            "packet": reloaded.to_dict(),
-            "audit_fields_unchanged": True,
-        }
+            # Durability: re-save canonical checkpoint before browser action.
+            audit_snapshot = {
+                "last_audited_sha": packet.last_audited_sha,
+                "current_target_sha": packet.current_target_sha,
+                "audit_status": packet.audit_status,
+                "audit_queue": list(packet.audit_queue),
+                "current_unit": packet.current_unit,
+                "current_unit_index": packet.current_unit_index,
+                "open_findings": [f.to_dict() for f in packet.open_findings],
+                "idempotency_run_key": packet.idempotency_run_key,
+                "completed_units": copy.deepcopy(packet.completed_units),
+                "last_completed_slice": copy.deepcopy(packet.last_completed_slice),
+                "next_action": packet.next_action,
+                "slice_claim": copy.deepcopy(packet.slice_claim),
+            }
+            self.store.save(packet)
+
+        provider_result = self.rollover.rollover(packet, RESUME_COMMAND)
+
+        with self.store.lock():
+            reloaded = self.store.load()
+            assert reloaded is not None
+            for key, value in audit_snapshot.items():
+                current = getattr(reloaded, key)
+                if key == "open_findings":
+                    current = [f.to_dict() for f in current]
+                if current != value:
+                    raise ValidationError(
+                        "rollover provider mutated canonical audit state"
+                    )
+            reloaded.session.state = "RESUMED"
+            reloaded.session.last_resume_command = RESUME_COMMAND
+            reloaded.session.rollover_count += 1
+            reloaded.session.notes = (
+                "fresh chat resumed from durable checkpoint"
+            )
+            # Preserve next_action / audit truth; only session fields change.
+            self.store.save(reloaded)
+            return {
+                "action": "rollover_resumed",
+                "provider_result": provider_result,
+                "packet": reloaded.to_dict(),
+                "audit_fields_unchanged": True,
+            }
 
     def resume_instruction_payload(self) -> dict[str, Any]:
         """Payload a fresh Chat needs — no conversation history required."""
@@ -798,7 +943,8 @@ class ChatAuditController:
     def _start_new_delta_run(
         self, packet: AuditControlPacket, new_head: str
     ) -> AuditControlPacket:
-        packet.last_audited_sha = packet.current_target_sha
+        # Never promote an incomplete/failed target to last_audited_sha.
+        # Baseline advances only on successful queue finalization (PASSED).
         packet.current_target_sha = new_head
         packet.idempotency_run_key = make_run_key(
             packet.target_repository, packet.target_branch, new_head
@@ -809,6 +955,7 @@ class ChatAuditController:
         packet.current_unit = None
         packet.current_unit_index = 0
         packet.completed_units = {}
+        packet.slice_claim = None
         packet.audit_status = "IDLE"
         packet.next_action = "run_next_audit_slice"
         packet.mode = "delta"
@@ -831,6 +978,7 @@ class ChatAuditController:
             "FINDINGS" if packet.open_findings else "PASSED"
         )
         packet.current_unit = None
+        packet.slice_claim = None
         packet.next_action = "inspect_coordination_pr_ci_only"
         packet.session.state = "ACTIVE"
         self.store.save(packet)
@@ -843,6 +991,10 @@ class ChatAuditController:
         }
 
     def _finalize_queue(self, packet: AuditControlPacket) -> dict[str, Any]:
+        if not packet.audit_queue:
+            raise ValidationError(
+                "cannot finalize empty audit_queue without evidence"
+            )
         if packet.open_findings:
             packet.audit_status = "FINDINGS"
             packet.next_action = "await_cursor_implementation_handoff"
@@ -851,6 +1003,7 @@ class ChatAuditController:
             packet.last_audited_sha = packet.current_target_sha
             packet.next_action = "idle_until_next_scheduled_audit"
         packet.current_unit = None
+        packet.slice_claim = None
         self.store.save(packet)
         return {
             "action": "queue_complete",
@@ -860,17 +1013,50 @@ class ChatAuditController:
         }
 
     def _apply_slice_result(
-        self, packet: AuditControlPacket, result: SliceResult
+        self,
+        packet: AuditControlPacket,
+        result: SliceResult,
+        *,
+        claim_id: str | None = None,
     ) -> dict[str, Any]:
+        if claim_id is not None:
+            claim = packet.slice_claim or {}
+            if claim.get("claim_id") != claim_id:
+                raise ValidationError("slice claim mismatch while applying result")
+
         if result.outcome == "TIMEOUT":
             packet.audit_status = "IN_SLICE"
             packet.session.state = "TIMEOUT"
             packet.next_action = f"resume_unit:{result.unit}"
+            if packet.slice_claim:
+                packet.slice_claim = {
+                    **packet.slice_claim,
+                    "state": "timed_out",
+                }
             self.store.save(packet)
             return {
                 "action": "timeout_checkpointed",
                 "unit": result.unit,
                 "outcome": "TIMEOUT",
+                "audit_request": result.audit_request,
+                "packet": packet.to_dict(),
+                "cheap_no_change": False,
+                "idempotent_replay": False,
+            }
+
+        if result.outcome == "AWAITING_EVIDENCE":
+            packet.audit_status = "AWAITING_EVIDENCE"
+            packet.next_action = f"supply_evidence_for_unit:{result.unit}"
+            if packet.slice_claim:
+                packet.slice_claim = {
+                    **packet.slice_claim,
+                    "state": "awaiting_evidence",
+                }
+            self.store.save(packet)
+            return {
+                "action": "awaiting_evidence",
+                "unit": result.unit,
+                "outcome": "AWAITING_EVIDENCE",
                 "audit_request": result.audit_request,
                 "packet": packet.to_dict(),
                 "cheap_no_change": False,
@@ -883,6 +1069,7 @@ class ChatAuditController:
             packet.next_action = (
                 f"reject_incomplete_evidence:{result.unit}"
             )
+            packet.slice_claim = None
             self.store.save(packet)
             return {
                 "action": "failed_closed",
@@ -895,10 +1082,64 @@ class ChatAuditController:
                 "idempotent_replay": False,
             }
 
+        if packet.current_unit and result.unit != packet.current_unit:
+            raise ValidationError("executor unit does not match claimed unit")
+        if evidence.unit != result.unit:
+            raise ValidationError("evidence unit does not match result unit")
         if not heads_match(result.target_sha, packet.current_target_sha):
             raise ValidationError(
                 "stale evidence target SHA does not match checkpoint"
             )
+        if not heads_match(evidence.target_sha, packet.current_target_sha):
+            raise ValidationError(
+                "stale evidence target SHA does not match checkpoint"
+            )
+
+        if result.outcome not in {"PASS", "FINDING"}:
+            packet.audit_status = "FAILED_CLOSED"
+            packet.next_action = f"reject_unsupported_outcome:{result.outcome}"
+            packet.slice_claim = None
+            self.store.save(packet)
+            return {
+                "action": "failed_closed",
+                "unit": result.unit,
+                "outcome": "REJECTED",
+                "reason": "unsupported_executor_outcome",
+                "audit_request": result.audit_request,
+                "packet": packet.to_dict(),
+                "cheap_no_change": False,
+                "idempotent_replay": False,
+            }
+        if result.outcome == "FINDING" and not result.findings:
+            packet.audit_status = "FAILED_CLOSED"
+            packet.next_action = "reject_finding_without_payload"
+            packet.slice_claim = None
+            self.store.save(packet)
+            return {
+                "action": "failed_closed",
+                "unit": result.unit,
+                "outcome": "REJECTED",
+                "reason": "finding_without_payload",
+                "audit_request": result.audit_request,
+                "packet": packet.to_dict(),
+                "cheap_no_change": False,
+                "idempotent_replay": False,
+            }
+        if result.outcome == "PASS" and result.findings:
+            packet.audit_status = "FAILED_CLOSED"
+            packet.next_action = "reject_pass_with_findings"
+            packet.slice_claim = None
+            self.store.save(packet)
+            return {
+                "action": "failed_closed",
+                "unit": result.unit,
+                "outcome": "REJECTED",
+                "reason": "pass_with_findings",
+                "audit_request": result.audit_request,
+                "packet": packet.to_dict(),
+                "cheap_no_change": False,
+                "idempotent_replay": False,
+            }
 
         unit_key = (
             f"{packet.idempotency_run_key}:{result.unit}:"
@@ -916,6 +1157,7 @@ class ChatAuditController:
         packet.completed_units[unit_key] = result.to_dict()
         packet.audit_status = "SLICE_COMPLETE"
         packet.current_unit = None
+        packet.slice_claim = None
         packet.next_action = "run_next_audit_slice"
         if packet.session.state == "TIMEOUT":
             packet.session.state = "ACTIVE"

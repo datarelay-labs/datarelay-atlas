@@ -11,6 +11,7 @@ from pathlib import Path
 
 from atlas.chat_audit import (
     ChatAuditController,
+    ExternalEvidenceUnitExecutor,
     FakeBrowserRolloverProvider,
     FileCheckpointStore,
     FixedUnitExecutor,
@@ -226,7 +227,20 @@ def cmd_wc_reconcile(args: argparse.Namespace) -> int:
 
 def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
     store = FileCheckpointStore(Path(args.data_root))
-    executor = FixedUnitExecutor()
+    adapter = getattr(args, "unit_adapter", "evidence")
+    if adapter == "fixed":
+        # Explicit offline/test mode only — never the operator default.
+        executor = FixedUnitExecutor()
+    else:
+        evidence_payload = None
+        evidence_file = getattr(args, "evidence_file", None)
+        if evidence_file:
+            evidence_payload = json.loads(
+                Path(evidence_file).read_text(encoding="utf-8")
+            )
+            if not isinstance(evidence_payload, dict):
+                raise ValidationError("evidence file must contain a JSON object")
+        executor = ExternalEvidenceUnitExecutor(evidence_payload)
     handoff = RecordingWorkPacketHandoff()
     provider = getattr(args, "rollover_provider", "fake")
     if provider == "stagehand":
@@ -491,6 +505,18 @@ def build_parser() -> argparse.ArgumentParser:
     ca_run.add_argument("--head", default=None)
     ca_run.add_argument("--include-release-readiness", action="store_true")
     ca_run.add_argument("--worktree", default=None)
+    ca_run.add_argument(
+        "--unit-adapter",
+        choices=["evidence", "fixed"],
+        default="evidence",
+        help="evidence=require external COMPLETE evidence (default); "
+        "fixed=explicit offline PASS synthesizer for tests only",
+    )
+    ca_run.add_argument(
+        "--evidence-file",
+        default=None,
+        help="JSON evidence payload required by the default evidence adapter",
+    )
     ca_run.set_defaults(func=cmd_ca_run_slice)
 
     ca_resume = ca_sub.add_parser(

@@ -221,6 +221,7 @@ class ChatAuditTests(unittest.TestCase):
             ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
             before = ctl.show()
             ctl.mark_session("ROLLOVER_REQUIRED", notes="chat limit")
+            expected_next = ctl.show()["next_action"]
             out = ctl.perform_rollover()
             self.assertEqual(out["action"], "rollover_resumed")
             self.assertTrue(out["audit_fields_unchanged"])
@@ -237,6 +238,7 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(
                 after["completed_units"], before["completed_units"]
             )
+            self.assertEqual(after["next_action"], expected_next)
             self.assertEqual(len(rollover.calls), 1)
 
     def test_11_stagehand_adapter_optional_and_gated(self):
@@ -259,6 +261,144 @@ class ChatAuditTests(unittest.TestCase):
         ctl.rollover = approved
         with self.assertRaises(ValidationError):
             ctl.perform_rollover()
+
+    def test_12_head_advance_does_not_promote_incomplete_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertIsNone(ctl.show()["last_audited_sha"])
+            ctl._test_head["head"] = HEAD_B  # type: ignore[attr-defined]
+            out = ctl.run_slice()
+            self.assertEqual(out["unit"], "changed_code")
+            packet = out["packet"]
+            self.assertIsNone(packet["last_audited_sha"])
+            self.assertEqual(packet["current_target_sha"], HEAD_B)
+
+    def test_13_missing_audit_queue_rejected(self):
+        from atlas.chat_audit import AuditControlPacket
+
+        with self.assertRaises(ValidationError):
+            AuditControlPacket.from_dict(
+                {
+                    "schema_version": 1,
+                    "target_repository": REPO,
+                    "target_branch": BRANCH,
+                    "current_target_sha": HEAD_A,
+                    "idempotency_run_key": "abc",
+                }
+            )
+        with self.assertRaises(ValidationError):
+            AuditControlPacket.from_dict(
+                {
+                    "schema_version": 1,
+                    "target_repository": REPO,
+                    "target_branch": BRANCH,
+                    "current_target_sha": HEAD_A,
+                    "audit_queue": [],
+                    "idempotency_run_key": "abc",
+                }
+            )
+
+    def test_14_unsupported_outcome_and_empty_finding_fail_closed(self):
+        class WeirdExecutor:
+            def __init__(self, outcome: str, findings=None):
+                self.outcome = outcome
+                self.findings = findings or []
+                self.calls = []
+
+            def execute(self, packet, unit, audit_request):
+                from atlas.chat_audit import AuditEvidence, AuditFinding, SliceResult
+
+                self.calls.append(unit)
+                findings = [
+                    AuditFinding.from_dict(f) if isinstance(f, dict) else f
+                    for f in self.findings
+                ]
+                return SliceResult(
+                    unit=unit,
+                    target_sha=packet.current_target_sha,
+                    outcome=self.outcome,
+                    findings=findings,
+                    audit_request=audit_request,
+                    evidence=AuditEvidence(
+                        status="COMPLETE",
+                        unit=unit,
+                        target_sha=packet.current_target_sha,
+                        notes="looks complete",
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp, executor=WeirdExecutor("REJECTED"))
+            out = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(out["action"], "failed_closed")
+            self.assertEqual(out["reason"], "unsupported_executor_outcome")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp, executor=WeirdExecutor("FINDING", findings=[]))
+            out = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(out["action"], "failed_closed")
+            self.assertEqual(out["reason"], "finding_without_payload")
+
+    def test_15_active_slice_claim_blocks_duplicate_invocation(self):
+        import threading
+
+        from atlas.chat_audit import AuditEvidence, SliceResult
+
+        started = threading.Event()
+        release = threading.Event()
+
+        class BlockingExecutor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, packet, unit, audit_request):
+                self.calls.append(unit)
+                started.set()
+                release.wait(timeout=5)
+                return SliceResult(
+                    unit=unit,
+                    target_sha=packet.current_target_sha,
+                    outcome="PASS",
+                    audit_request=audit_request,
+                    evidence=AuditEvidence(
+                        status="COMPLETE",
+                        unit=unit,
+                        target_sha=packet.current_target_sha,
+                        notes="ok",
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = BlockingExecutor()
+            ctl = self._ctl(tmp, executor=executor)
+            errors: list[BaseException] = []
+
+            def worker():
+                try:
+                    ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            t = threading.Thread(target=worker)
+            t.start()
+            self.assertTrue(started.wait(timeout=5))
+            with self.assertRaises(ValidationError):
+                ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            release.set()
+            t.join(timeout=5)
+            self.assertEqual(errors, [])
+            self.assertEqual(len(executor.calls), 1)
+
+    def test_16_default_evidence_executor_does_not_auto_pass(self):
+        from atlas.chat_audit import ExternalEvidenceUnitExecutor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp, executor=ExternalEvidenceUnitExecutor())
+            out = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(out["action"], "awaiting_evidence")
+            self.assertEqual(out["packet"]["audit_status"], "AWAITING_EVIDENCE")
+            self.assertNotEqual(out["packet"]["audit_status"], "PASSED")
 
 
 if __name__ == "__main__":
