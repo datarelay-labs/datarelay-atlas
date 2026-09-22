@@ -146,6 +146,19 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         self.assertIn("secrets", str(ctx.exception).lower())
         with self.assertRaises(ValidationError):
             _render(findings=f"boom\n{assigned}\n")
+        github_token = "GITHUB_TOKEN" + "=" + "ghp_" + ("x" * 20)
+        aws_secret = "AWS_SECRET_ACCESS_KEY" + "=" + ("y" * 24)
+        with self.assertRaises(ValidationError):
+            sanitize_rework_findings(github_token)
+        with self.assertRaises(ValidationError):
+            sanitize_rework_findings(aws_secret)
+
+    def test_sanitize_redacts_absolute_local_paths(self):
+        dirty = "worktree_path is not a directory: /home/runner/proj/target-wt"
+        clean = sanitize_rework_findings(dirty)
+        self.assertIn("<local-path>", clean)
+        self.assertNotIn("/home/runner", clean)
+        self.assertNotIn("target-wt", clean)
 
     def test_findings_cannot_inject_packet_headings(self):
         updated = _render(

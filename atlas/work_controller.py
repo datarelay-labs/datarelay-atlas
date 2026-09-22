@@ -385,13 +385,40 @@ _WORK_PACKET_SECTION_HEADINGS = (
 
 def _looks_like_secret(text: str) -> bool:
     """Detect likely live credentials, not mere documentation mentions."""
-    if re.search(r"OPENAI_API_KEY\s*=\s*\S+", text):
+    if re.search(
+        r"\b("
+        r"OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|"
+        r"AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|"
+        r"AZURE_CLIENT_SECRET|NPM_TOKEN"
+        r")\s*=\s*\S+",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(r"\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)\s*=\s*\S+", text):
         return True
     if re.search(r"\bsk-[A-Za-z0-9]{20,}\b", text):
+        return True
+    if re.search(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b", text):
+        return True
+    if re.search(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b", text):
+        return True
+    if re.search(r"\bAKIA[0-9A-Z]{16}\b", text):
         return True
     if re.search(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", text):
         return True
     return False
+
+
+_ABS_PATH_RE = re.compile(
+    r"(/(?:home|Users|tmp|var|private|opt|root|mnt|data)(?:/[^/\s\"'`]+)+)"
+    r"|([A-Za-z]:\\(?:[^\\\s\"'`]+\\)+[^\\\s\"'`]+)"
+)
+
+
+def redact_absolute_paths(text: str) -> str:
+    """Replace host-local absolute paths before GitHub Work Packet persistence."""
+    return _ABS_PATH_RE.sub("<local-path>", text or "")
 
 
 def sanitize_rework_findings(
@@ -401,7 +428,8 @@ def sanitize_rework_findings(
 
     Neutralize ATX headings and fence openers so interpolated findings cannot
     create or steal packet-level ``##`` sections during later replacement.
-    Reject credential-like text so secrets never land in GitHub Issues.
+    Reject credential-like text and redact absolute local paths so secrets and
+    host paths never land in GitHub Issues.
     """
     cleaned = "".join(
         ch for ch in (findings or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -415,7 +443,7 @@ def sanitize_rework_findings(
         if line.lstrip().startswith("```"):
             line = line.replace("```", "'''")
         neutralized.append(line)
-    cleaned = "\n".join(neutralized).strip()
+    cleaned = redact_absolute_paths("\n".join(neutralized).strip())
     if _looks_like_secret(cleaned):
         raise ValidationError(
             "refusing to persist findings that look like secrets"
@@ -1639,7 +1667,7 @@ class WorkController:
                             },
                         )
                     except ValidationError as exc:
-                        boundary_reason = str(exc)
+                        boundary_reason = redact_absolute_paths(str(exc))
                         try:
                             self.work_packet.apply_dispatch_blocked(
                                 repository=record.repository,

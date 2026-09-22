@@ -279,6 +279,12 @@ class CodexAuditProviderTests(unittest.TestCase):
         sk_shaped = "sk-" + ("a" * 24)
         self.assertTrue(_looks_like_secret(assigned))
         self.assertTrue(_looks_like_secret("token " + sk_shaped))
+        self.assertTrue(
+            _looks_like_secret("GITHUB_TOKEN" + "=" + "ghp_" + ("b" * 20))
+        )
+        self.assertTrue(
+            _looks_like_secret("AWS_SECRET_ACCESS_KEY" + "=" + ("c" * 24))
+        )
 
 
     def test_collect_bundle_uses_injected_collectors(self):
