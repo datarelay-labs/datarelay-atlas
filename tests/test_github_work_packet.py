@@ -836,6 +836,52 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 atlas_cli._controller_from_args(args)
 
+    def test_fixed_recording_with_spawn_dispatch_fails_closed(self):
+        """Recording packet adapter must not pair with a real PTY dispatcher."""
+        from atlas import cli as atlas_cli
+
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "work-controller",
+                "completion",
+                "/tmp/event.json",
+                "--audit-adapter",
+                "fixed",
+                "--audit-verdict",
+                "REWORK",
+                "--spawn-dispatch",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            args.data_root = tmp
+            with self.assertRaises(ValidationError) as ctx:
+                atlas_cli._controller_from_args(args)
+            self.assertIn("spawn-dispatch", str(ctx.exception).lower())
+            self.assertIn("github", str(ctx.exception).lower())
+
+    def test_explicit_recording_with_spawn_dispatch_fails_closed(self):
+        from atlas import cli as atlas_cli
+
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "work-controller",
+                "completion",
+                "/tmp/event.json",
+                "--audit-adapter",
+                "codex",
+                "--work-packet-adapter",
+                "recording",
+                "--spawn-dispatch",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            args.data_root = tmp
+            with self.assertRaises(ValidationError) as ctx:
+                atlas_cli._controller_from_args(args)
+            self.assertIn("recording", str(ctx.exception).lower())
+
     def test_register_show_list_use_offline_safe_adapters(self):
         from atlas import cli as atlas_cli
         from atlas.work_controller import RecordingWorkPacketAdapter

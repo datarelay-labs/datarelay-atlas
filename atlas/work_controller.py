@@ -1978,7 +1978,14 @@ class WorkController:
             # Common boundary for every audit adapter (codex/openai/fixed): never
             # finalize PASSED unless the audited worktree is still a clean
             # autonomous snapshot. Adapter-local checks are not sufficient.
-            blocked = self._reject_pass_if_unclean_snapshot(event, record)
+            blocked = self._reject_if_unclean_snapshot(
+                event,
+                record,
+                prefix=(
+                    "PASS rejected: audited worktree not a clean autonomous "
+                    "snapshot at controller PASS gate"
+                ),
+            )
             if blocked is not None:
                 audit_result = blocked
                 record.last_audit_verdict = audit_result.verdict
@@ -2015,101 +2022,43 @@ class WorkController:
                     extra={"reason": "retry_exhausted"},
                 )
             else:
-                try:
-                    self.work_packet.apply_rework_findings(
-                        repository=record.repository,
-                        issue_number=record.issue_number,
-                        branch=record.branch,
-                        workstream=record.workstream,
-                        findings=audit_result.findings,
-                        attempt=next_attempt,
-                        head=event.head,
-                    )
-                except ValidationError as exc:
-                    record.last_findings = (
-                        f"{audit_result.findings}\n"
-                        f"work packet mutation failed before dispatch: {exc}"
-                    ).strip()
+                # Common REWORK pre-mutation gate for every adapter: never mutate
+                # the canonical Work Packet (or dispatch) on a dirty/drifted tree.
+                blocked = self._reject_if_unclean_snapshot(
+                    event,
+                    record,
+                    prefix=(
+                        "REWORK rejected: audited worktree not a clean autonomous "
+                        "snapshot before Work Packet mutation"
+                    ),
+                )
+                if blocked is not None:
+                    audit_result = blocked
+                    record.last_audit_verdict = audit_result.verdict
+                    record.last_findings = audit_result.findings
                     outcome = self._finalize(
                         record,
                         event,
                         state="HUMAN_REQUIRED",
                         action="stop",
                         verdict="HUMAN_REQUIRED",
-                        extra={"reason": "work_packet_mutation_failed"},
+                        extra={"reason": "rework_unclean_snapshot"},
                     )
                 else:
                     try:
-                        dispatch = self.dispatcher.start_resume(
-                            DispatchRequest(
-                                workstream=record.workstream,
-                                worktree_path=record.worktree_path,
-                                branch=record.branch,
-                                issue_number=record.issue_number,
-                                attempt=next_attempt,
-                                repository=record.repository,
-                                expected_head=event.head,
-                                resume_prompt=RESUME_PROMPT,
-                            )
-                        )
-                    except DispatchSpawnedButUnobservedError as exc:
-                        # Wrapper may exist, but no Cursor session/process was
-                        # confirmed — compensate the packet and stop for human.
-                        boundary_reason = redact_absolute_paths(str(exc))
-                        try:
-                            self.work_packet.apply_dispatch_blocked(
-                                repository=record.repository,
-                                issue_number=record.issue_number,
-                                branch=record.branch,
-                                workstream=record.workstream,
-                                findings=audit_result.findings,
-                                attempt=next_attempt,
-                                head=event.head,
-                                reason=boundary_reason,
-                            )
-                        except ValidationError as packet_exc:
-                            boundary_reason = (
-                                f"{boundary_reason}; compensating packet update "
-                                f"also failed: {packet_exc}"
-                            )
-                        record.last_findings = (
-                            f"{audit_result.findings}\n"
-                            f"rework spawn unobserved (no confirmed session): "
-                            f"{boundary_reason}"
-                        ).strip()
-                        outcome = self._finalize(
-                            record,
-                            event,
-                            state="HUMAN_REQUIRED",
-                            action="stop",
-                            verdict="HUMAN_REQUIRED",
-                            extra={
-                                "reason": "spawned_but_unobserved",
-                                "dispatch_session_hint": exc.session_hint,
-                                "dispatch_command": exc.command,
-                            },
+                        self.work_packet.apply_rework_findings(
+                            repository=record.repository,
+                            issue_number=record.issue_number,
+                            branch=record.branch,
+                            workstream=record.workstream,
+                            findings=audit_result.findings,
+                            attempt=next_attempt,
+                            head=event.head,
                         )
                     except ValidationError as exc:
-                        boundary_reason = redact_absolute_paths(str(exc))
-                        try:
-                            self.work_packet.apply_dispatch_blocked(
-                                repository=record.repository,
-                                issue_number=record.issue_number,
-                                branch=record.branch,
-                                workstream=record.workstream,
-                                findings=audit_result.findings,
-                                attempt=next_attempt,
-                                head=event.head,
-                                reason=boundary_reason,
-                            )
-                        except ValidationError as packet_exc:
-                            boundary_reason = (
-                                f"{boundary_reason}; compensating packet update "
-                                f"also failed: {packet_exc}"
-                            )
                         record.last_findings = (
                             f"{audit_result.findings}\n"
-                            f"rework dispatch blocked at boundary: {boundary_reason}"
+                            f"work packet mutation failed before dispatch: {exc}"
                         ).strip()
                         outcome = self._finalize(
                             record,
@@ -2117,36 +2066,123 @@ class WorkController:
                             state="HUMAN_REQUIRED",
                             action="stop",
                             verdict="HUMAN_REQUIRED",
-                            extra={"reason": "dispatch_boundary_failed"},
+                            extra={"reason": "work_packet_mutation_failed"},
                         )
                     else:
-                        record.attempt = next_attempt
-                        record.last_session_id = dispatch.session_id
-                        record.expected_head = event.head
-                        outcome = self._finalize(
-                            record,
-                            event,
-                            state="REWORK_DISPATCHED",
-                            action="rework_dispatched",
-                            verdict="REWORK",
-                            extra={
-                                "dispatch_session_id": dispatch.session_id,
-                                "dispatch_command": dispatch.command,
-                                "next_attempt": next_attempt,
-                                "resume_prompt": RESUME_PROMPT,
-                            },
-                        )
+                        try:
+                            dispatch = self.dispatcher.start_resume(
+                                DispatchRequest(
+                                    workstream=record.workstream,
+                                    worktree_path=record.worktree_path,
+                                    branch=record.branch,
+                                    issue_number=record.issue_number,
+                                    attempt=next_attempt,
+                                    repository=record.repository,
+                                    expected_head=event.head,
+                                    resume_prompt=RESUME_PROMPT,
+                                )
+                            )
+                        except DispatchSpawnedButUnobservedError as exc:
+                            # Wrapper may exist, but no Cursor session/process was
+                            # confirmed — compensate the packet and stop for human.
+                            boundary_reason = redact_absolute_paths(str(exc))
+                            try:
+                                self.work_packet.apply_dispatch_blocked(
+                                    repository=record.repository,
+                                    issue_number=record.issue_number,
+                                    branch=record.branch,
+                                    workstream=record.workstream,
+                                    findings=audit_result.findings,
+                                    attempt=next_attempt,
+                                    head=event.head,
+                                    reason=boundary_reason,
+                                )
+                            except ValidationError as packet_exc:
+                                boundary_reason = (
+                                    f"{boundary_reason}; compensating packet update "
+                                    f"also failed: {packet_exc}"
+                                )
+                            record.last_findings = (
+                                f"{audit_result.findings}\n"
+                                f"rework spawn unobserved (no confirmed session): "
+                                f"{boundary_reason}"
+                            ).strip()
+                            outcome = self._finalize(
+                                record,
+                                event,
+                                state="HUMAN_REQUIRED",
+                                action="stop",
+                                verdict="HUMAN_REQUIRED",
+                                extra={
+                                    "reason": "spawned_but_unobserved",
+                                    "dispatch_session_hint": exc.session_hint,
+                                    "dispatch_command": exc.command,
+                                },
+                            )
+                        except ValidationError as exc:
+                            boundary_reason = redact_absolute_paths(str(exc))
+                            try:
+                                self.work_packet.apply_dispatch_blocked(
+                                    repository=record.repository,
+                                    issue_number=record.issue_number,
+                                    branch=record.branch,
+                                    workstream=record.workstream,
+                                    findings=audit_result.findings,
+                                    attempt=next_attempt,
+                                    head=event.head,
+                                    reason=boundary_reason,
+                                )
+                            except ValidationError as packet_exc:
+                                boundary_reason = (
+                                    f"{boundary_reason}; compensating packet update "
+                                    f"also failed: {packet_exc}"
+                                )
+                            record.last_findings = (
+                                f"{audit_result.findings}\n"
+                                f"rework dispatch blocked at boundary: {boundary_reason}"
+                            ).strip()
+                            outcome = self._finalize(
+                                record,
+                                event,
+                                state="HUMAN_REQUIRED",
+                                action="stop",
+                                verdict="HUMAN_REQUIRED",
+                                extra={"reason": "dispatch_boundary_failed"},
+                            )
+                        else:
+                            record.attempt = next_attempt
+                            record.last_session_id = dispatch.session_id
+                            record.expected_head = event.head
+                            record.last_findings = audit_result.findings
+                            outcome = self._finalize(
+                                record,
+                                event,
+                                state="REWORK_DISPATCHED",
+                                action="rework_dispatched",
+                                verdict="REWORK",
+                                extra={
+                                    "dispatch_session_id": dispatch.session_id,
+                                    "dispatch_command": dispatch.command,
+                                    "next_attempt": next_attempt,
+                                    "resume_prompt": RESUME_PROMPT,
+                                },
+                            )
         self.observer.observe("completion_handled", outcome)
         return outcome
 
-    def _reject_pass_if_unclean_snapshot(
-        self, event: CompletionEvent, record: WorkstreamRecord
+    def _reject_if_unclean_snapshot(
+        self,
+        event: CompletionEvent,
+        record: WorkstreamRecord,
+        *,
+        prefix: str,
     ) -> AuditResult | None:
-        """Reject adapter PASS unless the worktree is still a clean snapshot.
+        """Reject PASS/REWORK unless the worktree is still a clean snapshot.
 
         Returns a HUMAN_REQUIRED AuditResult when identity/porcelain checks fail;
-        None when PASS may proceed. Skipped when identity enforcement is disabled
-        (deterministic unit tests that inject FixedAuditAdapter without git).
+        None when the gate may proceed. Skipped when identity enforcement is
+        disabled (deterministic unit tests that inject FixedAuditAdapter without
+        git).
         """
         if not self.enforce_worktree_identity:
             return None
@@ -2161,10 +2197,7 @@ class WorkController:
         except ValidationError as exc:
             detail = redact_absolute_paths(str(exc))
             prior = (record.last_findings or "").strip()
-            findings = (
-                "PASS rejected: audited worktree not a clean autonomous "
-                f"snapshot at controller PASS gate ({detail[:300]})"
-            )
+            findings = f"{prefix} ({detail[:300]})"
             if prior:
                 findings = f"{prior}\n{findings}"
             return AuditResult(verdict="HUMAN_REQUIRED", findings=findings)

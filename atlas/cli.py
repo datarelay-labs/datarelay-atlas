@@ -172,6 +172,11 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
             "GitHub Work Packet mutation requires --spawn-dispatch "
             "(audit-only mode must pass --work-packet-adapter recording)"
         )
+    if spawn and packet_choice != "github":
+        raise ValidationError(
+            "real --spawn-dispatch requires --work-packet-adapter github "
+            "(RecordingWorkPacketAdapter cannot pair with PtyPersistCursorDispatcher)"
+        )
     if packet_choice == "github":
         work_packet = GitHubWorkPacketAdapter()
     elif packet_choice == "recording":
