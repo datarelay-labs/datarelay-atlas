@@ -26,7 +26,7 @@ from atlas.work_controller import (
     CompletionEvent,
     WorkstreamRecord,
     WorktreeIdentity,
-    _looks_like_secret,
+    _contains_unsafe_secret,
     default_git_runner,
     normalize_github_repository,
     parse_audit_verdict_payload,
@@ -1245,7 +1245,7 @@ class CodexAuditProvider:
             base_ref=self.base_ref,
         )
         self.last_prompt = prompt
-        if _looks_like_secret(prompt):
+        if _contains_unsafe_secret(prompt):
             raise ValidationError("refusing to send credential-like material to Codex")
 
         with tempfile.TemporaryDirectory(prefix="awc-codex-") as tmp:

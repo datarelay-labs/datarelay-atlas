@@ -294,6 +294,47 @@ class CodexAuditProviderTests(unittest.TestCase):
         )
         self.assertTrue(_looks_like_secret('{"password":"correct horse"}'))
 
+    def test_prompt_guard_allows_safe_redacted_placeholders(self):
+        from atlas.work_controller import (
+            _contains_unsafe_secret,
+            _looks_like_secret,
+            redact_sensitive_audit_text,
+        )
+
+        # Exact sanitizer output must not block the Codex prompt guard.
+        safe = "OPENAI_API_KEY=<redacted>\npassword=<redacted>"
+        self.assertTrue(_looks_like_secret(safe), safe)
+        self.assertFalse(_contains_unsafe_secret(safe), safe)
+        bearer_safe = "Authorization: Bearer <redacted>"
+        self.assertFalse(_contains_unsafe_secret(bearer_safe), bearer_safe)
+        pem_safe = redact_sensitive_audit_text(
+            "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----"
+        )
+        self.assertIn("<redacted-private-key>", pem_safe)
+        self.assertFalse(_contains_unsafe_secret(pem_safe), pem_safe)
+
+        # Live credentials still fail closed.
+        live = "OPENAI_API_KEY" + "=" + ("x" * 24)
+        self.assertTrue(_contains_unsafe_secret(live), live)
+        mixed = safe + "\n" + live
+        self.assertTrue(_contains_unsafe_secret(mixed), mixed)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = build_codex_audit_prompt(
+                self._event(),
+                self._record(tmp),
+                identity=self._identity(tmp),
+                evidence_bundle={
+                    **self._bundle(),
+                    "tests": {
+                        "status": "PASS",
+                        "detail": safe,
+                        "transcript": safe,
+                    },
+                },
+            )
+        self.assertIn("<redacted>", prompt)
+        self.assertFalse(_contains_unsafe_secret(prompt), prompt[:500])
 
     def test_collect_bundle_uses_injected_collectors(self):
         with tempfile.TemporaryDirectory() as tmp:

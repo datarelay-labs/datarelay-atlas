@@ -512,6 +512,30 @@ def redact_sensitive_audit_text(text: str, *, max_chars: int = 300) -> str:
     return cleaned[:max_chars]
 
 
+def _strip_safe_redaction_placeholders(text: str) -> str:
+    """Remove exact safe redaction markers before secret classification.
+
+    Assignments like ``OPENAI_API_KEY=<redacted>``, ``Bearer <redacted>``, and
+    ``<redacted-private-key>`` are intentional sanitizer output and must not
+    trip the Codex prompt guard or packet persistence rejector.
+    """
+    cleaned = text or ""
+    cleaned = re.sub(
+        rf'(?i)((?:\\)?["\']?)({_credential_name_pattern()})\1\s*[:=]\s*'
+        rf'((?:\\)?["\']?)<redacted>\3',
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"(?i)Bearer\s+<redacted>", "", cleaned)
+    cleaned = cleaned.replace("<redacted-private-key>", "")
+    return cleaned
+
+
+def _contains_unsafe_secret(text: str) -> bool:
+    """True when text still looks like a live credential after safe markers."""
+    return _looks_like_secret(_strip_safe_redaction_placeholders(text))
+
+
 def sanitize_rework_findings(
     findings: str, *, max_chars: int = DEFAULT_MAX_REWORK_FINDINGS_CHARS
 ) -> str:
@@ -535,15 +559,7 @@ def sanitize_rework_findings(
             line = line.replace("```", "'''")
         neutralized.append(line)
     cleaned = redact_absolute_paths("\n".join(neutralized).strip())
-    # Already-sanitized placeholders such as OPENAI_API_KEY=<redacted> are safe
-    # to persist; remove those exact assignments before credential rejection.
-    probe = re.sub(
-        rf'(?i)((?:\\)?["\']?)({_credential_name_pattern()})\1\s*[:=]\s*'
-        rf'((?:\\)?["\']?)<redacted>\3',
-        "",
-        cleaned,
-    )
-    if _looks_like_secret(probe):
+    if _contains_unsafe_secret(cleaned):
         raise ValidationError(
             "refusing to persist findings that look like secrets"
         )
