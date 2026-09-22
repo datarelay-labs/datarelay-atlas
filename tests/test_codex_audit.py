@@ -346,6 +346,12 @@ class CodexAuditProviderTests(unittest.TestCase):
         # JSON next-key shape must not exempt shell `=` assignments.
         shell_json_spoof = 'PASSWORD="<redacted>","hunter2":x'
         self.assertTrue(_contains_unsafe_secret(shell_json_spoof), shell_json_spoof)
+        # Bearer placeholder must terminate; a glued suffix stays unsafe.
+        bearer_spoof = "Bearer <redacted>hunter2"
+        self.assertTrue(_contains_unsafe_secret(bearer_spoof), bearer_spoof)
+        self.assertFalse(
+            _contains_unsafe_secret("Bearer <redacted>"), "Bearer <redacted>"
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             prompt = build_codex_audit_prompt(
