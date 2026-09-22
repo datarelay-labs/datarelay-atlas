@@ -259,6 +259,20 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             else:
                 self.assertIn("://<redacted>@", redacted)
 
+    def test_type_annotation_colon_values_are_not_secrets(self):
+        from atlas.work_controller import (
+            _contains_unsafe_secret,
+            _looks_like_secret,
+        )
+
+        annotation = "token: str"
+        self.assertFalse(_looks_like_secret(annotation), annotation)
+        self.assertFalse(_contains_unsafe_secret(annotation), annotation)
+        self.assertEqual(redact_sensitive_audit_text(annotation), annotation)
+        # Credential-shaped colon values remain detected.
+        secretish = "access_token: bare-secret-value-12345"
+        self.assertTrue(_looks_like_secret(secretish), secretish)
+
     def test_quoted_credential_values_match_selected_delimiter(self):
         from atlas.work_controller import _looks_like_secret
 

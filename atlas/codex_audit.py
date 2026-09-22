@@ -854,9 +854,13 @@ def collect_audit_evidence_bundle(
         )
         bundle["ci"] = ci
         # Fail closed: when a PR is in scope, review feedback must be inspectable.
+        # CI ABSENT (PR exists, no check runs) still requires review collection.
         pr = ci.get("pr") if isinstance(ci.get("pr"), dict) else None
         pr_number = pr.get("number") if pr else None
-        if ci.get("status") in {"OK", "PENDING", "FAIL"} and pr_number is not None:
+        if (
+            ci.get("status") in {"OK", "PENDING", "FAIL", "ABSENT"}
+            and pr_number is not None
+        ):
             bundle["pr_reviews"] = collect_pr_review_evidence(
                 repository=identity.repository,
                 pr_number=int(pr_number),

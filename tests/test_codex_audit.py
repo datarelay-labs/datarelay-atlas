@@ -1516,6 +1516,102 @@ class CodexAuditProviderTests(unittest.TestCase):
         )
         self.assertEqual(ci["status"], "ABSENT")
 
+    def test_absent_ci_with_pr_still_collects_reviews(self):
+        """CI ABSENT must not skip review evidence when a PR number is known."""
+        from atlas.codex_audit import collect_audit_evidence_bundle
+        from atlas.work_controller import (
+            CompletionEvent,
+            WorkstreamRecord,
+            WorktreeIdentity,
+        )
+
+        calls: list[list[str]] = []
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            calls.append(argv)
+            if argv[:3] == ["gh", "pr", "list"]:
+                payload = [
+                    {
+                        "number": 16,
+                        "url": "https://example.invalid/pr/16",
+                        "state": "OPEN",
+                        "headRefOid": HEAD,
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    stdout="",
+                    stderr="no checks reported on the 'feature/x' branch",
+                )
+            if argv[:2] == ["gh", "api"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps([[]]), stderr=""
+                )
+            raise AssertionError(argv)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            identity = WorktreeIdentity(
+                worktree_path=tmp,
+                repository="datarelay-labs/datarelay-atlas",
+                branch="feature/x",
+                head=HEAD,
+                toplevel=tmp,
+            )
+            record = WorkstreamRecord(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/x",
+                worktree_path=tmp,
+                expected_head=HEAD,
+                state="IDLE",
+                attempt=1,
+                max_attempts=3,
+            )
+            event = CompletionEvent(
+                event_id="evt-1",
+                workstream="awc-poc",
+                issue_number=12,
+                branch="feature/x",
+                head=HEAD,
+                attempt=1,
+            )
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                if tuple(argv) == ("git", "rev-parse", "HEAD"):
+                    return HEAD
+                if tuple(argv) == ("git", "status", "--porcelain", "--untracked-files=all"):
+                    return ""
+                if argv[:2] == ["git", "diff"]:
+                    return ""
+                if argv[:2] == ["git", "log"]:
+                    return ""
+                return ""
+
+            bundle = collect_audit_evidence_bundle(
+                event,
+                record,
+                identity=identity,
+                git_runner=fake_git,
+                command_runner=runner,
+                include_tests=False,
+                include_work_packet=False,
+            )
+            self.assertEqual(bundle["ci"]["status"], "ABSENT")
+            self.assertEqual(bundle["ci"]["pr"]["number"], 16)
+            self.assertEqual(bundle["pr_reviews"]["status"], "OK")
+            self.assertTrue(
+                any(argv[:2] == ["gh", "api"] for argv in calls),
+                msg=f"expected review API calls, got {calls!r}",
+            )
+
     def test_ci_collector_uses_raw_sha_search(self):
         seen: list[list[str]] = []
 

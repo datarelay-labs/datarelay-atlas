@@ -447,6 +447,27 @@ def _normalize_json_quote_escapes(text: str) -> str:
     return cur
 
 
+def _is_colon_type_or_prose_value(value: str) -> bool:
+    """True for type annotations / short prose, not credential-like colon values.
+
+    Distinguishes ``token: str`` from ``access_token: bare-secret-value-12345``.
+    """
+    v = (value or "").strip()
+    if not v:
+        return True
+    if re.fullmatch(
+        r"(?:str|int|float|bool|bytes|None|True|False|Any|Optional|"
+        r"List|Dict|Set|Tuple|Mapping|Sequence|Callable|Iterable|Iterator|"
+        r"object|type|list|dict|set|tuple|[A-Z][A-Za-z0-9_]*)",
+        v,
+    ):
+        return True
+    # Short plain identifiers without digits/punctuation are type/prose, not secrets.
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v) and len(v) < 16:
+        return True
+    return False
+
+
 def _looks_like_secret(text: str) -> bool:
     """Detect likely live credentials, not mere documentation mentions."""
     name = _credential_name_pattern()
@@ -461,12 +482,19 @@ def _looks_like_secret(text: str) -> bool:
         scan,
     ):
         return True
-    # Bare equals/colon assignments without whitespace in the value.
+    # Bare equals assignments without whitespace in the value.
     if re.search(
-        rf'(?i){key_q}({name})\1\s*[:=]\s*([^\s,"\'}}\]]+)',
+        rf'(?i){key_q}({name})\1\s*=\s*([^\s,"\'}}\]]+)',
         scan,
     ):
         return True
+    # Bare colon: skip type annotations / short prose (``token: str``).
+    for match in re.finditer(
+        rf'(?i){key_q}({name})\1\s*:\s*([^\s,"\'}}\]]+)',
+        scan,
+    ):
+        if not _is_colon_type_or_prose_value(match.group(3)):
+            return True
     if re.search(r"\bsk-[A-Za-z0-9]{20,}\b", scan):
         return True
     if re.search(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b", scan):
@@ -556,6 +584,10 @@ def _redact_secret_kv(match: re.Match[str]) -> str:
     val_q = match.groupdict().get("vq") or ""
     after_key = match.group(0)[len(key_q) + len(key) + len(key_q) :]
     separator = ":" if after_key.lstrip().startswith(":") else "="
+    if separator == ":" and not val_q:
+        bare_val = match.groupdict().get("val") or ""
+        if _is_colon_type_or_prose_value(bare_val):
+            return match.group(0)
     return f"{key_q}{key}{key_q}{separator}{val_q}<redacted>{val_q}"
 
 
