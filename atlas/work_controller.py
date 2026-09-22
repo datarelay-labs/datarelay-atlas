@@ -521,22 +521,25 @@ def _strip_safe_redaction_placeholders(text: str) -> str:
     """
     cleaned = text or ""
     name = _credential_name_pattern()
+    # Value must end at the placeholder (not PASSWORD="<redacted>"hunter2 /
+    # PASSWORD=<redacted>hunter2). Allow only complete JSON escape terminators
+    # (`\n`, `\"`), not a bare `\`.
+    value_end = r'(?=$|[\s,"\'}}\]]|\\["n])'
     # Quoted exact placeholder: key="<redacted>" / key:'<redacted>'
     cleaned = re.sub(
-        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*((?:\\)?["\'])<redacted>\3',
+        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*((?:\\)?["\'])<redacted>\3'
+        rf'{value_end}',
         "",
         cleaned,
     )
-    # Bare exact placeholder: value must end at <redacted> (not <redacted>hunter2).
-    # Allow only complete JSON escape terminators (`\n`, `\"`), not a bare `\`.
+    # Bare exact placeholder.
     cleaned = re.sub(
-        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*<redacted>'
-        rf'(?=$|[\s,"\'}}\]]|\\["n])',
+        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*<redacted>{value_end}',
         "",
         cleaned,
     )
     cleaned = re.sub(
-        r'(?i)Bearer\s+<redacted>(?=$|[\s,"\'\]\}]|\\["n])',
+        rf'(?i)Bearer\s+<redacted>{value_end}',
         "",
         cleaned,
     )

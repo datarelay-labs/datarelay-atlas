@@ -305,6 +305,8 @@ class CodexAuditProviderTests(unittest.TestCase):
         safe = "OPENAI_API_KEY=<redacted>\npassword=<redacted>"
         self.assertTrue(_looks_like_secret(safe), safe)
         self.assertFalse(_contains_unsafe_secret(safe), safe)
+        quoted_safe = 'PASSWORD="<redacted>"\napiKey=\'<redacted>\''
+        self.assertFalse(_contains_unsafe_secret(quoted_safe), quoted_safe)
         bearer_safe = "Authorization: Bearer <redacted>"
         self.assertFalse(_contains_unsafe_secret(bearer_safe), bearer_safe)
         pem_safe = redact_sensitive_audit_text(
@@ -324,6 +326,13 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertTrue(_looks_like_secret(spoofed), spoofed)
         backslash_spoof = "PASSWORD=<redacted>\\hunter2"
         self.assertTrue(_contains_unsafe_secret(backslash_spoof), backslash_spoof)
+        # Shell juxtaposition after a closed quote must stay unsafe.
+        quoted_spoof = 'PASSWORD="<redacted>"hunter2'
+        self.assertTrue(_contains_unsafe_secret(quoted_spoof), quoted_spoof)
+        single_quoted_spoof = "PASSWORD='<redacted>'hunter2"
+        self.assertTrue(
+            _contains_unsafe_secret(single_quoted_spoof), single_quoted_spoof
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             prompt = build_codex_audit_prompt(
