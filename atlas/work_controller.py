@@ -1636,6 +1636,15 @@ class WorkController:
         record.last_findings = audit_result.findings
 
         if audit_result.verdict == "PASS":
+            # Common boundary for every audit adapter (codex/openai/fixed): never
+            # finalize PASSED unless the audited worktree is still a clean
+            # autonomous snapshot. Adapter-local checks are not sufficient.
+            blocked = self._reject_pass_if_unclean_snapshot(event, record)
+            if blocked is not None:
+                audit_result = blocked
+                record.last_audit_verdict = audit_result.verdict
+                record.last_findings = audit_result.findings
+        if audit_result.verdict == "PASS":
             outcome = self._finalize(
                 record,
                 event,
@@ -1774,6 +1783,37 @@ class WorkController:
                         )
         self.observer.observe("completion_handled", outcome)
         return outcome
+
+    def _reject_pass_if_unclean_snapshot(
+        self, event: CompletionEvent, record: WorkstreamRecord
+    ) -> AuditResult | None:
+        """Reject adapter PASS unless the worktree is still a clean snapshot.
+
+        Returns a HUMAN_REQUIRED AuditResult when identity/porcelain checks fail;
+        None when PASS may proceed. Skipped when identity enforcement is disabled
+        (deterministic unit tests that inject FixedAuditAdapter without git).
+        """
+        if not self.enforce_worktree_identity:
+            return None
+        try:
+            validate_clean_worktree_identity(
+                record.worktree_path,
+                repository=record.repository,
+                branch=event.branch,
+                expected_head=event.head,
+                git_runner=self._git_runner,
+            )
+        except ValidationError as exc:
+            detail = redact_absolute_paths(str(exc))
+            prior = (record.last_findings or "").strip()
+            findings = (
+                "PASS rejected: audited worktree not a clean autonomous "
+                f"snapshot at controller PASS gate ({detail[:300]})"
+            )
+            if prior:
+                findings = f"{prior}\n{findings}"
+            return AuditResult(verdict="HUMAN_REQUIRED", findings=findings)
+        return None
 
     def _finalize(
         self,

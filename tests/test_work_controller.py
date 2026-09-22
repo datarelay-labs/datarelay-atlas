@@ -87,6 +87,111 @@ class WorkControllerTests(unittest.TestCase):
             shown = ctl.show("awc-poc")
             self.assertEqual(shown["state"], "PASSED")
 
+    def test_pass_rejected_when_worktree_dirty_at_controller_gate(self):
+        """Adapter PASS on a dirty tree must not finalize PASSED."""
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            git_state = {"dirty": ""}
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "branch", "--show-current"): (
+                        "feature/autonomous-work-controller-poc"
+                    ),
+                    ("git", "rev-parse", "HEAD"): HEAD_A,
+                    ("git", "status", "--porcelain", "--untracked-files=all"): (
+                        git_state["dirty"]
+                    ),
+                }
+                return mapping[tuple(argv)]
+
+            class DirtyAfterAudit:
+                def __init__(self) -> None:
+                    self.calls = []
+
+                def audit(self, event, record):
+                    self.calls.append((event, record))
+                    git_state["dirty"] = " M dirty.py\n"
+                    return AuditResult(verdict="PASS", findings="looks good")
+
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=DirtyAfterAudit(),
+                work_packet=RecordingWorkPacketAdapter(),
+                dispatcher=RecordingCursorDispatcher(),
+                enforce_worktree_identity=True,
+                git_runner=fake_git,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertIn("PASS rejected", outcome["findings"])
+            self.assertIn("dirty", outcome["findings"].lower())
+            self.assertEqual(ctl.show("awc-poc")["state"], "HUMAN_REQUIRED")
+
+    def test_pass_rejected_when_worktree_already_dirty_before_finalize(self):
+        """Dirty porcelain present for the whole PASS path still fails closed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                # Register only checks identity (not porcelain). Keep HEAD/branch
+                # valid while porcelain stays dirty for the PASS gate.
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "branch", "--show-current"): (
+                        "feature/autonomous-work-controller-poc"
+                    ),
+                    ("git", "rev-parse", "HEAD"): HEAD_A,
+                    ("git", "status", "--porcelain", "--untracked-files=all"): (
+                        " M already-dirty.py\n"
+                    ),
+                }
+                return mapping[tuple(argv)]
+
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="PASS", findings="adapter pass")
+                ),
+                work_packet=RecordingWorkPacketAdapter(),
+                dispatcher=RecordingCursorDispatcher(),
+                enforce_worktree_identity=True,
+                git_runner=fake_git,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertIn("PASS rejected", outcome["findings"])
+            self.assertNotEqual(ctl.show("awc-poc")["state"], "PASSED")
+
     def test_idempotent_replay(self):
         with tempfile.TemporaryDirectory() as tmp:
             ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
