@@ -910,18 +910,29 @@ class PtyPersistCursorDispatcher:
         self.spawned_pids.append(pid)
         deadline = time.monotonic() + self._poll_timeout_sec
         while time.monotonic() < deadline:
-            current = sessions_for_worktree(self._list_sessions(), worktree)
-            new_sessions = [
-                item for item in current if item.session_id not in before_ids
-            ]
-            if new_sessions:
-                chosen = new_sessions[-1]
-                return DispatchResult(session_id=chosen.session_id, command=command)
-            new_procs = [
-                (proc_pid, cmd)
-                for proc_pid, cmd in self._list_target_procs(worktree)
-                if proc_pid not in before_pids
-            ]
+            try:
+                current = sessions_for_worktree(self._list_sessions(), worktree)
+                new_sessions = [
+                    item for item in current if item.session_id not in before_ids
+                ]
+                if new_sessions:
+                    chosen = new_sessions[-1]
+                    return DispatchResult(
+                        session_id=chosen.session_id, command=command
+                    )
+                new_procs = [
+                    (proc_pid, cmd)
+                    for proc_pid, cmd in self._list_target_procs(worktree)
+                    if proc_pid not in before_pids
+                ]
+            except DispatchSpawnedButUnobservedError:
+                raise
+            except Exception as exc:
+                raise DispatchSpawnedButUnobservedError(
+                    f"post-spawn observation failed after pid={pid}: {exc}",
+                    session_hint=f"proc:{pid}",
+                    command=command,
+                ) from exc
             if new_procs:
                 proc_pid, _cmd = new_procs[-1]
                 return DispatchResult(

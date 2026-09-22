@@ -340,6 +340,37 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 atlas_cli._controller_from_args(args)
 
+    def test_register_show_list_use_offline_safe_adapters(self):
+        from atlas import cli as atlas_cli
+        from atlas.work_controller import RecordingWorkPacketAdapter
+
+        parser = build_parser()
+        for argv in (
+            ["work-controller", "list"],
+            ["work-controller", "show", "awc"],
+            [
+                "work-controller",
+                "register",
+                "awc",
+                "--repository",
+                "datarelay-labs/datarelay-atlas",
+                "--issue-number",
+                "12",
+                "--branch",
+                "feature/x",
+                "--worktree",
+                "/tmp",
+                "--expected-head",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+        ):
+            args = parser.parse_args(argv)
+            with tempfile.TemporaryDirectory() as tmp:
+                args.data_root = tmp
+                ctl = atlas_cli._controller_from_args(args)
+                self.assertIsInstance(ctl.work_packet, RecordingWorkPacketAdapter)
+                self.assertFalse(hasattr(args, "audit_adapter"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -137,7 +137,19 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
 
     Production Work Packet adapter mutates the same GitHub `[AI Work]` Issue
     before REWORK dispatch. `RecordingWorkPacketAdapter` is offline/test-only.
+
+    Non-runtime commands (`register` / `show` / `list`) do not carry audit or
+    dispatch flags; they always get offline-safe recording adapters.
     """
+    if not hasattr(args, "audit_adapter"):
+        return WorkController(
+            Path(args.data_root),
+            audit=FixedAuditAdapter(AuditResult(verdict="PASS", findings="")),
+            work_packet=RecordingWorkPacketAdapter(),
+            dispatcher=RecordingCursorDispatcher(),
+            enforce_worktree_identity=True,
+        )
+
     adapter = getattr(args, "audit_adapter", "codex")
     if adapter == "codex":
         audit = CodexAuditProvider()

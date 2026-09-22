@@ -13,6 +13,7 @@ from pathlib import Path
 from atlas.provenance import ValidationError
 from atlas.work_controller import (
     DispatchRequest,
+    DispatchSpawnedButUnobservedError,
     PersistSession,
     PtyPersistCursorDispatcher,
     build_persist_resume_command,
@@ -149,6 +150,38 @@ class CursorLauncherTests(unittest.TestCase):
             self.assertIn("unrelated-1", remaining_ids)
             self.assertEqual(state["stopped"], [])
             self.assertEqual(dispatcher.spawned_pids, [4242])
+
+    def test_post_spawn_list_failure_raises_spawned_but_unobserved(self):
+        """agent persist list failure after spawn ⇒ recoverable specialized error."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+            state = {"spawn_calls": 0, "lists": 0}
+
+            def list_sessions() -> list[PersistSession]:
+                state["lists"] += 1
+                if state["lists"] == 1:
+                    return []  # baseline before spawn
+                raise ValidationError("agent persist list failed: boom")
+
+            def spawn(command: list[str], worktree_path: str) -> int:
+                state["spawn_calls"] += 1
+                return 7777
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=list_sessions,
+                list_target_procs=lambda _wt: [],
+                spawn=spawn,
+                git_runner=self._clean_git(),
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(DispatchSpawnedButUnobservedError) as ctx:
+                dispatcher.start_resume(self._dispatch_request(str(target)))
+            self.assertEqual(ctx.exception.session_hint, "proc:7777")
+            self.assertEqual(state["spawn_calls"], 1)
+            self.assertEqual(dispatcher.spawned_pids, [7777])
 
     def test_pty_dispatcher_falls_back_to_target_process_observation(self):
         with tempfile.TemporaryDirectory() as tmp:
