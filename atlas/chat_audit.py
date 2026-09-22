@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
 from atlas.provenance import ValidationError
+from atlas.secrets import sanitize_durable_text
 from atlas.work_controller import (
     GitRunner,
     WorktreeIdentity,
@@ -286,6 +287,82 @@ def make_run_key(repository: str, branch: str, target_sha: str) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
 
 
+def sanitize_finding(finding: AuditFinding) -> AuditFinding:
+    return AuditFinding(
+        finding_id=finding.finding_id,
+        unit=finding.unit,
+        summary=sanitize_durable_text(finding.summary),
+        severity=finding.severity,
+    )
+
+
+def sanitize_evidence(evidence: AuditEvidence) -> AuditEvidence:
+    return AuditEvidence(
+        status=evidence.status,
+        unit=evidence.unit,
+        target_sha=evidence.target_sha,
+        notes=sanitize_durable_text(evidence.notes),
+        truncated=evidence.truncated,
+    )
+
+
+def sanitize_slice_dict(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    out = copy.deepcopy(raw)
+    if isinstance(out.get("evidence"), dict) and "notes" in out["evidence"]:
+        out["evidence"]["notes"] = sanitize_durable_text(
+            str(out["evidence"].get("notes", ""))
+        )
+    findings = out.get("findings")
+    if isinstance(findings, list):
+        sanitized = []
+        for item in findings:
+            if isinstance(item, dict) and "summary" in item:
+                item = dict(item)
+                item["summary"] = sanitize_durable_text(str(item.get("summary", "")))
+            sanitized.append(item)
+        out["findings"] = sanitized
+    if "audit_request" in out:
+        out["audit_request"] = sanitize_durable_text(str(out.get("audit_request", "")))
+    return out
+
+
+def sanitize_packet_for_persistence(
+    packet: AuditControlPacket,
+) -> AuditControlPacket:
+    """Return a deep-copied packet safe for durable JSON persistence."""
+    sanitized = AuditControlPacket.from_dict(packet.to_dict())
+    sanitized.open_findings = [
+        sanitize_finding(f) for f in sanitized.open_findings
+    ]
+    sanitized.last_completed_slice = sanitize_slice_dict(
+        sanitized.last_completed_slice
+    )
+    cleaned_units: dict[str, dict[str, Any]] = {}
+    for key, entry in sanitized.completed_units.items():
+        cleaned = sanitize_slice_dict(entry)
+        assert cleaned is not None
+        cleaned_units[key] = cleaned
+    sanitized.completed_units = cleaned_units
+    sanitized.next_action = sanitize_durable_text(sanitized.next_action)
+    sanitized.session.notes = sanitize_durable_text(sanitized.session.notes)
+    return sanitized
+
+
+def sanitize_slice_result(result: SliceResult) -> SliceResult:
+    return SliceResult(
+        unit=result.unit,
+        target_sha=result.target_sha,
+        outcome=result.outcome,
+        findings=[sanitize_finding(f) for f in result.findings],
+        evidence=(
+            sanitize_evidence(result.evidence) if result.evidence else None
+        ),
+        audit_request=sanitize_durable_text(result.audit_request),
+    )
+
+
 def require_exact_commit_sha(value: str, *, label: str) -> str:
     """Normalize and require a full 40-char commit SHA (no prefix matching)."""
     normalized = str(value).strip().lower()
@@ -462,10 +539,11 @@ class FileCheckpointStore:
         return AuditControlPacket.from_dict(raw)
 
     def save(self, packet: AuditControlPacket) -> None:
+        safe = sanitize_packet_for_persistence(packet)
         self.data_root.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(
-            json.dumps(packet.to_dict(), indent=2, sort_keys=True) + "\n",
+            json.dumps(safe.to_dict(), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         tmp.replace(self.path)
@@ -487,7 +565,8 @@ class MemoryCheckpointStore:
         return copy.deepcopy(self._packet)
 
     def save(self, packet: AuditControlPacket) -> None:
-        self._packet = AuditControlPacket.from_dict(packet.to_dict())
+        safe = sanitize_packet_for_persistence(packet)
+        self._packet = AuditControlPacket.from_dict(safe.to_dict())
 
 
 class UnitExecutor(Protocol):
@@ -632,17 +711,20 @@ class ExternalEvidenceUnitExecutor:
             raise ValidationError(
                 "evidence target_sha must exactly equal current_target_sha"
             )
-        evidence = AuditEvidence.from_dict(
-            {
-                "status": raw.get("status", "MISSING"),
-                "unit": str(raw["unit"]),
-                "target_sha": evidence_sha,
-                "notes": raw.get("notes", ""),
-                "truncated": bool(raw.get("truncated", False)),
-            }
+        evidence = sanitize_evidence(
+            AuditEvidence.from_dict(
+                {
+                    "status": raw.get("status", "MISSING"),
+                    "unit": str(raw["unit"]),
+                    "target_sha": evidence_sha,
+                    "notes": raw.get("notes", ""),
+                    "truncated": bool(raw.get("truncated", False)),
+                }
+            )
         )
         findings = [
-            AuditFinding.from_dict(item) for item in raw.get("findings", [])
+            sanitize_finding(AuditFinding.from_dict(item))
+            for item in raw.get("findings", [])
         ]
         outcome = str(raw.get("outcome", "PASS"))
         return SliceResult(
@@ -650,7 +732,7 @@ class ExternalEvidenceUnitExecutor:
             target_sha=packet.current_target_sha,
             outcome=outcome,
             findings=findings,
-            audit_request=audit_request,
+            audit_request=sanitize_durable_text(audit_request),
             evidence=evidence,
         )
 
@@ -668,12 +750,13 @@ class RecordingWorkPacketHandoff:
     def upsert_implementation_packet(
         self, packet: AuditControlPacket, finding: AuditFinding
     ) -> dict[str, Any]:
+        safe_finding = sanitize_finding(finding)
         record = {
-            "title": f"[AI Work] Audit finding: {finding.finding_id}",
+            "title": f"[AI Work] Audit finding: {safe_finding.finding_id}",
             "repository": packet.target_repository,
             "branch": packet.target_branch,
             "head": packet.current_target_sha,
-            "finding": finding.to_dict(),
+            "finding": safe_finding.to_dict(),
             "next_action": (
                 "Implement the bounded audit finding in Cursor; "
                 "do not modify product code from Chat."
@@ -704,21 +787,24 @@ class FileWorkPacketHandoff:
     def upsert_implementation_packet(
         self, packet: AuditControlPacket, finding: AuditFinding
     ) -> dict[str, Any]:
+        safe_finding = sanitize_finding(finding)
         record = {
-            "title": f"[AI Work] Audit finding: {finding.finding_id}",
+            "title": f"[AI Work] Audit finding: {safe_finding.finding_id}",
             "repository": packet.target_repository,
             "branch": packet.target_branch,
             "head": packet.current_target_sha,
-            "finding": finding.to_dict(),
+            "finding": safe_finding.to_dict(),
             "next_action": (
                 "Implement the bounded audit finding in Cursor; "
                 "do not modify product code from Chat."
             ),
             "status": "OPEN",
-            "finding_id": finding.finding_id,
+            "finding_id": safe_finding.finding_id,
         }
         self.directory.mkdir(parents=True, exist_ok=True)
-        path = self.directory / handoff_filename_for_finding_id(finding.finding_id)
+        path = self.directory / handoff_filename_for_finding_id(
+            safe_finding.finding_id
+        )
         path.write_text(
             json.dumps(record, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -1266,6 +1352,7 @@ class ChatAuditController:
             claim = packet.slice_claim or {}
             if claim.get("claim_id") != claim_id:
                 raise ValidationError("slice claim mismatch while applying result")
+        result = sanitize_slice_result(result)
 
         if result.outcome == "TIMEOUT":
             packet.audit_status = "IN_SLICE"

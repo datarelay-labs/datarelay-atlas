@@ -701,6 +701,56 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(json.loads(path1.read_text())["finding_id"], "a/b")
             self.assertEqual(json.loads(path2.read_text())["finding_id"], "a_b")
 
+    def test_28_durable_files_never_persist_raw_secrets(self):
+        """Checkpoint + handoff must not retain Basic/Bearer/URI/password secrets."""
+        from atlas.chat_audit import (
+            ExternalEvidenceUnitExecutor,
+            FileWorkPacketHandoff,
+        )
+
+        basic = "Authorization: Basic dXNlcjpwYXNz"
+        bearer = "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz012345"
+        db_url = "DATABASE_URL=postgresql://audit_user:s3cret-pass@db.example/app"
+        password_assign = "POSTGRES_PASSWORD=hunter2-literal"
+        notes = f"{basic}\n{bearer}\n{db_url}\n{password_assign}"
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            handoff = FileWorkPacketHandoff(data)
+            executor = ExternalEvidenceUnitExecutor(
+                {
+                    "status": "COMPLETE",
+                    "unit": "changed_code",
+                    "target_sha": HEAD_A,
+                    "notes": notes,
+                    "outcome": "FINDING",
+                    "findings": [
+                        {
+                            "finding_id": "sec-1",
+                            "unit": "changed_code",
+                            "summary": notes,
+                            "severity": "P1",
+                        }
+                    ],
+                }
+            )
+            ctl = self._ctl(tmp, executor=executor, handoff=handoff)
+            # Point store at same data root as handoff
+            ctl.store = FileCheckpointStore(data)
+            ctl.handoff = handoff
+            out = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(out["outcome"], "FINDING")
+            checkpoint_text = (data / "chat-audit.json").read_text(encoding="utf-8")
+            handoff_files = list((data / "chat-audit-handoffs").glob("*.json"))
+            self.assertTrue(handoff_files)
+            handoff_text = handoff_files[0].read_text(encoding="utf-8")
+            for blob in (checkpoint_text, handoff_text):
+                self.assertNotIn("dXNlcjpwYXNz", blob)
+                self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz012345", blob)
+                self.assertNotIn("s3cret-pass", blob)
+                self.assertNotIn("hunter2-literal", blob)
+                self.assertNotIn("audit_user:s3cret-pass@", blob)
+                self.assertIn("<redacted>", blob)
+
 
 if __name__ == "__main__":
     unittest.main()
