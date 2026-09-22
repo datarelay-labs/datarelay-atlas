@@ -14,8 +14,8 @@ from atlas.chat_audit import (
     ExternalEvidenceUnitExecutor,
     FakeBrowserRolloverProvider,
     FileCheckpointStore,
+    FileWorkPacketHandoff,
     FixedUnitExecutor,
-    RecordingWorkPacketHandoff,
     StagehandRolloverProvider,
 )
 from atlas.codex_audit import CodexAuditProvider
@@ -241,7 +241,7 @@ def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
             if not isinstance(evidence_payload, dict):
                 raise ValidationError("evidence file must contain a JSON object")
         executor = ExternalEvidenceUnitExecutor(evidence_payload)
-    handoff = RecordingWorkPacketHandoff()
+    handoff = FileWorkPacketHandoff(Path(args.data_root))
     provider = getattr(args, "rollover_provider", "fake")
     if provider == "stagehand":
         rollover = StagehandRolloverProvider(

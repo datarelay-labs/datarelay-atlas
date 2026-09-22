@@ -600,11 +600,21 @@ class ExternalEvidenceUnitExecutor:
             raise ValidationError(
                 "evidence payload must explicitly identify target_sha"
             )
+        evidence_sha = str(raw["target_sha"]).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", evidence_sha):
+            raise ValidationError(
+                "evidence target_sha must be an exact 40-char commit SHA"
+            )
+        expected_sha = packet.current_target_sha.strip().lower()
+        if evidence_sha != expected_sha:
+            raise ValidationError(
+                "evidence target_sha must exactly equal current_target_sha"
+            )
         evidence = AuditEvidence.from_dict(
             {
                 "status": raw.get("status", "MISSING"),
                 "unit": str(raw["unit"]),
-                "target_sha": str(raw["target_sha"]),
+                "target_sha": evidence_sha,
                 "notes": raw.get("notes", ""),
                 "truncated": bool(raw.get("truncated", False)),
             }
@@ -647,6 +657,41 @@ class RecordingWorkPacketHandoff:
                 "do not modify product code from Chat."
             ),
         }
+        self.handoffs.append(record)
+        return record
+
+
+class FileWorkPacketHandoff:
+    """Persist finding handoffs under the ADR-0005 data root."""
+
+    def __init__(self, data_root: Path):
+        self.data_root = Path(data_root)
+        self.directory = self.data_root / "chat-audit-handoffs"
+        self.handoffs: list[dict[str, Any]] = []
+
+    def upsert_implementation_packet(
+        self, packet: AuditControlPacket, finding: AuditFinding
+    ) -> dict[str, Any]:
+        record = {
+            "title": f"[AI Work] Audit finding: {finding.finding_id}",
+            "repository": packet.target_repository,
+            "branch": packet.target_branch,
+            "head": packet.current_target_sha,
+            "finding": finding.to_dict(),
+            "next_action": (
+                "Implement the bounded audit finding in Cursor; "
+                "do not modify product code from Chat."
+            ),
+            "status": "OPEN",
+        }
+        self.directory.mkdir(parents=True, exist_ok=True)
+        safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "_", finding.finding_id)
+        path = self.directory / f"{safe_id}.json"
+        path.write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        record["handoff_path"] = str(path)
         self.handoffs.append(record)
         return record
 
@@ -1092,7 +1137,7 @@ class ChatAuditController:
         packet.open_findings = []
         packet.audit_status = "IDLE"
         packet.next_action = "run_next_audit_slice"
-        packet.mode = "delta"
+        # Preserve explicit mode (delta|full); do not silently narrow full audits.
         self.store.save(packet)
         return packet
 
@@ -1143,6 +1188,7 @@ class ChatAuditController:
                 "cannot finalize empty audit_queue without evidence"
             )
         # Every queued unit must have validated completion evidence.
+        derived_findings: list[AuditFinding] = []
         for unit in packet.audit_queue:
             unit_key = (
                 f"{packet.idempotency_run_key}:{unit}:"
@@ -1152,8 +1198,15 @@ class ChatAuditController:
                 raise ValidationError(
                     f"cannot finalize without validated evidence for {unit}"
                 )
-        # After HEAD reconcile, open_findings only contains this run's findings.
-        if packet.open_findings:
+            entry = packet.completed_units[unit_key]
+            if str(entry.get("outcome")) == "FINDING":
+                derived_findings.extend(
+                    AuditFinding.from_dict(item)
+                    for item in entry.get("findings", [])
+                )
+        # Authoritative verdict comes from persisted completed-unit outcomes.
+        packet.open_findings = derived_findings
+        if derived_findings:
             packet.audit_status = "FINDINGS"
             packet.next_action = "await_cursor_implementation_handoff"
         else:

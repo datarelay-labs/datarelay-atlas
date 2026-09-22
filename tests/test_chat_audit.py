@@ -489,6 +489,119 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(ctl.show()["audit_status"], "PASSED")
             self.assertEqual(ctl.show()["last_audited_sha"], HEAD_B)
 
+    def test_21_finalize_derives_findings_from_completed_units(self):
+        from atlas.chat_audit import (
+            AuditControlPacket,
+            AuditEvidence,
+            AuditFinding,
+            build_audit_queue,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            packet = AuditControlPacket.from_dict(ctl.show())
+            completed = {}
+            for unit in build_audit_queue():
+                key = f"{packet.idempotency_run_key}:{unit}:{HEAD_A}"
+                if unit == "changed_code":
+                    finding = AuditFinding(
+                        finding_id=f"{packet.idempotency_run_key}:{unit}",
+                        unit=unit,
+                        summary="persisted finding",
+                    )
+                    completed[key] = {
+                        "unit": unit,
+                        "target_sha": HEAD_A,
+                        "outcome": "FINDING",
+                        "findings": [finding.to_dict()],
+                        "evidence": AuditEvidence(
+                            status="COMPLETE",
+                            unit=unit,
+                            target_sha=HEAD_A,
+                            notes="persisted finding",
+                        ).to_dict(),
+                        "audit_request": "",
+                    }
+                else:
+                    completed[key] = {
+                        "unit": unit,
+                        "target_sha": HEAD_A,
+                        "outcome": "PASS",
+                        "findings": [],
+                        "evidence": AuditEvidence(
+                            status="COMPLETE",
+                            unit=unit,
+                            target_sha=HEAD_A,
+                            notes="ok",
+                        ).to_dict(),
+                        "audit_request": "",
+                    }
+            restored = AuditControlPacket.from_dict(
+                {
+                    **packet.to_dict(),
+                    "completed_units": completed,
+                    "open_findings": [],
+                    "audit_status": "IDLE",
+                    "current_unit": None,
+                }
+            )
+            FileCheckpointStore(Path(tmp) / "data").save(restored)
+            out = ctl.run_slice()
+            self.assertEqual(out["action"], "queue_complete")
+            self.assertEqual(out["packet"]["audit_status"], "FINDINGS")
+            self.assertEqual(len(out["packet"]["open_findings"]), 1)
+            self.assertIsNone(out["packet"]["last_audited_sha"])
+
+    def test_22_evidence_rejects_short_sha_prefix(self):
+        from atlas.chat_audit import ExternalEvidenceUnitExecutor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(
+                tmp,
+                executor=ExternalEvidenceUnitExecutor(
+                    {
+                        "status": "COMPLETE",
+                        "unit": "changed_code",
+                        "target_sha": HEAD_A[:7],
+                        "notes": "ok",
+                        "outcome": "PASS",
+                    }
+                ),
+            )
+            with self.assertRaises(ValidationError):
+                ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+
+    def test_23_full_mode_preserved_across_head_advance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.initialize(
+                repository=REPO,
+                branch=BRANCH,
+                head=HEAD_A,
+                mode="full",
+            )
+            ctl.run_slice()
+            ctl._test_head["head"] = HEAD_B  # type: ignore[attr-defined]
+            out = ctl.run_slice()
+            self.assertEqual(out["packet"]["mode"], "full")
+
+    def test_24_file_handoff_persists_finding(self):
+        from atlas.chat_audit import FileWorkPacketHandoff
+
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = FileWorkPacketHandoff(Path(tmp) / "data")
+            executor = FixedUnitExecutor(
+                outcomes={"changed_code": "FINDING"},
+                finding_summaries={"changed_code": "bug"},
+            )
+            ctl = self._ctl(tmp, executor=executor, handoff=handoff)
+            out = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(out["outcome"], "FINDING")
+            self.assertTrue(handoff.handoffs)
+            path = Path(handoff.handoffs[0]["handoff_path"])
+            self.assertTrue(path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
