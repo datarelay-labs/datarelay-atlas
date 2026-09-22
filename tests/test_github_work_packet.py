@@ -112,6 +112,12 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             _render(branch="feature/other-branch")
 
+    def test_rejects_duplicate_managed_packet_sections(self):
+        duplicated = SAMPLE_BODY + "\n## Next Action\n\nStale second next action.\n"
+        with self.assertRaises(ValidationError) as ctx:
+            _render(body=duplicated)
+        self.assertIn("duplicate work packet section: Next Action", str(ctx.exception))
+
     def test_status_and_branch_ignore_body_evidence_lines(self):
         paused = SAMPLE_BODY.replace("STATUS=ACTIVE", "STATUS=PAUSED")
         poisoned = paused.replace(
@@ -124,10 +130,10 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         missing_branch = "\n".join(
             line for line in SAMPLE_BODY.splitlines() if not line.startswith("BRANCH=")
         )
-        missing_branch += (
-            "\n\n## Latest Evidence\n\n```text\n"
-            f"BRANCH={BRANCH}\n"
-            "```\n"
+        # Put BRANCH only inside an existing evidence fence (not leading metadata).
+        missing_branch = missing_branch.replace(
+            "```text\nHEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n```",
+            f"```text\nBRANCH={BRANCH}\nHEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n```",
         )
         with self.assertRaises(ValidationError) as ctx:
             _render(body=missing_branch)
@@ -229,6 +235,19 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         camel = '{"apiKey":"correct horse battery"}'
         prefixed = '{"openaiApiKey":"correct horse battery"}'
         for sample in (camel, prefixed):
+            self.assertTrue(_looks_like_secret(sample), sample)
+            with self.assertRaises(ValidationError):
+                sanitize_rework_findings(sample)
+            redacted = redact_sensitive_audit_text(sample)
+            self.assertIn("<redacted>", redacted)
+            self.assertNotIn("correct horse battery", redacted)
+
+    def test_hyphenated_api_key_assignments_are_redacted(self):
+        from atlas.work_controller import _looks_like_secret
+
+        header = 'X-API-Key: "correct horse battery"'
+        json_key = '{"api-key":"correct horse battery"}'
+        for sample in (header, json_key):
             self.assertTrue(_looks_like_secret(sample), sample)
             with self.assertRaises(ValidationError):
                 sanitize_rework_findings(sample)

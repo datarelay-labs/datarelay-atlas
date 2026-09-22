@@ -391,9 +391,10 @@ def _credential_name_pattern() -> str:
         r"AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|"
         r"AZURE_CLIENT_SECRET|NPM_TOKEN|"
         # Standalone names first so bare `password` / `secret` / `token` /
-        # camelCase `apiKey` match (`API_KEY` alone does not cover camelCase).
+        # camelCase `apiKey` and hyphenated `api-key` / `X-API-Key` match.
         r"PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY_ID|ACCESS_KEY|apiKey|"
-        r"[A-Za-z_][A-Za-z0-9_]*?(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|ACCESS_KEY_ID|ApiKey)"
+        r"X-API-Key|API-Key|"
+        r"[A-Za-z_][A-Za-z0-9_-]*?(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|ACCESS_KEY_ID|ApiKey|API-Key)"
         r")"
     )
 
@@ -573,6 +574,15 @@ def _set_packet_metadata_line(body: str, key: str, value: str) -> str:
     return (body or "")[:first_break] + "\n" + line + (body or "")[first_break:]
 
 
+def _require_unique_managed_sections(body: str) -> None:
+    """Fail closed when a managed packet heading appears more than once."""
+    text = body or ""
+    for heading in _WORK_PACKET_SECTION_HEADINGS:
+        pattern = re.compile(rf"^## {re.escape(heading)}\s*$", re.MULTILINE)
+        if len(pattern.findall(text)) > 1:
+            raise ValidationError(f"duplicate work packet section: {heading}")
+
+
 def _replace_packet_section(body: str, heading: str, content: str) -> str:
     if heading not in _WORK_PACKET_SECTION_HEADINGS:
         raise ValidationError(f"unsupported work packet section: {heading}")
@@ -581,7 +591,10 @@ def _replace_packet_section(body: str, heading: str, content: str) -> str:
         rf"(^## {re.escape(heading)}\s*\n)(.*?)(?=^## |\Z)",
         re.MULTILINE | re.DOTALL,
     )
-    if pattern.search(body):
+    matches = list(pattern.finditer(body))
+    if len(matches) > 1:
+        raise ValidationError(f"duplicate work packet section: {heading}")
+    if matches:
         # Callable replacement keeps content literal: backslash sequences such as
         # \d+ or \1 must not be parsed as re.sub templates/backreferences.
         return pattern.sub(lambda _match: replacement, body, count=1)
@@ -605,6 +618,7 @@ def render_rework_work_packet_body(
     raw = (body or "").strip()
     if not raw:
         raise ValidationError("work packet body is empty")
+    _require_unique_managed_sections(raw)
     status = _packet_metadata_value(raw, "STATUS")
     if status != "ACTIVE":
         raise ValidationError(
@@ -692,6 +706,7 @@ def render_dispatch_blocked_work_packet_body(
     raw = (body or "").strip()
     if not raw:
         raise ValidationError("work packet body is empty")
+    _require_unique_managed_sections(raw)
     status = _packet_metadata_value(raw, "STATUS")
     if status != "ACTIVE":
         raise ValidationError(
