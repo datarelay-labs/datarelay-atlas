@@ -442,9 +442,9 @@ _ABS_PATH_RE = re.compile(
 )
 _URL_RE = re.compile(r"https?://[^\s\"'`]+", re.IGNORECASE)
 _PEM_PRIVATE_KEY_RE = re.compile(
-    r"-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"
+    r"-----BEGIN ((?:[A-Z0-9]+ )*)PRIVATE KEY-----"
     r"[\s\S]*?"
-    r"-----END (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"
+    r"-----END \1PRIVATE KEY-----"
 )
 
 _CREDENTIAL_NAME = _credential_name_pattern()

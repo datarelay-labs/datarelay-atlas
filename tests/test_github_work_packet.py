@@ -580,14 +580,19 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             "MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn\n"
             "-----END RSA PRIVATE KEY-----"
         )
-        for sample in (pem, rsa):
+        dsa = (
+            "-----BEGIN DSA PRIVATE KEY-----\n"
+            "MIIBuwIBAAKBgQDF\n"
+            "-----END DSA PRIVATE KEY-----"
+        )
+        for sample in (pem, rsa, dsa):
             self.assertTrue(_looks_like_secret(sample), sample)
             with self.assertRaises(ValidationError):
                 sanitize_rework_findings(sample)
             redacted = redact_sensitive_audit_text(sample)
             self.assertIn("<redacted-private-key>", redacted)
-            self.assertNotIn("BEGIN PRIVATE KEY", redacted)
-            self.assertNotIn("MIIE", redacted)
+            self.assertNotIn("BEGIN", redacted)
+            self.assertNotIn("MII", redacted)
 
     def test_safe_redacted_placeholders_are_allowed(self):
         safe = "OPENAI_API_KEY=<redacted>\npassword=<redacted>"
