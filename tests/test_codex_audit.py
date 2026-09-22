@@ -333,6 +333,13 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertTrue(
             _contains_unsafe_secret(single_quoted_spoof), single_quoted_spoof
         )
+        # Punctuation is not a terminator when a suffix continues the value.
+        punct_spoof = 'PASSWORD="<redacted>",hunter2'
+        self.assertTrue(_contains_unsafe_secret(punct_spoof), punct_spoof)
+        bare_punct_spoof = "PASSWORD=<redacted>,hunter2"
+        self.assertTrue(_contains_unsafe_secret(bare_punct_spoof), bare_punct_spoof)
+        brace_spoof = 'PASSWORD="<redacted>"}hunter2'
+        self.assertTrue(_contains_unsafe_secret(brace_spoof), brace_spoof)
 
         with tempfile.TemporaryDirectory() as tmp:
             prompt = build_codex_audit_prompt(

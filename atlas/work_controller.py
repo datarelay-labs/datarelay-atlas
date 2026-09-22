@@ -521,10 +521,15 @@ def _strip_safe_redaction_placeholders(text: str) -> str:
     """
     cleaned = text or ""
     name = _credential_name_pattern()
-    # Value must end at the placeholder (not PASSWORD="<redacted>"hunter2 /
-    # PASSWORD=<redacted>hunter2). Allow only complete JSON escape terminators
-    # (`\n`, `\"`), not a bare `\`.
-    value_end = r'(?=$|[\s,"\'}}\]]|\\["n])'
+    # Value must end at the placeholder (not PASSWORD=<redacted>hunter2 /
+    # PASSWORD="<redacted>"hunter2 / PASSWORD="<redacted>",hunter2).
+    # Structural punctuation is a terminator only when the next character also
+    # proves end-of-value (not a shell-concatenated suffix). Allow only complete
+    # JSON escape terminators (`\n`, `\"`), not a bare `\`.
+    value_end = (
+        r'(?=$|\s|\\["n]'
+        r'|[,"\'\}\]](?=$|[\s,"\'\}\]]|\\["n]))'
+    )
     # Quoted exact placeholder: key="<redacted>" / key:'<redacted>'
     cleaned = re.sub(
         rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*((?:\\)?["\'])<redacted>\3'
