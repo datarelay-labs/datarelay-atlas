@@ -528,14 +528,15 @@ def _strip_safe_redaction_placeholders(text: str) -> str:
         cleaned,
     )
     # Bare exact placeholder: value must end at <redacted> (not <redacted>hunter2).
-    # Also allow JSON-escaped terminators (`\n`, `\"`) inside serialized prompts.
+    # Allow only complete JSON escape terminators (`\n`, `\"`), not a bare `\`.
     cleaned = re.sub(
-        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*<redacted>(?=$|[\s,"\'}}\]]|\\)',
+        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*<redacted>'
+        rf'(?=$|[\s,"\'}}\]]|\\["n])',
         "",
         cleaned,
     )
     cleaned = re.sub(
-        r"(?i)Bearer\s+<redacted>(?=$|[\s,\"'\]\}]|\\)",
+        r'(?i)Bearer\s+<redacted>(?=$|[\s,"\'\]\}]|\\["n])',
         "",
         cleaned,
     )

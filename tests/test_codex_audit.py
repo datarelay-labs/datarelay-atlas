@@ -322,6 +322,8 @@ class CodexAuditProviderTests(unittest.TestCase):
         spoofed = "PASSWORD=<redacted>hunter2"
         self.assertTrue(_contains_unsafe_secret(spoofed), spoofed)
         self.assertTrue(_looks_like_secret(spoofed), spoofed)
+        backslash_spoof = "PASSWORD=<redacted>\\hunter2"
+        self.assertTrue(_contains_unsafe_secret(backslash_spoof), backslash_spoof)
 
         with tempfile.TemporaryDirectory() as tmp:
             prompt = build_codex_audit_prompt(
