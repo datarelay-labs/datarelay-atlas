@@ -343,6 +343,9 @@ class CodexAuditProviderTests(unittest.TestCase):
         # Comma + another quoted fragment is shell concatenation, not JSON.
         quoted_suffix = 'PASSWORD="<redacted>","hunter2"'
         self.assertTrue(_contains_unsafe_secret(quoted_suffix), quoted_suffix)
+        # JSON next-key shape must not exempt shell `=` assignments.
+        shell_json_spoof = 'PASSWORD="<redacted>","hunter2":x'
+        self.assertTrue(_contains_unsafe_secret(shell_json_spoof), shell_json_spoof)
 
         with tempfile.TemporaryDirectory() as tmp:
             prompt = build_codex_audit_prompt(

@@ -401,35 +401,50 @@ def _credential_name_pattern() -> str:
     )
 
 
+def _normalize_json_quote_escapes(text: str) -> str:
+    """Peel nested ``json.dumps`` quote-escapes in linear time.
+
+    Collapses ``\\\\\"`` runs produced by repeated serialization into plain
+    quotes so detectors stay linear-time, while preserving a single ``\\\"``
+    escape inside credential values.
+    """
+    cur = text or ""
+    prev = None
+    while prev != cur:
+        prev = cur
+        cur = cur.replace('\\\\"', '"').replace("\\\\'", "'")
+    return cur
+
+
 def _looks_like_secret(text: str) -> bool:
     """Detect likely live credentials, not mere documentation mentions."""
     name = _credential_name_pattern()
+    scan = _normalize_json_quote_escapes(text)
     # Quoted values may contain whitespace/commas and the opposite quote
     # character; only the selected delimiter ends the value (escapes allowed).
-    # Zero-or-more leading backslashes cover nested JSON serialization
-    # (`{\"api-key\":\"...\"}` and double-escaped forms after another dumps).
-    key_q = r'((?:(?:\\)*["\'])?)'
-    val_q = r'((?:\\)*["\'])'
+    # Nested dumps are peeled first; at most one JSON ``\\\"`` remains.
+    key_q = r'((?:\\?["\'])?)'
+    val_q = r'(\\?["\'])'
     if re.search(
         rf'(?i){key_q}({name})\1\s*[:=]\s*{val_q}((?:\\.|(?!\3).)*)\3',
-        text,
+        scan,
     ):
         return True
     # Bare equals/colon assignments without whitespace in the value.
     if re.search(
         rf'(?i){key_q}({name})\1\s*[:=]\s*([^\s,"\'}}\]]+)',
-        text,
+        scan,
     ):
         return True
-    if re.search(r"\bsk-[A-Za-z0-9]{20,}\b", text):
+    if re.search(r"\bsk-[A-Za-z0-9]{20,}\b", scan):
         return True
-    if re.search(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b", text):
+    if re.search(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b", scan):
         return True
-    if re.search(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b", text):
+    if re.search(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b", scan):
         return True
-    if re.search(r"\bAKIA[0-9A-Z]{16}\b", text):
+    if re.search(r"\bAKIA[0-9A-Z]{16}\b", scan):
         return True
-    if re.search(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", text):
+    if re.search(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", scan):
         return True
     if _PEM_PRIVATE_KEY_RE.search(text or ""):
         return True
@@ -454,14 +469,15 @@ _PEM_PRIVATE_KEY_RE = re.compile(
 _CREDENTIAL_NAME = _credential_name_pattern()
 # Quoted value first so whitespace/commas and the opposite quote inside the
 # selected delimiter are fully captured (including escaped delimiters).
-# Zero-or-more backslashes before quotes match nested JSON-serialized dumps.
+# Bound escape depth (no ``\\\\*``) to keep redaction linear-time; detection
+# normalizes deeper nesting before matching.
 _SECRET_KV_QUOTED_RE = re.compile(
-    rf'(?i)(?P<kq>(?:(?:\\)*["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
-    rf'\s*[:=]\s*(?P<vq>(?:\\)*["\'])(?P<val>(?:\\.|(?!(?P=vq)).)*)(?P=vq)'
+    rf'(?i)(?P<kq>(?:(?:\\){{0,8}}["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
+    rf'\s*[:=]\s*(?P<vq>(?:\\){{0,8}}["\'])(?P<val>(?:\\.|(?!(?P=vq)).)*)(?P=vq)'
 )
 # Bare key=value / key:value without whitespace in the value.
 _SECRET_KV_BARE_RE = re.compile(
-    rf'(?i)(?P<kq>(?:(?:\\)*["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
+    rf'(?i)(?P<kq>(?:(?:\\){{0,8}}["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
     rf'\s*[:=]\s*(?P<val>[^\s,"\'}}\]]+)'
 )
 _SECRET_TOKEN_RE = re.compile(
@@ -504,6 +520,9 @@ def redact_sensitive_audit_text(text: str, *, max_chars: int = 300) -> str:
     """Redact secrets and absolute paths for durable AuditResult findings."""
     cleaned = redact_absolute_paths(text or "")
     cleaned = _PEM_PRIVATE_KEY_RE.sub("<redacted-private-key>", cleaned)
+    # Normalize nested JSON quote-escapes before KV matching so deep dumps
+    # still redact without unbounded backtracking.
+    cleaned = _normalize_json_quote_escapes(cleaned)
     cleaned = _SECRET_KV_QUOTED_RE.sub(_redact_secret_kv, cleaned)
     cleaned = _SECRET_KV_BARE_RE.sub(_redact_secret_kv, cleaned)
     cleaned = _SECRET_TOKEN_RE.sub("<redacted>", cleaned)
@@ -521,39 +540,37 @@ def _strip_safe_redaction_placeholders(text: str) -> str:
     ``<redacted-private-key>`` are intentional sanitizer output and must not
     trip the Codex prompt guard or packet persistence rejector.
     """
-    cleaned = text or ""
+    cleaned = _normalize_json_quote_escapes(text)
     name = _credential_name_pattern()
-    # Value must end at the placeholder (not PASSWORD=<redacted>hunter2 /
-    # PASSWORD="<redacted>"hunter2 / PASSWORD="<redacted>","hunter2").
-    # A comma terminates only when the next token is end/space/} or a JSON
-    # `"key":` pair — not another shell-quoted fragment.
-    # Allow only complete JSON escape terminators (`\n`, `\"`), not a bare `\`.
-    key_q = r'((?:(?:\\)*["\'])?)'
-    val_q = r'((?:\\)*["\'])'
-    value_end = (
-        r'(?='
+    # Value must end at the placeholder. JSON ``"key":`` after a comma is only
+    # accepted for colon assignments (not shell ``PASSWORD="...", "x":``).
+    key_q = r'((?:\\?["\'])?)'
+    val_q = r'(\\?["\'])'
+    common_end = (
         r'$|\s|\\["n]'
         r'|[\}\]](?=$|[\s,\}\]]|\\["n])'
-        r'|,(?:$|[\s\}\]]|\\["n]|(?:\\)*["\'][^"\']+?(?:\\)*["\']\s*:)'
-        # Closing quote of a containing JSON/string only when it ends that
-        # string (not PASSWORD=<redacted>"hunter2).
-        r'|(?:\\)*["\'](?=$|[\s,\}\]]|\\["n])'
-        r')'
+        r'|\\?["\'](?=$|[\s,\}\]]|\\["n])'
     )
-    # Quoted exact placeholder: key="<redacted>" / key:'<redacted>'
-    cleaned = re.sub(
-        rf'(?i){key_q}({name})\1\s*[:=]\s*{val_q}<redacted>\3{value_end}',
-        "",
-        cleaned,
+    value_end_eq = (
+        rf'(?={common_end}|,(?=$|[\s\}}]|\\["n]))'
     )
-    # Bare exact placeholder.
-    cleaned = re.sub(
-        rf'(?i){key_q}({name})\1\s*[:=]\s*<redacted>{value_end}',
-        "",
-        cleaned,
+    value_end_colon = (
+        rf'(?={common_end}|,(?:$|[\s\}}]|\\["n]|\\?["\'][^"\']+?\\?["\']\s*:))'
     )
+    for sep, value_end in (("=", value_end_eq), (":", value_end_colon)):
+        cleaned = re.sub(
+            rf'(?i){key_q}({name})\1\s*{re.escape(sep)}\s*{val_q}<redacted>\3'
+            rf'{value_end}',
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(
+            rf'(?i){key_q}({name})\1\s*{re.escape(sep)}\s*<redacted>{value_end}',
+            "",
+            cleaned,
+        )
     cleaned = re.sub(
-        rf'(?i)Bearer\s+<redacted>{value_end}',
+        rf'(?i)Bearer\s+<redacted>(?={common_end}|,(?=$|[\s\}}]|\\["n]))',
         "",
         cleaned,
     )

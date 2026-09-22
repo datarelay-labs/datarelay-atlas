@@ -753,6 +753,23 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         self.assertTrue(_looks_like_secret(prompt), prompt[:500])
         self.assertTrue(_contains_unsafe_secret(prompt), prompt[:500])
 
+    def test_deeply_nested_json_escapes_detect_without_redos(self):
+        import time
+
+        from atlas.work_controller import _looks_like_secret
+
+        # Five nested json.dumps layers previously hung detection (>15s).
+        payload = {"password": "hunter2-deep-secret"}
+        nested = json.dumps(payload)
+        for _ in range(5):
+            nested = json.dumps(nested)
+        self.assertGreater(len(nested), 200)
+        started = time.perf_counter()
+        detected = _looks_like_secret(nested)
+        elapsed = time.perf_counter() - started
+        self.assertTrue(detected, nested[:200])
+        self.assertLess(elapsed, 1.0, f"secret scan took {elapsed:.3f}s")
+
 
 class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
     def test_fixed_defaults_to_recording_adapter(self):
