@@ -154,6 +154,12 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
     if packet_choice is None:
         # Offline/fixed defaults to recording so dogfood does not mutate GitHub.
         packet_choice = "recording" if adapter == "fixed" else "github"
+    spawn = bool(getattr(args, "spawn_dispatch", False))
+    if packet_choice == "github" and not spawn:
+        raise ValidationError(
+            "GitHub Work Packet mutation requires --spawn-dispatch "
+            "(audit-only mode must pass --work-packet-adapter recording)"
+        )
     if packet_choice == "github":
         work_packet = GitHubWorkPacketAdapter()
     elif packet_choice == "recording":
@@ -161,7 +167,7 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
     else:
         raise ValidationError(f"unsupported work packet adapter: {packet_choice}")
 
-    if getattr(args, "spawn_dispatch", False):
+    if spawn:
         dispatcher = PtyPersistCursorDispatcher()
     else:
         dispatcher = RecordingCursorDispatcher()

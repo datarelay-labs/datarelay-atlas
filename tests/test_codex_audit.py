@@ -1185,6 +1185,11 @@ class CodexAuditProviderTests(unittest.TestCase):
             classify_gh_pr_checks_result(1, "unit\tfail\t1s\thttps://x\n", ""),
             ("FAIL", ""),
         )
+        # Documented gh bucket value `cancel` maps to FAIL → REWORK.
+        self.assertEqual(
+            classify_gh_pr_checks_result(1, "job\tcancel\t1s\thttps://x\n", ""),
+            ("FAIL", ""),
+        )
 
         calls: list[list[str]] = []
 

@@ -537,6 +537,7 @@ def classify_gh_pr_checks_result(
         "fail",
         "failed",
         "failure",
+        "cancel",
         "cancelled",
         "canceled",
         "timed_out",

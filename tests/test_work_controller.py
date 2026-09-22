@@ -12,6 +12,7 @@ from atlas.work_controller import (
     AuditResult,
     CompletionEvent,
     DispatchResult,
+    DispatchSpawnedButUnobservedError,
     FixedAuditAdapter,
     RecordingCursorDispatcher,
     RecordingObserver,
@@ -277,6 +278,52 @@ class WorkControllerTests(unittest.TestCase):
             outcome = ctl.handle_completion(self._event())
             self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
             self.assertEqual(probe.order, ["packet", "dispatch"])
+
+    def test_spawned_but_unobserved_persists_rework_dispatched(self):
+        """Post-spawn observation failure must not pretend spawn never happened."""
+
+        class ObservingFailDispatcher:
+            def __init__(self) -> None:
+                self.requests = []
+
+            def start_resume(self, request):
+                self.requests.append(request)
+                raise DispatchSpawnedButUnobservedError(
+                    "session did not appear",
+                    session_hint="proc:4242",
+                    command=build_persist_resume_command(request),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            dispatcher = ObservingFailDispatcher()
+            packets = RecordingWorkPacketAdapter()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=dispatcher,
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
+            self.assertEqual(outcome["reason"], "spawned_but_unobserved")
+            self.assertEqual(outcome["dispatch_session_id"], "proc:4242")
+            self.assertEqual(len(packets.updates), 1)
+            self.assertEqual(ctl.show("awc-poc")["attempt"], 2)
 
     def test_retry_exhaustion(self):
         with tempfile.TemporaryDirectory() as tmp:

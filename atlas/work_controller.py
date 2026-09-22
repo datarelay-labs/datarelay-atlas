@@ -733,6 +733,26 @@ class RecordingCursorDispatcher:
         )
 
 
+class DispatchSpawnedButUnobservedError(ValidationError):
+    """Raised when Cursor was spawned but session observation failed.
+
+    Distinct from pre-spawn boundary ValidationError so the controller can
+    persist a recoverable REWORK_DISPATCHED state instead of pretending the
+    spawn never happened after the Work Packet was already mutated.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        session_hint: str,
+        command: list[str],
+    ) -> None:
+        super().__init__(message)
+        self.session_hint = session_hint
+        self.command = list(command)
+
+
 @dataclass(frozen=True)
 class PersistSession:
     session_id: str
@@ -909,10 +929,12 @@ class PtyPersistCursorDispatcher:
                     command=command,
                 )
             self._sleep(self._poll_interval_sec)
-        raise ValidationError(
+        raise DispatchSpawnedButUnobservedError(
             "cursor persist session/process for target worktree did not appear "
             f"within {self._poll_timeout_sec}s "
-            f"(cwd={worktree}, argv={command!r}, pid={pid})"
+            f"(cwd={worktree}, argv={command!r}, pid={pid})",
+            session_hint=f"proc:{pid}",
+            command=command,
         )
 
 
@@ -1313,6 +1335,29 @@ class WorkController:
                                 expected_head=event.head,
                                 resume_prompt=RESUME_PROMPT,
                             )
+                        )
+                    except DispatchSpawnedButUnobservedError as exc:
+                        # Spawn already happened; keep recoverable dispatched state.
+                        record.attempt = next_attempt
+                        record.last_session_id = exc.session_hint
+                        record.expected_head = event.head
+                        record.last_findings = (
+                            f"{audit_result.findings}\n"
+                            f"rework spawn succeeded but observation failed: {exc}"
+                        ).strip()
+                        outcome = self._finalize(
+                            record,
+                            event,
+                            state="REWORK_DISPATCHED",
+                            action="rework_dispatched",
+                            verdict="REWORK",
+                            extra={
+                                "dispatch_session_id": exc.session_hint,
+                                "dispatch_command": exc.command,
+                                "next_attempt": next_attempt,
+                                "resume_prompt": RESUME_PROMPT,
+                                "reason": "spawned_but_unobserved",
+                            },
                         )
                     except ValidationError as exc:
                         record.last_findings = (

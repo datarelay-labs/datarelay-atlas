@@ -133,8 +133,15 @@ Codex CLI must be installed and logged in with the owner's ChatGPT account
 required for the default path.
 
 ```bash
+# Live Codex with real REWORK dispatch (mutates GitHub Work Packet, then spawns)
 python3 -m atlas work-controller completion /tmp/awc-completion.json \
-  --audit-adapter codex
+  --audit-adapter codex \
+  --spawn-dispatch
+
+# Audit-only Codex (no GitHub mutation, no Cursor spawn)
+python3 -m atlas work-controller completion /tmp/awc-completion.json \
+  --audit-adapter codex \
+  --work-packet-adapter recording
 ```
 
 Contract:

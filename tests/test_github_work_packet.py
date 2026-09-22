@@ -297,9 +297,32 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
             ctl = atlas_cli._controller_from_args(args)
             self.assertIsInstance(ctl.work_packet, RecordingWorkPacketAdapter)
 
-    def test_codex_defaults_to_github_adapter(self):
+    def test_codex_with_spawn_defaults_to_github_adapter(self):
         from atlas import cli as atlas_cli
-        from atlas.work_controller import GitHubWorkPacketAdapter
+        from atlas.work_controller import (
+            GitHubWorkPacketAdapter,
+            PtyPersistCursorDispatcher,
+        )
+
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "work-controller",
+                "completion",
+                "/tmp/event.json",
+                "--audit-adapter",
+                "codex",
+                "--spawn-dispatch",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            args.data_root = tmp
+            ctl = atlas_cli._controller_from_args(args)
+            self.assertIsInstance(ctl.work_packet, GitHubWorkPacketAdapter)
+            self.assertIsInstance(ctl.dispatcher, PtyPersistCursorDispatcher)
+
+    def test_github_without_spawn_fails_closed(self):
+        from atlas import cli as atlas_cli
 
         parser = build_parser()
         args = parser.parse_args(
@@ -314,8 +337,8 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             args.data_root = tmp
             args.spawn_dispatch = False
-            ctl = atlas_cli._controller_from_args(args)
-            self.assertIsInstance(ctl.work_packet, GitHubWorkPacketAdapter)
+            with self.assertRaises(ValidationError):
+                atlas_cli._controller_from_args(args)
 
 
 if __name__ == "__main__":
