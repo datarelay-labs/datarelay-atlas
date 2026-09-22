@@ -155,6 +155,7 @@ class ChatAuditTests(unittest.TestCase):
             # Put changed_code back as current without removing completed_units
             # by selecting via IN_SLICE path with completed key:
             raw.audit_status = "IN_SLICE"
+            raw.current_unit_index = 0
             store.save(raw)
             replay = ctl.run_slice()
             self.assertEqual(replay["action"], "idempotent_replay")
@@ -422,8 +423,11 @@ class ChatAuditTests(unittest.TestCase):
                     {"status": "COMPLETE", "notes": "ok"}
                 ),
             )
-            with self.assertRaises(ValidationError):
-                ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            out = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(out["action"], "failed_closed")
+            self.assertEqual(out["outcome"], "HUMAN_REQUIRED")
+            self.assertEqual(out["reason"], "executor_exception")
+            self.assertEqual(out["packet"]["slice_claim"]["state"], "failed")
 
     def test_18_expired_executing_claim_is_reclaimable(self):
         import time
@@ -570,8 +574,14 @@ class ChatAuditTests(unittest.TestCase):
                     }
                 ),
             )
-            with self.assertRaises(ValidationError):
-                ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            out = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(out["action"], "failed_closed")
+            self.assertEqual(out["outcome"], "HUMAN_REQUIRED")
+            self.assertEqual(out["reason"], "executor_exception")
+            self.assertIn(
+                "exact 40-char",
+                out["packet"]["session"]["notes"],
+            )
 
     def test_23_full_mode_preserved_across_head_advance(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -666,9 +676,17 @@ class ChatAuditTests(unittest.TestCase):
         )
 
         self.assertNotEqual(
-            handoff_filename_for_finding_id("a/b"),
-            handoff_filename_for_finding_id("a_b"),
+            handoff_filename_for_finding_id("find.a"),
+            handoff_filename_for_finding_id("find_a"),
         )
+        with self.assertRaises(ValidationError):
+            AuditFinding.from_dict(
+                {
+                    "finding_id": "a/b",
+                    "unit": "changed_code",
+                    "summary": "bad id",
+                }
+            )
         with tempfile.TemporaryDirectory() as tmp:
             handoff = FileWorkPacketHandoff(Path(tmp) / "data")
             packet = AuditControlPacket(
@@ -684,8 +702,12 @@ class ChatAuditTests(unittest.TestCase):
                 ],
                 idempotency_run_key="runkey",
             )
-            f1 = AuditFinding(finding_id="a/b", unit="changed_code", summary="one")
-            f2 = AuditFinding(finding_id="a_b", unit="changed_code", summary="two")
+            f1 = AuditFinding(
+                finding_id="find.a", unit="changed_code", summary="one"
+            )
+            f2 = AuditFinding(
+                finding_id="find_a", unit="changed_code", summary="two"
+            )
             r1 = handoff.upsert_implementation_packet(packet, f1)
             r2 = handoff.upsert_implementation_packet(packet, f2)
             path1 = Path(r1["handoff_path"])
@@ -693,13 +715,13 @@ class ChatAuditTests(unittest.TestCase):
             self.assertNotEqual(path1, path2)
             self.assertTrue(path1.exists())
             self.assertTrue(path2.exists())
-            self.assertEqual(json.loads(path1.read_text())["finding_id"], "a/b")
-            self.assertEqual(json.loads(path2.read_text())["finding_id"], "a_b")
+            self.assertEqual(json.loads(path1.read_text())["finding_id"], "find.a")
+            self.assertEqual(json.loads(path2.read_text())["finding_id"], "find_a")
             # Same-ID upsert is stable/idempotent (same path, overwrite in place).
             r1b = handoff.upsert_implementation_packet(packet, f1)
             self.assertEqual(Path(r1b["handoff_path"]), path1)
-            self.assertEqual(json.loads(path1.read_text())["finding_id"], "a/b")
-            self.assertEqual(json.loads(path2.read_text())["finding_id"], "a_b")
+            self.assertEqual(json.loads(path1.read_text())["finding_id"], "find.a")
+            self.assertEqual(json.loads(path2.read_text())["finding_id"], "find_a")
 
     def test_28_durable_files_never_persist_raw_secrets(self):
         """Checkpoint + handoff must not retain Basic/Bearer/URI/password secrets."""
@@ -750,6 +772,464 @@ class ChatAuditTests(unittest.TestCase):
                 self.assertNotIn("hunter2-literal", blob)
                 self.assertNotIn("audit_user:s3cret-pass@", blob)
                 self.assertIn("<redacted>", blob)
+
+    def test_29_multiline_quoted_credential_redacted(self):
+        from atlas.secrets import redact_sensitive_audit_text, contains_unsafe_secret
+
+        raw = 'OPENAI_API_KEY="sk-live-abcdefghijklmnopqrstuvwxyz012345\nstill-secret"'
+        cleaned = redact_sensitive_audit_text(raw)
+        self.assertNotIn("sk-live-", cleaned)
+        self.assertNotIn("still-secret", cleaned)
+        self.assertFalse(contains_unsafe_secret(cleaned))
+
+    def test_30_finding_id_and_severity_reject_secrets_and_unknown(self):
+        from atlas.chat_audit import AuditFinding
+
+        with self.assertRaises(ValidationError):
+            AuditFinding.from_dict(
+                {
+                    "finding_id": "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz",
+                    "unit": "changed_code",
+                    "summary": "x",
+                }
+            )
+        with self.assertRaises(ValidationError):
+            AuditFinding.from_dict(
+                {
+                    "finding_id": "ok-1",
+                    "unit": "changed_code",
+                    "summary": "x",
+                    "severity": "CRITICAL",
+                }
+            )
+
+    def test_31_uppercase_completed_unit_key_canonicalized(self):
+        from atlas.chat_audit import AuditControlPacket, AuditEvidence, make_run_key
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        upper_key = f"{run_key}:changed_code:{HEAD_A.upper()}"
+        packet = AuditControlPacket.from_dict(
+            {
+                "schema_version": 1,
+                "target_repository": REPO,
+                "target_branch": BRANCH,
+                "current_target_sha": HEAD_A,
+                "audit_status": "IDLE",
+                "audit_queue": [
+                    "changed_code",
+                    "affected_contracts",
+                    "affected_tests_ci",
+                    "security_impact",
+                    "docs_spec_drift",
+                ],
+                "idempotency_run_key": run_key,
+                "completed_units": {
+                    upper_key: {
+                        "unit": "changed_code",
+                        "target_sha": HEAD_A,
+                        "outcome": "PASS",
+                        "findings": [],
+                        "evidence": AuditEvidence(
+                            status="COMPLETE",
+                            unit="changed_code",
+                            target_sha=HEAD_A,
+                            notes="ok",
+                        ).to_dict(),
+                        "audit_request": "",
+                    }
+                },
+            }
+        )
+        canon = f"{run_key}:changed_code:{HEAD_A}"
+        self.assertIn(canon, packet.completed_units)
+        self.assertNotIn(upper_key, packet.completed_units)
+
+    def test_32_restored_prefix_sha_rejected(self):
+        from atlas.chat_audit import AuditControlPacket, make_run_key
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        base = {
+            "schema_version": 1,
+            "target_repository": REPO,
+            "target_branch": BRANCH,
+            "current_target_sha": HEAD_A[:12],
+            "audit_status": "IDLE",
+            "audit_queue": [
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            "idempotency_run_key": run_key,
+        }
+        with self.assertRaises(ValidationError):
+            AuditControlPacket.from_dict(base)
+        with self.assertRaises(ValidationError):
+            AuditControlPacket.from_dict(
+                {
+                    **base,
+                    "current_target_sha": HEAD_A,
+                    "last_audited_sha": HEAD_B[:12],
+                    "idempotency_run_key": make_run_key(REPO, BRANCH, HEAD_A),
+                }
+            )
+
+    def test_33_malformed_restored_state_fail_closed(self):
+        from atlas.chat_audit import AuditControlPacket, make_run_key
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        base = {
+            "schema_version": 1,
+            "target_repository": REPO,
+            "target_branch": BRANCH,
+            "current_target_sha": HEAD_A,
+            "audit_status": "IN_SLICE",
+            "audit_queue": [
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            "idempotency_run_key": run_key,
+            "current_unit": "not_in_queue",
+            "current_unit_index": 0,
+        }
+        with self.assertRaises(ValidationError):
+            AuditControlPacket.from_dict(base)
+        with self.assertRaises(ValidationError):
+            AuditControlPacket.from_dict(
+                {
+                    **base,
+                    "current_unit": "changed_code",
+                    "mode": "weird",
+                }
+            )
+        with self.assertRaises(ValidationError):
+            AuditControlPacket.from_dict(
+                {
+                    **base,
+                    "current_unit": "changed_code",
+                    "idempotency_run_key": "arbitrary-not-derived",
+                }
+            )
+
+    def test_34_timeout_resume_rejects_malformed_checkpoint(self):
+        from atlas.chat_audit import AuditControlPacket, make_run_key
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            path = Path(tmp) / "data" / "chat-audit.json"
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw["audit_status"] = "IN_SLICE"
+            raw["current_unit"] = "not_in_queue"
+            raw["current_unit_index"] = 0
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            with self.assertRaises(ValidationError):
+                ctl.run_slice()
+            # Sanity: well-formed timeout resume still works.
+            run_key = make_run_key(REPO, BRANCH, HEAD_A)
+            good = AuditControlPacket.from_dict(
+                {
+                    **raw,
+                    "current_unit": "changed_code",
+                    "current_unit_index": 0,
+                    "idempotency_run_key": run_key,
+                    "slice_claim": {
+                        "claim_id": "c1",
+                        "unit": "changed_code",
+                        "run_key": run_key,
+                        "target_sha": HEAD_A,
+                        "state": "timed_out",
+                    },
+                }
+            )
+            FileCheckpointStore(Path(tmp) / "data").save(good)
+            out = ctl.run_slice()
+            self.assertIn(out["action"], {"slice_complete", "timeout_checkpointed"})
+
+    def test_35_fake_identity_without_worktree_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileCheckpointStore(Path(tmp) / "data")
+            ctl = ChatAuditController(
+                store,
+                executor=FixedUnitExecutor(),
+                allow_trusted_identity=False,
+            )
+            with self.assertRaises(ValidationError):
+                ctl.run_slice(
+                    repository="evil/fake-repo",
+                    branch="main",
+                    head=HEAD_A,
+                )
+
+    def test_36_worktree_identity_rejects_fake_asserted_head(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileCheckpointStore(Path(tmp) / "data")
+            real_head = {"head": HEAD_A}
+
+            def identity():
+                from atlas.chat_audit import Identity
+
+                return Identity(
+                    repository=REPO, branch=BRANCH, head=real_head["head"]
+                )
+
+            ctl = ChatAuditController(
+                store,
+                executor=FixedUnitExecutor(),
+                identity_resolver=identity,
+            )
+            with self.assertRaises(ValidationError):
+                ctl.run_slice(
+                    repository=REPO,
+                    branch=BRANCH,
+                    head=HEAD_B,  # fake asserted SHA
+                )
+
+    def test_37_finding_unit_mismatch_refused_before_handoff(self):
+        from atlas.chat_audit import ExternalEvidenceUnitExecutor
+
+        handoff = RecordingWorkPacketHandoff()
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(
+                tmp,
+                executor=ExternalEvidenceUnitExecutor(
+                    {
+                        "status": "COMPLETE",
+                        "unit": "changed_code",
+                        "target_sha": HEAD_A,
+                        "notes": "ok",
+                        "outcome": "FINDING",
+                        "findings": [
+                            {
+                                "finding_id": "mismatch-1",
+                                "unit": "security_impact",
+                                "summary": "wrong unit",
+                                "severity": "P2",
+                            }
+                        ],
+                    }
+                ),
+                handoff=handoff,
+            )
+            out = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(out["outcome"], "HUMAN_REQUIRED")
+            self.assertEqual(handoff.handoffs, [])
+            # Immediate retry/reconcile is allowed (failed claim, not lease-blocked).
+            retry = ctl.run_slice()
+            self.assertIn(
+                retry["action"],
+                {"failed_closed", "slice_complete", "awaiting_evidence"},
+            )
+
+    def test_38_executor_exception_reconciles_for_immediate_retry(self):
+        class BoomExecutor:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def execute(self, packet, unit, audit_request):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("executor boom OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123")
+                from atlas.chat_audit import AuditEvidence, SliceResult
+
+                return SliceResult(
+                    unit=unit,
+                    target_sha=packet.current_target_sha,
+                    outcome="PASS",
+                    evidence=AuditEvidence(
+                        status="COMPLETE",
+                        unit=unit,
+                        target_sha=packet.current_target_sha,
+                        notes="recovered",
+                    ),
+                    audit_request=audit_request,
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            boom = BoomExecutor()
+            ctl = self._ctl(tmp, executor=boom)  # type: ignore[arg-type]
+            first = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(first["outcome"], "HUMAN_REQUIRED")
+            self.assertEqual(
+                first["packet"]["slice_claim"]["state"], "failed"
+            )
+            notes = first["packet"]["session"]["notes"]
+            self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz0123", notes)
+            second = ctl.run_slice()
+            self.assertEqual(second["action"], "slice_complete")
+            self.assertEqual(second["outcome"], "PASS")
+            self.assertEqual(boom.calls, 2)
+
+    def test_39_handoff_exception_reconciles_without_duplicate_side_effects(self):
+        class FlakyHandoff:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.handoffs: list[dict] = []
+
+            def upsert_implementation_packet(self, packet, finding):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("github write unavailable")
+                record = {
+                    "action": "created",
+                    "finding": finding.to_dict(),
+                    "issue_number": 999,
+                }
+                self.handoffs.append(record)
+                return record
+
+        executor = FixedUnitExecutor(
+            outcomes={"changed_code": "FINDING"},
+            finding_summaries={"changed_code": "bug"},
+        )
+        flaky = FlakyHandoff()
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp, executor=executor, handoff=flaky)  # type: ignore[arg-type]
+            first = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(first["outcome"], "HUMAN_REQUIRED")
+            self.assertEqual(flaky.calls, 1)
+            self.assertEqual(flaky.handoffs, [])
+            self.assertEqual(ctl.show()["open_findings"], [])
+            second = ctl.run_slice()
+            self.assertEqual(second["action"], "slice_complete")
+            self.assertEqual(second["outcome"], "FINDING")
+            self.assertEqual(len(flaky.handoffs), 1)
+            self.assertEqual(flaky.calls, 2)
+
+    def test_40_github_checkpoint_and_handoff_adapters_roundtrip(self):
+        from atlas.chat_audit import AuditControlPacket, AuditFinding, make_run_key
+        from atlas.chat_audit_github import (
+            GitHubAIWorkHandoff,
+            GitHubIssueCheckpointStore,
+            embed_checkpoint_in_issue_body,
+            extract_checkpoint_from_issue_body,
+        )
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        packet = AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=[
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            idempotency_run_key=run_key,
+        )
+        body = embed_checkpoint_in_issue_body("existing note", packet)
+        restored = extract_checkpoint_from_issue_body(body)
+        assert restored is not None
+        self.assertEqual(restored.current_target_sha, HEAD_A)
+
+        calls: list[list[str]] = []
+        bodies: dict[str, str] = {"body": body}
+
+        def runner(argv: list[str], cwd: str):
+            import subprocess
+
+            calls.append(list(argv))
+            if argv[:3] == ["gh", "issue", "view"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "number": 20,
+                            "title": "Audit",
+                            "body": bodies["body"],
+                            "state": "OPEN",
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                # body-file path is last or after --body-file
+                idx = argv.index("--body-file")
+                bodies["body"] = Path(argv[idx + 1]).read_text(encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            if argv[:3] == ["gh", "issue", "list"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout="[]", stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "create"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout="https://github.com/datarelay-labs/datarelay-atlas/issues/321\n",
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="unexpected")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = FileCheckpointStore(Path(tmp) / "cache")
+            store = GitHubIssueCheckpointStore(
+                repository=REPO,
+                issue_number=20,
+                cache=cache,
+                command_runner=runner,
+            )
+            store.save(packet)
+            loaded = store.load()
+            assert loaded is not None
+            self.assertEqual(loaded.idempotency_run_key, run_key)
+            self.assertTrue(cache.path.exists())
+
+            handoff = GitHubAIWorkHandoff(
+                repository=REPO, command_runner=runner
+            )
+            finding = AuditFinding(
+                finding_id="gh-1",
+                unit="changed_code",
+                summary="prove github handoff",
+                severity="P2",
+            )
+            record = handoff.upsert_implementation_packet(packet, finding)
+            self.assertEqual(record["action"], "created")
+            self.assertEqual(record["issue_number"], 321)
+            # Idempotent update path
+            def runner2(argv: list[str], cwd: str):
+                import subprocess
+
+                if argv[:3] == ["gh", "issue", "list"]:
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            [
+                                {
+                                    "number": 321,
+                                    "title": "[AI Work] Audit finding: gh-1",
+                                    "body": (
+                                        "<!-- atlas-chat-audit-finding-id:gh-1 -->\n"
+                                        "old"
+                                    ),
+                                    "url": "https://github.com/datarelay-labs/datarelay-atlas/issues/321",
+                                }
+                            ]
+                        ),
+                        stderr="",
+                    )
+                if argv[:3] == ["gh", "issue", "edit"]:
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout="", stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="unexpected"
+                )
+
+            handoff2 = GitHubAIWorkHandoff(
+                repository=REPO, command_runner=runner2
+            )
+            updated = handoff2.upsert_implementation_packet(packet, finding)
+            self.assertEqual(updated["action"], "updated")
+            self.assertEqual(updated["issue_number"], 321)
 
 
 if __name__ == "__main__":

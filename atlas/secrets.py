@@ -135,7 +135,7 @@ _CREDENTIAL_NAME = _credential_name_pattern()
 # normalizes deeper nesting before matching.
 _SECRET_KV_QUOTED_RE = re.compile(
     rf'(?i)(?P<kq>(?:(?:\\){{0,8}}["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
-    rf'\s*[:=]\s*(?P<vq>(?:\\){{0,8}}["\'])(?P<val>(?:\\.|(?!(?P=vq)).)*)(?P=vq)'
+    rf'\s*[:=]\s*(?P<vq>(?:\\){{0,8}}["\'])(?P<val>(?:\\.|(?!(?P=vq))[\s\S])*)(?P=vq)'
 )
 # Bare key=value / key:value without whitespace in the value.
 _SECRET_KV_BARE_RE = re.compile(

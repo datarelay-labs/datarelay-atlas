@@ -42,6 +42,12 @@ DEFAULT_AUDIT_UNITS = (
     "security_impact",
     "docs_spec_drift",
 )
+FINDING_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+FINDING_SEVERITIES = frozenset({"P0", "P1", "P2", "P3", "INFO"})
+ALLOWED_MODES = frozenset({"delta", "full"})
+CLAIM_STATES = frozenset(
+    {"executing", "timed_out", "awaiting_evidence", "failed"}
+)
 
 
 def build_audit_queue(*, include_release_readiness: bool = False) -> list[str]:
@@ -86,11 +92,30 @@ class AuditFinding:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "AuditFinding":
+        finding_id = str(raw.get("finding_id", "")).strip()
+        if not FINDING_ID_RE.match(finding_id):
+            raise ValidationError(
+                "finding_id must be a bounded [A-Za-z0-9._:-] identifier"
+            )
+        from atlas.secrets import contains_unsafe_secret
+
+        if contains_unsafe_secret(finding_id):
+            raise ValidationError(
+                "finding_id must not contain credential-like material"
+            )
+        severity = str(raw.get("severity", "P2")).strip().upper()
+        if severity not in FINDING_SEVERITIES:
+            raise ValidationError(
+                f"unsupported finding severity: {severity!r}"
+            )
+        unit = str(raw.get("unit", "")).strip()
+        if unit not in DEFAULT_AUDIT_UNITS and unit != "release_readiness":
+            raise ValidationError(f"unsupported finding unit: {unit!r}")
         return cls(
-            finding_id=str(raw["finding_id"]),
-            unit=str(raw["unit"]),
-            summary=str(raw["summary"]),
-            severity=str(raw.get("severity", "P2")),
+            finding_id=finding_id,
+            unit=unit,
+            summary=str(raw.get("summary", "")),
+            severity=severity,
         )
 
 
@@ -241,44 +266,114 @@ class AuditControlPacket:
         run_key = str(raw.get("idempotency_run_key", "")).strip()
         if not run_key:
             raise ValidationError("idempotency_run_key is required")
+        mode = str(raw.get("mode", "delta")).strip()
+        if mode not in ALLOWED_MODES:
+            raise ValidationError(f"unsupported mode: {mode!r}")
+        target_repository = normalize_github_repository(
+            str(raw["target_repository"])
+        )
+        target_branch = str(raw["target_branch"]).strip()
+        if not target_branch:
+            raise ValidationError("target_branch is required")
+        current_target_sha = require_exact_commit_sha(
+            str(raw["current_target_sha"]),
+            label="current_target_sha",
+        )
+        last_audited_sha = None
+        if raw.get("last_audited_sha"):
+            last_audited_sha = require_exact_commit_sha(
+                str(raw["last_audited_sha"]),
+                label="last_audited_sha",
+            )
+        expected_run_key = make_run_key(
+            target_repository, target_branch, current_target_sha
+        )
+        if run_key != expected_run_key:
+            raise ValidationError(
+                "idempotency_run_key must match repository+branch+current_target_sha"
+            )
+        current_unit = (
+            str(raw["current_unit"]) if raw.get("current_unit") else None
+        )
+        if status == "IN_SLICE" and current_unit is None:
+            raise ValidationError("IN_SLICE requires current_unit")
+        if current_unit is not None and current_unit not in queue:
+            raise ValidationError(
+                f"current_unit {current_unit!r} is not in audit_queue"
+            )
+        current_unit_index = int(raw.get("current_unit_index", 0))
+        if current_unit_index < 0 or current_unit_index >= len(queue):
+            raise ValidationError("current_unit_index out of range")
+        if current_unit is not None and queue[current_unit_index] != current_unit:
+            raise ValidationError(
+                "current_unit_index does not match current_unit"
+            )
+        no_change_runs = int(raw.get("no_change_runs", 0))
+        if no_change_runs < 0:
+            raise ValidationError("no_change_runs must be non-negative")
+        slice_claim = copy.deepcopy(raw.get("slice_claim"))
+        if slice_claim is not None:
+            if not isinstance(slice_claim, dict):
+                raise ValidationError("slice_claim must be an object")
+            claim_state = str(slice_claim.get("state", ""))
+            if claim_state not in CLAIM_STATES:
+                raise ValidationError(
+                    f"unsupported slice_claim.state: {claim_state!r}"
+                )
+            claim_unit = str(slice_claim.get("unit", ""))
+            if claim_unit and claim_unit not in queue:
+                raise ValidationError(
+                    f"slice_claim.unit {claim_unit!r} is not in audit_queue"
+                )
+            claim_run = str(slice_claim.get("run_key", ""))
+            if claim_run and claim_run != run_key:
+                raise ValidationError("slice_claim.run_key mismatch")
+            if slice_claim.get("target_sha"):
+                claim_sha = require_exact_commit_sha(
+                    str(slice_claim["target_sha"]),
+                    label="slice_claim.target_sha",
+                )
+                if claim_sha != current_target_sha:
+                    raise ValidationError("slice_claim.target_sha mismatch")
         findings = [
             AuditFinding.from_dict(item)
             for item in raw.get("open_findings", [])
         ]
+        completed_raw = raw.get("completed_units") or {}
+        if not isinstance(completed_raw, dict):
+            raise ValidationError("completed_units must be an object")
+        # Canonicalize completed-unit keys to lowercase SHA form.
+        canonical_completed: dict[str, Any] = {}
+        for key, entry in completed_raw.items():
+            run_k, unit_k, sha_k = parse_unit_key(str(key))
+            canon_key = f"{run_k}:{unit_k}:{sha_k}"
+            canonical_completed[canon_key] = entry
         return cls(
-            target_repository=normalize_github_repository(
-                str(raw["target_repository"])
-            ),
-            target_branch=str(raw["target_branch"]),
-            current_target_sha=str(raw["current_target_sha"]),
-            last_audited_sha=(
-                str(raw["last_audited_sha"])
-                if raw.get("last_audited_sha")
-                else None
-            ),
+            target_repository=target_repository,
+            target_branch=target_branch,
+            current_target_sha=current_target_sha,
+            last_audited_sha=last_audited_sha,
             audit_status=status,
             audit_queue=queue,
-            current_unit=(
-                str(raw["current_unit"]) if raw.get("current_unit") else None
-            ),
-            current_unit_index=int(raw.get("current_unit_index", 0)),
+            current_unit=current_unit,
+            current_unit_index=current_unit_index,
             open_findings=findings,
             next_action=str(raw.get("next_action", "")),
             last_completed_slice=copy.deepcopy(raw.get("last_completed_slice")),
             idempotency_run_key=run_key,
-            mode=str(raw.get("mode", "delta")),
+            mode=mode,
             include_release_readiness=bool(
                 raw.get("include_release_readiness", False)
             ),
             session=SessionState.from_dict(raw.get("session")),
             schema_version=version,
             completed_units=validate_completed_units_map(
-                raw.get("completed_units") or {},
+                canonical_completed,
                 expected_run_key=run_key,
-                expected_target_sha=str(raw["current_target_sha"]),
+                expected_target_sha=current_target_sha,
             ),
-            no_change_runs=int(raw.get("no_change_runs", 0)),
-            slice_claim=copy.deepcopy(raw.get("slice_claim")),
+            no_change_runs=no_change_runs,
+            slice_claim=slice_claim,
         )
 
 
@@ -777,7 +872,11 @@ def handoff_filename_for_finding_id(finding_id: str) -> str:
 
 
 class FileWorkPacketHandoff:
-    """Persist finding handoffs under the ADR-0005 data root."""
+    """Offline/test-only local finding handoff cache.
+
+    Production Chat path must use GitHubAIWorkHandoff; local JSON is not a
+    canonical success signal.
+    """
 
     def __init__(self, data_root: Path):
         self.data_root = Path(data_root)
@@ -788,6 +887,8 @@ class FileWorkPacketHandoff:
         self, packet: AuditControlPacket, finding: AuditFinding
     ) -> dict[str, Any]:
         safe_finding = sanitize_finding(finding)
+        # Re-validate id so filenames never embed secret-like material.
+        AuditFinding.from_dict(safe_finding.to_dict())
         record = {
             "title": f"[AI Work] Audit finding: {safe_finding.finding_id}",
             "repository": packet.target_repository,
@@ -895,6 +996,7 @@ class ChatAuditController:
         git_runner: GitRunner = default_git_runner,
         worktree_path: str | None = None,
         enforce_worktree_identity: bool = False,
+        allow_trusted_identity: bool = False,
     ):
         self.store = store
         self.executor = executor or FixedUnitExecutor()
@@ -904,6 +1006,11 @@ class ChatAuditController:
         self.git_runner = git_runner
         self.worktree_path = worktree_path
         self.enforce_worktree_identity = enforce_worktree_identity
+        # Offline/test-only: allow caller-supplied repo/branch/head without worktree.
+        # Production CLI must derive identity from worktree (or injected resolver).
+        self.allow_trusted_identity = bool(
+            allow_trusted_identity or identity_resolver is not None
+        )
 
     def _resolve_identity(
         self,
@@ -921,7 +1028,7 @@ class ChatAuditController:
                 branch=wt.branch,
                 head=wt.head,
             )
-        elif repository and branch and head:
+        elif self.allow_trusted_identity and repository and branch and head:
             identity = Identity(
                 repository=normalize_github_repository(repository),
                 branch=branch,
@@ -929,16 +1036,28 @@ class ChatAuditController:
             )
         else:
             raise ValidationError(
-                "chat-audit identity requires resolver, worktree, or "
-                "explicit repository/branch/head"
+                "chat-audit requires authoritative worktree identity "
+                "(or offline allow_trusted_identity); refusing caller-only "
+                "repository/branch/head"
             )
-        if not HEAD_RE.match(identity.head.strip().lower()):
-            raise ValidationError(f"invalid HEAD: {identity.head!r}")
-        return Identity(
+        resolved = Identity(
             repository=normalize_github_repository(identity.repository),
-            branch=identity.branch,
-            head=identity.head.strip().lower(),
+            branch=str(identity.branch).strip(),
+            head=require_exact_commit_sha(identity.head, label="HEAD"),
         )
+        if not resolved.branch:
+            raise ValidationError("branch identity is required")
+        # Caller-supplied values are assertions against authoritative identity.
+        if repository is not None:
+            if normalize_github_repository(repository) != resolved.repository:
+                raise ValidationError("repository identity mismatch")
+        if branch is not None and str(branch).strip() != resolved.branch:
+            raise ValidationError("branch identity mismatch")
+        if head is not None:
+            asserted = require_exact_commit_sha(head, label="asserted HEAD")
+            if asserted != resolved.head:
+                raise ValidationError("HEAD identity mismatch")
+        return resolved
 
     def _read_worktree(self) -> WorktreeIdentity:
         assert self.worktree_path is not None
@@ -975,10 +1094,6 @@ class ChatAuditController:
         identity = self._resolve_identity(
             repository=repository, branch=branch, head=head
         )
-        if normalize_github_repository(repository) != identity.repository:
-            raise ValidationError("repository identity mismatch")
-        if branch != identity.branch:
-            raise ValidationError("branch identity mismatch")
         existing = self.store.load()
         if existing is not None:
             raise ValidationError(
@@ -1060,7 +1175,8 @@ class ChatAuditController:
             # Resume interrupted slice.
             if packet.audit_status == "IN_SLICE" and packet.current_unit:
                 claim = packet.slice_claim or {}
-                if claim.get("state") == "executing":
+                claim_state = str(claim.get("state", ""))
+                if claim_state == "executing":
                     claimed_at = float(claim.get("claimed_at", 0) or 0)
                     age = time.time() - claimed_at if claimed_at else None
                     if age is not None and age < SLICE_CLAIM_LEASE_SECONDS:
@@ -1072,6 +1188,14 @@ class ChatAuditController:
                         **claim,
                         "state": "timed_out",
                         "reclaimed_from_expired_lease": True,
+                    }
+                    self.store.save(packet)
+                elif claim_state == "failed":
+                    # Controller-boundary failure: reclaim immediately.
+                    packet.slice_claim = {
+                        **claim,
+                        "state": "timed_out",
+                        "reclaimed_from_failed_claim": True,
                     }
                     self.store.save(packet)
                 unit = packet.current_unit
@@ -1110,7 +1234,15 @@ class ChatAuditController:
             }
             self.store.save(packet)
 
-        result = self.executor.execute(packet, unit, audit_request)
+        try:
+            result = self.executor.execute(packet, unit, audit_request)
+        except Exception as exc:
+            return self._reconcile_slice_exception(
+                claim_id=claim_id,
+                unit=unit,
+                exc=exc,
+                phase="executor",
+            )
 
         with self.store.lock():
             latest = self.store.load()
@@ -1131,7 +1263,18 @@ class ChatAuditController:
                     "cheap_no_change": False,
                     "idempotent_replay": True,
                 }
-            return self._apply_slice_result(latest, result, claim_id=claim_id)
+            try:
+                return self._apply_slice_result(
+                    latest, result, claim_id=claim_id
+                )
+            except Exception as exc:
+                return self._reconcile_slice_exception(
+                    claim_id=claim_id,
+                    unit=unit,
+                    exc=exc,
+                    phase="handoff",
+                    locked_packet=latest,
+                )
 
     def mark_session(
         self, state: str, *, notes: str = ""
@@ -1234,9 +1377,68 @@ class ChatAuditController:
             "conversation_history_required": False,
         }
 
+    def _reconcile_slice_exception(
+        self,
+        *,
+        claim_id: str,
+        unit: str,
+        exc: BaseException,
+        phase: str,
+        locked_packet: AuditControlPacket | None = None,
+    ) -> dict[str, Any]:
+        """Fail closed after executor/handoff exception; allow immediate retry."""
+
+        def _apply(packet: AuditControlPacket) -> dict[str, Any]:
+            claim = packet.slice_claim or {}
+            if claim.get("claim_id") != claim_id:
+                raise ValidationError(
+                    "slice claim lost or stolen during exception reconcile"
+                )
+            try:
+                detail = sanitize_durable_text(str(exc)[:400])
+            except ValidationError:
+                detail = "<redacted-exception>"
+            # Remain IN_SLICE with failed claim so the same unit is immediately
+            # reclaimable; next_action carries HUMAN_REQUIRED for operators.
+            packet.audit_status = "IN_SLICE"
+            packet.session.state = "STALLED"
+            packet.session.notes = detail
+            packet.next_action = f"HUMAN_REQUIRED:{phase}_exception:{unit}"
+            packet.slice_claim = {
+                **claim,
+                "state": "failed",
+                "error_phase": phase,
+                "error": detail,
+            }
+            # Keep current_unit so timeout/resume can reclaim the same slice.
+            packet.current_unit = unit
+            if unit in packet.audit_queue:
+                packet.current_unit_index = packet.audit_queue.index(unit)
+            self.store.save(packet)
+            return {
+                "action": "failed_closed",
+                "unit": unit,
+                "outcome": "HUMAN_REQUIRED",
+                "reason": f"{phase}_exception",
+                "packet": packet.to_dict(),
+                "cheap_no_change": False,
+                "idempotent_replay": False,
+            }
+
+        if locked_packet is not None:
+            return _apply(locked_packet)
+        with self.store.lock():
+            latest = self.store.load()
+            if latest is None:
+                raise ValidationError(
+                    "checkpoint disappeared during exception reconcile"
+                )
+            return _apply(latest)
+
     def _start_new_delta_run(
         self, packet: AuditControlPacket, new_head: str
     ) -> AuditControlPacket:
+        new_head = require_exact_commit_sha(new_head, label="new HEAD")
         # Never promote an incomplete/failed target to last_audited_sha.
         # Baseline advances only on successful queue finalization (PASSED).
         packet.current_target_sha = new_head
@@ -1416,11 +1618,22 @@ class ChatAuditController:
             raise ValidationError("executor unit does not match claimed unit")
         if evidence.unit != result.unit:
             raise ValidationError("evidence unit does not match result unit")
-        if not heads_match(result.target_sha, packet.current_target_sha):
+        for finding in result.findings:
+            if finding.unit != result.unit:
+                raise ValidationError(
+                    "finding.unit must match claimed/result/evidence unit"
+                )
+        result_sha = require_exact_commit_sha(
+            result.target_sha, label="result.target_sha"
+        )
+        evidence_sha = require_exact_commit_sha(
+            evidence.target_sha, label="evidence.target_sha"
+        )
+        if result_sha != packet.current_target_sha:
             raise ValidationError(
                 "stale evidence target SHA does not match checkpoint"
             )
-        if not heads_match(evidence.target_sha, packet.current_target_sha):
+        if evidence_sha != packet.current_target_sha:
             raise ValidationError(
                 "stale evidence target SHA does not match checkpoint"
             )
@@ -1475,13 +1688,16 @@ class ChatAuditController:
             f"{packet.idempotency_run_key}:{result.unit}:"
             f"{packet.current_target_sha}"
         )
+        # Handoff before mutating durable open_findings / completed_units so a
+        # handoff failure leaves no partial finding commit for duplicate replay.
         handoff_records: list[dict[str, Any]] = []
         if result.outcome == "FINDING":
             for finding in result.findings:
-                packet.open_findings.append(finding)
                 handoff_records.append(
                     self.handoff.upsert_implementation_packet(packet, finding)
                 )
+            for finding in result.findings:
+                packet.open_findings.append(finding)
 
         packet.last_completed_slice = result.to_dict()
         packet.completed_units[unit_key] = result.to_dict()

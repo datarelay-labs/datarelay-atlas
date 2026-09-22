@@ -5,42 +5,63 @@ Operator notes for ADR-0007 / Issue #20.
 ## Purpose
 
 Run bounded, delta-first repository audit slices that survive Chat timeout and
-conversation rollover. Durable state is the Audit Control Packet, not chat
-history.
+conversation rollover. Durable canonical state is the GitHub-backed Audit
+Control Packet (and GitHub `[AI Work]` finding handoffs). Local
+`chat-audit.json` / handoff JSON under `ATLAS_DATA_ROOT` are derived cache only.
 
-## Local checkpoint
+## Canonical checkpoint
 
-Default path: `.atlas-data/chat-audit.json` (override with `ATLAS_DATA_ROOT`).
+- Production: GitHub Issue body markers via `--checkpoint-issue` or
+  `ATLAS_CHAT_AUDIT_ISSUE` (Issue #20 for this workstream).
+- Offline/test: `--allow-local-checkpoint` with `--unit-adapter fixed` or
+  `--handoff local`.
 
 ## Commands
 
 ```bash
-# Initialize from exact HEAD
+# Initialize from authoritative worktree identity (asserted repo/branch optional)
 python -m atlas chat-audit init \
+  --repository datarelay-labs/datarelay-atlas \
+  --branch feature/continuous-chat-audit-supervisor-poc \
+  --worktree "$PWD" \
+  --checkpoint-issue 20
+
+# Show canonical checkpoint (GitHub + local cache)
+python -m atlas chat-audit show \
+  --repository datarelay-labs/datarelay-atlas \
+  --checkpoint-issue 20
+
+# Run one bounded slice. Default adapter requires external COMPLETE evidence.
+# Supplied --repository/--branch/--head are assertions against the worktree.
+python -m atlas chat-audit run-slice \
+  --repository datarelay-labs/datarelay-atlas \
+  --branch feature/continuous-chat-audit-supervisor-poc \
+  --worktree "$PWD" \
+  --checkpoint-issue 20 \
+  --evidence-file ./evidence/slice.json
+
+# Explicit offline/test synthesizer only (never the operator default):
+python -m atlas chat-audit run-slice \
+  --unit-adapter fixed \
+  --allow-local-checkpoint \
+  --allow-trusted-identity \
+  --handoff local \
   --repository datarelay-labs/datarelay-atlas \
   --branch main \
   --head "$(git rev-parse HEAD)"
 
-# Show checkpoint
-python -m atlas chat-audit show
-
-# Run one bounded slice (also auto-inits when missing).
-# Default adapter requires external COMPLETE evidence and will not auto-PASS.
-python -m atlas chat-audit run-slice \
-  --repository datarelay-labs/datarelay-atlas \
-  --branch main \
-  --head "$(git rev-parse HEAD)" \
-  --evidence-file ./evidence/slice.json
-
-# Explicit offline/test synthesizer only (never the operator default):
-python -m atlas chat-audit run-slice --unit-adapter fixed ...
-
 # Resume payload for a fresh Chat (no conversation history required)
-python -m atlas chat-audit resume-payload
+python -m atlas chat-audit resume-payload \
+  --repository datarelay-labs/datarelay-atlas \
+  --checkpoint-issue 20
 
 # Mark session + optional fake rollover
-python -m atlas chat-audit mark-session ROLLOVER_REQUIRED
-python -m atlas chat-audit rollover
+python -m atlas chat-audit mark-session ROLLOVER_REQUIRED \
+  --repository datarelay-labs/datarelay-atlas \
+  --checkpoint-issue 20
+python -m atlas chat-audit rollover \
+  --repository datarelay-labs/datarelay-atlas \
+  --checkpoint-issue 20
 ```
 
 Fresh Chat / scheduled Chat entrypoint: `/chat-audit-resume`.
@@ -49,5 +70,10 @@ Fresh Chat / scheduled Chat entrypoint: `/chat-audit-resume`.
 
 - No OpenAI API key required on the default path.
 - Truncated evidence cannot PASS.
+- Exact 40-char SHAs only for durable current/last-audited identities.
+- Production identity comes from `--worktree` (defaults to cwd); caller values
+  are assertions and mismatch fails closed.
+- Finding handoff success requires GitHub `[AI Work]` create/update; local JSON
+  is not canonical success.
 - Stagehand rollover is optional and gated on Issue #19.
 - Do not merge from Chat; hand findings to Cursor `[AI Work]` packets.

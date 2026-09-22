@@ -31,10 +31,12 @@ resumed by a fresh Chat with only a stable resume instruction.
    (`.cursor/commands/chat-audit-resume.md`); session-supervisor states;
    replaceable checkpoint / unit-executor / handoff / rollover adapter ports.
 4. **State / migration impact** — Atlas-owned file
-   `<data-root>/chat-audit.json` with `schema_version: 1` for local/runtime
-   checkpoint copies and deterministic tests. Canonical coordination for live
-   Chat resume remains a GitHub-backed Audit Control Packet (adapter-mediated).
-   Unsupported schema versions fail closed.
+   `<data-root>/chat-audit.json` with `schema_version: 1` is derived cache /
+   offline-test evidence only. Canonical coordination for live Chat resume is
+   the GitHub-backed Audit Control Packet (Issue body markers via adapter).
+   Finding handoff success requires GitHub `[AI Work]` create/update; local
+   JSON is not a canonical success signal. Unsupported schema versions fail
+   closed.
 5. **Security / operations impact** — No secrets in checkpoints/Git; no shell
    execution from packet bodies; truncated/incomplete evidence cannot PASS;
    stale HEAD/run-key mismatches fail closed; Stagehand remains gated on Issue
@@ -73,8 +75,9 @@ resumed by a fresh Chat with only a stable resume instruction.
 6. **Idempotency**: duplicate invocations with the same
    `idempotency_run_key` + unit + target SHA return the prior outcome without
    double-advancing the queue.
-7. **Finding handoff**: open findings create/update an `[AI Work]` packet via
-   adapter; Chat must not modify product code.
+7. **Finding handoff**: open findings create/update a GitHub `[AI Work]` Issue
+   via adapter (idempotent by finding_id marker); Chat must not modify product
+   code. Local handoff JSON is offline/test cache only and is not success.
 8. **Session supervisor** is browser-provider-independent. A fake/recording
    rollover provider proves `ROLLOVER_REQUIRED → RESUMED` while leaving
    canonical audit fields unchanged except session state. Stagehand is an
@@ -82,9 +85,9 @@ resumed by a fresh Chat with only a stable resume instruction.
 9. **Stable resume instruction** is `.cursor/commands/chat-audit-resume.md`
    (`/chat-audit-resume`). A fresh Chat loads only GitHub/local checkpoint
    state; conversation history is non-canonical.
-10. **Reuse ADR-0005 data root** for the local checkpoint store
-    `chat-audit.json`. Live Chat coordination may mirror the same schema
-    through a GitHub adapter without forking field semantics.
+10. **Reuse ADR-0005 data root** for the local derived checkpoint cache
+    `chat-audit.json`. Live Chat coordination mirrors the same schema through
+    the GitHub Issue adapter without forking field semantics.
 
 ## Consequences
 

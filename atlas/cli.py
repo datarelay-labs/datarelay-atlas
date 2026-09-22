@@ -13,10 +13,13 @@ from atlas.chat_audit import (
     ChatAuditController,
     ExternalEvidenceUnitExecutor,
     FakeBrowserRolloverProvider,
-    FileCheckpointStore,
     FileWorkPacketHandoff,
     FixedUnitExecutor,
     StagehandRolloverProvider,
+)
+from atlas.chat_audit_github import (
+    GitHubAIWorkHandoff,
+    resolve_checkpoint_store,
 )
 from atlas.codex_audit import CodexAuditProvider
 from atlas.provenance import ValidationError
@@ -226,8 +229,17 @@ def cmd_wc_reconcile(args: argparse.Namespace) -> int:
 
 
 def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
-    store = FileCheckpointStore(Path(args.data_root))
     adapter = getattr(args, "unit_adapter", "evidence")
+    offline = adapter == "fixed" or bool(
+        getattr(args, "allow_local_checkpoint", False)
+    )
+    repository = getattr(args, "repository", None)
+    store = resolve_checkpoint_store(
+        data_root=Path(args.data_root),
+        repository=repository,
+        checkpoint_issue=getattr(args, "checkpoint_issue", None),
+        require_github=not offline,
+    )
     if adapter == "fixed":
         # Explicit offline/test mode only — never the operator default.
         executor = FixedUnitExecutor()
@@ -241,7 +253,15 @@ def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
             if not isinstance(evidence_payload, dict):
                 raise ValidationError("evidence file must contain a JSON object")
         executor = ExternalEvidenceUnitExecutor(evidence_payload)
-    handoff = FileWorkPacketHandoff(Path(args.data_root))
+    handoff_mode = getattr(args, "handoff", "github")
+    if handoff_mode == "local" or offline:
+        handoff = FileWorkPacketHandoff(Path(args.data_root))
+    else:
+        if not repository:
+            raise ValidationError(
+                "repository is required for GitHub [AI Work] finding handoff"
+            )
+        handoff = GitHubAIWorkHandoff(repository=repository)
     provider = getattr(args, "rollover_provider", "fake")
     if provider == "stagehand":
         rollover = StagehandRolloverProvider(
@@ -250,6 +270,10 @@ def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
     else:
         rollover = FakeBrowserRolloverProvider()
     worktree = getattr(args, "worktree", None)
+    allow_trusted = bool(getattr(args, "allow_trusted_identity", False)) or offline
+    if not worktree and not allow_trusted:
+        # Production/default Chat path: derive identity from the worktree.
+        worktree = str(Path.cwd())
     return ChatAuditController(
         store,
         executor=executor,
@@ -257,6 +281,7 @@ def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
         rollover=rollover,
         worktree_path=worktree,
         enforce_worktree_identity=bool(worktree),
+        allow_trusted_identity=allow_trusted,
     )
 
 
@@ -482,7 +507,7 @@ def build_parser() -> argparse.ArgumentParser:
     ca_init = ca_sub.add_parser("init", help="Initialize Audit Control Packet")
     ca_init.add_argument("--repository", required=True)
     ca_init.add_argument("--branch", required=True)
-    ca_init.add_argument("--head", required=True)
+    ca_init.add_argument("--head", default=None)
     ca_init.add_argument(
         "--mode",
         choices=["delta", "full"],
@@ -493,10 +518,39 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
     )
     ca_init.add_argument("--worktree", default=None)
+    ca_init.add_argument(
+        "--checkpoint-issue",
+        type=int,
+        default=None,
+        help="GitHub Issue number hosting the canonical Audit Control Packet",
+    )
+    ca_init.add_argument(
+        "--allow-local-checkpoint",
+        action="store_true",
+        help="Offline/test only: allow local chat-audit.json without GitHub",
+    )
+    ca_init.add_argument(
+        "--allow-trusted-identity",
+        action="store_true",
+        help="Offline/test only: trust caller-supplied repo/branch/head",
+    )
+    ca_init.add_argument(
+        "--handoff",
+        choices=["github", "local"],
+        default="github",
+        help="github=canonical [AI Work] Issues (default); local=offline cache",
+    )
     ca_init.set_defaults(func=cmd_ca_init)
 
     ca_show = ca_sub.add_parser("show", help="Show Audit Control Packet")
+    ca_show.add_argument("--repository", default=None)
     ca_show.add_argument("--worktree", default=None)
+    ca_show.add_argument("--checkpoint-issue", type=int, default=None)
+    ca_show.add_argument("--allow-local-checkpoint", action="store_true")
+    ca_show.add_argument("--allow-trusted-identity", action="store_true")
+    ca_show.add_argument(
+        "--handoff", choices=["github", "local"], default="github"
+    )
     ca_show.set_defaults(func=cmd_ca_show)
 
     ca_run = ca_sub.add_parser("run-slice", help="Run one bounded audit slice")
@@ -505,6 +559,15 @@ def build_parser() -> argparse.ArgumentParser:
     ca_run.add_argument("--head", default=None)
     ca_run.add_argument("--include-release-readiness", action="store_true")
     ca_run.add_argument("--worktree", default=None)
+    ca_run.add_argument("--checkpoint-issue", type=int, default=None)
+    ca_run.add_argument("--allow-local-checkpoint", action="store_true")
+    ca_run.add_argument("--allow-trusted-identity", action="store_true")
+    ca_run.add_argument(
+        "--handoff",
+        choices=["github", "local"],
+        default="github",
+        help="github=canonical [AI Work] Issues (default); local=offline cache",
+    )
     ca_run.add_argument(
         "--unit-adapter",
         choices=["evidence", "fixed"],
@@ -523,7 +586,14 @@ def build_parser() -> argparse.ArgumentParser:
         "resume-payload",
         help="Emit fresh-Chat resume payload from durable checkpoint only",
     )
+    ca_resume.add_argument("--repository", default=None)
     ca_resume.add_argument("--worktree", default=None)
+    ca_resume.add_argument("--checkpoint-issue", type=int, default=None)
+    ca_resume.add_argument("--allow-local-checkpoint", action="store_true")
+    ca_resume.add_argument("--allow-trusted-identity", action="store_true")
+    ca_resume.add_argument(
+        "--handoff", choices=["github", "local"], default="github"
+    )
     ca_resume.set_defaults(func=cmd_ca_resume_payload)
 
     ca_mark = ca_sub.add_parser("mark-session", help="Update session supervisor state")
@@ -532,7 +602,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["ACTIVE", "STALLED", "TIMEOUT", "ROLLOVER_REQUIRED", "RESUMED"],
     )
     ca_mark.add_argument("--notes", default="")
+    ca_mark.add_argument("--repository", default=None)
     ca_mark.add_argument("--worktree", default=None)
+    ca_mark.add_argument("--checkpoint-issue", type=int, default=None)
+    ca_mark.add_argument("--allow-local-checkpoint", action="store_true")
+    ca_mark.add_argument("--allow-trusted-identity", action="store_true")
+    ca_mark.add_argument(
+        "--handoff", choices=["github", "local"], default="github"
+    )
     ca_mark.set_defaults(func=cmd_ca_mark_session)
 
     ca_roll = ca_sub.add_parser(
@@ -549,7 +626,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Required to attempt Stagehand path; still gated/unimplemented in PoC",
     )
+    ca_roll.add_argument("--repository", default=None)
     ca_roll.add_argument("--worktree", default=None)
+    ca_roll.add_argument("--checkpoint-issue", type=int, default=None)
+    ca_roll.add_argument("--allow-local-checkpoint", action="store_true")
+    ca_roll.add_argument("--allow-trusted-identity", action="store_true")
+    ca_roll.add_argument(
+        "--handoff", choices=["github", "local"], default="github"
+    )
     ca_roll.set_defaults(func=cmd_ca_rollover)
 
     return parser
