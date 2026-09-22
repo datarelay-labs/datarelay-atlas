@@ -12,6 +12,7 @@ import pty
 import re
 import shlex
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -312,6 +313,7 @@ class WorkPacketPort(Protocol):
     def apply_rework_findings(
         self,
         *,
+        repository: str,
         issue_number: int,
         findings: str,
         attempt: int,
@@ -355,13 +357,145 @@ class FixedAuditAdapter:
         return self._result
 
 
+DEFAULT_MAX_REWORK_FINDINGS_CHARS = 4000
+_WORK_PACKET_SECTION_HEADINGS = (
+    "Goal",
+    "Current State",
+    "Next Action",
+    "Constraints",
+    "Canonical References",
+    "Latest Evidence",
+    "Blockers",
+)
+
+
+def sanitize_rework_findings(
+    findings: str, *, max_chars: int = DEFAULT_MAX_REWORK_FINDINGS_CHARS
+) -> str:
+    """Bound findings for Work Packet mutation; never executed as code/shell."""
+    cleaned = "".join(
+        ch for ch in (findings or "").replace("\r\n", "\n").replace("\r", "\n")
+        if ch == "\n" or (ord(ch) >= 32 or ch == "\t")
+    ).strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[:max_chars] + "\n...[truncated]...\n"
+
+
+def _set_packet_metadata_line(body: str, key: str, value: str) -> str:
+    line = f"{key}={value}"
+    pattern = re.compile(rf"^{re.escape(key)}=.*$", re.MULTILINE)
+    if pattern.search(body):
+        return pattern.sub(line, body, count=1)
+    # Insert after the metadata block's first line when possible.
+    first_break = body.find("\n\n")
+    if first_break == -1:
+        return body.rstrip() + "\n" + line + "\n"
+    return body[:first_break] + "\n" + line + body[first_break:]
+
+
+def _replace_packet_section(body: str, heading: str, content: str) -> str:
+    if heading not in _WORK_PACKET_SECTION_HEADINGS:
+        raise ValidationError(f"unsupported work packet section: {heading}")
+    replacement = f"## {heading}\n\n{content.rstrip()}\n\n"
+    pattern = re.compile(
+        rf"(^## {re.escape(heading)}\s*\n)(.*?)(?=^## |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    if pattern.search(body):
+        return pattern.sub(replacement, body, count=1)
+    return body.rstrip() + "\n\n" + replacement
+
+
+def render_rework_work_packet_body(
+    body: str,
+    *,
+    repository: str,
+    findings: str,
+    attempt: int,
+    head: str,
+) -> str:
+    """Rewrite canonical packet sections for a REWORK handoff.
+
+    Preserves Goal/Constraints/Canonical References unless missing section
+    headings force append-only updates. Findings are sanitized text only.
+    """
+    raw = (body or "").strip()
+    if not raw:
+        raise ValidationError("work packet body is empty")
+    status_lines = [
+        line.strip() for line in raw.splitlines() if line.startswith("STATUS=")
+    ]
+    if "STATUS=ACTIVE" not in status_lines:
+        raise ValidationError(
+            "work packet STATUS must be ACTIVE for REWORK mutation"
+        )
+    repo = normalize_github_repository(repository)
+    target_lines = [
+        line.strip()
+        for line in raw.splitlines()
+        if line.startswith("TARGET_REPO=")
+    ]
+    if target_lines:
+        observed = normalize_github_repository(target_lines[0].split("=", 1)[1])
+        if observed != repo:
+            raise ValidationError(
+                f"work packet TARGET_REPO mismatch: {observed} != {repo}"
+            )
+    safe_findings = sanitize_rework_findings(findings)
+    if not safe_findings:
+        safe_findings = "(no findings text provided)"
+    updated = _set_packet_metadata_line(raw, "LAST_VERIFIED_HEAD", head.strip().lower())
+    updated = _replace_packet_section(
+        updated,
+        "Current State",
+        (
+            f"- Controller audit verdict: REWORK\n"
+            f"- Next attempt: {attempt}\n"
+            f"- Audited HEAD: `{head.strip().lower()}`\n"
+            f"- Findings:\n"
+            f"{safe_findings}\n"
+            f"- Canonical Work Packet mutated before `/work-resume` dispatch."
+        ),
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Next Action",
+        (
+            f"Address the REWORK findings below on attempt {attempt} "
+            f"at HEAD `{head.strip().lower()}`:\n\n"
+            f"{safe_findings}\n\n"
+            "Re-run affected deterministic validation, update this same Work Packet, "
+            "then continue the AWC completion loop."
+        ),
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Latest Evidence",
+        (
+            "```text\n"
+            f"HEAD={head.strip().lower()}\n"
+            f"ATTEMPT={attempt}\n"
+            "VERDICT=REWORK\n"
+            f"FINDINGS=\n{safe_findings}\n"
+            "WORK_PACKET_MUTATION=PENDING_DISPATCH\n"
+            "```"
+        ),
+    )
+    updated = _replace_packet_section(updated, "Blockers", "NONE")
+    return updated.rstrip() + "\n"
+
+
 class RecordingWorkPacketAdapter:
+    """Test/offline Work Packet adapter. Do not use on the production path."""
+
     def __init__(self) -> None:
         self.updates: list[dict] = []
 
     def apply_rework_findings(
         self,
         *,
+        repository: str,
         issue_number: int,
         findings: str,
         attempt: int,
@@ -369,12 +503,142 @@ class RecordingWorkPacketAdapter:
     ) -> None:
         self.updates.append(
             {
+                "repository": repository,
                 "issue_number": issue_number,
                 "findings": findings,
                 "attempt": attempt,
                 "head": head,
             }
         )
+
+
+class GitHubWorkPacketAdapter:
+    """Mutate the same GitHub AI Work Packet via safe ``gh`` argv (no shell)."""
+
+    def __init__(
+        self,
+        *,
+        command_runner: Callable[
+            [list[str], str], subprocess.CompletedProcess[str]
+        ]
+        | None = None,
+        cwd: str | None = None,
+        timeout_sec: int = 60,
+        max_findings_chars: int = DEFAULT_MAX_REWORK_FINDINGS_CHARS,
+    ) -> None:
+        self._command_runner = command_runner
+        self._cwd = cwd or str(Path.cwd())
+        self._timeout_sec = timeout_sec
+        self._max_findings_chars = max_findings_chars
+
+    def apply_rework_findings(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        findings: str,
+        attempt: int,
+        head: str,
+    ) -> None:
+        repo = normalize_github_repository(repository)
+        if int(issue_number) < 1:
+            raise ValidationError(f"invalid issue_number: {issue_number}")
+        view = self._run(
+            [
+                "gh",
+                "issue",
+                "view",
+                str(int(issue_number)),
+                "--repo",
+                repo,
+                "--json",
+                "number,title,state,body",
+            ]
+        )
+        if view.returncode != 0:
+            detail = (view.stderr or view.stdout or "").strip()
+            raise ValidationError(
+                detail[:500]
+                or f"gh issue view failed with exit {view.returncode}"
+            )
+        try:
+            payload = json.loads(view.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValidationError("gh issue view returned non-JSON") from exc
+        title = str(payload.get("title") or "")
+        if not title.startswith("[AI Work]"):
+            raise ValidationError(
+                f"issue #{issue_number} is not an [AI Work] packet: {title!r}"
+            )
+        if str(payload.get("state") or "").upper() != "OPEN":
+            raise ValidationError(
+                f"work packet issue #{issue_number} is not OPEN"
+            )
+        new_body = render_rework_work_packet_body(
+            str(payload.get("body") or ""),
+            repository=repo,
+            findings=sanitize_rework_findings(
+                findings, max_chars=self._max_findings_chars
+            ),
+            attempt=int(attempt),
+            head=head,
+        )
+        # Write body via file path argv only — never shell-interpolate findings.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".md",
+            delete=False,
+        ) as handle:
+            handle.write(new_body)
+            body_path = handle.name
+        try:
+            edit = self._run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(int(issue_number)),
+                    "--repo",
+                    repo,
+                    "--body-file",
+                    body_path,
+                ]
+            )
+        finally:
+            Path(body_path).unlink(missing_ok=True)
+        if edit.returncode != 0:
+            detail = (edit.stderr or edit.stdout or "").strip()
+            raise ValidationError(
+                detail[:500]
+                or f"gh issue edit failed with exit {edit.returncode}"
+            )
+
+    def _run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
+        if self._command_runner is not None:
+            return self._command_runner(argv, self._cwd)
+        try:
+            return subprocess.run(
+                argv,
+                cwd=self._cwd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout_sec,
+            )
+        except FileNotFoundError as exc:
+            missing = argv[0] if argv else "command"
+            return subprocess.CompletedProcess(
+                argv,
+                127,
+                stdout="",
+                stderr=f"{missing} not found on PATH: {exc}",
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ValidationError(
+                f"{argv[0] if argv else 'command'} timed out after "
+                f"{self._timeout_sec}s"
+            ) from exc
 
 
 class RecordingCursorDispatcher:
@@ -938,29 +1202,18 @@ class WorkController:
                     extra={"reason": "retry_exhausted"},
                 )
             else:
-                self.work_packet.apply_rework_findings(
-                    issue_number=record.issue_number,
-                    findings=audit_result.findings,
-                    attempt=next_attempt,
-                    head=event.head,
-                )
                 try:
-                    dispatch = self.dispatcher.start_resume(
-                        DispatchRequest(
-                            workstream=record.workstream,
-                            worktree_path=record.worktree_path,
-                            branch=record.branch,
-                            issue_number=record.issue_number,
-                            attempt=next_attempt,
-                            repository=record.repository,
-                            expected_head=event.head,
-                            resume_prompt=RESUME_PROMPT,
-                        )
+                    self.work_packet.apply_rework_findings(
+                        repository=record.repository,
+                        issue_number=record.issue_number,
+                        findings=audit_result.findings,
+                        attempt=next_attempt,
+                        head=event.head,
                     )
                 except ValidationError as exc:
                     record.last_findings = (
                         f"{audit_result.findings}\n"
-                        f"rework dispatch blocked at boundary: {exc}"
+                        f"work packet mutation failed before dispatch: {exc}"
                     ).strip()
                     outcome = self._finalize(
                         record,
@@ -968,25 +1221,52 @@ class WorkController:
                         state="HUMAN_REQUIRED",
                         action="stop",
                         verdict="HUMAN_REQUIRED",
-                        extra={"reason": "dispatch_boundary_failed"},
+                        extra={"reason": "work_packet_mutation_failed"},
                     )
                 else:
-                    record.attempt = next_attempt
-                    record.last_session_id = dispatch.session_id
-                    record.expected_head = event.head
-                    outcome = self._finalize(
-                        record,
-                        event,
-                        state="REWORK_DISPATCHED",
-                        action="rework_dispatched",
-                        verdict="REWORK",
-                        extra={
-                            "dispatch_session_id": dispatch.session_id,
-                            "dispatch_command": dispatch.command,
-                            "next_attempt": next_attempt,
-                            "resume_prompt": RESUME_PROMPT,
-                        },
-                    )
+                    try:
+                        dispatch = self.dispatcher.start_resume(
+                            DispatchRequest(
+                                workstream=record.workstream,
+                                worktree_path=record.worktree_path,
+                                branch=record.branch,
+                                issue_number=record.issue_number,
+                                attempt=next_attempt,
+                                repository=record.repository,
+                                expected_head=event.head,
+                                resume_prompt=RESUME_PROMPT,
+                            )
+                        )
+                    except ValidationError as exc:
+                        record.last_findings = (
+                            f"{audit_result.findings}\n"
+                            f"rework dispatch blocked at boundary: {exc}"
+                        ).strip()
+                        outcome = self._finalize(
+                            record,
+                            event,
+                            state="HUMAN_REQUIRED",
+                            action="stop",
+                            verdict="HUMAN_REQUIRED",
+                            extra={"reason": "dispatch_boundary_failed"},
+                        )
+                    else:
+                        record.attempt = next_attempt
+                        record.last_session_id = dispatch.session_id
+                        record.expected_head = event.head
+                        outcome = self._finalize(
+                            record,
+                            event,
+                            state="REWORK_DISPATCHED",
+                            action="rework_dispatched",
+                            verdict="REWORK",
+                            extra={
+                                "dispatch_session_id": dispatch.session_id,
+                                "dispatch_command": dispatch.command,
+                                "next_attempt": next_attempt,
+                                "resume_prompt": RESUME_PROMPT,
+                            },
+                        )
         self.observer.observe("completion_handled", outcome)
         return outcome
 

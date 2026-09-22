@@ -68,5 +68,16 @@ if [[ "${AWC_DRAIN:-1}" == "1" ]]; then
   if [[ "${AWC_SPAWN_DISPATCH:-1}" == "1" ]]; then
     EXTRA+=(--spawn-dispatch)
   fi
+  if [[ -n "${AWC_WORK_PACKET_ADAPTER:-}" ]]; then
+    case "${AWC_WORK_PACKET_ADAPTER}" in
+      github|recording)
+        EXTRA+=(--work-packet-adapter "${AWC_WORK_PACKET_ADAPTER}")
+        ;;
+      *)
+        echo "awc-completion-hook: unknown AWC_WORK_PACKET_ADAPTER='${AWC_WORK_PACKET_ADAPTER}' (expected github|recording)" >&2
+        exit 1
+        ;;
+    esac
+  fi
   python3 -m atlas --data-root "$DATA_ROOT" work-controller drain-inbox "${EXTRA[@]}"
 fi

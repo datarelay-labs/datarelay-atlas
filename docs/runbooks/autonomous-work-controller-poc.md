@@ -83,6 +83,8 @@ python3 -m atlas work-controller drain-inbox \
   --audit-adapter fixed --audit-verdict PASS
 
 # Re-register in a fresh data root to exercise REWORK dispatch argv:
+# `--audit-adapter fixed` defaults to `--work-packet-adapter recording`
+# so offline dogfood does not mutate GitHub Issue #12.
 rm -rf "$ATLAS_DATA_ROOT"
 python3 -m atlas work-controller register autonomous-work-controller-poc \
   --repository datarelay-labs/datarelay-atlas \
@@ -101,6 +103,11 @@ python3 -m atlas work-controller show autonomous-work-controller-poc
 Expected REWORK outcome includes:
 `dispatch_command = ["agent", "persist", "--trust", "/work-resume"]`
 and `resume_prompt = "/work-resume"`.
+
+Production Codex/OpenAI paths default to `--work-packet-adapter github`, which
+updates the same canonical `[AI Work]` Issue (findings + next action) via safe
+`gh` argv/`--body-file` **before** Cursor dispatch. Mutation failure fails
+closed as `HUMAN_REQUIRED` with no spawn / no `REWORK_DISPATCHED`.
 
 To exercise the real PTY launcher (creates a live Cursor persist session in
 this worktree only):

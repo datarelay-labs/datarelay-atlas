@@ -11,6 +11,7 @@ from atlas.provenance import ValidationError
 from atlas.work_controller import (
     AuditResult,
     CompletionEvent,
+    DispatchResult,
     FixedAuditAdapter,
     RecordingCursorDispatcher,
     RecordingObserver,
@@ -183,10 +184,99 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(outcome["reason"], "dispatch_boundary_failed")
             self.assertIn("dispatch blocked at boundary", outcome["findings"])
             self.assertEqual(len(dispatcher.requests), 1)
+            self.assertEqual(len(packets.updates), 1)
             self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
             shown = ctl.show("awc-poc")
             self.assertEqual(shown["state"], "HUMAN_REQUIRED")
             self.assertEqual(shown["attempt"], 0)
+
+    def test_work_packet_mutation_failure_blocks_dispatch(self):
+        """Work Packet mutation ValidationError ⇒ HUMAN_REQUIRED, no Cursor spawn."""
+
+        class FailingWorkPacket:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def apply_rework_findings(self, **kwargs):
+                self.calls += 1
+                raise ValidationError("gh issue edit failed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            dispatcher = RecordingCursorDispatcher()
+            packets = FailingWorkPacket()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=dispatcher,
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "work_packet_mutation_failed")
+            self.assertIn("work packet mutation failed", outcome["findings"])
+            self.assertEqual(packets.calls, 1)
+            self.assertEqual(dispatcher.requests, [])
+            self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
+
+    def test_work_packet_mutation_happens_before_dispatch(self):
+        """REWORK ordering: mutate canonical packet, then dispatch Cursor."""
+
+        class OrderedProbe:
+            def __init__(self) -> None:
+                self.order: list[str] = []
+
+            def apply_rework_findings(self, **kwargs):
+                self.order.append("packet")
+
+            def start_resume(self, request):
+                self.order.append("dispatch")
+                return DispatchResult(
+                    session_id="sess-ordered",
+                    command=build_persist_resume_command(request),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            probe = OrderedProbe()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=probe,
+                dispatcher=probe,
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
+            self.assertEqual(probe.order, ["packet", "dispatch"])
 
     def test_retry_exhaustion(self):
         with tempfile.TemporaryDirectory() as tmp:
