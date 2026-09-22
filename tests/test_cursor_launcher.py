@@ -248,7 +248,9 @@ class CursorLauncherTests(unittest.TestCase):
                                 "task": "Rework",
                             }}
                         )
-                        state_path.write_text(json.dumps(sessions))
+                        tmp_path = state_path.with_name(state_path.name + ".tmp")
+                        tmp_path.write_text(json.dumps(sessions))
+                        tmp_path.replace(state_path)
                         raise SystemExit(0)
                     print("unexpected argv", argv, file=sys.stderr)
                     raise SystemExit(2)
@@ -263,6 +265,7 @@ class CursorLauncherTests(unittest.TestCase):
             try:
                 before = json.loads(state_file.read_text(encoding="utf-8"))
                 dispatcher = PtyPersistCursorDispatcher(
+                    list_target_procs=lambda _wt: [],
                     poll_interval_sec=0.05,
                     poll_timeout_sec=2.0,
                 )

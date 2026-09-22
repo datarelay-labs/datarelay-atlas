@@ -79,7 +79,8 @@ EOF
 
 # PASS path via inbox ingestion (Cursor hook shape)
 python3 -m atlas work-controller enqueue-completion /tmp/awc-completion.json
-python3 -m atlas work-controller drain-inbox --audit-verdict PASS
+python3 -m atlas work-controller drain-inbox \
+  --audit-adapter fixed --audit-verdict PASS
 
 # Re-register in a fresh data root to exercise REWORK dispatch argv:
 rm -rf "$ATLAS_DATA_ROOT"
@@ -90,6 +91,7 @@ python3 -m atlas work-controller register autonomous-work-controller-poc \
   --worktree "$WT" \
   --expected-head "$HEAD"
 python3 -m atlas work-controller completion /tmp/awc-completion.json \
+  --audit-adapter fixed \
   --audit-verdict REWORK \
   --audit-findings "deterministic rework finding"
 
@@ -105,6 +107,7 @@ this worktree only):
 
 ```bash
 python3 -m atlas work-controller completion /tmp/awc-completion.json \
+  --audit-adapter fixed \
   --audit-verdict REWORK \
   --audit-findings "launcher dogfood" \
   --spawn-dispatch
@@ -125,22 +128,49 @@ python3 -m atlas work-controller completion /tmp/awc-completion.json \
 ```
 
 Contract:
-- `codex exec -C <worktree> -s read-only --ephemeral -o <last-message> -`
+- Controller gathers deterministic evidence (git, Work Packet, tests, CI)
+- `codex exec -C <worktree> -s read-only --ephemeral --ignore-user-config
+  --ignore-rules` with apps/browser/computer/shell/plugins/hooks/multi-agent
+  disabled (`--disable …`, `web_search="disabled"`)
+- Codex judges only the embedded evidence bundle (no Codex local shell required)
 - structured JSON verdict `PASS|REWORK|HUMAN_REQUIRED`
 - exact worktree identity validation (repo/branch/HEAD) before audit
 - no edits/commits/pushes
 
 OpenAI Responses API (`--audit-adapter openai`) is optional fallback only.
+Offline/deterministic mode requires explicit `--audit-adapter fixed`.
 
 ## Completion hook helper
 
 `scripts/awc-completion-hook.sh` builds an event from the current git identity
-and enqueues/drains the local inbox without Telegram:
+and enqueues/drains the local inbox without Telegram. Default audit adapter is
+`codex`. Unknown `AWC_AUDIT_ADAPTER` values fail closed.
+
+Production default is **unattended**: when draining, the hook passes
+`--spawn-dispatch` so a `REWORK` verdict can launch a fresh Cursor session with
+exact argv `agent persist --trust /work-resume`. Set
+`AWC_SPAWN_DISPATCH=0` only for audit-only / operator opt-out (drain without
+auto-dispatch).
 
 ```bash
+# Production default (Codex / ChatGPT plan; auto-dispatch on REWORK)
 AWC_WORKSTREAM=autonomous-work-controller-poc \
 AWC_ISSUE_NUMBER=12 \
 AWC_ATTEMPT=1 \
+./scripts/awc-completion-hook.sh
+
+# Audit-only opt-out: drain without spawning REWORK dispatch
+AWC_WORKSTREAM=autonomous-work-controller-poc \
+AWC_ISSUE_NUMBER=12 \
+AWC_ATTEMPT=1 \
+AWC_SPAWN_DISPATCH=0 \
+./scripts/awc-completion-hook.sh
+
+# Explicit offline/fixed only when deliberately requested
+AWC_WORKSTREAM=autonomous-work-controller-poc \
+AWC_ISSUE_NUMBER=12 \
+AWC_ATTEMPT=1 \
+AWC_AUDIT_ADAPTER=fixed \
 AWC_AUDIT_VERDICT=PASS \
 ./scripts/awc-completion-hook.sh
 ```

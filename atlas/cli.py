@@ -130,19 +130,21 @@ def cmd_projections(args: argparse.Namespace) -> int:
 def _controller_from_args(args: argparse.Namespace) -> WorkController:
     """Build a controller with operator-selected adapters.
 
-    Default audit is fixed/offline so the CLI stays deterministic. Prefer
-    `--audit-adapter codex` for the ChatGPT-plan Codex CLI auditor (no OpenAI
-    API key). `--audit-adapter openai` remains optional fallback only.
+    Production default is Codex (ChatGPT-plan, no API key). Use
+    `--audit-adapter fixed` explicitly for offline/deterministic verdicts.
+    `--audit-adapter openai` remains optional API fallback only.
     """
-    adapter = getattr(args, "audit_adapter", "fixed")
+    adapter = getattr(args, "audit_adapter", "codex")
     if adapter == "codex":
         audit = CodexAuditProvider()
     elif adapter == "openai":
         audit = OpenAIResponsesAuditAdapter()
-    else:
+    elif adapter == "fixed":
         verdict = getattr(args, "audit_verdict", "PASS")
         findings = getattr(args, "audit_findings", "") or ""
         audit = FixedAuditAdapter(AuditResult(verdict=verdict, findings=findings))
+    else:
+        raise ValidationError(f"unsupported audit adapter: {adapter}")
     work_packet = RecordingWorkPacketAdapter()
     if getattr(args, "spawn_dispatch", False):
         dispatcher = PtyPersistCursorDispatcher()
@@ -313,9 +315,9 @@ def build_parser() -> argparse.ArgumentParser:
     wc_comp.add_argument("event_file")
     wc_comp.add_argument(
         "--audit-adapter",
-        choices=["fixed", "openai"],
-        default="fixed",
-        help="fixed=offline verdict flags; openai=Responses background lifecycle",
+        choices=["codex", "fixed", "openai"],
+        default="codex",
+        help="codex=default production; fixed=explicit offline; openai=optional API fallback",
     )
     wc_comp.add_argument(
         "--audit-verdict",
@@ -345,8 +347,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wc_drain.add_argument(
         "--audit-adapter",
-        choices=["fixed", "openai"],
-        default="fixed",
+        choices=["codex", "fixed", "openai"],
+        default="codex",
     )
     wc_drain.add_argument(
         "--audit-verdict",
@@ -364,8 +366,8 @@ def build_parser() -> argparse.ArgumentParser:
     wc_rec.add_argument("workstream", nargs="?")
     wc_rec.add_argument(
         "--audit-adapter",
-        choices=["fixed", "openai"],
-        default="fixed",
+        choices=["codex", "fixed", "openai"],
+        default="codex",
     )
     wc_rec.add_argument(
         "--audit-verdict",
