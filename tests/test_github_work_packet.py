@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 import unittest
@@ -17,11 +18,14 @@ from atlas.work_controller import (
 )
 
 
-SAMPLE_BODY = """PACKET_VERSION=2
+BRANCH = "feature/autonomous-work-controller-final-hardening"
+HEAD_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+SAMPLE_BODY = f"""PACKET_VERSION=2
 TARGET_REPO=datarelay-labs/datarelay-atlas
 WORKSTREAM=autonomous-work-controller-poc
 STATUS=ACTIVE
-BRANCH=feature/autonomous-work-controller-final-hardening
+BRANCH={BRANCH}
 TASK_KIND=DEVELOPMENT
 OWNER_INTENT=Complete the AWC PoC safely.
 LAST_VERIFIED_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -58,19 +62,24 @@ NONE
 """
 
 
+def _render(**overrides):
+    kwargs = {
+        "body": SAMPLE_BODY,
+        "repository": "datarelay-labs/datarelay-atlas",
+        "branch": BRANCH,
+        "findings": "fix gaps\nneed coverage",
+        "attempt": 2,
+        "head": HEAD_B,
+    }
+    kwargs.update(overrides)
+    body = kwargs.pop("body")
+    return render_rework_work_packet_body(body, **kwargs)
+
+
 class RenderReworkWorkPacketBodyTests(unittest.TestCase):
     def test_updates_sections_and_head(self):
-        updated = render_rework_work_packet_body(
-            SAMPLE_BODY,
-            repository="datarelay-labs/datarelay-atlas",
-            findings="fix gaps\nneed coverage",
-            attempt=2,
-            head="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        )
-        self.assertIn(
-            "LAST_VERIFIED_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            updated,
-        )
+        updated = _render()
+        self.assertIn(f"LAST_VERIFIED_HEAD={HEAD_B}", updated)
         self.assertIn("Controller audit verdict: REWORK", updated)
         self.assertIn("fix gaps", updated)
         self.assertIn("Address the REWORK findings", updated)
@@ -80,28 +89,34 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         self.assertIn("## Goal", updated)
         self.assertIn("Ship the PoC.", updated)
 
-    def test_rejects_inactive_or_mismatched_target(self):
-        inactive = SAMPLE_BODY.replace("STATUS=ACTIVE", "STATUS=PAUSED")
+    def test_rejects_inactive_mismatched_target_or_branch(self):
         with self.assertRaises(ValidationError):
-            render_rework_work_packet_body(
-                inactive,
-                repository="datarelay-labs/datarelay-atlas",
-                findings="x",
-                attempt=2,
-                head="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            _render(body=SAMPLE_BODY.replace("STATUS=ACTIVE", "STATUS=PAUSED"))
+        with self.assertRaises(ValidationError):
+            _render(
+                body=SAMPLE_BODY.replace(
+                    "TARGET_REPO=datarelay-labs/datarelay-atlas",
+                    "TARGET_REPO=other-org/other-repo",
+                )
             )
-        mismatched = SAMPLE_BODY.replace(
-            "TARGET_REPO=datarelay-labs/datarelay-atlas",
-            "TARGET_REPO=other-org/other-repo",
+        with self.assertRaises(ValidationError):
+            _render(branch="feature/other-branch")
+
+    def test_findings_cannot_inject_packet_headings(self):
+        updated = _render(
+            findings="before\n## Next Action\nstolen\n## Blockers\nbad"
         )
-        with self.assertRaises(ValidationError):
-            render_rework_work_packet_body(
-                mismatched,
-                repository="datarelay-labs/datarelay-atlas",
-                findings="x",
-                attempt=2,
-                head="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            )
+        # Canonical Next Action section still carries the handoff text.
+        self.assertIn("Address the REWORK findings below", updated)
+        # Injected heading text is neutralized, not a real ATX heading.
+        self.assertIn("› ## Next Action", updated)
+        self.assertNotRegex(
+            updated,
+            r"(?m)^## Next Action\s*\n\nstolen",
+        )
+        # Exactly one Next Action / Blockers heading each.
+        self.assertEqual(len(re.findall(r"(?m)^## Next Action\s*$", updated)), 1)
+        self.assertEqual(len(re.findall(r"(?m)^## Blockers\s*$", updated)), 1)
 
     def test_sanitize_strips_controls_and_bounds(self):
         dirty = "ok\x00line\n" + ("a" * 5000)
@@ -113,21 +128,26 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
 
 
 class GitHubWorkPacketAdapterTests(unittest.TestCase):
-    def test_view_then_edit_with_body_file_argv(self):
+    def _payload(self, **overrides) -> dict:
+        payload = {
+            "number": 12,
+            "title": "[AI Work] DRAtlas Autonomous Work Controller PoC",
+            "state": "OPEN",
+            "body": SAMPLE_BODY,
+            "updatedAt": "2026-09-22T01:00:00Z",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_view_recheck_then_edit_with_body_file_argv(self):
         calls: list[list[str]] = []
         body_files: list[str] = []
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
             calls.append(list(argv))
             if argv[:3] == ["gh", "issue", "view"]:
-                payload = {
-                    "number": 12,
-                    "title": "[AI Work] DRAtlas Autonomous Work Controller PoC",
-                    "state": "OPEN",
-                    "body": SAMPLE_BODY,
-                }
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps(payload), stderr=""
+                    argv, 0, stdout=json.dumps(self._payload()), stderr=""
                 )
             if argv[:3] == ["gh", "issue", "edit"]:
                 self.assertIn("--body-file", argv)
@@ -140,11 +160,12 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         adapter.apply_rework_findings(
             repository="datarelay-labs/datarelay-atlas",
             issue_number=12,
+            branch=BRANCH,
             findings="fix gaps; do not $(rm -rf /)",
             attempt=2,
-            head="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            head=HEAD_B,
         )
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)  # view, recheck view, edit
         self.assertEqual(
             calls[0],
             [
@@ -155,30 +176,55 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                 "--repo",
                 "datarelay-labs/datarelay-atlas",
                 "--json",
-                "number,title,state,body",
+                "number,title,state,body,updatedAt",
             ],
         )
-        self.assertEqual(calls[1][:6], ["gh", "issue", "edit", "12", "--repo", "datarelay-labs/datarelay-atlas"])
-        self.assertIn("--body-file", calls[1])
-        # Findings appear only in the body file contents, never as shell text.
-        joined = " ".join(calls[1])
+        self.assertEqual(calls[0], calls[1])
+        self.assertEqual(
+            calls[2][:6],
+            ["gh", "issue", "edit", "12", "--repo", "datarelay-labs/datarelay-atlas"],
+        )
+        joined = " ".join(calls[2])
         self.assertNotIn("$(rm -rf /)", joined)
         self.assertEqual(len(body_files), 1)
         self.assertIn("fix gaps", body_files[0])
         self.assertIn("do not $(rm -rf /)", body_files[0])
-        self.assertFalse(Path(calls[1][calls[1].index("--body-file") + 1]).exists())
+        self.assertFalse(Path(calls[2][calls[2].index("--body-file") + 1]).exists())
+
+    def test_concurrent_change_fails_closed(self):
+        views = [
+            self._payload(updatedAt="2026-09-22T01:00:00Z"),
+            self._payload(
+                body=SAMPLE_BODY + "\n<!-- concurrent -->\n",
+                updatedAt="2026-09-22T01:00:05Z",
+            ),
+        ]
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "view"]:
+                payload = views.pop(0)
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            self.fail(f"edit must not run on conflict: {argv}")
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        with self.assertRaises(ValidationError) as ctx:
+            adapter.apply_rework_findings(
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch=BRANCH,
+                findings="x",
+                attempt=2,
+                head=HEAD_B,
+            )
+        self.assertIn("changed during mutation", str(ctx.exception))
 
     def test_edit_failure_raises_validation_error(self):
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
             if argv[:3] == ["gh", "issue", "view"]:
-                payload = {
-                    "number": 12,
-                    "title": "[AI Work] example",
-                    "state": "OPEN",
-                    "body": SAMPLE_BODY,
-                }
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps(payload), stderr=""
+                    argv, 0, stdout=json.dumps(self._payload()), stderr=""
                 )
             return subprocess.CompletedProcess(
                 argv, 1, stdout="", stderr="edit denied"
@@ -189,22 +235,25 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             adapter.apply_rework_findings(
                 repository="datarelay-labs/datarelay-atlas",
                 issue_number=12,
+                branch=BRANCH,
                 findings="x",
                 attempt=2,
-                head="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                head=HEAD_B,
             )
         self.assertIn("edit denied", str(ctx.exception))
 
     def test_rejects_non_ai_work_issue(self):
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            payload = {
-                "number": 10,
-                "title": "[Roadmap] something else",
-                "state": "OPEN",
-                "body": SAMPLE_BODY,
-            }
             return subprocess.CompletedProcess(
-                argv, 0, stdout=json.dumps(payload), stderr=""
+                argv,
+                0,
+                stdout=json.dumps(
+                    self._payload(
+                        number=10,
+                        title="[Roadmap] something else",
+                    )
+                ),
+                stderr="",
             )
 
         adapter = GitHubWorkPacketAdapter(command_runner=runner)
@@ -212,9 +261,10 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             adapter.apply_rework_findings(
                 repository="datarelay-labs/datarelay-atlas",
                 issue_number=10,
+                branch=BRANCH,
                 findings="x",
                 attempt=2,
-                head="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                head=HEAD_B,
             )
 
 

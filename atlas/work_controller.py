@@ -315,6 +315,7 @@ class WorkPacketPort(Protocol):
         *,
         repository: str,
         issue_number: int,
+        branch: str,
         findings: str,
         attempt: int,
         head: str,
@@ -372,14 +373,35 @@ _WORK_PACKET_SECTION_HEADINGS = (
 def sanitize_rework_findings(
     findings: str, *, max_chars: int = DEFAULT_MAX_REWORK_FINDINGS_CHARS
 ) -> str:
-    """Bound findings for Work Packet mutation; never executed as code/shell."""
+    """Bound findings for Work Packet mutation; never executed as code/shell.
+
+    Neutralize ATX headings and fence openers so interpolated findings cannot
+    create or steal packet-level ``##`` sections during later replacement.
+    """
     cleaned = "".join(
         ch for ch in (findings or "").replace("\r\n", "\n").replace("\r", "\n")
         if ch == "\n" or (ord(ch) >= 32 or ch == "\t")
     ).strip()
+    neutralized: list[str] = []
+    for line in cleaned.split("\n"):
+        if re.match(r"^#{1,6}(\s|$)", line):
+            # Prefix so the line is no longer a Markdown ATX heading.
+            line = "› " + line
+        if line.lstrip().startswith("```"):
+            line = line.replace("```", "'''")
+        neutralized.append(line)
+    cleaned = "\n".join(neutralized).strip()
     if len(cleaned) <= max_chars:
         return cleaned
     return cleaned[:max_chars] + "\n...[truncated]...\n"
+
+
+def _packet_metadata_value(body: str, key: str) -> str | None:
+    pattern = re.compile(rf"^{re.escape(key)}=(.*)$", re.MULTILINE)
+    match = pattern.search(body)
+    if not match:
+        return None
+    return match.group(1).strip()
 
 
 def _set_packet_metadata_line(body: str, key: str, value: str) -> str:
@@ -411,6 +433,7 @@ def render_rework_work_packet_body(
     body: str,
     *,
     repository: str,
+    branch: str,
     findings: str,
     attempt: int,
     head: str,
@@ -431,20 +454,29 @@ def render_rework_work_packet_body(
             "work packet STATUS must be ACTIVE for REWORK mutation"
         )
     repo = normalize_github_repository(repository)
-    target_lines = [
-        line.strip()
-        for line in raw.splitlines()
-        if line.startswith("TARGET_REPO=")
-    ]
-    if target_lines:
-        observed = normalize_github_repository(target_lines[0].split("=", 1)[1])
+    target = _packet_metadata_value(raw, "TARGET_REPO")
+    if target:
+        observed = normalize_github_repository(target)
         if observed != repo:
             raise ValidationError(
                 f"work packet TARGET_REPO mismatch: {observed} != {repo}"
             )
+    expected_branch = branch.strip()
+    if not expected_branch:
+        raise ValidationError("branch is required for Work Packet mutation")
+    packet_branch = _packet_metadata_value(raw, "BRANCH")
+    if packet_branch is None:
+        raise ValidationError("work packet missing BRANCH metadata")
+    if packet_branch != expected_branch:
+        raise ValidationError(
+            f"work packet BRANCH mismatch: {packet_branch!r} != {expected_branch!r}"
+        )
+    # Sanitize before any section rewrite so findings cannot inject headings.
     safe_findings = sanitize_rework_findings(findings)
     if not safe_findings:
         safe_findings = "(no findings text provided)"
+    # Quote findings inside fences so residual markdown cannot steal sections.
+    quoted_findings = "```text\n" + safe_findings + "\n```"
     updated = _set_packet_metadata_line(raw, "LAST_VERIFIED_HEAD", head.strip().lower())
     updated = _replace_packet_section(
         updated,
@@ -453,8 +485,9 @@ def render_rework_work_packet_body(
             f"- Controller audit verdict: REWORK\n"
             f"- Next attempt: {attempt}\n"
             f"- Audited HEAD: `{head.strip().lower()}`\n"
+            f"- Branch: `{expected_branch}`\n"
             f"- Findings:\n"
-            f"{safe_findings}\n"
+            f"{quoted_findings}\n"
             f"- Canonical Work Packet mutated before `/work-resume` dispatch."
         ),
     )
@@ -463,8 +496,8 @@ def render_rework_work_packet_body(
         "Next Action",
         (
             f"Address the REWORK findings below on attempt {attempt} "
-            f"at HEAD `{head.strip().lower()}`:\n\n"
-            f"{safe_findings}\n\n"
+            f"at HEAD `{head.strip().lower()}` (branch `{expected_branch}`):\n\n"
+            f"{quoted_findings}\n\n"
             "Re-run affected deterministic validation, update this same Work Packet, "
             "then continue the AWC completion loop."
         ),
@@ -475,6 +508,7 @@ def render_rework_work_packet_body(
         (
             "```text\n"
             f"HEAD={head.strip().lower()}\n"
+            f"BRANCH={expected_branch}\n"
             f"ATTEMPT={attempt}\n"
             "VERDICT=REWORK\n"
             f"FINDINGS=\n{safe_findings}\n"
@@ -497,6 +531,7 @@ class RecordingWorkPacketAdapter:
         *,
         repository: str,
         issue_number: int,
+        branch: str,
         findings: str,
         attempt: int,
         head: str,
@@ -505,6 +540,7 @@ class RecordingWorkPacketAdapter:
             {
                 "repository": repository,
                 "issue_number": issue_number,
+                "branch": branch,
                 "findings": findings,
                 "attempt": attempt,
                 "head": head,
@@ -536,6 +572,7 @@ class GitHubWorkPacketAdapter:
         *,
         repository: str,
         issue_number: int,
+        branch: str,
         findings: str,
         attempt: int,
         head: str,
@@ -543,46 +580,38 @@ class GitHubWorkPacketAdapter:
         repo = normalize_github_repository(repository)
         if int(issue_number) < 1:
             raise ValidationError(f"invalid issue_number: {issue_number}")
-        view = self._run(
-            [
-                "gh",
-                "issue",
-                "view",
-                str(int(issue_number)),
-                "--repo",
-                repo,
-                "--json",
-                "number,title,state,body",
-            ]
-        )
-        if view.returncode != 0:
-            detail = (view.stderr or view.stdout or "").strip()
-            raise ValidationError(
-                detail[:500]
-                or f"gh issue view failed with exit {view.returncode}"
-            )
-        try:
-            payload = json.loads(view.stdout)
-        except json.JSONDecodeError as exc:
-            raise ValidationError("gh issue view returned non-JSON") from exc
-        title = str(payload.get("title") or "")
-        if not title.startswith("[AI Work]"):
-            raise ValidationError(
-                f"issue #{issue_number} is not an [AI Work] packet: {title!r}"
-            )
-        if str(payload.get("state") or "").upper() != "OPEN":
-            raise ValidationError(
-                f"work packet issue #{issue_number} is not OPEN"
-            )
+        expected_branch = branch.strip()
+        if not expected_branch:
+            raise ValidationError("branch is required for Work Packet mutation")
+
+        payload = self._view_issue(repo, int(issue_number))
+        original_body = str(payload.get("body") or "")
+        original_updated_at = str(payload.get("updatedAt") or "")
+        self._assert_ai_work_issue(payload, issue_number=int(issue_number))
         new_body = render_rework_work_packet_body(
-            str(payload.get("body") or ""),
+            original_body,
             repository=repo,
+            branch=expected_branch,
             findings=sanitize_rework_findings(
                 findings, max_chars=self._max_findings_chars
             ),
             attempt=int(attempt),
             head=head,
         )
+
+        # Conflict check: fail closed if canonical packet changed mid-mutation.
+        recheck = self._view_issue(repo, int(issue_number))
+        recheck_body = str(recheck.get("body") or "")
+        recheck_updated_at = str(recheck.get("updatedAt") or "")
+        if recheck_body != original_body or (
+            original_updated_at
+            and recheck_updated_at
+            and recheck_updated_at != original_updated_at
+        ):
+            raise ValidationError(
+                "work packet changed during mutation; refusing overwrite"
+            )
+
         # Write body via file path argv only — never shell-interpolate findings.
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -612,6 +641,45 @@ class GitHubWorkPacketAdapter:
             raise ValidationError(
                 detail[:500]
                 or f"gh issue edit failed with exit {edit.returncode}"
+            )
+
+    def _view_issue(self, repository: str, issue_number: int) -> dict:
+        view = self._run(
+            [
+                "gh",
+                "issue",
+                "view",
+                str(issue_number),
+                "--repo",
+                repository,
+                "--json",
+                "number,title,state,body,updatedAt",
+            ]
+        )
+        if view.returncode != 0:
+            detail = (view.stderr or view.stdout or "").strip()
+            raise ValidationError(
+                detail[:500]
+                or f"gh issue view failed with exit {view.returncode}"
+            )
+        try:
+            payload = json.loads(view.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValidationError("gh issue view returned non-JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValidationError("gh issue view returned non-object JSON")
+        return payload
+
+    @staticmethod
+    def _assert_ai_work_issue(payload: dict, *, issue_number: int) -> None:
+        title = str(payload.get("title") or "")
+        if not title.startswith("[AI Work]"):
+            raise ValidationError(
+                f"issue #{issue_number} is not an [AI Work] packet: {title!r}"
+            )
+        if str(payload.get("state") or "").upper() != "OPEN":
+            raise ValidationError(
+                f"work packet issue #{issue_number} is not OPEN"
             )
 
     def _run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1206,6 +1274,7 @@ class WorkController:
                     self.work_packet.apply_rework_findings(
                         repository=record.repository,
                         issue_number=record.issue_number,
+                        branch=record.branch,
                         findings=audit_result.findings,
                         attempt=next_attempt,
                         head=event.head,
