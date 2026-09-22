@@ -1614,8 +1614,24 @@ class PtyPersistCursorDispatcher:
         )
 
 
+def _is_agent_persist_trust_cmdline(cmdline: str) -> bool:
+    """True when cmdline is the real ``agent`` child, not a ``script`` wrapper."""
+    argv0 = cmdline.split("\x00", 1)[0]
+    if Path(argv0).name != "agent":
+        return False
+    if "persist" not in cmdline or "--trust" not in cmdline:
+        return False
+    if RESUME_PROMPT not in cmdline and "/work-resume" not in cmdline:
+        return False
+    return True
+
+
 def list_persist_trust_processes(worktree_path: str) -> list[tuple[int, str]]:
-    """List `agent persist --trust /work-resume` processes for one worktree only."""
+    """List `agent persist --trust /work-resume` processes for one worktree only.
+
+    Excludes the ``script(1)`` PTY wrapper whose command line only embeds the
+    agent argv as a string — confirmation requires the real ``agent`` executable.
+    """
     target = str(Path(worktree_path).resolve())
     found: list[tuple[int, str]] = []
     proc_root = Path("/proc")
@@ -1632,9 +1648,7 @@ def list_persist_trust_processes(worktree_path: str) -> list[tuple[int, str]]:
             continue
         if cwd != target:
             continue
-        if "persist" not in cmdline or "--trust" not in cmdline:
-            continue
-        if RESUME_PROMPT not in cmdline and "/work-resume" not in cmdline:
+        if not _is_agent_persist_trust_cmdline(cmdline):
             continue
         found.append((pid, cmdline.replace("\x00", " ").strip()))
     return found

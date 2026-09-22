@@ -16,6 +16,7 @@ from atlas.work_controller import (
     DispatchSpawnedButUnobservedError,
     PersistSession,
     PtyPersistCursorDispatcher,
+    _is_agent_persist_trust_cmdline,
     build_persist_resume_command,
     parse_persist_list,
     sessions_for_worktree,
@@ -182,6 +183,14 @@ class CursorLauncherTests(unittest.TestCase):
             self.assertEqual(ctx.exception.session_hint, "proc:7777")
             self.assertEqual(state["spawn_calls"], 1)
             self.assertEqual(dispatcher.spawned_pids, [7777])
+
+    def test_script_wrapper_cmdline_is_not_confirmed_agent(self):
+        script_cmdline = (
+            "script\x00-qec\x00agent persist --trust /work-resume\x00/dev/null\x00"
+        )
+        agent_cmdline = "agent\x00persist\x00--trust\x00/work-resume\x00"
+        self.assertFalse(_is_agent_persist_trust_cmdline(script_cmdline))
+        self.assertTrue(_is_agent_persist_trust_cmdline(agent_cmdline))
 
     def test_pre_spawn_oserror_is_validation_error(self):
         """OSError before a live process exists must stay a boundary ValidationError."""
