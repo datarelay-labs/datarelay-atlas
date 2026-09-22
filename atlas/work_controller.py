@@ -580,16 +580,14 @@ def _strip_safe_redaction_placeholders(text: str) -> str:
 
 def _contains_unsafe_secret(text: str) -> bool:
     """True when text still looks like a live credential after safe markers."""
-    raw = text or ""
-    # Bearer placeholders that do not terminate still leak a live token suffix
-    # (`Bearer <redacted>hunter2`); the ordinary Bearer detector cannot see it
-    # because the value starts with `<`.
-    if re.search(
-        r'(?i)Bearer\s+<redacted>(?!$|[\s,"\'\]\}]|\\["n])',
-        raw,
-    ):
+    cleaned = _strip_safe_redaction_placeholders(text)
+    if _looks_like_secret(cleaned):
         return True
-    return _looks_like_secret(_strip_safe_redaction_placeholders(raw))
+    # Any ``Bearer <redacted>`` that survived stripping still has a live suffix
+    # (for example ``Bearer <redacted>,hunter2`` or ``Bearer <redacted>"hunter2"``).
+    if re.search(r"(?i)Bearer\s+<redacted>", cleaned):
+        return True
+    return False
 
 
 def sanitize_rework_findings(

@@ -349,6 +349,14 @@ class CodexAuditProviderTests(unittest.TestCase):
         # Bearer placeholder must terminate; a glued suffix stays unsafe.
         bearer_spoof = "Bearer <redacted>hunter2"
         self.assertTrue(_contains_unsafe_secret(bearer_spoof), bearer_spoof)
+        self.assertTrue(
+            _contains_unsafe_secret("Bearer <redacted>,hunter2"),
+            "Bearer <redacted>,hunter2",
+        )
+        self.assertTrue(
+            _contains_unsafe_secret('Bearer <redacted>"hunter2"'),
+            'Bearer <redacted>"hunter2"',
+        )
         self.assertFalse(
             _contains_unsafe_secret("Bearer <redacted>"), "Bearer <redacted>"
         )
