@@ -65,7 +65,14 @@ if [[ "${AWC_DRAIN:-1}" == "1" ]]; then
       exit 1
       ;;
   esac
-  if [[ "${AWC_SPAWN_DISPATCH:-1}" == "1" ]]; then
+  # Real spawn requires canonical GitHub Work Packet mutation. Fixed/offline
+  # defaults to recording and therefore must not pass --spawn-dispatch unless
+  # the operator explicitly selects github.
+  WANT_SPAWN="${AWC_SPAWN_DISPATCH:-1}"
+  if [[ "$ADAPTER" == "fixed" && "${AWC_WORK_PACKET_ADAPTER:-}" != "github" ]]; then
+    WANT_SPAWN=0
+  fi
+  if [[ "$WANT_SPAWN" == "1" ]]; then
     EXTRA+=(--spawn-dispatch)
   else
     # Audit-only / no Cursor spawn: never default to GitHub mutation.

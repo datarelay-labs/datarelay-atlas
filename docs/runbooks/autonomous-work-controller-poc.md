@@ -113,13 +113,15 @@ as a platform limit for this PoC. Mutation failure fails closed as
 `HUMAN_REQUIRED` with no spawn / no `REWORK_DISPATCHED`.
 
 To exercise the real PTY launcher (creates a live Cursor persist session in
-this worktree only):
+this worktree only), pair fixed audit with the canonical GitHub Work Packet
+adapter:
 
 ```bash
 python3 -m atlas work-controller completion /tmp/awc-completion.json \
   --audit-adapter fixed \
   --audit-verdict REWORK \
   --audit-findings "launcher dogfood" \
+  --work-packet-adapter github \
   --spawn-dispatch
 ```
 
