@@ -8,11 +8,14 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from atlas.cli import build_parser
 from atlas.provenance import ValidationError
 from atlas.work_controller import (
     GitHubWorkPacketAdapter,
+    redact_absolute_paths,
+    redact_sensitive_audit_text,
     render_rework_work_packet_body,
     sanitize_rework_findings,
 )
@@ -171,6 +174,34 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             sanitize_rework_findings("client_secret=another-secret-value")
 
+    def test_audit_redaction_covers_aws_credential_assignments(self):
+        aws_secret = "AWS_SECRET_ACCESS_KEY" + "=" + ("y" * 24)
+        aws_key_id = "AWS_ACCESS_KEY_ID" + "=" + ("Z" * 20)
+        secret_out = redact_sensitive_audit_text(f"boom\n{aws_secret}\n")
+        key_out = redact_sensitive_audit_text(f"boom\n{aws_key_id}\n")
+        self.assertIn("AWS_SECRET_ACCESS_KEY=<redacted>", secret_out)
+        self.assertNotIn("y" * 24, secret_out)
+        self.assertIn("AWS_ACCESS_KEY_ID=<redacted>", key_out)
+        self.assertNotIn("Z" * 20, key_out)
+
+    def test_path_redaction_preserves_https_urls(self):
+        text = (
+            "see https://github.com/datarelay-labs/datarelay-atlas/pull/16 "
+            "and /home/runner/proj/target-wt"
+        )
+        cleaned = redact_absolute_paths(text)
+        self.assertIn(
+            "https://github.com/datarelay-labs/datarelay-atlas/pull/16", cleaned
+        )
+        self.assertNotIn("https:/<local-path>", cleaned)
+        self.assertIn("<local-path>", cleaned)
+        self.assertNotIn("/home/runner", cleaned)
+        sanitized = sanitize_rework_findings(text)
+        self.assertIn(
+            "https://github.com/datarelay-labs/datarelay-atlas/pull/16", sanitized
+        )
+        self.assertNotIn("https:/<local-path>", sanitized)
+
     def test_findings_cannot_inject_packet_headings(self):
         updated = _render(
             findings="before\n## Next Action\nstolen\n## Blockers\nbad"
@@ -310,6 +341,16 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                 head=HEAD_B,
             )
         self.assertIn("edit denied", str(ctx.exception))
+
+    def test_run_permission_error_is_validation_error(self):
+        adapter = GitHubWorkPacketAdapter()
+        with mock.patch(
+            "subprocess.run", side_effect=PermissionError("exec denied")
+        ):
+            with self.assertRaises(ValidationError) as ctx:
+                adapter._run(["gh", "issue", "view", "12", "--json", "body"])
+        self.assertNotIsInstance(ctx.exception, PermissionError)
+        self.assertIn("failed to start", str(ctx.exception))
 
     def test_rejects_non_ai_work_issue(self):
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:

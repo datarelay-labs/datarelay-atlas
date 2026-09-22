@@ -396,7 +396,7 @@ def _looks_like_secret(text: str) -> bool:
     ):
         return True
     if re.search(
-        r"\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)\s*=\s*\S+",
+        r"\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|ACCESS_KEY_ID)\s*=\s*\S+",
         text,
         re.IGNORECASE,
     ):
@@ -414,15 +414,25 @@ def _looks_like_secret(text: str) -> bool:
     return False
 
 
-# Any multi-segment absolute POSIX path, or Windows drive path. URL paths after a
-# hostname letter are excluded by the lookbehind (e.g. github.com/org/repo).
+# Multi-segment absolute POSIX/Windows paths. Lookbehind excludes URL authorities
+# (`https://...`) by rejecting a match that starts immediately after `:` or `/`.
 _ABS_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9:])(/(?:[^/\s\"'`]{1,255}/){1,}[^/\s\"'`]{1,255})"
+    r"(?<![A-Za-z0-9:/])(/(?:[^/\s\"'`]{1,255}/){1,}[^/\s\"'`]{1,255})"
     r"|([A-Za-z]:\\(?:[^\\\s\"'`]+\\)+[^\\\s\"'`]+)"
 )
+_URL_RE = re.compile(r"https?://[^\s\"'`]+", re.IGNORECASE)
 
+# Explicit credential names that do not end in TOKEN/SECRET/API_KEY alone.
+_NAMED_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b("
+    r"OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|"
+    r"AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|"
+    r"AZURE_CLIENT_SECRET|NPM_TOKEN"
+    r")\s*=\s*\S+"
+)
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY))\s*=\s*\S+"
+    r"(?i)\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|ACCESS_KEY_ID))"
+    r"\s*=\s*\S+"
 )
 _SECRET_TOKEN_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -432,13 +442,28 @@ _BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*")
 
 
 def redact_absolute_paths(text: str) -> str:
-    """Replace host-local absolute paths before GitHub Work Packet persistence."""
-    return _ABS_PATH_RE.sub("<local-path>", text or "")
+    """Replace host-local absolute paths before GitHub Work Packet persistence.
+
+    Canonical ``http(s)://`` URLs are preserved; only filesystem paths are
+    replaced with ``<local-path>``.
+    """
+    urls: list[str] = []
+
+    def _park_url(match: re.Match[str]) -> str:
+        urls.append(match.group(0))
+        return f"__URL_{len(urls) - 1}__"
+
+    protected = _URL_RE.sub(_park_url, text or "")
+    protected = _ABS_PATH_RE.sub("<local-path>", protected)
+    for index, url in enumerate(urls):
+        protected = protected.replace(f"__URL_{index}__", url)
+    return protected
 
 
 def redact_sensitive_audit_text(text: str, *, max_chars: int = 300) -> str:
     """Redact secrets and absolute paths for durable AuditResult findings."""
     cleaned = redact_absolute_paths(text or "")
+    cleaned = _NAMED_SECRET_ASSIGNMENT_RE.sub(r"\1=<redacted>", cleaned)
     cleaned = _SECRET_ASSIGNMENT_RE.sub(r"\1=<redacted>", cleaned)
     cleaned = _SECRET_TOKEN_RE.sub("<redacted>", cleaned)
     cleaned = _BEARER_RE.sub("Bearer <redacted>", cleaned)
@@ -1007,6 +1032,12 @@ class GitHubWorkPacketAdapter:
                 stdout="",
                 stderr=f"{missing} not found on PATH: {exc}",
             )
+        except OSError as exc:
+            # PermissionError and other pre-exec OS failures must stay at the
+            # ValidationError boundary so controller state can finalize safely.
+            raise ValidationError(
+                f"{argv[0] if argv else 'command'} failed to start: {exc}"
+            ) from exc
         except subprocess.TimeoutExpired as exc:
             raise ValidationError(
                 f"{argv[0] if argv else 'command'} timed out after "

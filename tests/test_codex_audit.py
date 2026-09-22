@@ -1027,6 +1027,47 @@ class CodexAuditProviderTests(unittest.TestCase):
             self.assertIn("OPENAI_API_KEY=<redacted>", result.findings)
             self.assertNotIn("live-secret-value", result.findings)
 
+    def test_deterministic_gate_redacts_aws_secret_assignments(self):
+        aws_secret = "AWS_SECRET_ACCESS_KEY" + "=" + ("y" * 24)
+        aws_key_id = "AWS_ACCESS_KEY_ID" + "=" + ("Z" * 20)
+
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {
+                        "status": "FAIL",
+                        "transcript": f"boom\n{aws_secret}\n{aws_key_id}\n",
+                    },
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "REWORK")
+            self.assertIn("AWS_SECRET_ACCESS_KEY=<redacted>", result.findings)
+            self.assertIn("AWS_ACCESS_KEY_ID=<redacted>", result.findings)
+            self.assertNotIn("y" * 24, result.findings)
+            self.assertNotIn("Z" * 20, result.findings)
+
     def test_deterministic_tests_error_returns_human_required_without_codex(self):
         def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
             raise AssertionError("codex runner must not be called")
