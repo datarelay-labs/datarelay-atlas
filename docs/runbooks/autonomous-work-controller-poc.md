@@ -106,8 +106,11 @@ and `resume_prompt = "/work-resume"`.
 
 Production Codex/OpenAI paths default to `--work-packet-adapter github`, which
 updates the same canonical `[AI Work]` Issue (findings + next action) via safe
-`gh` argv/`--body-file` **before** Cursor dispatch. Mutation failure fails
-closed as `HUMAN_REQUIRED` with no spawn / no `REWORK_DISPATCHED`.
+`gh` argv/`--body-file` **before** Cursor dispatch, after a body/`updatedAt`
+recheck. GitHub Issues PATCH rejects conditional headers (`If-Match` /
+`If-Unmodified-Since` → HTTP 400), so a residual TOCTOU remains and is accepted
+as a platform limit for this PoC. Mutation failure fails closed as
+`HUMAN_REQUIRED` with no spawn / no `REWORK_DISPATCHED`.
 
 To exercise the real PTY launcher (creates a live Cursor persist session in
 this worktree only):

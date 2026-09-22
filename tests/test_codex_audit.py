@@ -1167,6 +1167,55 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertEqual(ci["status"], "PENDING")
         self.assertEqual(ci["checks_exit_code"], 8)
 
+    def test_ci_collector_maps_auth_and_transport_errors_to_error(self):
+        from atlas.codex_audit import classify_gh_pr_checks_result
+
+        self.assertEqual(
+            classify_gh_pr_checks_result(4, "", "auth failed"),
+            ("ERROR", "gh pr checks authentication failure"),
+        )
+        status, detail = classify_gh_pr_checks_result(
+            1, "", "GraphQL: Resource not accessible"
+        )
+        self.assertEqual(status, "ERROR")
+        self.assertIn("Resource not accessible", detail)
+
+        # Exit 1 with parseable failed check rows remains FAIL.
+        self.assertEqual(
+            classify_gh_pr_checks_result(1, "unit\tfail\t1s\thttps://x\n", ""),
+            ("FAIL", ""),
+        )
+
+        calls: list[list[str]] = []
+
+        def fake(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            calls.append(argv)
+            if argv[:3] == ["gh", "pr", "list"]:
+                payload = [
+                    {
+                        "number": 15,
+                        "url": "https://example.invalid/pr/15",
+                        "state": "OPEN",
+                        "headRefOid": HEAD,
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="HTTP 401: Bad credentials"
+                )
+            raise AssertionError(argv)
+
+        ci = collect_ci_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            head=HEAD,
+            command_runner=fake,
+        )
+        self.assertEqual(ci["status"], "ERROR")
+        self.assertEqual(ci["checks_exit_code"], 1)
+
     def test_ci_collector_uses_raw_sha_search(self):
         seen: list[list[str]] = []
 

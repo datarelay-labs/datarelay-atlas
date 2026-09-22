@@ -586,7 +586,9 @@ class GitHubWorkPacketAdapter:
 
         payload = self._view_issue(repo, int(issue_number))
         original_body = str(payload.get("body") or "")
-        original_updated_at = str(payload.get("updatedAt") or "")
+        original_updated_at = str(
+            payload.get("updatedAt") or payload.get("updated_at") or ""
+        )
         self._assert_ai_work_issue(payload, issue_number=int(issue_number))
         new_body = render_rework_work_packet_body(
             original_body,
@@ -599,10 +601,14 @@ class GitHubWorkPacketAdapter:
             head=head,
         )
 
-        # Conflict check: fail closed if canonical packet changed mid-mutation.
+        # Best-effort conflict check. GitHub Issues PATCH rejects conditional
+        # headers (If-Match / If-Unmodified-Since → HTTP 400), so a residual
+        # TOCTOU remains between this recheck and the unconditional edit.
         recheck = self._view_issue(repo, int(issue_number))
         recheck_body = str(recheck.get("body") or "")
-        recheck_updated_at = str(recheck.get("updatedAt") or "")
+        recheck_updated_at = str(
+            recheck.get("updatedAt") or recheck.get("updated_at") or ""
+        )
         if recheck_body != original_body or (
             original_updated_at
             and recheck_updated_at
@@ -677,7 +683,8 @@ class GitHubWorkPacketAdapter:
             raise ValidationError(
                 f"issue #{issue_number} is not an [AI Work] packet: {title!r}"
             )
-        if str(payload.get("state") or "").upper() != "OPEN":
+        # GitHub REST returns lowercase "open"; gh issue view may return "OPEN".
+        if str(payload.get("state") or "").lower() != "open":
             raise ValidationError(
                 f"work packet issue #{issue_number} is not OPEN"
             )

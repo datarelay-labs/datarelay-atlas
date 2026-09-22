@@ -488,14 +488,10 @@ def collect_ci_evidence(
             "detail": "gh pr checks timed out",
             "pr": chosen,
         }
-    # gh pr checks: 0=pass, 8=pending, other=fail (see `gh pr checks --help`).
-    if checks.returncode == 0:
-        status = "OK"
-    elif checks.returncode == 8:
-        status = "PENDING"
-    else:
-        status = "FAIL"
-    return {
+    status, detail = classify_gh_pr_checks_result(
+        checks.returncode, checks.stdout or "", checks.stderr or ""
+    )
+    result: dict = {
         "collector": "atlas.codex_audit.collect_ci_evidence",
         "status": status,
         "head": head,
@@ -508,6 +504,71 @@ def collect_ci_evidence(
             max_chars,
         ),
     }
+    if detail:
+        result["detail"] = _trim(detail, 500)
+    return result
+
+
+def classify_gh_pr_checks_result(
+    returncode: int, stdout: str, stderr: str
+) -> tuple[str, str]:
+    """Map ``gh pr checks`` exit + output to OK|PENDING|FAIL|ERROR.
+
+    ``gh pr checks --help`` documents exit 0 (success) and 8 (pending).
+    ``gh help exit-codes`` documents exit 1 (command failed) and 4 (auth).
+    Non-0/8 exits are not proof of a failed check unless parseable check
+    rows show a failure state; otherwise return ERROR so the deterministic
+    gate fails closed to HUMAN_REQUIRED instead of autonomous REWORK.
+    """
+    if returncode == 0:
+        return "OK", ""
+    if returncode == 8:
+        return "PENDING", ""
+    if returncode == 4:
+        return "ERROR", "gh pr checks authentication failure"
+
+    states: list[str] = []
+    for line in (stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0].strip():
+            states.append(parts[1].strip().lower())
+
+    fail_states = {
+        "fail",
+        "failed",
+        "failure",
+        "cancelled",
+        "canceled",
+        "timed_out",
+        "timedout",
+        "error",
+        "action_required",
+        "startup_failure",
+    }
+    pending_states = {
+        "pending",
+        "queued",
+        "in_progress",
+        "expected",
+        "waiting",
+        "requested",
+    }
+    if states:
+        if any(state in fail_states for state in states):
+            return "FAIL", ""
+        if any(state in pending_states for state in states):
+            return "PENDING", ""
+        return (
+            "ERROR",
+            f"gh pr checks exit {returncode} with unrecognized row states: "
+            f"{sorted(set(states))}",
+        )
+
+    detail = "\n".join(part for part in (stdout, stderr) if part).strip()
+    return (
+        "ERROR",
+        detail[:500] or f"gh pr checks command failure (exit {returncode})",
+    )
 
 
 def _bounded_review_items(
