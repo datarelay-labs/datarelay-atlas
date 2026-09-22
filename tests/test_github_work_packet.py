@@ -159,6 +159,17 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         self.assertIn("<local-path>", clean)
         self.assertNotIn("/home/runner", clean)
         self.assertNotIn("target-wt", clean)
+        workspace = sanitize_rework_findings(
+            "cwd mismatch: /workspace/datarelay-atlas/feature-wt"
+        )
+        self.assertIn("<local-path>", workspace)
+        self.assertNotIn("/workspace/", workspace)
+
+    def test_sanitize_rejects_lowercase_secret_assignments(self):
+        with self.assertRaises(ValidationError):
+            sanitize_rework_findings("service_token=supersecretvalue123")
+        with self.assertRaises(ValidationError):
+            sanitize_rework_findings("client_secret=another-secret-value")
 
     def test_findings_cannot_inject_packet_headings(self):
         updated = _render(

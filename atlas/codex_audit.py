@@ -30,6 +30,7 @@ from atlas.work_controller import (
     default_git_runner,
     normalize_github_repository,
     parse_audit_verdict_payload,
+    redact_sensitive_audit_text,
     require_clean_porcelain,
     validate_worktree_identity,
 )
@@ -1014,6 +1015,11 @@ def _revalidate_clean_audited_snapshot(
     return None
 
 
+def _safe_detail(value: object, *, max_chars: int = 300) -> str:
+    """Bound and redact detail text before it enters AuditResult.findings."""
+    return redact_sensitive_audit_text(str(value or ""), max_chars=max_chars)
+
+
 def _deterministic_gate_before_codex(bundle: dict) -> AuditResult | None:
     """Short-circuit known deterministic failures/errors before spending Codex.
 
@@ -1026,21 +1032,21 @@ def _deterministic_gate_before_codex(bundle: dict) -> AuditResult | None:
     if isinstance(tests, dict):
         status = str(tests.get("status") or "")
         if status == "FAIL":
-            detail = str(tests.get("detail") or tests.get("transcript") or "")
+            detail = _safe_detail(tests.get("detail") or tests.get("transcript") or "")
             return AuditResult(
                 verdict="REWORK",
                 findings=(
                     "deterministic gate: tests FAIL before Codex; "
-                    f"{detail[:300]}".strip()
+                    f"{detail}".strip()
                 ),
             )
         if status == "ERROR":
-            detail = str(tests.get("detail") or "")
+            detail = _safe_detail(tests.get("detail") or "")
             return AuditResult(
                 verdict="HUMAN_REQUIRED",
                 findings=(
                     "deterministic gate: tests ERROR before Codex; "
-                    f"{detail[:300]}".strip()
+                    f"{detail}".strip()
                 ),
             )
         if status and status != "PASS":
@@ -1056,21 +1062,21 @@ def _deterministic_gate_before_codex(bundle: dict) -> AuditResult | None:
     if isinstance(ci, dict):
         status = str(ci.get("status") or "")
         if status == "FAIL":
-            detail = str(ci.get("detail") or ci.get("checks") or "")
+            detail = _safe_detail(ci.get("detail") or ci.get("checks") or "")
             return AuditResult(
                 verdict="REWORK",
                 findings=(
                     "deterministic gate: CI FAIL before Codex; "
-                    f"{detail[:300]}".strip()
+                    f"{detail}".strip()
                 ),
             )
         if status in {"PENDING", "ERROR"}:
-            detail = str(ci.get("detail") or ci.get("checks") or "")
+            detail = _safe_detail(ci.get("detail") or ci.get("checks") or "")
             return AuditResult(
                 verdict="HUMAN_REQUIRED",
                 findings=(
                     f"deterministic gate: CI {status} before Codex; "
-                    f"{detail[:300]}".strip()
+                    f"{detail}".strip()
                 ),
             )
         if status and status not in {"OK", "ABSENT"}:

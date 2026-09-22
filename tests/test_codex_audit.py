@@ -285,6 +285,9 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertTrue(
             _looks_like_secret("AWS_SECRET_ACCESS_KEY" + "=" + ("c" * 24))
         )
+        self.assertTrue(
+            _looks_like_secret("service_token" + "=" + "supersecretvalue123")
+        )
 
 
     def test_collect_bundle_uses_injected_collectors(self):
@@ -986,6 +989,43 @@ class CodexAuditProviderTests(unittest.TestCase):
             self.assertEqual(result.verdict, "REWORK")
             self.assertIn("tests FAIL", result.findings)
             self.assertIsNone(provider.last_command)
+
+    def test_deterministic_gate_redacts_secrets_in_findings(self):
+        assigned = "OPENAI_API_KEY" + "=" + "live-secret-value"
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {
+                        "status": "FAIL",
+                        "transcript": f"boom\n{assigned}\n",
+                    },
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "REWORK")
+            self.assertIn("OPENAI_API_KEY=<redacted>", result.findings)
+            self.assertNotIn("live-secret-value", result.findings)
 
     def test_deterministic_tests_error_returns_human_required_without_codex(self):
         def boom_runner(command: list[str], prompt: str, cwd: str) -> str:

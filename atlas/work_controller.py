@@ -395,7 +395,11 @@ def _looks_like_secret(text: str) -> bool:
         re.IGNORECASE,
     ):
         return True
-    if re.search(r"\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)\s*=\s*\S+", text):
+    if re.search(
+        r"\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)\s*=\s*\S+",
+        text,
+        re.IGNORECASE,
+    ):
         return True
     if re.search(r"\bsk-[A-Za-z0-9]{20,}\b", text):
         return True
@@ -410,15 +414,38 @@ def _looks_like_secret(text: str) -> bool:
     return False
 
 
+# Any multi-segment absolute POSIX path, or Windows drive path. URL paths after a
+# hostname letter are excluded by the lookbehind (e.g. github.com/org/repo).
 _ABS_PATH_RE = re.compile(
-    r"(/(?:home|Users|tmp|var|private|opt|root|mnt|data)(?:/[^/\s\"'`]+)+)"
+    r"(?<![A-Za-z0-9:])(/(?:[^/\s\"'`]{1,255}/){1,}[^/\s\"'`]{1,255})"
     r"|([A-Za-z]:\\(?:[^\\\s\"'`]+\\)+[^\\\s\"'`]+)"
 )
+
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY))\s*=\s*\S+"
+)
+_SECRET_TOKEN_RE = re.compile(
+    r"\b(?:sk-[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+    r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b"
+)
+_BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*")
 
 
 def redact_absolute_paths(text: str) -> str:
     """Replace host-local absolute paths before GitHub Work Packet persistence."""
     return _ABS_PATH_RE.sub("<local-path>", text or "")
+
+
+def redact_sensitive_audit_text(text: str, *, max_chars: int = 300) -> str:
+    """Redact secrets and absolute paths for durable AuditResult findings."""
+    cleaned = redact_absolute_paths(text or "")
+    cleaned = _SECRET_ASSIGNMENT_RE.sub(r"\1=<redacted>", cleaned)
+    cleaned = _SECRET_TOKEN_RE.sub("<redacted>", cleaned)
+    cleaned = _BEARER_RE.sub("Bearer <redacted>", cleaned)
+    cleaned = cleaned.strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[:max_chars]
 
 
 def sanitize_rework_findings(
