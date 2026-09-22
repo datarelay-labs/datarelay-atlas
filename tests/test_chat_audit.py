@@ -298,6 +298,17 @@ class ChatAuditTests(unittest.TestCase):
                     "idempotency_run_key": "abc",
                 }
             )
+        with self.assertRaises(ValidationError):
+            AuditControlPacket.from_dict(
+                {
+                    "schema_version": 1,
+                    "target_repository": REPO,
+                    "target_branch": BRANCH,
+                    "current_target_sha": HEAD_A,
+                    "audit_queue": ["changed_code"],
+                    "idempotency_run_key": "abc",
+                }
+            )
 
     def test_14_unsupported_outcome_and_empty_finding_fail_closed(self):
         class WeirdExecutor:
@@ -399,6 +410,44 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(out["action"], "awaiting_evidence")
             self.assertEqual(out["packet"]["audit_status"], "AWAITING_EVIDENCE")
             self.assertNotEqual(out["packet"]["audit_status"], "PASSED")
+
+    def test_17_evidence_requires_explicit_unit_and_target(self):
+        from atlas.chat_audit import ExternalEvidenceUnitExecutor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(
+                tmp,
+                executor=ExternalEvidenceUnitExecutor(
+                    {"status": "COMPLETE", "notes": "ok"}
+                ),
+            )
+            with self.assertRaises(ValidationError):
+                ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+
+    def test_18_expired_executing_claim_is_reclaimable(self):
+        import time
+
+        from atlas.chat_audit import AuditControlPacket
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            packet = AuditControlPacket.from_dict(ctl.show())
+            packet.audit_status = "IN_SLICE"
+            packet.current_unit = "changed_code"
+            packet.slice_claim = {
+                "claim_id": "old",
+                "unit": "changed_code",
+                "run_key": packet.idempotency_run_key,
+                "target_sha": HEAD_A,
+                "state": "executing",
+                "claimed_at": time.time() - 10_000,
+                "lease_seconds": 900,
+            }
+            FileCheckpointStore(Path(tmp) / "data").save(packet)
+            out = ctl.run_slice()
+            self.assertEqual(out["action"], "slice_complete")
+            self.assertEqual(out["unit"], "changed_code")
 
 
 if __name__ == "__main__":

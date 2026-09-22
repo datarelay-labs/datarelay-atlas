@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -31,6 +32,7 @@ CHAT_AUDIT_SCHEMA_VERSION = 1
 STORE_FILENAME = "chat-audit.json"
 HEAD_RE = re.compile(r"^[0-9a-f]{7,40}$")
 RESUME_COMMAND = "/chat-audit-resume"
+SLICE_CLAIM_LEASE_SECONDS = 900
 
 DEFAULT_AUDIT_UNITS = (
     "changed_code",
@@ -39,6 +41,14 @@ DEFAULT_AUDIT_UNITS = (
     "security_impact",
     "docs_spec_drift",
 )
+
+
+def build_audit_queue(*, include_release_readiness: bool = False) -> list[str]:
+    queue = list(DEFAULT_AUDIT_UNITS)
+    if include_release_readiness:
+        queue.append("release_readiness")
+    return queue
+
 
 AUDIT_STATUSES = frozenset(
     {
@@ -218,6 +228,15 @@ class AuditControlPacket:
         queue = [str(u) for u in raw["audit_queue"]]
         if not queue:
             raise ValidationError("audit_queue must be non-empty")
+        include_release = bool(raw.get("include_release_readiness", False))
+        expected_queue = build_audit_queue(
+            include_release_readiness=include_release
+        )
+        if queue != expected_queue:
+            raise ValidationError(
+                "audit_queue must exactly match the required unit set/order "
+                f"for include_release_readiness={include_release}"
+            )
         run_key = str(raw.get("idempotency_run_key", "")).strip()
         if not run_key:
             raise ValidationError("idempotency_run_key is required")
@@ -256,13 +275,6 @@ class AuditControlPacket:
             no_change_runs=int(raw.get("no_change_runs", 0)),
             slice_claim=copy.deepcopy(raw.get("slice_claim")),
         )
-
-
-def build_audit_queue(*, include_release_readiness: bool = False) -> list[str]:
-    queue = list(DEFAULT_AUDIT_UNITS)
-    if include_release_readiness:
-        queue.append("release_readiness")
-    return queue
 
 
 def make_run_key(repository: str, branch: str, target_sha: str) -> str:
@@ -481,11 +493,19 @@ class ExternalEvidenceUnitExecutor:
                 ),
             )
         raw = self.evidence_payload
+        if "unit" not in raw or not str(raw.get("unit", "")).strip():
+            raise ValidationError(
+                "evidence payload must explicitly identify unit"
+            )
+        if "target_sha" not in raw or not str(raw.get("target_sha", "")).strip():
+            raise ValidationError(
+                "evidence payload must explicitly identify target_sha"
+            )
         evidence = AuditEvidence.from_dict(
             {
                 "status": raw.get("status", "MISSING"),
-                "unit": raw.get("unit", unit),
-                "target_sha": raw.get("target_sha", packet.current_target_sha),
+                "unit": str(raw["unit"]),
+                "target_sha": str(raw["target_sha"]),
                 "notes": raw.get("notes", ""),
                 "truncated": bool(raw.get("truncated", False)),
             }
@@ -779,9 +799,19 @@ class ChatAuditController:
             if packet.audit_status == "IN_SLICE" and packet.current_unit:
                 claim = packet.slice_claim or {}
                 if claim.get("state") == "executing":
-                    raise ValidationError(
-                        "active slice claim held; duplicate invocation refused"
-                    )
+                    claimed_at = float(claim.get("claimed_at", 0) or 0)
+                    age = time.time() - claimed_at if claimed_at else None
+                    if age is not None and age < SLICE_CLAIM_LEASE_SECONDS:
+                        raise ValidationError(
+                            "active slice claim held; duplicate invocation refused"
+                        )
+                    # Expired/abandoned executing claim is reclaimable.
+                    packet.slice_claim = {
+                        **claim,
+                        "state": "timed_out",
+                        "reclaimed_from_expired_lease": True,
+                    }
+                    self.store.save(packet)
                 unit = packet.current_unit
             else:
                 unit = self._select_next_unit(packet)
@@ -813,6 +843,8 @@ class ChatAuditController:
                 "run_key": run_key,
                 "target_sha": packet.current_target_sha,
                 "state": "executing",
+                "claimed_at": time.time(),
+                "lease_seconds": SLICE_CLAIM_LEASE_SECONDS,
             }
             self.store.save(packet)
 
