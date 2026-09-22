@@ -520,13 +520,25 @@ def _strip_safe_redaction_placeholders(text: str) -> str:
     trip the Codex prompt guard or packet persistence rejector.
     """
     cleaned = text or ""
+    name = _credential_name_pattern()
+    # Quoted exact placeholder: key="<redacted>" / key:'<redacted>'
     cleaned = re.sub(
-        rf'(?i)((?:\\)?["\']?)({_credential_name_pattern()})\1\s*[:=]\s*'
-        rf'((?:\\)?["\']?)<redacted>\3',
+        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*((?:\\)?["\'])<redacted>\3',
         "",
         cleaned,
     )
-    cleaned = re.sub(r"(?i)Bearer\s+<redacted>", "", cleaned)
+    # Bare exact placeholder: value must end at <redacted> (not <redacted>hunter2).
+    # Also allow JSON-escaped terminators (`\n`, `\"`) inside serialized prompts.
+    cleaned = re.sub(
+        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*<redacted>(?=$|[\s,"\'}}\]]|\\)',
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)Bearer\s+<redacted>(?=$|[\s,\"'\]\}]|\\)",
+        "",
+        cleaned,
+    )
     cleaned = cleaned.replace("<redacted-private-key>", "")
     return cleaned
 

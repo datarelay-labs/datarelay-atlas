@@ -318,6 +318,10 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertTrue(_contains_unsafe_secret(live), live)
         mixed = safe + "\n" + live
         self.assertTrue(_contains_unsafe_secret(mixed), mixed)
+        # Placeholder must terminate the value; prefix spoofing stays unsafe.
+        spoofed = "PASSWORD=<redacted>hunter2"
+        self.assertTrue(_contains_unsafe_secret(spoofed), spoofed)
+        self.assertTrue(_looks_like_secret(spoofed), spoofed)
 
         with tempfile.TemporaryDirectory() as tmp:
             prompt = build_codex_audit_prompt(
