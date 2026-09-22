@@ -390,7 +390,9 @@ def _credential_name_pattern() -> str:
         r"OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|"
         r"AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|"
         r"AZURE_CLIENT_SECRET|NPM_TOKEN|"
-        r"[A-Za-z_][A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|ACCESS_KEY_ID)"
+        # Standalone names first so bare `password` / `secret` / `token` match.
+        r"PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY_ID|ACCESS_KEY|"
+        r"[A-Za-z_][A-Za-z0-9_]*?(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|ACCESS_KEY_ID)"
         r")"
     )
 
@@ -398,10 +400,15 @@ def _credential_name_pattern() -> str:
 def _looks_like_secret(text: str) -> bool:
     """Detect likely live credentials, not mere documentation mentions."""
     name = _credential_name_pattern()
-    # Equals or colon assignments, with optional quotes around key/value
-    # (covers env dumps, logs, and JSON fragments).
+    # Quoted values may contain whitespace/commas (JSON/log dumps).
     if re.search(
-        rf'(?i)(["\']?)({name})\1\s*[:=]\s*(["\']?)([^\s,"\'}}\]]+)\3',
+        rf'(?i)(["\']?)({name})\1\s*[:=]\s*(["\'])([^"\']*)\3',
+        text,
+    ):
+        return True
+    # Bare equals/colon assignments without whitespace in the value.
+    if re.search(
+        rf'(?i)(["\']?)({name})\1\s*[:=]\s*([^\s,"\'}}\]]+)',
         text,
     ):
         return True
@@ -427,10 +434,15 @@ _ABS_PATH_RE = re.compile(
 _URL_RE = re.compile(r"https?://[^\s\"'`]+", re.IGNORECASE)
 
 _CREDENTIAL_NAME = _credential_name_pattern()
-# key=value / key: value / "key": "value" / 'key': 'value'
-_SECRET_KV_RE = re.compile(
+# Quoted value first so whitespace/commas inside quotes are fully captured.
+_SECRET_KV_QUOTED_RE = re.compile(
     rf'(?i)(?P<kq>["\']?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
-    rf'\s*[:=]\s*(?P<vq>["\']?)(?P<val>[^\s,"\'}}\]]+)(?P=vq)'
+    rf'\s*[:=]\s*(?P<vq>["\'])(?P<val>[^"\']*)(?P=vq)'
+)
+# Bare key=value / key:value without whitespace in the value.
+_SECRET_KV_BARE_RE = re.compile(
+    rf'(?i)(?P<kq>["\']?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
+    rf'\s*[:=]\s*(?P<val>[^\s,"\'}}\]]+)'
 )
 _SECRET_TOKEN_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -462,7 +474,7 @@ def _redact_secret_kv(match: re.Match[str]) -> str:
     """Preserve credential key syntax; replace only the secret value."""
     key_q = match.group("kq") or ""
     key = match.group("key")
-    val_q = match.group("vq") or ""
+    val_q = match.groupdict().get("vq") or ""
     after_key = match.group(0)[len(key_q) + len(key) + len(key_q) :]
     separator = ":" if after_key.lstrip().startswith(":") else "="
     return f"{key_q}{key}{key_q}{separator}{val_q}<redacted>{val_q}"
@@ -471,7 +483,8 @@ def _redact_secret_kv(match: re.Match[str]) -> str:
 def redact_sensitive_audit_text(text: str, *, max_chars: int = 300) -> str:
     """Redact secrets and absolute paths for durable AuditResult findings."""
     cleaned = redact_absolute_paths(text or "")
-    cleaned = _SECRET_KV_RE.sub(_redact_secret_kv, cleaned)
+    cleaned = _SECRET_KV_QUOTED_RE.sub(_redact_secret_kv, cleaned)
+    cleaned = _SECRET_KV_BARE_RE.sub(_redact_secret_kv, cleaned)
     cleaned = _SECRET_TOKEN_RE.sub("<redacted>", cleaned)
     cleaned = _BEARER_RE.sub("Bearer <redacted>", cleaned)
     cleaned = cleaned.strip()

@@ -292,6 +292,7 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertTrue(
             _looks_like_secret('{"client_secret": "json-secret-value"}')
         )
+        self.assertTrue(_looks_like_secret('{"password":"correct horse"}'))
 
 
     def test_collect_bundle_uses_injected_collectors(self):

@@ -190,6 +190,21 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             self.assertNotIn("secret-value", redacted)
             self.assertNotIn("tokensecretvalue", redacted)
 
+    def test_quoted_credential_values_with_whitespace_are_redacted(self):
+        from atlas.work_controller import _looks_like_secret
+
+        spaced = '{"password":"correct horse"}'
+        comma = '{"client_secret": "has space and, comma"}'
+        log_form = 'password: "correct horse"'
+        for sample in (spaced, comma, log_form):
+            self.assertTrue(_looks_like_secret(sample), sample)
+            with self.assertRaises(ValidationError):
+                sanitize_rework_findings(sample)
+            redacted = redact_sensitive_audit_text(sample)
+            self.assertIn("<redacted>", redacted)
+            self.assertNotIn("correct horse", redacted)
+            self.assertNotIn("has space and, comma", redacted)
+
     def test_audit_redaction_covers_aws_credential_assignments(self):
         aws_secret = "AWS_SECRET_ACCESS_KEY" + "=" + ("y" * 24)
         aws_key_id = "AWS_ACCESS_KEY_ID" + "=" + ("Z" * 20)
