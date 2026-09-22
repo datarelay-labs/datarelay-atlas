@@ -11,6 +11,7 @@ import os
 import pty
 import re
 import shlex
+import signal
 import subprocess
 import tempfile
 import time
@@ -476,6 +477,10 @@ def _looks_like_secret(text: str) -> bool:
         return True
     if re.search(r"(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*", scan):
         return True
+    if re.search(r"(?i)\bBasic\s+[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_-])", scan):
+        return True
+    if _URL_USERINFO_RE.search(scan):
+        return True
     if _PEM_PRIVATE_KEY_RE.search(text or ""):
         return True
     return False
@@ -488,6 +493,10 @@ _ABS_PATH_RE = re.compile(
     r"|([A-Za-z]:\\(?:[^\\\s\"'`]+\\)+[^\\\s\"'`]+)"
 )
 _URL_RE = re.compile(r"https?://[^\s\"'`]+", re.IGNORECASE)
+# Credential-bearing URI userinfo (any scheme), e.g. postgresql://u:p@host/db.
+_URL_USERINFO_RE = re.compile(
+    r"(?i)(?P<scheme>\b[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/\s\"'`]+@)"
+)
 _PEM_PRIVATE_KEY_RE = re.compile(
     # Full PEM label grammar for private keys: optional hyphenated tokens
     # before "PRIVATE KEY", with a matching END label.
@@ -515,6 +524,10 @@ _SECRET_TOKEN_RE = re.compile(
     r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b"
 )
 _BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.IGNORECASE)
+_BASIC_AUTH_RE = re.compile(
+    r"\bBasic\s+[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_-])",
+    re.IGNORECASE,
+)
 
 
 def redact_absolute_paths(text: str) -> str:
@@ -557,6 +570,8 @@ def redact_sensitive_audit_text(text: str, *, max_chars: int = 300) -> str:
     cleaned = _SECRET_KV_BARE_RE.sub(_redact_secret_kv, cleaned)
     cleaned = _SECRET_TOKEN_RE.sub("<redacted>", cleaned)
     cleaned = _BEARER_RE.sub("Bearer <redacted>", cleaned)
+    cleaned = _BASIC_AUTH_RE.sub("Basic <redacted>", cleaned)
+    cleaned = _URL_USERINFO_RE.sub(r"\g<scheme><redacted>@", cleaned)
     cleaned = cleaned.strip()
     if len(cleaned) <= max_chars:
         return cleaned
@@ -604,6 +619,17 @@ def _strip_safe_redaction_placeholders(text: str) -> str:
         "",
         cleaned,
     )
+    cleaned = re.sub(
+        rf'(?i)Basic\s+<redacted>(?={common_end}|,(?=$|[\s\}}]|\\["n]))',
+        "",
+        cleaned,
+    )
+    # Safe URL form after userinfo redaction: scheme://<redacted>@host...
+    cleaned = re.sub(
+        r"(?i)\b[a-z][a-z0-9+.-]*://<redacted>@",
+        "",
+        cleaned,
+    )
     cleaned = cleaned.replace("<redacted-private-key>", "")
     return cleaned
 
@@ -616,6 +642,8 @@ def _contains_unsafe_secret(text: str) -> bool:
     # Any ``Bearer <redacted>`` that survived stripping still has a live suffix
     # (for example ``Bearer <redacted>,hunter2`` or ``Bearer <redacted>"hunter2"``).
     if re.search(r"(?i)Bearer\s+<redacted>", cleaned):
+        return True
+    if re.search(r"(?i)Basic\s+<redacted>", cleaned):
         return True
     return False
 
@@ -1542,6 +1570,7 @@ class PtyPersistCursorDispatcher:
         spawn: Callable[[list[str], str], int] | None = None,
         list_target_procs: Callable[[str], list[tuple[int, str]]] | None = None,
         git_runner: GitRunner | None = None,
+        terminate_process_group: Callable[[int], None] | None = None,
         poll_interval_sec: float = 0.5,
         poll_timeout_sec: float = 45.0,
         sleeper: Callable[[float], None] | None = None,
@@ -1550,11 +1579,40 @@ class PtyPersistCursorDispatcher:
         self._spawn = spawn or script_pty_spawn_persist
         self._list_target_procs = list_target_procs or list_persist_trust_processes
         self._git_runner = git_runner
+        self._terminate_process_group = (
+            terminate_process_group or terminate_spawned_process_group
+        )
         self._poll_interval_sec = poll_interval_sec
         self._poll_timeout_sec = poll_timeout_sec
         self._sleep = sleeper or time.sleep
         self.requests: list[DispatchRequest] = []
         self.spawned_pids: list[int] = []
+
+    def _fail_unobserved(
+        self,
+        pid: int,
+        *,
+        message: str,
+        command: list[str],
+        cause: BaseException | None = None,
+    ) -> None:
+        """Terminate the owned spawn group, then raise unobserved."""
+        try:
+            self._terminate_process_group(pid)
+        except Exception:
+            # Best-effort cleanup; still surface the unobserved boundary.
+            pass
+        if cause is None:
+            raise DispatchSpawnedButUnobservedError(
+                message,
+                session_hint=f"proc:{pid}",
+                command=command,
+            )
+        raise DispatchSpawnedButUnobservedError(
+            message,
+            session_hint=f"proc:{pid}",
+            command=command,
+        ) from cause
 
     def start_resume(self, request: DispatchRequest) -> DispatchResult:
         self.requests.append(request)
@@ -1612,11 +1670,14 @@ class PtyPersistCursorDispatcher:
             except DispatchSpawnedButUnobservedError:
                 raise
             except Exception as exc:
-                raise DispatchSpawnedButUnobservedError(
-                    f"post-spawn observation failed after pid={pid}: {exc}",
-                    session_hint=f"proc:{pid}",
+                self._fail_unobserved(
+                    pid,
+                    message=(
+                        f"post-spawn observation failed after pid={pid}: {exc}"
+                    ),
                     command=command,
-                ) from exc
+                    cause=exc,
+                )
             if new_procs:
                 proc_pid, _cmd = new_procs[-1]
                 return DispatchResult(
@@ -1624,13 +1685,55 @@ class PtyPersistCursorDispatcher:
                     command=command,
                 )
             self._sleep(self._poll_interval_sec)
-        raise DispatchSpawnedButUnobservedError(
-            "cursor persist session/process for target worktree did not appear "
-            f"within {self._poll_timeout_sec}s "
-            f"(cwd={worktree}, argv={command!r}, pid={pid})",
-            session_hint=f"proc:{pid}",
+        self._fail_unobserved(
+            pid,
+            message=(
+                "cursor persist session/process for target worktree did not appear "
+                f"within {self._poll_timeout_sec}s "
+                f"(cwd={worktree}, argv={command!r}, pid={pid})"
+            ),
             command=command,
         )
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+def terminate_spawned_process_group(pid: int, *, wait_sec: float = 2.0) -> None:
+    """Best-effort SIGTERM/SIGKILL of an owned ``start_new_session`` spawn group.
+
+    Spawns use a new session so the returned pid is the process-group leader.
+    Unobserved timeouts must stop that group before compensating the packet so a
+    late-starting Cursor session cannot race a HUMAN_REQUIRED rewrite.
+    """
+    if pid <= 0:
+        return
+
+    def _signal_group(sig: signal.Signals) -> None:
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            raise
+        except (PermissionError, OSError):
+            os.kill(pid, sig)
+
+    try:
+        _signal_group(signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        return
+    deadline = time.monotonic() + max(0.0, wait_sec)
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        except OSError:
+            return
+        time.sleep(0.05)
+    try:
+        _signal_group(signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        return
 
 
 def _is_agent_persist_trust_cmdline(cmdline: str) -> bool:

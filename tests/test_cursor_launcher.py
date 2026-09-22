@@ -157,7 +157,7 @@ class CursorLauncherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "target-wt"
             target.mkdir()
-            state = {"spawn_calls": 0, "lists": 0}
+            state = {"spawn_calls": 0, "lists": 0, "terminated": []}
 
             def list_sessions() -> list[PersistSession]:
                 state["lists"] += 1
@@ -173,6 +173,7 @@ class CursorLauncherTests(unittest.TestCase):
                 list_sessions=list_sessions,
                 list_target_procs=lambda _wt: [],
                 spawn=spawn,
+                terminate_process_group=lambda pid: state["terminated"].append(pid),
                 git_runner=self._clean_git(),
                 poll_interval_sec=0.01,
                 poll_timeout_sec=0.05,
@@ -183,6 +184,29 @@ class CursorLauncherTests(unittest.TestCase):
             self.assertEqual(ctx.exception.session_hint, "proc:7777")
             self.assertEqual(state["spawn_calls"], 1)
             self.assertEqual(dispatcher.spawned_pids, [7777])
+            self.assertEqual(state["terminated"], [7777])
+
+    def test_observation_timeout_terminates_spawn_group(self):
+        """Unobserved timeout must stop the owned process group before raise."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+            state = {"terminated": []}
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=lambda: [],
+                list_target_procs=lambda _wt: [],
+                spawn=lambda _cmd, _wt: 4242,
+                terminate_process_group=lambda pid: state["terminated"].append(pid),
+                git_runner=self._clean_git(),
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(DispatchSpawnedButUnobservedError) as ctx:
+                dispatcher.start_resume(self._dispatch_request(str(target)))
+            self.assertEqual(ctx.exception.session_hint, "proc:4242")
+            self.assertEqual(state["terminated"], [4242])
 
     def test_script_wrapper_cmdline_is_not_confirmed_agent(self):
         script_cmdline = (

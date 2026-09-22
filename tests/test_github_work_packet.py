@@ -235,6 +235,30 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             self.assertNotIn("correct horse", redacted)
             self.assertNotIn("has space and, comma", redacted)
 
+    def test_basic_auth_and_url_userinfo_are_detected_and_redacted(self):
+        from atlas.work_controller import (
+            _contains_unsafe_secret,
+            _looks_like_secret,
+        )
+
+        basic = "Authorization: Basic YWxpY2U6aHVudGVyMg=="
+        db_url = "DATABASE_URL=postgresql://alice:hunter2@example.com/db"
+        https_url = "https://alice:hunter2@example.com/path"
+        for sample in (basic, db_url, https_url):
+            self.assertTrue(_looks_like_secret(sample), sample)
+            self.assertTrue(_contains_unsafe_secret(sample), sample)
+            with self.assertRaises(ValidationError):
+                sanitize_rework_findings(sample)
+            redacted = redact_sensitive_audit_text(sample)
+            self.assertTrue(_contains_unsafe_secret(sample), sample)
+            self.assertFalse(_contains_unsafe_secret(redacted), redacted)
+            self.assertNotIn("hunter2", redacted)
+            self.assertNotIn("YWxpY2U6aHVudGVyMg==", redacted)
+            if "Basic" in sample:
+                self.assertIn("Basic <redacted>", redacted)
+            else:
+                self.assertIn("://<redacted>@", redacted)
+
     def test_quoted_credential_values_match_selected_delimiter(self):
         from atlas.work_controller import _looks_like_secret
 
