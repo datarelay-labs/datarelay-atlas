@@ -205,6 +205,24 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             self.assertNotIn("correct horse", redacted)
             self.assertNotIn("has space and, comma", redacted)
 
+    def test_quoted_credential_values_match_selected_delimiter(self):
+        from atlas.work_controller import _looks_like_secret
+
+        # Apostrophe inside double quotes must not truncate the value.
+        apostrophe = "{\"password\":\"correct horse's battery\"}"
+        # Escaped delimiter must keep the full credential in one match.
+        escaped = r'password="correct \"horse\" battery"'
+        single_with_double = "password='say \"hi\" secret'"
+        for sample in (apostrophe, escaped, single_with_double):
+            self.assertTrue(_looks_like_secret(sample), sample)
+            with self.assertRaises(ValidationError):
+                sanitize_rework_findings(sample)
+            redacted = redact_sensitive_audit_text(sample)
+            self.assertIn("<redacted>", redacted)
+            self.assertNotIn("correct horse", redacted)
+            self.assertNotIn("horse", redacted)
+            self.assertNotIn('say "hi" secret', redacted)
+
     def test_audit_redaction_covers_aws_credential_assignments(self):
         aws_secret = "AWS_SECRET_ACCESS_KEY" + "=" + ("y" * 24)
         aws_key_id = "AWS_ACCESS_KEY_ID" + "=" + ("Z" * 20)

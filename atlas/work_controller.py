@@ -400,9 +400,10 @@ def _credential_name_pattern() -> str:
 def _looks_like_secret(text: str) -> bool:
     """Detect likely live credentials, not mere documentation mentions."""
     name = _credential_name_pattern()
-    # Quoted values may contain whitespace/commas (JSON/log dumps).
+    # Quoted values may contain whitespace/commas and the opposite quote
+    # character; only the selected delimiter ends the value (escapes allowed).
     if re.search(
-        rf'(?i)(["\']?)({name})\1\s*[:=]\s*(["\'])([^"\']*)\3',
+        rf'(?i)(["\']?)({name})\1\s*[:=]\s*(["\'])((?:\\.|(?!\3).)*)\3',
         text,
     ):
         return True
@@ -434,10 +435,11 @@ _ABS_PATH_RE = re.compile(
 _URL_RE = re.compile(r"https?://[^\s\"'`]+", re.IGNORECASE)
 
 _CREDENTIAL_NAME = _credential_name_pattern()
-# Quoted value first so whitespace/commas inside quotes are fully captured.
+# Quoted value first so whitespace/commas and the opposite quote inside the
+# selected delimiter are fully captured (including escaped delimiters).
 _SECRET_KV_QUOTED_RE = re.compile(
     rf'(?i)(?P<kq>["\']?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
-    rf'\s*[:=]\s*(?P<vq>["\'])(?P<val>[^"\']*)(?P=vq)'
+    rf'\s*[:=]\s*(?P<vq>["\'])(?P<val>(?:\\.|(?!(?P=vq)).)*)(?P=vq)'
 )
 # Bare key=value / key:value without whitespace in the value.
 _SECRET_KV_BARE_RE = re.compile(
