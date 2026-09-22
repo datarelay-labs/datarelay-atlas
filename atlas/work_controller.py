@@ -1097,29 +1097,30 @@ class PtyPersistCursorDispatcher:
         if not str(request.expected_head or "").strip():
             raise ValidationError("dispatch request missing expected_head")
         command = build_persist_resume_command(request)
-        before_ids = {
-            item.session_id
-            for item in sessions_for_worktree(self._list_sessions(), worktree)
-        }
-        before_pids = {pid for pid, _cmd in self._list_target_procs(worktree)}
-        # Final identity/porcelain check immediately before spawn — no external
-        # observation between this validation and _spawn (TOCTOU close).
-        validate_clean_worktree_identity(
-            worktree,
-            repository=request.repository,
-            branch=request.branch,
-            expected_head=request.expected_head,
-            git_runner=self._git_runner,
-        )
         try:
+            before_ids = {
+                item.session_id
+                for item in sessions_for_worktree(self._list_sessions(), worktree)
+            }
+            before_pids = {pid for pid, _cmd in self._list_target_procs(worktree)}
+            # Final identity/porcelain check immediately before spawn — no external
+            # observation between this validation and _spawn (TOCTOU close).
+            validate_clean_worktree_identity(
+                worktree,
+                repository=request.repository,
+                branch=request.branch,
+                expected_head=request.expected_head,
+                git_runner=self._git_runner,
+            )
             pid = self._spawn(command, worktree)
         except DispatchSpawnedButUnobservedError:
             raise
         except ValidationError:
             raise
         except OSError as exc:
-            # Pre-spawn OS failures must remain boundary ValidationErrors so the
-            # controller can compensate the Work Packet away from PENDING_DISPATCH.
+            # Pre-spawn OS failures (missing agent/script, denied exec, etc.) must
+            # remain boundary ValidationErrors so the controller can compensate the
+            # Work Packet away from PENDING_DISPATCH.
             raise ValidationError(f"cursor spawn failed before start: {exc}") from exc
         self.spawned_pids.append(pid)
         deadline = time.monotonic() + self._poll_timeout_sec
@@ -1190,12 +1191,15 @@ def list_persist_trust_processes(worktree_path: str) -> list[tuple[int, str]]:
 
 
 def default_list_persist_sessions() -> list[PersistSession]:
-    completed = subprocess.run(
-        ["agent", "persist", "list"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            ["agent", "persist", "list"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise ValidationError(f"agent persist list failed to start: {exc}") from exc
     if completed.returncode != 0:
         raise ValidationError(
             "agent persist list failed: "

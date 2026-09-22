@@ -207,6 +207,36 @@ class CursorLauncherTests(unittest.TestCase):
             self.assertIn("spawn failed before start", str(ctx.exception))
             self.assertEqual(dispatcher.spawned_pids, [])
 
+    def test_pre_spawn_list_sessions_oserror_is_validation_error(self):
+        """Missing agent during baseline session discovery must stay ValidationError."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+            state = {"spawn_calls": 0}
+
+            def list_sessions() -> list[PersistSession]:
+                raise FileNotFoundError("agent not found")
+
+            def spawn(command: list[str], worktree_path: str) -> int:
+                state["spawn_calls"] += 1
+                return 9999
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=list_sessions,
+                list_target_procs=lambda _wt: [],
+                spawn=spawn,
+                git_runner=self._clean_git(),
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                dispatcher.start_resume(self._dispatch_request(str(target)))
+            self.assertNotIsInstance(ctx.exception, DispatchSpawnedButUnobservedError)
+            self.assertIn("spawn failed before start", str(ctx.exception))
+            self.assertEqual(state["spawn_calls"], 0)
+            self.assertEqual(dispatcher.spawned_pids, [])
+
     def test_pty_dispatcher_falls_back_to_target_process_observation(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "target-wt"
