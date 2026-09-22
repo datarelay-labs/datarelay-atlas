@@ -585,7 +585,12 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             "MIIBuwIBAAKBgQDF\n"
             "-----END DSA PRIVATE KEY-----"
         )
-        for sample in (pem, rsa, dsa):
+        hyphenated = (
+            "-----BEGIN FOO-BAR PRIVATE KEY-----\n"
+            "MIIBuwIBAAKBgQDF\n"
+            "-----END FOO-BAR PRIVATE KEY-----"
+        )
+        for sample in (pem, rsa, dsa, hyphenated):
             self.assertTrue(_looks_like_secret(sample), sample)
             with self.assertRaises(ValidationError):
                 sanitize_rework_findings(sample)

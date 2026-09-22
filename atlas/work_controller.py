@@ -442,7 +442,9 @@ _ABS_PATH_RE = re.compile(
 )
 _URL_RE = re.compile(r"https?://[^\s\"'`]+", re.IGNORECASE)
 _PEM_PRIVATE_KEY_RE = re.compile(
-    r"-----BEGIN ((?:[A-Z0-9]+ )*)PRIVATE KEY-----"
+    # Full PEM label grammar for private keys: optional hyphenated tokens
+    # before "PRIVATE KEY", with a matching END label.
+    r"-----BEGIN ((?:[A-Z0-9][A-Z0-9-]* )*)PRIVATE KEY-----"
     r"[\s\S]*?"
     r"-----END \1PRIVATE KEY-----"
 )
