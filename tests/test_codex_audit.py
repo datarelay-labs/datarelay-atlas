@@ -614,7 +614,40 @@ class CodexAuditProviderTests(unittest.TestCase):
         )
         self.assertEqual(ci["status"], "ERROR")
         tests = collect_test_evidence("/tmp", command_runner=boom)
-        self.assertEqual(tests["status"], "FAIL")
+        # Nonzero exit without a unittest "Ran N tests" summary is infrastructure.
+        self.assertEqual(tests["status"], "ERROR")
+
+    def test_unittest_collection_errors_are_error_not_fail(self):
+        from atlas.codex_audit import classify_unittest_result
+
+        infra = (
+            "ERROR: tests.test_missing (unittest.loader._FailedTest)\n"
+            "ImportError: Failed to import test module: test_missing\n"
+            "ModuleNotFoundError: No module named 'missing_dep'\n"
+            "\n"
+            "Ran 1 test in 0.001s\n"
+            "\n"
+            "FAILED (errors=1)\n"
+        )
+        self.assertEqual(classify_unittest_result(1, infra), "ERROR")
+
+        assertion = (
+            "FAIL: test_gap (tests.test_x.X)\n"
+            "AssertionError: expected 1\n"
+            "\n"
+            "Ran 1 test in 0.001s\n"
+            "\n"
+            "FAILED (failures=1)\n"
+        )
+        self.assertEqual(classify_unittest_result(1, assertion), "FAIL")
+        self.assertEqual(classify_unittest_result(0, "Ran 1 test\nOK\n"), "PASS")
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 1, stdout=infra, stderr="")
+
+        tests = collect_test_evidence("/tmp", command_runner=runner)
+        self.assertEqual(tests["status"], "ERROR")
+        self.assertIn("infrastructure", tests.get("detail", ""))
 
     def test_work_packet_fail_closed_when_body_trimmed(self):
         """Acceptance text only in trimmed Work Packet tail ⇒ INCOMPLETE."""
@@ -1389,6 +1422,12 @@ class CodexAuditProviderTests(unittest.TestCase):
             classify_gh_pr_checks_result(1, "job\tcancel\t1s\thttps://x\n", ""),
             ("FAIL", ""),
         )
+        # PR with zero check runs is ABSENT, not a transport ERROR.
+        absent_msg = "no checks reported on the 'feature/x' branch"
+        self.assertEqual(
+            classify_gh_pr_checks_result(1, "", absent_msg),
+            ("ABSENT", absent_msg),
+        )
 
         calls: list[list[str]] = []
 
@@ -1419,6 +1458,36 @@ class CodexAuditProviderTests(unittest.TestCase):
         )
         self.assertEqual(ci["status"], "ERROR")
         self.assertEqual(ci["checks_exit_code"], 1)
+
+    def test_ci_collector_maps_no_checks_to_absent(self):
+        def fake(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "pr", "list"]:
+                payload = [
+                    {
+                        "number": 15,
+                        "url": "https://example.invalid/pr/15",
+                        "state": "OPEN",
+                        "headRefOid": HEAD,
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    stdout="",
+                    stderr="no checks reported on the 'feature/x' branch",
+                )
+            raise AssertionError(argv)
+
+        ci = collect_ci_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            head=HEAD,
+            command_runner=fake,
+        )
+        self.assertEqual(ci["status"], "ABSENT")
 
     def test_ci_collector_uses_raw_sha_search(self):
         seen: list[list[str]] = []

@@ -388,13 +388,52 @@ def collect_test_evidence(
     transcript = "\n".join(
         part for part in (completed.stdout, completed.stderr) if part
     ).strip()
-    return {
+    status = classify_unittest_result(completed.returncode, transcript)
+    result = {
         "collector": "atlas.codex_audit.collect_test_evidence",
-        "status": "PASS" if completed.returncode == 0 else "FAIL",
+        "status": status,
         "exit_code": completed.returncode,
         "command": argv,
         "transcript": _trim(transcript, max_chars),
     }
+    if status == "ERROR" and completed.returncode != 0:
+        result["detail"] = _trim(
+            "unittest collection/infrastructure failure; "
+            "refusing autonomous REWORK",
+            300,
+        )
+    return result
+
+
+_UNITTEST_INFRA_RE = re.compile(
+    r"(?is)"
+    r"failed to import test module|"
+    r"unittest\.loader\._FailedTest|"
+    r"ModuleNotFoundError:|"
+    r"ImportError:\s+Failed to import|"
+    r"No module named\s|"
+    r"SyntaxError:|"
+    r"PermissionError:|"
+    r"ERROR:\s+Discovery failure"
+)
+
+
+def classify_unittest_result(returncode: int, transcript: str) -> str:
+    """Map unittest exit + transcript to PASS|FAIL|ERROR.
+
+    Assertion/test failures remain FAIL → autonomous REWORK. Collection and
+    environment/import failures are ERROR → HUMAN_REQUIRED so setup problems
+    are never dispatched as product rework.
+    """
+    if returncode == 0:
+        return "PASS"
+    text = transcript or ""
+    if _UNITTEST_INFRA_RE.search(text):
+        return "ERROR"
+    # Nonzero exit with no runnable summary is also infrastructure, not FAIL.
+    if not re.search(r"(?m)^Ran \d+ tests?", text):
+        return "ERROR"
+    return "FAIL"
 
 
 def collect_ci_evidence(
@@ -514,13 +553,15 @@ def collect_ci_evidence(
 def classify_gh_pr_checks_result(
     returncode: int, stdout: str, stderr: str
 ) -> tuple[str, str]:
-    """Map ``gh pr checks`` exit + output to OK|PENDING|FAIL|ERROR.
+    """Map ``gh pr checks`` exit + output to OK|PENDING|FAIL|ABSENT|ERROR.
 
     ``gh pr checks --help`` documents exit 0 (success) and 8 (pending).
     ``gh help exit-codes`` documents exit 1 (command failed) and 4 (auth).
     Non-0/8 exits are not proof of a failed check unless parseable check
     rows show a failure state; otherwise return ERROR so the deterministic
     gate fails closed to HUMAN_REQUIRED instead of autonomous REWORK.
+    A PR with no reported checks is ABSENT (allowed by the AWC contract),
+    not a transport ERROR.
     """
     if returncode == 0:
         return "OK", ""
@@ -568,6 +609,11 @@ def classify_gh_pr_checks_result(
         )
 
     detail = "\n".join(part for part in (stdout, stderr) if part).strip()
+    # gh reports this for a PR/branch with zero check runs (exit 1, no rows).
+    if returncode == 1 and re.search(
+        r"(?i)no checks reported on the\b", detail
+    ):
+        return "ABSENT", detail[:500] or "no checks reported"
     return (
         "ERROR",
         detail[:500] or f"gh pr checks command failure (exit {returncode})",
