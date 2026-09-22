@@ -360,6 +360,13 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertFalse(
             _contains_unsafe_secret("Bearer <redacted>"), "Bearer <redacted>"
         )
+        # Authorization scheme matching is case-insensitive.
+        lower_bearer = "authorization: bearer hunter2secretvalue"
+        self.assertTrue(_contains_unsafe_secret(lower_bearer), lower_bearer)
+        self.assertIn(
+            "Bearer <redacted>",
+            redact_sensitive_audit_text(lower_bearer),
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             prompt = build_codex_audit_prompt(

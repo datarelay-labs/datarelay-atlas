@@ -444,7 +444,7 @@ def _looks_like_secret(text: str) -> bool:
         return True
     if re.search(r"\bAKIA[0-9A-Z]{16}\b", scan):
         return True
-    if re.search(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", scan):
+    if re.search(r"(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*", scan):
         return True
     if _PEM_PRIVATE_KEY_RE.search(text or ""):
         return True
@@ -484,7 +484,7 @@ _SECRET_TOKEN_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
     r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b"
 )
-_BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*")
+_BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.IGNORECASE)
 
 
 def redact_absolute_paths(text: str) -> str:
@@ -1389,11 +1389,11 @@ class RecordingCursorDispatcher:
 
 
 class DispatchSpawnedButUnobservedError(ValidationError):
-    """Raised when Cursor was spawned but session observation failed.
+    """Raised when a spawn started but no Cursor session/process was confirmed.
 
-    Distinct from pre-spawn boundary ValidationError so the controller can
-    persist a recoverable REWORK_DISPATCHED state instead of pretending the
-    spawn never happened after the Work Packet was already mutated.
+    Distinct from pre-spawn boundary ValidationError for diagnostics. The
+    controller treats this as ``HUMAN_REQUIRED`` with Work Packet compensation
+    because an unobserved wrapper is not a proven resumable dispatch.
     """
 
     def __init__(
@@ -2039,26 +2039,40 @@ class WorkController:
                             )
                         )
                     except DispatchSpawnedButUnobservedError as exc:
-                        # Spawn already happened; keep recoverable dispatched state.
-                        record.attempt = next_attempt
-                        record.last_session_id = exc.session_hint
-                        record.expected_head = event.head
+                        # Wrapper may exist, but no Cursor session/process was
+                        # confirmed — compensate the packet and stop for human.
+                        boundary_reason = redact_absolute_paths(str(exc))
+                        try:
+                            self.work_packet.apply_dispatch_blocked(
+                                repository=record.repository,
+                                issue_number=record.issue_number,
+                                branch=record.branch,
+                                workstream=record.workstream,
+                                findings=audit_result.findings,
+                                attempt=next_attempt,
+                                head=event.head,
+                                reason=boundary_reason,
+                            )
+                        except ValidationError as packet_exc:
+                            boundary_reason = (
+                                f"{boundary_reason}; compensating packet update "
+                                f"also failed: {packet_exc}"
+                            )
                         record.last_findings = (
                             f"{audit_result.findings}\n"
-                            f"rework spawn succeeded but observation failed: {exc}"
+                            f"rework spawn unobserved (no confirmed session): "
+                            f"{boundary_reason}"
                         ).strip()
                         outcome = self._finalize(
                             record,
                             event,
-                            state="REWORK_DISPATCHED",
-                            action="rework_dispatched",
-                            verdict="REWORK",
+                            state="HUMAN_REQUIRED",
+                            action="stop",
+                            verdict="HUMAN_REQUIRED",
                             extra={
-                                "dispatch_session_id": exc.session_hint,
-                                "dispatch_command": exc.command,
-                                "next_attempt": next_attempt,
-                                "resume_prompt": RESUME_PROMPT,
                                 "reason": "spawned_but_unobserved",
+                                "dispatch_session_hint": exc.session_hint,
+                                "dispatch_command": exc.command,
                             },
                         )
                     except ValidationError as exc:

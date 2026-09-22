@@ -386,8 +386,8 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
             self.assertEqual(probe.order, ["packet", "dispatch"])
 
-    def test_spawned_but_unobserved_persists_rework_dispatched(self):
-        """Post-spawn observation failure must not pretend spawn never happened."""
+    def test_spawned_but_unobserved_requires_human(self):
+        """Unobserved spawn is not a proven dispatch; compensate and stop."""
 
         class ObservingFailDispatcher:
             def __init__(self) -> None:
@@ -426,11 +426,12 @@ class WorkControllerTests(unittest.TestCase):
                 max_attempts=3,
             )
             outcome = ctl.handle_completion(self._event())
-            self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
             self.assertEqual(outcome["reason"], "spawned_but_unobserved")
-            self.assertEqual(outcome["dispatch_session_id"], "proc:4242")
-            self.assertEqual(len(packets.updates), 1)
-            self.assertEqual(ctl.show("awc-poc")["attempt"], 2)
+            self.assertEqual(outcome["dispatch_session_hint"], "proc:4242")
+            # Packet mutation then compensating blocked update.
+            self.assertEqual(len(packets.updates), 2)
+            self.assertNotEqual(ctl.show("awc-poc")["state"], "REWORK_DISPATCHED")
 
     def test_retry_exhaustion(self):
         with tempfile.TemporaryDirectory() as tmp:
