@@ -532,6 +532,63 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
         self.assertIn("ambiguous ACTIVE Work Packets", str(ctx.exception))
 
+    def test_branchless_active_packet_counts_in_uniqueness(self):
+        branchless = "\n".join(
+            line for line in SAMPLE_BODY.splitlines() if not line.startswith("BRANCH=")
+        )
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "list"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        self._list_payload(
+                            {
+                                "number": 12,
+                                "title": "[AI Work] branched",
+                                "state": "OPEN",
+                                "body": SAMPLE_BODY,
+                            },
+                            {
+                                "number": 77,
+                                "title": "[AI Work] branchless",
+                                "state": "OPEN",
+                                "body": branchless,
+                            },
+                        )
+                    ),
+                    stderr="",
+                )
+            self.fail(f"must not continue after ambiguity: {argv}")
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        with self.assertRaises(ValidationError) as ctx:
+            adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
+        self.assertIn("ambiguous ACTIVE Work Packets", str(ctx.exception))
+
+    def test_pem_private_keys_are_detected_and_redacted(self):
+        from atlas.work_controller import _looks_like_secret
+
+        pem = (
+            "-----BEGIN PRIVATE KEY-----\n"
+            "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n"
+            "-----END PRIVATE KEY-----"
+        )
+        rsa = (
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn\n"
+            "-----END RSA PRIVATE KEY-----"
+        )
+        for sample in (pem, rsa):
+            self.assertTrue(_looks_like_secret(sample), sample)
+            with self.assertRaises(ValidationError):
+                sanitize_rework_findings(sample)
+            redacted = redact_sensitive_audit_text(sample)
+            self.assertIn("<redacted-private-key>", redacted)
+            self.assertNotIn("BEGIN PRIVATE KEY", redacted)
+            self.assertNotIn("MIIE", redacted)
+
     def test_safe_redacted_placeholders_are_allowed(self):
         safe = "OPENAI_API_KEY=<redacted>\npassword=<redacted>"
         cleaned = sanitize_rework_findings(safe)

@@ -429,6 +429,8 @@ def _looks_like_secret(text: str) -> bool:
         return True
     if re.search(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", text):
         return True
+    if _PEM_PRIVATE_KEY_RE.search(text or ""):
+        return True
     return False
 
 
@@ -439,6 +441,11 @@ _ABS_PATH_RE = re.compile(
     r"|([A-Za-z]:\\(?:[^\\\s\"'`]+\\)+[^\\\s\"'`]+)"
 )
 _URL_RE = re.compile(r"https?://[^\s\"'`]+", re.IGNORECASE)
+_PEM_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"
+    r"[\s\S]*?"
+    r"-----END (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"
+)
 
 _CREDENTIAL_NAME = _credential_name_pattern()
 # Quoted value first so whitespace/commas and the opposite quote inside the
@@ -492,6 +499,7 @@ def _redact_secret_kv(match: re.Match[str]) -> str:
 def redact_sensitive_audit_text(text: str, *, max_chars: int = 300) -> str:
     """Redact secrets and absolute paths for durable AuditResult findings."""
     cleaned = redact_absolute_paths(text or "")
+    cleaned = _PEM_PRIVATE_KEY_RE.sub("<redacted-private-key>", cleaned)
     cleaned = _SECRET_KV_QUOTED_RE.sub(_redact_secret_kv, cleaned)
     cleaned = _SECRET_KV_BARE_RE.sub(_redact_secret_kv, cleaned)
     cleaned = _SECRET_TOKEN_RE.sub("<redacted>", cleaned)
@@ -1198,7 +1206,9 @@ class GitHubWorkPacketAdapter:
                 return False
         except ValidationError:
             return False
-        if meta.get("BRANCH") != branch:
+        packet_branch = meta.get("BRANCH")
+        # Missing BRANCH matches any current branch (/work-resume.md:31).
+        if packet_branch not in (None, "") and packet_branch != branch:
             return False
         return True
 
