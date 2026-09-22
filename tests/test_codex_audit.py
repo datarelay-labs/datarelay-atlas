@@ -340,6 +340,9 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertTrue(_contains_unsafe_secret(bare_punct_spoof), bare_punct_spoof)
         brace_spoof = 'PASSWORD="<redacted>"}hunter2'
         self.assertTrue(_contains_unsafe_secret(brace_spoof), brace_spoof)
+        # Comma + another quoted fragment is shell concatenation, not JSON.
+        quoted_suffix = 'PASSWORD="<redacted>","hunter2"'
+        self.assertTrue(_contains_unsafe_secret(quoted_suffix), quoted_suffix)
 
         with tempfile.TemporaryDirectory() as tmp:
             prompt = build_codex_audit_prompt(

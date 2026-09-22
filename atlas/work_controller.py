@@ -406,16 +406,18 @@ def _looks_like_secret(text: str) -> bool:
     name = _credential_name_pattern()
     # Quoted values may contain whitespace/commas and the opposite quote
     # character; only the selected delimiter ends the value (escapes allowed).
-    # Optional leading backslash covers JSON-serialized evidence
-    # (`{\"api-key\":\"...\"}` inside EVIDENCE_BUNDLE_JSON).
+    # Zero-or-more leading backslashes cover nested JSON serialization
+    # (`{\"api-key\":\"...\"}` and double-escaped forms after another dumps).
+    key_q = r'((?:(?:\\)*["\'])?)'
+    val_q = r'((?:\\)*["\'])'
     if re.search(
-        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*((?:\\)?["\'])((?:\\.|(?!\3).)*)\3',
+        rf'(?i){key_q}({name})\1\s*[:=]\s*{val_q}((?:\\.|(?!\3).)*)\3',
         text,
     ):
         return True
     # Bare equals/colon assignments without whitespace in the value.
     if re.search(
-        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*([^\s,"\'}}\]]+)',
+        rf'(?i){key_q}({name})\1\s*[:=]\s*([^\s,"\'}}\]]+)',
         text,
     ):
         return True
@@ -452,14 +454,14 @@ _PEM_PRIVATE_KEY_RE = re.compile(
 _CREDENTIAL_NAME = _credential_name_pattern()
 # Quoted value first so whitespace/commas and the opposite quote inside the
 # selected delimiter are fully captured (including escaped delimiters).
-# Optional backslash before quotes matches JSON-serialized credential dumps.
+# Zero-or-more backslashes before quotes match nested JSON-serialized dumps.
 _SECRET_KV_QUOTED_RE = re.compile(
-    rf'(?i)(?P<kq>(?:\\)?["\']?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
-    rf'\s*[:=]\s*(?P<vq>(?:\\)?["\'])(?P<val>(?:\\.|(?!(?P=vq)).)*)(?P=vq)'
+    rf'(?i)(?P<kq>(?:(?:\\)*["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
+    rf'\s*[:=]\s*(?P<vq>(?:\\)*["\'])(?P<val>(?:\\.|(?!(?P=vq)).)*)(?P=vq)'
 )
 # Bare key=value / key:value without whitespace in the value.
 _SECRET_KV_BARE_RE = re.compile(
-    rf'(?i)(?P<kq>(?:\\)?["\']?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
+    rf'(?i)(?P<kq>(?:(?:\\)*["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
     rf'\s*[:=]\s*(?P<val>[^\s,"\'}}\]]+)'
 )
 _SECRET_TOKEN_RE = re.compile(
@@ -522,24 +524,31 @@ def _strip_safe_redaction_placeholders(text: str) -> str:
     cleaned = text or ""
     name = _credential_name_pattern()
     # Value must end at the placeholder (not PASSWORD=<redacted>hunter2 /
-    # PASSWORD="<redacted>"hunter2 / PASSWORD="<redacted>",hunter2).
-    # Structural punctuation is a terminator only when the next character also
-    # proves end-of-value (not a shell-concatenated suffix). Allow only complete
-    # JSON escape terminators (`\n`, `\"`), not a bare `\`.
+    # PASSWORD="<redacted>"hunter2 / PASSWORD="<redacted>","hunter2").
+    # A comma terminates only when the next token is end/space/} or a JSON
+    # `"key":` pair — not another shell-quoted fragment.
+    # Allow only complete JSON escape terminators (`\n`, `\"`), not a bare `\`.
+    key_q = r'((?:(?:\\)*["\'])?)'
+    val_q = r'((?:\\)*["\'])'
     value_end = (
-        r'(?=$|\s|\\["n]'
-        r'|[,"\'\}\]](?=$|[\s,"\'\}\]]|\\["n]))'
+        r'(?='
+        r'$|\s|\\["n]'
+        r'|[\}\]](?=$|[\s,\}\]]|\\["n])'
+        r'|,(?:$|[\s\}\]]|\\["n]|(?:\\)*["\'][^"\']+?(?:\\)*["\']\s*:)'
+        # Closing quote of a containing JSON/string only when it ends that
+        # string (not PASSWORD=<redacted>"hunter2).
+        r'|(?:\\)*["\'](?=$|[\s,\}\]]|\\["n])'
+        r')'
     )
     # Quoted exact placeholder: key="<redacted>" / key:'<redacted>'
     cleaned = re.sub(
-        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*((?:\\)?["\'])<redacted>\3'
-        rf'{value_end}',
+        rf'(?i){key_q}({name})\1\s*[:=]\s*{val_q}<redacted>\3{value_end}',
         "",
         cleaned,
     )
     # Bare exact placeholder.
     cleaned = re.sub(
-        rf'(?i)((?:\\)?["\']?)({name})\1\s*[:=]\s*<redacted>{value_end}',
+        rf'(?i){key_q}({name})\1\s*[:=]\s*<redacted>{value_end}',
         "",
         cleaned,
     )

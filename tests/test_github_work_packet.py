@@ -704,6 +704,55 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         redacted = redact_sensitive_audit_text(prompt)
         self.assertNotIn("correct horse battery", redacted)
 
+    def test_double_json_escaped_credential_in_prompt_is_detected(self):
+        from atlas.codex_audit import build_codex_audit_prompt
+        from atlas.work_controller import (
+            CompletionEvent,
+            WorkstreamRecord,
+            WorktreeIdentity,
+            _contains_unsafe_secret,
+            _looks_like_secret,
+        )
+
+        # Evidence already contains one JSON-escape layer; prompt dumps again.
+        already_escaped = r'{\"password\":\"hunter2-secret-value\"}'
+        self.assertTrue(_looks_like_secret(already_escaped), already_escaped)
+        event = CompletionEvent(
+            event_id="e1",
+            workstream=WORKSTREAM,
+            issue_number=12,
+            branch=BRANCH,
+            head=HEAD_B,
+            attempt=1,
+        )
+        record = WorkstreamRecord(
+            workstream=WORKSTREAM,
+            repository="datarelay-labs/datarelay-atlas",
+            worktree_path="/tmp/wt",
+            branch=BRANCH,
+            issue_number=12,
+            max_attempts=3,
+            state="AUDITING",
+            attempt=1,
+            expected_head=HEAD_B,
+        )
+        identity = WorktreeIdentity(
+            worktree_path="/tmp/wt",
+            repository="datarelay-labs/datarelay-atlas",
+            branch=BRANCH,
+            head=HEAD_B,
+            toplevel="/tmp/wt",
+        )
+        prompt = build_codex_audit_prompt(
+            event,
+            record,
+            identity=identity,
+            evidence_bundle={"tests": {"output": already_escaped}},
+        )
+        self.assertIn("hunter2-secret-value", prompt)
+        self.assertTrue(_looks_like_secret(prompt), prompt[:500])
+        self.assertTrue(_contains_unsafe_secret(prompt), prompt[:500])
+
 
 class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
     def test_fixed_defaults_to_recording_adapter(self):
