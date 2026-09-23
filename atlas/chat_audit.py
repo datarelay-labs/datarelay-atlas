@@ -101,13 +101,26 @@ EXECUTOR_OUTCOMES = frozenset(
 )
 
 
+_FINDING_ID_CREDENTIAL_KEY = re.compile(
+    r"(?i)(?:^|[^A-Za-z0-9])(?:"
+    r"OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|AWS_SECRET_ACCESS_KEY|"
+    r"AWS_ACCESS_KEY_ID|AZURE_CLIENT_SECRET|NPM_TOKEN|"
+    r"ACCESS_KEY_ID|API_KEY|ACCESS_KEY|APIKEY|PASSWORD|SECRET|TOKEN"
+    r")(?:[^A-Za-z0-9]|$)"
+)
+
+
 def finding_id_embeds_credential_key(finding_id: str) -> bool:
     """True when a finding id contains a credential-key segment.
 
     This is intentionally stricter than ``contains_unsafe_secret``: prose
     heuristics allow short colon values (``token: str``), but a finding id is
     an identifier and must not carry ``PASSWORD:hunter2``-style assignments.
+    Underscore-delimited names such as ``OPENAI_API_KEY`` stay intact; they
+    are not split before matching.
     """
+    if _FINDING_ID_CREDENTIAL_KEY.search(finding_id):
+        return True
     for segment in re.split(r"[^A-Za-z0-9]+", finding_id):
         if not segment:
             continue
@@ -646,6 +659,15 @@ def validate_slice_claim(
         )
     if current_unit is not None and claim_unit != current_unit:
         raise ValidationError("slice_claim.unit does not match current_unit")
+    if claim_state == "executing":
+        if audit_status != "IN_SLICE":
+            raise ValidationError(
+                "executing slice_claim requires audit_status=IN_SLICE"
+            )
+        if current_unit != claim_unit:
+            raise ValidationError(
+                "executing slice_claim requires matching current_unit"
+            )
     claim_run = str(slice_claim.get("run_key", "")).strip()
     if claim_run != run_key:
         raise ValidationError("slice_claim.run_key mismatch")
@@ -2202,6 +2224,11 @@ class ChatAuditController:
                     "cheap_no_change": False,
                     "idempotent_replay": True,
                 }
+            terminal = self._replay_committed_noncompletion(
+                packet, claim_id=claim_id, unit=unit
+            )
+            if terminal is not None:
+                return terminal
             claim = packet.slice_claim or {}
             if claim.get("claim_id") != claim_id:
                 detail = _detail()
@@ -2248,6 +2275,65 @@ class ChatAuditController:
             raise ValidationError(
                 "checkpoint disappeared during exception reconcile"
             ) from exc
+
+    def _replay_committed_noncompletion(
+        self,
+        packet: AuditControlPacket,
+        *,
+        claim_id: str,
+        unit: str,
+    ) -> dict[str, Any] | None:
+        """Replay a committed TIMEOUT, AWAITING_EVIDENCE, or FAILED_CLOSED.
+
+        Those results are canonical even though they have no completed-unit
+        entry. A cache-only failure after the canonical write must not turn
+        them into a failed claim or a lost-claim error.
+        """
+        claim = packet.slice_claim or {}
+        replay = {
+            "action": "idempotent_replay",
+            "unit": unit,
+            "reason": "result_already_committed",
+            "packet": packet.to_dict(),
+            "cheap_no_change": False,
+            "idempotent_replay": True,
+        }
+        if (
+            packet.audit_status == "IN_SLICE"
+            and packet.session.state == "TIMEOUT"
+            and packet.current_unit == unit
+            and claim.get("claim_id") == claim_id
+            and claim.get("state") == "timed_out"
+            and claim.get("unit") == unit
+        ):
+            replay["outcome"] = "TIMEOUT"
+            return replay
+        if (
+            packet.audit_status == "AWAITING_EVIDENCE"
+            and packet.current_unit == unit
+            and claim.get("claim_id") == claim_id
+            and claim.get("state") == "awaiting_evidence"
+            and claim.get("unit") == unit
+        ):
+            replay["outcome"] = "AWAITING_EVIDENCE"
+            return replay
+        next_action = str(packet.next_action or "")
+        if (
+            packet.audit_status == "FAILED_CLOSED"
+            and packet.slice_claim is None
+            and packet.current_unit == unit
+            and (
+                next_action.endswith(f":{unit}")
+                or next_action
+                in {
+                    "reject_finding_without_payload",
+                    "reject_pass_with_findings",
+                }
+            )
+        ):
+            replay["outcome"] = "REJECTED"
+            return replay
+        return None
 
     def _start_new_delta_run(
         self, packet: AuditControlPacket, new_head: str

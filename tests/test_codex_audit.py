@@ -1403,6 +1403,85 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertEqual(failed["status"], "ERROR")
         self.assertEqual(failed["failed_section"], "review_threads")
 
+    def test_same_head_native_resolution_omits_resolved_thread(self):
+        from atlas.chat_audit_github import _reviews_actionable_for_head
+        from atlas.codex_audit import _filter_inline_for_current_head
+
+        resolved_comment = {
+            "id": 11,
+            "user": {"login": "reviewer"},
+            "body": "P1 still listed on this head",
+            "commit_id": HEAD,
+            "original_commit_id": HEAD,
+            "path": "atlas/chat_audit.py",
+            "isResolved": True,
+        }
+        self.assertEqual(
+            _filter_inline_for_current_head([resolved_comment], HEAD), []
+        )
+        open_comment = {**resolved_comment, "id": 12, "isResolved": False}
+        kept = _filter_inline_for_current_head([open_comment], HEAD)
+        self.assertEqual([item["id"] for item in kept], [12])
+
+        def runner(argv: list[str], cwd: str, *, resolved: bool):
+            thread = {
+                "id": "PRRT_same_head",
+                "isResolved": resolved,
+                "isOutdated": False,
+                "comments": {
+                    "pageInfo": {"hasNextPage": False},
+                    "nodes": [{"databaseId": 11}],
+                },
+            }
+            graphql = _graphql_threads_result(argv, nodes=[thread])
+            if graphql is not None:
+                return graphql
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [[]]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [
+                    [
+                        {
+                            "id": 11,
+                            "user": {"login": "reviewer"},
+                            "body": "P1 still listed on this head",
+                            "commit_id": HEAD,
+                            "original_commit_id": HEAD,
+                        }
+                    ]
+                ]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        hidden = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=lambda argv, cwd: runner(argv, cwd, resolved=True),
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(hidden["status"], "OK")
+        self.assertEqual(hidden["inline_comments"], [])
+        actionable, _count = _reviews_actionable_for_head(hidden, target_sha=HEAD)
+        self.assertFalse(actionable)
+
+        visible = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=lambda argv, cwd: runner(argv, cwd, resolved=False),
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(
+            [item["id"] for item in visible["inline_comments"]], [11]
+        )
+        actionable, _count = _reviews_actionable_for_head(visible, target_sha=HEAD)
+        self.assertTrue(actionable)
+
     def test_bundle_includes_pr_reviews_when_ci_finds_pr(self):
         def fake_git(argv: list[str], cwd: str) -> str:
             mapping = {

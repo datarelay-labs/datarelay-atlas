@@ -549,6 +549,8 @@ def _bounded_review_items(
             "original_line": entry.get("original_line"),
             "body": bounded_body,
         }
+        if isinstance(entry.get("isResolved"), bool):
+            item["isResolved"] = entry.get("isResolved")
         encoded = json.dumps(item, sort_keys=True)
         if len(encoded) > remaining and items:
             truncated = True
@@ -956,6 +958,23 @@ def _explicit_thread_resolution(entry: dict) -> bool:
     return False
 
 
+def _inline_thread_members(
+    entry: dict,
+    replies: dict[object, list[dict]],
+    by_id: dict[object, dict],
+) -> list[dict]:
+    parent = entry.get("in_reply_to_id")
+    root_id = parent if parent is not None else entry.get("id")
+    root = by_id.get(root_id)
+    members: list[dict] = []
+    if isinstance(root, dict):
+        members.append(root)
+    elif isinstance(entry, dict):
+        members.append(entry)
+    members.extend(replies.get(root_id, []))
+    return members
+
+
 def _historical_inline_thread_resolved(
     entry: dict,
     replies: dict[object, list[dict]],
@@ -968,15 +987,7 @@ def _historical_inline_thread_resolved(
     or ``resolved: true`` marker do. Non-actionable historical noise is omitted
     so it cannot exhaust the current-HEAD budget.
     """
-    parent = entry.get("in_reply_to_id")
-    root_id = parent if parent is not None else entry.get("id")
-    root = by_id.get(root_id)
-    members: list[dict] = []
-    if isinstance(root, dict):
-        members.append(root)
-    elif isinstance(entry, dict):
-        members.append(entry)
-    members.extend(replies.get(root_id, []))
+    members = _inline_thread_members(entry, replies, by_id)
     if any(_explicit_thread_resolution(item) for item in members):
         return True
     if any(
@@ -1013,10 +1024,14 @@ def _filter_inline_for_current_head(
         original = entry.get("original_commit_id")
         mapped = entry.get("commit_id")
         provenance = original or mapped
-        if provenance is None:
-            kept.append(entry)
+        # Native resolution drops the thread for the current HEAD and for
+        # remapped historical threads. Same-HEAD provenance is not an early keep.
+        if any(
+            _explicit_thread_resolution(item)
+            for item in _inline_thread_members(entry, replies, by_id)
+        ):
             continue
-        if _commit_matches_target(provenance, target_sha):
+        if provenance is None or _commit_matches_target(provenance, target_sha):
             kept.append(entry)
             continue
         remapped = (

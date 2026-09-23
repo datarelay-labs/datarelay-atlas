@@ -820,6 +820,28 @@ class ChatAuditTests(unittest.TestCase):
                     "severity": "CRITICAL",
                 }
             )
+        for finding_id in (
+            "OPENAI_API_KEY:hunter2",
+            "API_KEY:hunter2",
+            "ACCESS_KEY:hunter2",
+            "PASSWORD:hunter2",
+        ):
+            with self.assertRaises(ValidationError):
+                AuditFinding.from_dict(
+                    {
+                        "finding_id": finding_id,
+                        "unit": "changed_code",
+                        "summary": "x",
+                    }
+                )
+        accepted = AuditFinding.from_dict(
+            {
+                "finding_id": "changed-code-note",
+                "unit": "changed_code",
+                "summary": "x",
+            }
+        )
+        self.assertEqual(accepted.finding_id, "changed-code-note")
 
     def test_31_uppercase_completed_unit_key_canonicalized(self):
         from atlas.chat_audit import AuditControlPacket, AuditEvidence, make_run_key
@@ -4674,6 +4696,153 @@ class ChatAuditTests(unittest.TestCase):
             "evidence.truncated must be an explicit boolean",
             str(slice_rejected.exception),
         )
+
+    def test_84_executing_claim_requires_active_slice(self):
+        import time
+
+        from atlas.chat_audit import AuditControlPacket, make_run_key
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        queue = [
+            "changed_code",
+            "affected_contracts",
+            "affected_tests_ci",
+            "security_impact",
+            "docs_spec_drift",
+        ]
+        claim = {
+            "claim_id": "live-claim",
+            "unit": "changed_code",
+            "run_key": run_key,
+            "target_sha": HEAD_A,
+            "state": "executing",
+            "claimed_at": time.time(),
+            "lease_seconds": 900,
+        }
+        base = {
+            "schema_version": 1,
+            "target_repository": REPO,
+            "target_branch": BRANCH,
+            "current_target_sha": HEAD_A,
+            "audit_queue": queue,
+            "idempotency_run_key": run_key,
+            "slice_claim": claim,
+        }
+        with self.assertRaises(ValidationError) as idle:
+            AuditControlPacket.from_dict(
+                {**base, "audit_status": "IDLE", "current_unit": None}
+            )
+        self.assertIn("audit_status=IN_SLICE", str(idle.exception))
+        loaded = AuditControlPacket.from_dict(
+            {
+                **base,
+                "audit_status": "IN_SLICE",
+                "current_unit": "changed_code",
+                "current_unit_index": 0,
+            }
+        )
+        assert loaded.slice_claim is not None
+        self.assertEqual(loaded.slice_claim["state"], "executing")
+
+    def test_85_cache_error_replays_noncompletion_canonical_results(self):
+        class CommitThenCacheError(FileCheckpointStore):
+            def __init__(self, data_root: Path, predicate):
+                super().__init__(data_root)
+                self.predicate = predicate
+                self.cache_failures = 0
+
+            def save(self, packet):
+                super().save(packet)
+                if self.cache_failures == 0 and self.predicate(packet):
+                    self.cache_failures += 1
+                    raise OSError("cache follow-up failed")
+
+        class AwaitExecutor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            def execute(self, packet, unit, audit_request):
+                from atlas.chat_audit import AuditEvidence, SliceResult
+
+                self.calls.append((unit, packet.current_target_sha))
+                return SliceResult(
+                    unit=unit,
+                    target_sha=packet.current_target_sha,
+                    outcome="AWAITING_EVIDENCE",
+                    audit_request=audit_request,
+                    evidence=AuditEvidence(
+                        status="MISSING",
+                        unit=unit,
+                        target_sha=packet.current_target_sha,
+                        notes="need external evidence",
+                        truncated=False,
+                    ),
+                )
+
+        cases = (
+            (
+                "TIMEOUT",
+                FixedUnitExecutor(timeout_units={"changed_code"}),
+                lambda packet: (packet.slice_claim or {}).get("state") == "timed_out",
+                "TIMEOUT",
+                "IN_SLICE",
+                "timed_out",
+            ),
+            (
+                "AWAITING_EVIDENCE",
+                AwaitExecutor(),
+                lambda packet: packet.audit_status == "AWAITING_EVIDENCE",
+                "AWAITING_EVIDENCE",
+                "AWAITING_EVIDENCE",
+                "awaiting_evidence",
+            ),
+            (
+                "FAILED_CLOSED",
+                FixedUnitExecutor(truncate_units={"changed_code"}),
+                lambda packet: packet.audit_status == "FAILED_CLOSED",
+                "REJECTED",
+                "FAILED_CLOSED",
+                None,
+            ),
+        )
+        for _name, executor, predicate, outcome, status, claim_state in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                store = CommitThenCacheError(Path(tmp) / "data", predicate)
+                current = {"head": HEAD_A}
+
+                def identity(current=current):
+                    from atlas.chat_audit import Identity
+
+                    return Identity(
+                        repository=REPO, branch=BRANCH, head=current["head"]
+                    )
+
+                ctl = ChatAuditController(
+                    store,
+                    executor=executor,
+                    handoff=RecordingWorkPacketHandoff(),
+                    coordination=FixedCoordinationRefresher(),
+                    identity_resolver=identity,
+                )
+                ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+                replayed = ctl.run_slice()
+                self.assertEqual(replayed["action"], "idempotent_replay", _name)
+                self.assertEqual(replayed["reason"], "result_already_committed")
+                self.assertEqual(replayed["outcome"], outcome)
+                self.assertNotIn("lost or stolen", json.dumps(replayed))
+                self.assertEqual(replayed["packet"]["audit_status"], status)
+                claim = replayed["packet"]["slice_claim"]
+                if claim_state is None:
+                    self.assertIsNone(claim)
+                else:
+                    self.assertEqual(claim["state"], claim_state)
+                self.assertEqual(len(executor.calls), 1)
+                stored = json.loads(
+                    (Path(tmp) / "data" / "chat-audit.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(stored["audit_status"], status)
 
 
 if __name__ == "__main__":
