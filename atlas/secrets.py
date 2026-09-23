@@ -77,18 +77,22 @@ def _looks_like_secret(text: str) -> bool:
         scan,
     ):
         return True
-    # Bare equals assignments without whitespace in the value.
+    # Bare equals assignments; values may include internal whitespace.
     if re.search(
-        rf'(?i){key_q}({name})\1\s*=\s*([^\s,"\'}}\]]+)',
+        rf'(?i){key_q}({name})\1\s*=\s*([^\n\r,"\'}}\]]+(?:\s+[^\n\r,"\'}}\]]+)*)',
         scan,
     ):
         return True
     # Bare colon: skip type annotations / short prose (``token: str``).
     for match in re.finditer(
-        rf'(?i){key_q}({name})\1\s*:\s*([^\s,"\'}}\]]+)',
+        rf'(?i){key_q}({name})\1\s*:\s*([^\n\r,"\'}}\]]+(?:\s+[^\n\r,"\'}}\]]+)*)',
         scan,
     ):
-        if not _is_colon_type_or_prose_value(match.group(3)):
+        first_token = match.group(3).split()[0] if match.group(3).strip() else ""
+        if not _is_colon_type_or_prose_value(first_token):
+            return True
+        # Multi-token unquoted colon values are never type annotations.
+        if len(match.group(3).split()) > 1:
             return True
     if re.search(r"\bsk-[A-Za-z0-9]{20,}\b", scan):
         return True
@@ -137,10 +141,12 @@ _SECRET_KV_QUOTED_RE = re.compile(
     rf'(?i)(?P<kq>(?:(?:\\){{0,8}}["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
     rf'\s*[:=]\s*(?P<vq>(?:\\){{0,8}}["\'])(?P<val>(?:\\.|(?!(?P=vq))[\s\S])*)(?P=vq)'
 )
-# Bare key=value / key:value without whitespace in the value.
+# Bare key=value / key:value. Unquoted values may include internal whitespace;
+# stop only at newline or JSON/shell structural delimiters so suffixes like
+# ``PASSWORD=hunter2 more-secret`` cannot leak past the first token.
 _SECRET_KV_BARE_RE = re.compile(
     rf'(?i)(?P<kq>(?:(?:\\){{0,8}}["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
-    rf'\s*[:=]\s*(?P<val>[^\s,"\'}}\]]+)'
+    rf'\s*[:=]\s*(?P<val>[^\n\r,"\'}}\]]+(?:\s+[^\n\r,"\'}}\]]+)*)'
 )
 _SECRET_TOKEN_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -181,7 +187,10 @@ def _redact_secret_kv(match: re.Match[str]) -> str:
     separator = ":" if after_key.lstrip().startswith(":") else "="
     if separator == ":" and not val_q:
         bare_val = match.groupdict().get("val") or ""
-        if _is_colon_type_or_prose_value(bare_val):
+        first_token = bare_val.split()[0] if bare_val.strip() else ""
+        # Preserve true type annotations (``token: str``) only; multi-token
+        # unquoted values are treated as secrets.
+        if len(bare_val.split()) <= 1 and _is_colon_type_or_prose_value(first_token):
             return match.group(0)
     return f"{key_q}{key}{key_q}{separator}{val_q}<redacted>{val_q}"
 

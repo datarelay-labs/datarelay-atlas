@@ -330,7 +330,13 @@ def cmd_ca_init(args: argparse.Namespace) -> int:
 
 def cmd_ca_show(args: argparse.Namespace) -> int:
     ctl = _chat_audit_from_args(args)
-    _print_json(ctl.show())
+    _print_json(
+        ctl.show(
+            repository=getattr(args, "repository", None),
+            branch=getattr(args, "branch", None),
+            head=getattr(args, "head", None),
+        )
+    )
     return 0
 
 
@@ -349,19 +355,39 @@ def cmd_ca_run_slice(args: argparse.Namespace) -> int:
 
 def cmd_ca_resume_payload(args: argparse.Namespace) -> int:
     ctl = _chat_audit_from_args(args)
-    _print_json(ctl.resume_instruction_payload())
+    _print_json(
+        ctl.resume_instruction_payload(
+            repository=getattr(args, "repository", None),
+            branch=getattr(args, "branch", None),
+            head=getattr(args, "head", None),
+        )
+    )
     return 0
 
 
 def cmd_ca_mark_session(args: argparse.Namespace) -> int:
     ctl = _chat_audit_from_args(args)
-    _print_json(ctl.mark_session(args.state, notes=args.notes or ""))
+    _print_json(
+        ctl.mark_session(
+            args.state,
+            notes=args.notes or "",
+            repository=getattr(args, "repository", None),
+            branch=getattr(args, "branch", None),
+            head=getattr(args, "head", None),
+        )
+    )
     return 0
 
 
 def cmd_ca_rollover(args: argparse.Namespace) -> int:
     ctl = _chat_audit_from_args(args)
-    _print_json(ctl.perform_rollover())
+    _print_json(
+        ctl.perform_rollover(
+            repository=getattr(args, "repository", None),
+            branch=getattr(args, "branch", None),
+            head=getattr(args, "head", None),
+        )
+    )
     return 0
 
 
@@ -576,6 +602,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     ca_show = ca_sub.add_parser("show", help="Show Audit Control Packet")
     ca_show.add_argument("--repository", default=None)
+    ca_show.add_argument("--branch", default=None)
+    ca_show.add_argument("--head", default=None)
     ca_show.add_argument("--worktree", default=None)
     ca_show.add_argument("--checkpoint-issue", type=int, default=None)
     ca_show.add_argument("--allow-local-checkpoint", action="store_true")
@@ -619,6 +647,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit fresh-Chat resume payload from durable checkpoint only",
     )
     ca_resume.add_argument("--repository", default=None)
+    ca_resume.add_argument("--branch", default=None)
+    ca_resume.add_argument("--head", default=None)
     ca_resume.add_argument("--worktree", default=None)
     ca_resume.add_argument("--checkpoint-issue", type=int, default=None)
     ca_resume.add_argument("--allow-local-checkpoint", action="store_true")
@@ -635,6 +665,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ca_mark.add_argument("--notes", default="")
     ca_mark.add_argument("--repository", default=None)
+    ca_mark.add_argument("--branch", default=None)
+    ca_mark.add_argument("--head", default=None)
     ca_mark.add_argument("--worktree", default=None)
     ca_mark.add_argument("--checkpoint-issue", type=int, default=None)
     ca_mark.add_argument("--allow-local-checkpoint", action="store_true")
@@ -659,6 +691,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Required to attempt Stagehand path; still gated/unimplemented in PoC",
     )
     ca_roll.add_argument("--repository", default=None)
+    ca_roll.add_argument("--branch", default=None)
+    ca_roll.add_argument("--head", default=None)
     ca_roll.add_argument("--worktree", default=None)
     ca_roll.add_argument("--checkpoint-issue", type=int, default=None)
     ca_roll.add_argument("--allow-local-checkpoint", action="store_true")

@@ -1191,10 +1191,36 @@ class ChatAuditController:
             "cheap_no_change": False,
         }
 
-    def show(self) -> dict[str, Any]:
+    def _assert_packet_matches_identity(
+        self,
+        packet: AuditControlPacket,
+        identity: Identity,
+        *,
+        require_head: bool,
+    ) -> None:
+        if packet.target_repository != identity.repository:
+            raise ValidationError("stale repository: checkpoint/repo mismatch")
+        if packet.target_branch != identity.branch:
+            raise ValidationError("stale branch: checkpoint/branch mismatch")
+        if require_head and packet.current_target_sha != identity.head:
+            raise ValidationError("stale HEAD: checkpoint/HEAD mismatch")
+
+    def show(
+        self,
+        *,
+        repository: str | None = None,
+        branch: str | None = None,
+        head: str | None = None,
+    ) -> dict[str, Any]:
+        identity = self._resolve_identity(
+            repository=repository, branch=branch, head=head
+        )
         packet = self.store.load()
         if packet is None:
             raise ValidationError("no chat-audit checkpoint present")
+        self._assert_packet_matches_identity(
+            packet, identity, require_head=True
+        )
         return packet.to_dict()
 
     def run_slice(
@@ -1375,14 +1401,26 @@ class ChatAuditController:
                 )
 
     def mark_session(
-        self, state: str, *, notes: str = ""
+        self,
+        state: str,
+        *,
+        notes: str = "",
+        repository: str | None = None,
+        branch: str | None = None,
+        head: str | None = None,
     ) -> dict[str, Any]:
         if state not in SESSION_STATES:
             raise ValidationError(f"unsupported session state: {state}")
+        identity = self._resolve_identity(
+            repository=repository, branch=branch, head=head
+        )
         with self.store.lock():
             packet = self.store.load()
             if packet is None:
                 raise ValidationError("no chat-audit checkpoint present")
+            self._assert_packet_matches_identity(
+                packet, identity, require_head=True
+            )
             packet.session.state = state
             if notes:
                 packet.session.notes = notes
@@ -1398,11 +1436,23 @@ class ChatAuditController:
             self.store.save(packet)
             return packet.to_dict()
 
-    def perform_rollover(self) -> dict[str, Any]:
+    def perform_rollover(
+        self,
+        *,
+        repository: str | None = None,
+        branch: str | None = None,
+        head: str | None = None,
+    ) -> dict[str, Any]:
+        identity = self._resolve_identity(
+            repository=repository, branch=branch, head=head
+        )
         with self.store.lock():
             packet = self.store.load()
             if packet is None:
                 raise ValidationError("no chat-audit checkpoint present")
+            self._assert_packet_matches_identity(
+                packet, identity, require_head=True
+            )
             if packet.session.state not in {
                 "ROLLOVER_REQUIRED",
                 "TIMEOUT",
@@ -1433,6 +1483,9 @@ class ChatAuditController:
         with self.store.lock():
             reloaded = self.store.load()
             assert reloaded is not None
+            self._assert_packet_matches_identity(
+                reloaded, identity, require_head=True
+            )
             for key, value in audit_snapshot.items():
                 current = getattr(reloaded, key)
                 if key == "open_findings":
@@ -1456,11 +1509,23 @@ class ChatAuditController:
                 "audit_fields_unchanged": True,
             }
 
-    def resume_instruction_payload(self) -> dict[str, Any]:
+    def resume_instruction_payload(
+        self,
+        *,
+        repository: str | None = None,
+        branch: str | None = None,
+        head: str | None = None,
+    ) -> dict[str, Any]:
         """Payload a fresh Chat needs — no conversation history required."""
+        identity = self._resolve_identity(
+            repository=repository, branch=branch, head=head
+        )
         packet = self.store.load()
         if packet is None:
             raise ValidationError("no chat-audit checkpoint present")
+        self._assert_packet_matches_identity(
+            packet, identity, require_head=True
+        )
         return {
             "resume_command": RESUME_COMMAND,
             "target_repository": packet.target_repository,

@@ -1931,5 +1931,102 @@ class ChatAuditTests(unittest.TestCase):
         )
 
 
+    def test_49_mark_session_refuses_fake_repo_against_worktree(self):
+        """Mutating session paths must bind to authoritative worktree identity."""
+        from atlas.chat_audit import (
+            AuditControlPacket,
+            ChatAuditController,
+            FileCheckpointStore,
+            Identity,
+            make_run_key,
+        )
+
+        git_calls: list[list[str]] = []
+
+        def git_runner(argv: list[str], cwd: str) -> str:
+            git_calls.append(list(argv))
+            raise AssertionError(f"git should not be needed after identity resolve: {argv}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileCheckpointStore(Path(tmp) / "data")
+            # Authoritative identity is the real Atlas repo/branch/HEAD.
+            def identity():
+                return Identity(repository=REPO, branch=BRANCH, head=HEAD_A)
+
+            fake = AuditControlPacket(
+                target_repository="fake-owner/fake-repo",
+                target_branch="fake-branch",
+                current_target_sha=HEAD_B,
+                audit_queue=[
+                    "changed_code",
+                    "affected_contracts",
+                    "affected_tests_ci",
+                    "security_impact",
+                    "docs_spec_drift",
+                ],
+                idempotency_run_key=make_run_key(
+                    "fake-owner/fake-repo", "fake-branch", HEAD_B
+                ),
+            )
+            store.save(fake)
+            ctl = ChatAuditController(
+                store,
+                identity_resolver=identity,
+                git_runner=git_runner,
+                worktree_path=tmp,
+                enforce_worktree_identity=True,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                ctl.mark_session("STALLED", notes="should-fail")
+            self.assertIn("repository", str(ctx.exception).lower())
+            self.assertEqual(store.load().session.state, "ACTIVE")
+            # show/resume also refuse fake packet against real identity
+            with self.assertRaises(ValidationError):
+                ctl.show()
+            with self.assertRaises(ValidationError):
+                ctl.resume_instruction_payload()
+            with self.assertRaises(ValidationError):
+                ctl.perform_rollover()
+            # No git calls: identity_resolver supplied authority.
+            self.assertEqual(git_calls, [])
+
+    def test_50_unquoted_credential_suffix_fully_redacted(self):
+        from atlas.secrets import (
+            contains_unsafe_secret,
+            redact_sensitive_audit_text,
+            sanitize_durable_text,
+        )
+
+        samples = [
+            "PASSWORD=hunter2 more-secret",
+            "token=abc123 extra-sensitive-fragment",
+            "CLIENT_SECRET=first second-third",
+        ]
+        for raw in samples:
+            cleaned = redact_sensitive_audit_text(raw)
+            self.assertNotIn("hunter2", cleaned)
+            self.assertNotIn("more-secret", cleaned)
+            self.assertNotIn("abc123", cleaned)
+            self.assertNotIn("extra-sensitive-fragment", cleaned)
+            self.assertNotIn("first", cleaned)
+            self.assertNotIn("second-third", cleaned)
+            self.assertIn("<redacted>", cleaned)
+            self.assertFalse(contains_unsafe_secret(cleaned))
+            self.assertEqual(sanitize_durable_text(raw), cleaned)
+            # Original suffix bytes must not survive durable notes.
+            from atlas.chat_audit import AuditFinding, sanitize_finding
+
+            finding = sanitize_finding(
+                AuditFinding(
+                    finding_id="safe-id",
+                    unit="changed_code",
+                    summary=raw,
+                    severity="P2",
+                )
+            )
+            self.assertNotIn("more-secret", finding.summary)
+            self.assertNotIn("hunter2", finding.summary)
+
+
 if __name__ == "__main__":
     unittest.main()
