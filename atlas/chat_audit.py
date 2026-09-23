@@ -1008,12 +1008,13 @@ def sanitize_coordination_snapshot(raw: dict[str, Any] | None) -> dict[str, Any]
     return out
 
 
-# Compound assignments that remain valid Git branch text. ``*=``, ``^=``, and
-# ``:=`` are already illegal ref text. ``=`` and ``:`` stay with the shared
-# durable-secret check; this only covers operators that check misses.
+# Credential key, then a punctuation-only operator that ends in ``=``.
+# This covers valid Git branch text such as ``.=``, ``&&=``, ``||=``, and
+# ``@=`` without listing operators one review at a time. Alphanumeric branch
+# text (``feature/token-refresh``, ``feature/i+=1``) does not match.
 _BRANCH_COMPOUND_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?<![A-Za-z0-9_])(?:{_credential_name_pattern()})"
-    rf"(?:<<=|>>=|\+=|-=|\.=|/=|%=|&=|\|=)"
+    rf"[^A-Za-z0-9_=]*="
 )
 
 
@@ -1022,9 +1023,9 @@ def require_persistable_branch(branch: str, *, label: str = "target_branch") -> 
 
     Redaction would change the canonical branch name, so unsafe material
     fails closed instead of being rewritten. Append-style assignments such as
-    ``PASSWORD+=hunter2`` and ``PASSWORD.=hunter2`` are valid Git branch text
-    and are outside the shared prose sanitizer's ``key=value`` / ``key:value``
-    forms.
+    A credential key followed by a punctuation-only operator ending in ``=``
+    (``+=``, ``.=``, ``&&=``, ``||=``, ``@=``) is valid Git branch text and is
+    outside the shared prose sanitizer's ``key=value`` / ``key:value`` forms.
     """
     value = str(branch or "").strip()
     if not value:
