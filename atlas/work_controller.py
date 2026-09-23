@@ -447,23 +447,130 @@ def _normalize_json_quote_escapes(text: str) -> str:
     return cur
 
 
-def _is_colon_type_or_prose_value(value: str) -> bool:
-    """True only for recognized type annotations, not short credential values.
+# Explicit annotation atoms only. Capitalized identifiers are not annotations
+# unless listed here (``SecretStr`` is the justified pydantic annotation).
+_COLON_TYPE_ATOMS = frozenset(
+    {
+        "str",
+        "int",
+        "float",
+        "bool",
+        "bytes",
+        "object",
+        "type",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "None",
+        "True",
+        "False",
+        "Any",
+        "Optional",
+        "Union",
+        "Literal",
+        "Final",
+        "ClassVar",
+        "Annotated",
+        "List",
+        "Dict",
+        "Set",
+        "Tuple",
+        "Mapping",
+        "Sequence",
+        "Callable",
+        "Iterable",
+        "Iterator",
+        "SecretStr",
+    }
+)
+_COLON_TYPE_MAX_DEPTH = 2
 
-    ``token: str`` and ``token: SecretStr`` stay exempt. Arbitrary short
-    identifiers such as ``password: hunter2`` or ``token: letmein`` do not.
+
+def _skip_annotation_space(text: str, index: int) -> int:
+    while index < len(text) and text[index] in " \t":
+        index += 1
+    return index
+
+
+def _read_annotation_identifier(text: str, index: int) -> tuple[str, int]:
+    if index >= len(text) or not (text[index].isalpha() or text[index] == "_"):
+        return "", index
+    end = index + 1
+    while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+        end += 1
+    return text[index:end], end
+
+
+def _parse_type_primary(text: str, index: int, depth: int) -> tuple[bool, int]:
+    """Parse one explicit atom, optionally with bounded generic arguments."""
+    index = _skip_annotation_space(text, index)
+    name, index = _read_annotation_identifier(text, index)
+    if name not in _COLON_TYPE_ATOMS:
+        return False, index
+    if index >= len(text) or text[index] != "[":
+        return True, index
+    if depth >= _COLON_TYPE_MAX_DEPTH:
+        return False, index
+    index += 1
+    ok, index = _parse_type_expr(text, index, depth + 1)
+    if not ok:
+        return False, index
+    while True:
+        cursor = _skip_annotation_space(text, index)
+        if cursor < len(text) and text[cursor] == ",":
+            ok, index = _parse_type_expr(text, cursor + 1, depth + 1)
+            if not ok:
+                return False, index
+            continue
+        index = cursor
+        break
+    if index >= len(text) or text[index] != "]":
+        return False, index
+    return True, index + 1
+
+
+def _parse_type_expr(text: str, index: int, depth: int) -> tuple[bool, int]:
+    """Parse explicit atoms, generics, and ``|`` unions. No other identifiers."""
+    ok, index = _parse_type_primary(text, index, depth)
+    if not ok:
+        return False, index
+    while True:
+        cursor = _skip_annotation_space(text, index)
+        if cursor >= len(text) or text[cursor] != "|":
+            return True, index
+        ok, index = _parse_type_primary(text, cursor + 1, depth)
+        if not ok:
+            return False, index
+
+
+def _colon_value_is_type_annotation(rest: str) -> tuple[bool, int]:
+    """Return whether an unquoted colon value is only an explicit annotation.
+
+    ``consumed`` is the annotation length. An empty value is not a credential.
+    A quoted value is left to the quoted-credential matcher.
     """
-    v = (value or "").strip()
-    if not v:
+    if not rest or rest[0].isspace() or rest[0] in "\"'":
+        return True, 0
+    ok, end = _parse_type_expr(rest, 0, 0)
+    if not ok or end <= 0:
+        return False, 0
+    if end < len(rest) and rest[end] not in " \t\r\n,})]":
+        return False, 0
+    return True, end
+
+
+def _is_colon_type_or_prose_value(value: str) -> bool:
+    """True when ``value`` is entirely an explicit type annotation.
+
+    ``token: str`` and ``apiKey: SecretStr`` stay exempt. Arbitrary
+    capitalized values such as ``password: DummySecret`` do not.
+    """
+    text = value or ""
+    if not text.strip():
         return True
-    return bool(
-        re.fullmatch(
-            r"(?:str|int|float|bool|bytes|None|True|False|Any|Optional|"
-            r"List|Dict|Set|Tuple|Mapping|Sequence|Callable|Iterable|Iterator|"
-            r"object|type|list|dict|set|tuple|[A-Z][A-Za-z0-9_]*)",
-            v,
-        )
-    )
+    is_annotation, consumed = _colon_value_is_type_annotation(text.strip())
+    return is_annotation and consumed == len(text.strip())
 
 
 def _looks_like_secret(text: str) -> bool:
@@ -486,12 +593,11 @@ def _looks_like_secret(text: str) -> bool:
         scan,
     ):
         return True
-    # Bare colon: skip type annotations / short prose (``token: str``).
-    for match in re.finditer(
-        rf'(?i){key_q}({name})\1\s*:\s*([^\s,"\'}}\]]+)',
-        scan,
-    ):
-        if not _is_colon_type_or_prose_value(match.group(3)):
+    # Bare colon: exempt only explicit type annotations, not arbitrary
+    # capitalized identifiers (``password: DummySecret`` is a credential).
+    for match in re.finditer(rf'(?i){key_q}({name})\1\s*:\s*', scan):
+        is_annotation, _consumed = _colon_value_is_type_annotation(scan[match.end() :])
+        if not is_annotation:
             return True
     if re.search(r"\bsk-[A-Za-z0-9]{20,}\b", scan):
         return True
@@ -540,10 +646,11 @@ _SECRET_KV_QUOTED_RE = re.compile(
     rf'(?i)(?P<kq>(?:(?:\\){{0,8}}["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
     rf'\s*[:=]\s*(?P<vq>(?:\\){{0,8}}["\'])(?P<val>(?:\\.|(?!(?P=vq)).)*)(?P=vq)'
 )
-# Bare key=value / key:value without whitespace in the value.
+# Bare key=value without whitespace in the value. Colon assignments are
+# handled separately so explicit type annotations are not redacted.
 _SECRET_KV_BARE_RE = re.compile(
     rf'(?i)(?P<kq>(?:(?:\\){{0,8}}["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
-    rf'\s*[:=]\s*(?P<val>[^\s,"\'}}\]]+)'
+    rf'\s*=\s*(?P<val>[^\s,"\'}}\]]+)'
 )
 _SECRET_TOKEN_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -589,6 +696,29 @@ def _redact_secret_kv(match: re.Match[str]) -> str:
     return f"{key_q}{key}{key_q}{separator}{val_q}<redacted>{val_q}"
 
 
+def _redact_unquoted_colon_credentials(text: str) -> str:
+    """Redact unquoted ``key: value`` credentials; keep explicit annotations."""
+    name = _credential_name_pattern()
+    pattern = re.compile(
+        rf'(?i)(?P<kq>(?:(?:\\){{0,8}}["\'])?)(?P<key>{name})(?P=kq)\s*:\s*'
+    )
+    pieces: list[str] = []
+    pos = 0
+    for match in pattern.finditer(text):
+        is_annotation, _consumed = _colon_value_is_type_annotation(text[match.end() :])
+        if is_annotation:
+            continue
+        bare = re.match(r"[^\s,\"'}\]]+", text[match.end() :])
+        value_len = len(bare.group(0)) if bare else 0
+        key_q = match.group("kq") or ""
+        key = match.group("key")
+        pieces.append(text[pos : match.start()])
+        pieces.append(f"{key_q}{key}{key_q}:<redacted>")
+        pos = match.end() + value_len
+    pieces.append(text[pos:])
+    return "".join(pieces)
+
+
 def redact_sensitive_audit_text(text: str, *, max_chars: int = 300) -> str:
     """Redact secrets and absolute paths for durable AuditResult findings."""
     cleaned = redact_absolute_paths(text or "")
@@ -597,6 +727,7 @@ def redact_sensitive_audit_text(text: str, *, max_chars: int = 300) -> str:
     # still redact without unbounded backtracking.
     cleaned = _normalize_json_quote_escapes(cleaned)
     cleaned = _SECRET_KV_QUOTED_RE.sub(_redact_secret_kv, cleaned)
+    cleaned = _redact_unquoted_colon_credentials(cleaned)
     cleaned = _SECRET_KV_BARE_RE.sub(_redact_secret_kv, cleaned)
     cleaned = _SECRET_TOKEN_RE.sub("<redacted>", cleaned)
     cleaned = _BEARER_RE.sub("Bearer <redacted>", cleaned)

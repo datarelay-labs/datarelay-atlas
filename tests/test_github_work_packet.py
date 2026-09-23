@@ -273,39 +273,71 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         secretish = "access_token: bare-secret-value-12345"
         self.assertTrue(_looks_like_secret(secretish), secretish)
 
-    def test_short_bare_colon_credentials_are_rejected(self):
+    def test_colon_credential_annotation_matrix(self):
+        """Credential-like colon values fail closed; explicit annotations do not."""
         from atlas.work_controller import (
             _contains_unsafe_secret,
             _looks_like_secret,
         )
 
-        samples = (
+        unsafe = (
             "password: hunter2",
             "token: letmein",
             "password: hunter",
             "client_secret: secret",
+            "password: DummySecret",
+            "token: SampleValue",
+            "client_secret: Example123",
+            "token: sampleValue",
+            "api_key: NotARealType",
+            "password: Abc123",
+            "token: Optional[DummySecret]",
         )
-        for sample in samples:
+        leaked = (
+            "hunter2",
+            "letmein",
+            "hunter",
+            "DummySecret",
+            "SampleValue",
+            "Example123",
+            "sampleValue",
+            "NotARealType",
+            "Abc123",
+        )
+        for sample in unsafe:
+            prompt = f"audit evidence\n{sample}\n"
             self.assertTrue(_looks_like_secret(sample), sample)
             self.assertTrue(_contains_unsafe_secret(sample), sample)
+            self.assertTrue(_contains_unsafe_secret(prompt), sample)
             with self.assertRaises(ValidationError):
                 sanitize_rework_findings(sample)
             redacted = redact_sensitive_audit_text(sample)
             self.assertIn("<redacted>", redacted)
             self.assertFalse(_contains_unsafe_secret(redacted), redacted)
-            self.assertNotIn("hunter2", redacted)
-            self.assertNotIn("letmein", redacted)
-            self.assertNotIn("hunter", redacted)
+            for token in leaked:
+                if token in sample:
+                    self.assertNotIn(token, redacted, sample)
             self.assertNotRegex(redacted, r":\s*secret\b")
-        for safe in (
+
+        safe = (
             "token: str",
             "token: Optional",
             "password: None",
             "apiKey: SecretStr",
-        ):
-            self.assertFalse(_looks_like_secret(safe), safe)
-            self.assertFalse(_contains_unsafe_secret(safe), safe)
-            self.assertEqual(redact_sensitive_audit_text(safe), safe)
+            "token: list[str]",
+            "token: Optional[str]",
+            "token: str | None",
+            "password: SecretStr | None",
+            "api_key: dict[str, int]",
+            "token: list[dict[str, int]]",
+        )
+        for sample in safe:
+            prompt = f"audit evidence\n{sample}\n"
+            self.assertFalse(_looks_like_secret(sample), sample)
+            self.assertFalse(_contains_unsafe_secret(sample), sample)
+            self.assertFalse(_contains_unsafe_secret(prompt), sample)
+            self.assertEqual(sanitize_rework_findings(sample), sample)
+            self.assertEqual(redact_sensitive_audit_text(sample), sample)
 
     def test_quoted_credential_values_match_selected_delimiter(self):
         from atlas.work_controller import _looks_like_secret
