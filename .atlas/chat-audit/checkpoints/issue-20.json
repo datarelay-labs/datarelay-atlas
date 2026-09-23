@@ -7,7 +7,7 @@
     "docs_spec_drift"
   ],
   "audit_status": "PASSED",
-  "canonical_revision": 51,
+  "canonical_revision": 52,
   "completed_units": {
     "6d3ff204c1ceada7e992bb1e:affected_contracts:979541a259aa05e718213dd5045b00dfc4056ca7": {
       "audit_request": "AUDIT_UNIT=affected_contracts\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
@@ -108,7 +108,7 @@
     "collector": "atlas.chat_audit_github.GitHubCoordinationRefresher",
     "outcome": "PASSED",
     "pr": {
-      "headRefOid": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
+      "headRefOid": "979541a259aa05e718213dd5045b00dfc4056ca7",
       "number": 21,
       "state": "OPEN",
       "status": "OK",
@@ -121,25 +121,25 @@
       "status": "OK"
     },
     "status": "OK",
-    "target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
+    "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
     "work_packet": {
       "gate": "PASS",
       "number": 20,
       "state": "OPEN",
       "status": "ACTIVE",
-      "updated_at": "2026-09-23T12:25:02Z"
+      "updated_at": "2026-09-23T13:10:19Z"
     }
   },
   "mode": "delta",
-  "next_action": "idle_until_next_scheduled_audit",
-  "no_change_runs": 3,
+  "next_action": "inspect_coordination_pr_ci_only",
+  "no_change_runs": 4,
   "open_findings": [],
   "schema_version": 1,
   "session": {
     "last_resume_command": "/chat-audit-resume",
     "notes": "evidence unit/target_sha mismatch",
     "rollover_count": 1,
-    "state": "STALLED"
+    "state": "ACTIVE"
   },
   "slice_claim": null,
   "target_branch": "feature/continuous-chat-audit-supervisor-poc",
