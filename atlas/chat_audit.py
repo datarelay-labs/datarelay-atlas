@@ -1013,7 +1013,7 @@ def sanitize_coordination_snapshot(raw: dict[str, Any] | None) -> dict[str, Any]
 # durable-secret check; this only covers operators that check misses.
 _BRANCH_COMPOUND_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?<![A-Za-z0-9_])(?:{_credential_name_pattern()})"
-    rf"(?:<<=|>>=|\+=|-=|/=|%=|&=|\|=)"
+    rf"(?:<<=|>>=|\+=|-=|\.=|/=|%=|&=|\|=)"
 )
 
 
@@ -1022,8 +1022,9 @@ def require_persistable_branch(branch: str, *, label: str = "target_branch") -> 
 
     Redaction would change the canonical branch name, so unsafe material
     fails closed instead of being rewritten. Append-style assignments such as
-    ``PASSWORD+=hunter2`` are valid Git branch text and are outside the shared
-    prose sanitizer's ``key=value`` / ``key:value`` forms.
+    ``PASSWORD+=hunter2`` and ``PASSWORD.=hunter2`` are valid Git branch text
+    and are outside the shared prose sanitizer's ``key=value`` / ``key:value``
+    forms.
     """
     value = str(branch or "").strip()
     if not value:

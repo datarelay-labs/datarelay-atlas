@@ -5140,6 +5140,7 @@ class ChatAuditTests(unittest.TestCase):
             "feature/continuous-chat-audit-supervisor-poc",
             "feature/c++-port",
             "feature/i+=1",
+            "feature/i.=1",
             "feature/token-refresh",
         ):
             safe = sanitize_packet_for_persistence(packet_for(branch))
@@ -5148,6 +5149,8 @@ class ChatAuditTests(unittest.TestCase):
         secret_branches = (
             "PASSWORD=hunter2",
             "feature/PASSWORD+=hunter2",
+            "feature/PASSWORD.=hunter2",
+            "feature/token.=refresh",
             "feature/token+=refresh",
             "feature/PASSWORD<<=hunter2",
         )
