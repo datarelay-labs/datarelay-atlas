@@ -20,7 +20,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
 from atlas.provenance import ValidationError
-from atlas.secrets import contains_unsafe_secret, sanitize_durable_text
+from atlas.secrets import (
+    _credential_name_pattern,
+    contains_unsafe_secret,
+    sanitize_durable_text,
+)
 from atlas.work_controller import (
     GitRunner,
     WorktreeIdentity,
@@ -1004,16 +1008,27 @@ def sanitize_coordination_snapshot(raw: dict[str, Any] | None) -> dict[str, Any]
     return out
 
 
+# Compound assignments that remain valid Git branch text. ``*=``, ``^=``, and
+# ``:=`` are already illegal ref text. ``=`` and ``:`` stay with the shared
+# durable-secret check; this only covers operators that check misses.
+_BRANCH_COMPOUND_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?<![A-Za-z0-9_])(?:{_credential_name_pattern()})"
+    rf"(?:<<=|>>=|\+=|-=|/=|%=|&=|\|=)"
+)
+
+
 def require_persistable_branch(branch: str, *, label: str = "target_branch") -> str:
     """Reject credential-bearing branch identities before durable writes.
 
     Redaction would change the canonical branch name, so unsafe material
-    fails closed instead of being rewritten.
+    fails closed instead of being rewritten. Append-style assignments such as
+    ``PASSWORD+=hunter2`` are valid Git branch text and are outside the shared
+    prose sanitizer's ``key=value`` / ``key:value`` forms.
     """
     value = str(branch or "").strip()
     if not value:
         raise ValidationError(f"{label} is required")
-    if contains_unsafe_secret(value):
+    if contains_unsafe_secret(value) or _BRANCH_COMPOUND_ASSIGNMENT_RE.search(value):
         raise ValidationError(
             f"{label} must not contain credential-like material"
         )
