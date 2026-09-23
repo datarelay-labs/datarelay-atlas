@@ -6,8 +6,8 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "IN_SLICE",
-  "canonical_revision": 36,
+  "audit_status": "AWAITING_EVIDENCE",
+  "canonical_revision": 37,
   "completed_units": {},
   "current_target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
   "current_unit": "security_impact",
@@ -60,7 +60,7 @@
     }
   },
   "mode": "delta",
-  "next_action": "complete_or_resume_unit:security_impact",
+  "next_action": "supply_evidence_for_unit:security_impact",
   "no_change_runs": 3,
   "open_findings": [],
   "schema_version": 1,
@@ -75,7 +75,7 @@
     "claimed_at": 1790168970.4038825,
     "lease_seconds": 900.0,
     "run_key": "6d3ff204c1ceada7e992bb1e",
-    "state": "executing",
+    "state": "awaiting_evidence",
     "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
     "unit": "security_impact"
   },
