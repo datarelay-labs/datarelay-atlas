@@ -3532,6 +3532,250 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(nxt["unit"], "affected_contracts")
             self.assertEqual(len(executor.calls), 2)
 
+    def _blank_packet(self):
+        from atlas.chat_audit import AuditControlPacket, make_run_key
+
+        return AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=[
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            idempotency_run_key=make_run_key(REPO, BRANCH, HEAD_A),
+            canonical_revision=0,
+        )
+
+    def _contents_runner(self, state: dict[str, Any]):
+        import base64
+        import subprocess
+
+        def runner(argv: list[str], cwd: str):
+            joined = " ".join(argv)
+            if argv[:2] == ["gh", "api"] and "--method" not in argv:
+                if "/contents/" not in joined:
+                    if "/git/ref/heads/" in joined:
+                        return subprocess.CompletedProcess(
+                            argv,
+                            0,
+                            stdout=json.dumps({"object": {"sha": "1" * 40}}),
+                            stderr="",
+                        )
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps({"default_branch": "main"}),
+                        stderr="",
+                    )
+                if state.get("raw") is None:
+                    return subprocess.CompletedProcess(
+                        argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                    )
+                encoded = base64.b64encode(state["raw"].encode("utf-8")).decode(
+                    "ascii"
+                )
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "type": "file",
+                            "sha": state["sha"],
+                            "content": encoded,
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:2] == ["gh", "api"] and "--method" in argv:
+                if "git/refs" in joined:
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout="{}", stderr=""
+                    )
+                idx = argv.index("--input")
+                body = json.loads(Path(argv[idx + 1]).read_text(encoding="utf-8"))
+                raw = base64.b64decode(body["content"]).decode("utf-8")
+                state["puts"] = int(state.get("puts") or 0) + 1
+                state["expected_shas"] = list(state.get("expected_shas") or [])
+                state["expected_shas"].append(body.get("sha"))
+                mode = state.get("put_mode") or "ok"
+                if mode == "reset":
+                    state["raw"] = raw
+                    state["sha"] = state.get("remote_sha") or "remote-blob"
+                    state["put_mode"] = "ok"
+                    return subprocess.CompletedProcess(
+                        argv,
+                        1,
+                        stdout="",
+                        stderr="connection reset by peer",
+                    )
+                if mode == "differ":
+                    state["raw"] = state.get("other_raw") or "{\"other\":true}\n"
+                    state["sha"] = "other-blob"
+                    return subprocess.CompletedProcess(
+                        argv,
+                        1,
+                        stdout="",
+                        stderr="connection reset by peer",
+                    )
+                state["raw"] = raw
+                state["sha"] = state.get("remote_sha") or "server-blob"
+                if mode == "omit-sha":
+                    state["put_mode"] = "ok"
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout="{}", stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps({"content": {"sha": state["sha"]}}),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="unexpected"
+            )
+
+        return runner
+
+    def test_71_canonical_load_and_save_survive_cache_disk_full(self):
+        from atlas.chat_audit_github import GitHubContentsCheckpointStore
+
+        class DiskFullCache(FileCheckpointStore):
+            def save(self, packet):
+                raise OSError("disk full")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = DiskFullCache(Path(tmp) / "data")
+            state: dict[str, Any] = {"raw": None, "sha": None, "puts": 0}
+            store = GitHubContentsCheckpointStore(
+                repository=REPO,
+                issue_number=20,
+                cache=cache,
+                command_runner=self._contents_runner(state),
+            )
+            packet = self._blank_packet()
+            packet.canonical_revision = 1
+            state["sha"] = "loaded-blob"
+            state["raw"] = json.dumps(packet.to_dict(), indent=2, sort_keys=True) + "\n"
+            loaded = store.load()
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertEqual(loaded.canonical_revision, 1)
+            self.assertEqual(store._cas_blob_sha, "loaded-blob")
+            self.assertIn("disk full", store.last_cache_error or "")
+            loaded.audit_status = "IDLE"
+            store.save(loaded)
+            self.assertEqual(loaded.canonical_revision, 2)
+            self.assertEqual(store._cas_blob_sha, "server-blob")
+            self.assertIn("disk full", store.last_cache_error or "")
+            self.assertEqual(state["puts"], 1)
+            self.assertEqual(state["expected_shas"], ["loaded-blob"])
+
+    def test_72_ambiguous_put_adopts_server_blob_without_retry(self):
+        from atlas.chat_audit import CheckpointCasConflict
+        from atlas.chat_audit_github import GitHubContentsCheckpointStore
+
+        state: dict[str, Any] = {
+            "raw": None,
+            "sha": None,
+            "puts": 0,
+            "put_mode": "reset",
+            "remote_sha": "remote-blob",
+        }
+        store = GitHubContentsCheckpointStore(
+            repository=REPO,
+            issue_number=20,
+            command_runner=self._contents_runner(state),
+        )
+        packet = self._blank_packet()
+        self.assertIsNone(store.load())
+        store.save(packet)
+        self.assertEqual(packet.canonical_revision, 1)
+        self.assertEqual(store._cas_blob_sha, "remote-blob")
+        self.assertEqual(state["puts"], 1)
+        self.assertIsNone(store.last_cache_error)
+        store.save(packet)
+        self.assertEqual(packet.canonical_revision, 2)
+        self.assertEqual(state["puts"], 2)
+        self.assertEqual(state["expected_shas"][1], "remote-blob")
+
+        differ: dict[str, Any] = {
+            "raw": None,
+            "sha": None,
+            "puts": 0,
+            "put_mode": "differ",
+            "other_raw": "{\"not\":\"the packet\"}\n",
+        }
+        other = GitHubContentsCheckpointStore(
+            repository=REPO,
+            issue_number=20,
+            command_runner=self._contents_runner(differ),
+        )
+        stale = self._blank_packet()
+        self.assertIsNone(other.load())
+        with self.assertRaises(CheckpointCasConflict):
+            other.save(stale)
+        self.assertEqual(stale.canonical_revision, 0)
+        self.assertIsNone(other._cas_blob_sha)
+
+    def test_73_missing_put_sha_rereads_checkpoint_and_handoff_claim(self):
+        import hashlib
+
+        from atlas.chat_audit_github import (
+            GitHubAIWorkHandoff,
+            GitHubContentsCheckpointStore,
+        )
+
+        state: dict[str, Any] = {
+            "raw": None,
+            "sha": None,
+            "puts": 0,
+            "put_mode": "omit-sha",
+            "remote_sha": "real-blob-2",
+        }
+        store = GitHubContentsCheckpointStore(
+            repository=REPO,
+            issue_number=20,
+            command_runner=self._contents_runner(state),
+        )
+        packet = self._blank_packet()
+        self.assertIsNone(store.load())
+        store.save(packet)
+        invented = hashlib.sha1(state["raw"].encode("utf-8")).hexdigest()
+        self.assertEqual(store._cas_blob_sha, "real-blob-2")
+        self.assertNotEqual(store._cas_blob_sha, invented)
+        self.assertEqual(packet.canonical_revision, 1)
+        self.assertEqual(state["puts"], 1)
+        store.save(packet)
+        self.assertEqual(state["expected_shas"][1], "real-blob-2")
+
+        claim_state: dict[str, Any] = {
+            "raw": None,
+            "sha": None,
+            "puts": 0,
+            "put_mode": "omit-sha",
+            "remote_sha": "real-claim-sha",
+        }
+        handoff = GitHubAIWorkHandoff(
+            repository=REPO,
+            command_runner=self._contents_runner(claim_state),
+        )
+        claim = {"finding_id": "safe-id", "issue_number": None}
+        sha = handoff._put_claim("safe-id", claim, expected_sha=None)
+        invented_claim = hashlib.sha1(claim_state["raw"].encode("utf-8")).hexdigest()
+        self.assertEqual(sha, "real-claim-sha")
+        self.assertNotEqual(sha, invented_claim)
+        self.assertEqual(claim_state["puts"], 1)
+        claim_state["put_mode"] = "reset"
+        claim_state["remote_sha"] = "remote-claim-sha"
+        reset_sha = handoff._put_claim("safe-id", claim, expected_sha=sha)
+        self.assertEqual(reset_sha, "remote-claim-sha")
+        self.assertEqual(claim_state["puts"], 2)
+        self.assertEqual(claim_state["expected_shas"][1], "real-claim-sha")
+
 
 if __name__ == "__main__":
     unittest.main()

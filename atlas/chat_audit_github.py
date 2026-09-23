@@ -83,6 +83,96 @@ def _is_contents_conflict(completed: subprocess.CompletedProcess[str]) -> bool:
     return False
 
 
+def _contents_response_sha(payload: Any) -> str | None:
+    """Return a server-provided blob SHA from a Contents API response."""
+    if not isinstance(payload, dict):
+        return None
+    content = payload.get("content")
+    new_sha = content.get("sha") if isinstance(content, dict) else None
+    if not new_sha:
+        new_sha = payload.get("sha")
+    if isinstance(new_sha, str) and new_sha.strip():
+        return new_sha.strip()
+    return None
+
+
+def _classify_contents_payload(
+    payload: dict[str, Any] | None, intended_raw: str
+) -> tuple[str, str | None]:
+    """Classify a Contents GET against the exact bytes we intended to commit.
+
+    Returns ``(status, blob_sha)`` where status is ``match``, ``differ``,
+    ``absent``, ``unverified``, or ``unknown``. A match requires the server
+    blob SHA; this function never invents one.
+    """
+    if payload is None:
+        return "absent", None
+    if not isinstance(payload, dict):
+        return "unknown", None
+    encoded = str(payload.get("content") or "")
+    blob = str(payload.get("sha") or "").strip()
+    if not encoded:
+        return "unknown", None
+    try:
+        decoded = base64.b64decode(encoded, validate=False).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return "unknown", None
+    if decoded == intended_raw and blob:
+        return "match", blob
+    if decoded == intended_raw:
+        return "unverified", None
+    return "differ", None
+
+
+def _sha_from_contents_put(
+    *,
+    completed: subprocess.CompletedProcess[str],
+    intended_raw: str,
+    observe: Callable[[], tuple[str, str | None]],
+    conflict_message: str,
+    failure_label: str,
+) -> str:
+    """Resolve a Contents PUT to the server blob SHA.
+
+    Transport failures and responses that omit ``content.sha`` are reconciled
+    by re-reading canonical contents. Exact committed bytes adopt the server
+    SHA. Different canonical bytes are a conflict. Nothing here synthesizes a
+    SHA from local JSON.
+    """
+
+    def _adopt_match() -> str | None:
+        status, sha = observe()
+        if status == "match" and sha:
+            return sha
+        return None
+
+    if completed.returncode != 0:
+        status, sha = observe()
+        if status == "match" and sha:
+            return sha
+        if _is_contents_conflict(completed) or status == "differ":
+            raise CheckpointCasConflict(conflict_message)
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise ValidationError(detail[:500] or failure_label)
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        adopted = _adopt_match()
+        if adopted:
+            return adopted
+        raise ValidationError(f"{failure_label} returned non-JSON") from exc
+    new_sha = _contents_response_sha(payload)
+    if new_sha:
+        return new_sha
+    adopted = _adopt_match()
+    if adopted:
+        return adopted
+    raise ValidationError(
+        f"{failure_label} omitted the server blob SHA and canonical "
+        "re-read did not confirm the committed bytes"
+    )
+
+
 class GitHubContentsCheckpointStore:
     """Canonical checkpoint store via Contents API blob-SHA CAS.
 
@@ -118,6 +208,8 @@ class GitHubContentsCheckpointStore:
         # Blob SHA observed by the latest successful load/save (None = absent).
         self._cas_blob_sha: str | None = None
         self._cas_loaded = False
+        # Derived-cache failures are telemetry. They never fail canonical I/O.
+        self.last_cache_error: str | None = None
 
     @contextmanager
     def lock(self) -> Iterator[None]:
@@ -164,6 +256,24 @@ class GitHubContentsCheckpointStore:
             )
         return payload
 
+    def _observe_contents(self, intended_raw: str) -> tuple[str, str | None]:
+        try:
+            payload = self._get_contents()
+        except ValidationError:
+            return "unknown", None
+        return _classify_contents_payload(payload, intended_raw)
+
+    def _write_cache(self, packet: AuditControlPacket) -> None:
+        """Best-effort derived cache. Canonical success does not depend on it."""
+        if self.cache is None:
+            return
+        try:
+            self.cache.save(packet)
+        except Exception as exc:
+            self.last_cache_error = f"{type(exc).__name__}: {exc}"[:500]
+            return
+        self.last_cache_error = None
+
     def _put_contents(
         self,
         *,
@@ -202,30 +312,16 @@ class GitHubContentsCheckpointStore:
             )
         finally:
             Path(path).unlink(missing_ok=True)
-        if completed.returncode != 0:
-            if _is_contents_conflict(completed):
-                raise CheckpointCasConflict(
-                    "checkpoint compare-and-set failed: contents blob SHA "
-                    "conflict (stale or concurrent writer)"
-                )
-            detail = (completed.stderr or completed.stdout or "").strip()
-            raise ValidationError(
-                detail[:500] or "gh api contents PUT failed for audit checkpoint"
-            )
-        try:
-            payload = json.loads(completed.stdout or "{}")
-        except json.JSONDecodeError as exc:
-            raise ValidationError("gh api contents PUT returned non-JSON") from exc
-        content = payload.get("content") if isinstance(payload, dict) else None
-        new_sha = None
-        if isinstance(content, dict):
-            new_sha = content.get("sha")
-        if not new_sha and isinstance(payload, dict):
-            new_sha = payload.get("sha")
-        if not isinstance(new_sha, str) or not new_sha.strip():
-            # Deterministic fallback when API omits sha in mocked/minimal replies.
-            new_sha = hashlib.sha1(raw.encode("utf-8")).hexdigest()
-        return new_sha.strip()
+        return _sha_from_contents_put(
+            completed=completed,
+            intended_raw=raw,
+            observe=lambda: self._observe_contents(raw),
+            conflict_message=(
+                "checkpoint compare-and-set failed: contents blob SHA "
+                "conflict (stale or concurrent writer)"
+            ),
+            failure_label="gh api contents PUT failed for audit checkpoint",
+        )
 
     def ensure_control_branch(self) -> dict[str, Any]:
         """Idempotently create the control branch from the repo default branch."""
@@ -364,20 +460,17 @@ class GitHubContentsCheckpointStore:
             raise ValidationError("checkpoint contents response missing blob sha")
         self._cas_blob_sha = blob_sha
         self._cas_loaded = True
-        if self.cache is not None:
-            try:
-                self.cache.save(packet)
-            except Exception:
-                # Cache is derived. A follow-up cache failure must not hide
-                # the canonical Contents payload already decoded above.
-                pass
+        self._write_cache(packet)
         return packet
 
     def save(self, packet: AuditControlPacket) -> None:
         """Persist via Contents API PUT bound to the loaded blob SHA.
 
-        Does not perform a client-side re-read/check before write: concurrency
-        safety comes from GitHub rejecting a stale expected ``sha``.
+        Concurrency safety comes from GitHub rejecting a stale expected
+        ``sha``. Ambiguous PUT results (transport failure or a success body
+        that omits the blob SHA) re-read canonical contents and adopt the
+        server SHA only when those bytes match. Derived cache writes are
+        best-effort and cannot turn a committed PUT into a failure.
         """
         if not self._cas_loaded:
             # Require an explicit load (or prior successful save) so writers bind
@@ -404,8 +497,8 @@ class GitHubContentsCheckpointStore:
         packet.canonical_revision = next_revision
         self._cas_blob_sha = new_sha
         self._cas_loaded = True
-        if self.cache is not None:
-            self.cache.save(safe)
+        # Cache failure must not roll back the CAS token or caller revision.
+        self._write_cache(safe)
 
 
 # Backward-compatible alias for older imports/docs.
@@ -475,6 +568,31 @@ class GitHubAIWorkHandoff:
             raise ValidationError("handoff claim must be an object")
         return claim, str(payload.get("sha") or "").strip() or None
 
+    def _observe_claim_file(
+        self, path: str, intended_raw: str
+    ) -> tuple[str, str | None]:
+        completed = self._run(
+            [
+                "gh",
+                "api",
+                "-H",
+                "Accept: application/vnd.github+json",
+                f"repos/{self.repository}/contents/{path}?ref={self.branch}",
+            ]
+        )
+        detail = f"{completed.stderr or ''}\n{completed.stdout or ''}"
+        if completed.returncode != 0:
+            if "404" in detail or "Not Found" in detail:
+                return "absent", None
+            return "unknown", None
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            return "unknown", None
+        if not isinstance(payload, dict):
+            return "unknown", None
+        return _classify_contents_payload(payload, intended_raw)
+
     def _put_claim(
         self,
         finding_id: str,
@@ -512,23 +630,15 @@ class GitHubAIWorkHandoff:
             )
         finally:
             Path(tmp).unlink(missing_ok=True)
-        if completed.returncode != 0:
-            if _is_contents_conflict(completed):
-                raise CheckpointCasConflict(
-                    "handoff claim compare-and-set failed: concurrent creator"
-                )
-            detail = (completed.stderr or completed.stdout or "").strip()
-            raise ValidationError(detail[:500] or "handoff claim PUT failed")
-        payload = json.loads(completed.stdout or "{}")
-        content = payload.get("content") if isinstance(payload, dict) else None
-        new_sha = None
-        if isinstance(content, dict):
-            new_sha = content.get("sha")
-        if not new_sha and isinstance(payload, dict):
-            new_sha = payload.get("sha")
-        if not isinstance(new_sha, str) or not new_sha.strip():
-            new_sha = hashlib.sha1(raw.encode("utf-8")).hexdigest()
-        return new_sha.strip()
+        return _sha_from_contents_put(
+            completed=completed,
+            intended_raw=raw,
+            observe=lambda: self._observe_claim_file(path, raw),
+            conflict_message=(
+                "handoff claim compare-and-set failed: concurrent creator"
+            ),
+            failure_label="handoff claim PUT failed",
+        )
 
     def upsert_implementation_packet(
         self, packet: AuditControlPacket, finding: AuditFinding
