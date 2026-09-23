@@ -2738,6 +2738,15 @@ class ChatAuditController:
         # handoff failure leaves no partial finding commit for duplicate replay.
         handoff_records: list[dict[str, Any]] = []
         if result.outcome == "FINDING":
+            seen_ids = {item.finding_id for item in packet.open_findings}
+            batch_ids: set[str] = set()
+            for finding in result.findings:
+                if finding.finding_id in batch_ids or finding.finding_id in seen_ids:
+                    raise ValidationError(
+                        "duplicate finding_id "
+                        f"{finding.finding_id!r} in this audit run"
+                    )
+                batch_ids.add(finding.finding_id)
             for finding in result.findings:
                 handoff_records.append(
                     self.handoff.upsert_implementation_packet(packet, finding)

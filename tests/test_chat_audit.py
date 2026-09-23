@@ -4883,6 +4883,150 @@ class ChatAuditTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 handoff.upsert_implementation_packet(packet, finding)
 
+    def test_87_offline_mode_rejects_github_checkpoint_selectors(self):
+        import argparse
+        import os
+        from unittest.mock import patch
+
+        from atlas.chat_audit import FileCheckpointStore
+        from atlas.chat_audit_github import (
+            GitHubContentsCheckpointStore,
+            resolve_checkpoint_store,
+        )
+        from atlas.cli import _chat_audit_from_args
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            local = resolve_checkpoint_store(
+                data_root=data,
+                repository=REPO,
+                checkpoint_issue=None,
+                require_github=False,
+            )
+            self.assertIsInstance(local, FileCheckpointStore)
+            self.assertNotIsInstance(local, GitHubContentsCheckpointStore)
+
+            with self.assertRaises(ValidationError) as explicit:
+                resolve_checkpoint_store(
+                    data_root=data,
+                    repository=REPO,
+                    checkpoint_issue=20,
+                    require_github=False,
+                )
+            self.assertIn("--checkpoint-issue", str(explicit.exception))
+
+            with patch.dict(os.environ, {"ATLAS_CHAT_AUDIT_ISSUE": "20"}):
+                with self.assertRaises(ValidationError) as inherited:
+                    resolve_checkpoint_store(
+                        data_root=data,
+                        repository=REPO,
+                        checkpoint_issue=None,
+                        require_github=False,
+                    )
+                self.assertIn("ATLAS_CHAT_AUDIT_ISSUE", str(inherited.exception))
+
+            def args_for(**overrides):
+                base = dict(
+                    data_root=tmp,
+                    repository=REPO,
+                    checkpoint_issue=20,
+                    unit_adapter="fixed",
+                    allow_local_checkpoint=False,
+                    evidence_file=None,
+                    handoff="local",
+                    rollover_provider="fake",
+                    stagehand_approved=False,
+                    worktree=None,
+                    allow_trusted_identity=True,
+                )
+                base.update(overrides)
+                return argparse.Namespace(**base)
+
+            with self.assertRaises(ValidationError) as cli_issue:
+                _chat_audit_from_args(args_for(checkpoint_issue=20))
+            self.assertIn("GitHub canonical checkpoint", str(cli_issue.exception))
+
+            with patch.dict(os.environ, {"ATLAS_CHAT_AUDIT_ISSUE": "20"}):
+                with self.assertRaises(ValidationError) as cli_env:
+                    _chat_audit_from_args(
+                        args_for(
+                            checkpoint_issue=None,
+                            unit_adapter="evidence",
+                            allow_local_checkpoint=True,
+                            handoff="local",
+                        )
+                    )
+                self.assertIn("ATLAS_CHAT_AUDIT_ISSUE", str(cli_env.exception))
+
+    def test_88_duplicate_finding_ids_rejected_before_handoff(self):
+        from atlas.chat_audit import AuditEvidence, AuditFinding, SliceResult
+
+        class ScriptedFindings:
+            def __init__(self, batches: list[list[AuditFinding]]):
+                self.batches = batches
+                self.calls: list[str] = []
+
+            def execute(self, packet, unit, audit_request):
+                self.calls.append(unit)
+                findings = self.batches.pop(0)
+                return SliceResult(
+                    unit=unit,
+                    target_sha=packet.current_target_sha,
+                    outcome="FINDING",
+                    findings=findings,
+                    audit_request=audit_request,
+                    evidence=AuditEvidence(
+                        status="COMPLETE",
+                        unit=unit,
+                        target_sha=packet.current_target_sha,
+                        notes="finding",
+                        truncated=False,
+                    ),
+                )
+
+        def finding(unit: str) -> AuditFinding:
+            return AuditFinding(
+                finding_id="same-id",
+                unit=unit,
+                summary="duplicate",
+                severity="P2",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = RecordingWorkPacketHandoff()
+            executor = ScriptedFindings(
+                [[finding("changed_code"), finding("changed_code")]]
+            )
+            ctl = self._ctl(tmp, executor=executor, handoff=handoff)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            blocked = ctl.run_slice()
+            self.assertEqual(blocked["action"], "failed_closed")
+            self.assertIn("duplicate finding_id", blocked["packet"]["session"]["notes"])
+            self.assertEqual(handoff.handoffs, [])
+            self.assertEqual(blocked["packet"]["open_findings"], [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = RecordingWorkPacketHandoff()
+            executor = ScriptedFindings(
+                [
+                    [finding("changed_code")],
+                    [finding("affected_contracts")],
+                ]
+            )
+            ctl = self._ctl(tmp, executor=executor, handoff=handoff)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            first = ctl.run_slice()
+            self.assertEqual(first["action"], "slice_complete")
+            self.assertEqual(len(handoff.handoffs), 1)
+            second = ctl.run_slice()
+            self.assertEqual(second["action"], "failed_closed")
+            self.assertIn("duplicate finding_id", second["packet"]["session"]["notes"])
+            self.assertEqual(len(handoff.handoffs), 1)
+            self.assertEqual(
+                [item["finding_id"] for item in second["packet"]["open_findings"]],
+                ["same-id"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

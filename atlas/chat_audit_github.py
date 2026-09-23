@@ -1769,7 +1769,19 @@ def resolve_checkpoint_store(
     require_github: bool = True,
     checkpoint_branch: str | None = None,
 ) -> CheckpointStore:
-    """Prefer GitHub Contents CAS store; local file is cache when configured."""
+    """Prefer GitHub Contents CAS store; local file is cache when configured.
+
+    Offline mode never selects or writes the GitHub canonical checkpoint.
+    An explicit issue or ``ATLAS_CHAT_AUDIT_ISSUE`` in that mode fails closed.
+    """
+    if not require_github:
+        env_issue = os.environ.get("ATLAS_CHAT_AUDIT_ISSUE", "").strip()
+        if checkpoint_issue is not None or env_issue:
+            raise ValidationError(
+                "offline mode cannot select a GitHub canonical checkpoint "
+                "(--checkpoint-issue or ATLAS_CHAT_AUDIT_ISSUE)"
+            )
+        return FileCheckpointStore(data_root)
     issue = checkpoint_issue
     if issue is None:
         env = os.environ.get("ATLAS_CHAT_AUDIT_ISSUE", "").strip()
