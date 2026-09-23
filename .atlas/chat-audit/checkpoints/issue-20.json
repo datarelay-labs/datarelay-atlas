@@ -7,7 +7,7 @@
     "docs_spec_drift"
   ],
   "audit_status": "IN_SLICE",
-  "canonical_revision": 45,
+  "canonical_revision": 46,
   "completed_units": {
     "6d3ff204c1ceada7e992bb1e:changed_code:979541a259aa05e718213dd5045b00dfc4056ca7": {
       "audit_request": "AUDIT_UNIT=changed_code\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
@@ -119,8 +119,9 @@
     "error": "evidence unit/target_sha mismatch",
     "error_phase": "result_validation",
     "lease_seconds": 900.0,
+    "reclaimed_from_failed_claim": true,
     "run_key": "6d3ff204c1ceada7e992bb1e",
-    "state": "failed",
+    "state": "timed_out",
     "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
     "unit": "affected_contracts"
   },
