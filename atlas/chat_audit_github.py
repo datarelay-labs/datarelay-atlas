@@ -26,7 +26,7 @@ from atlas.chat_audit import (
     CheckpointCasConflict,
     CheckpointStore,
     FileCheckpointStore,
-    sanitize_finding,
+    finding_for_handoff_persistence,
     sanitize_packet_for_persistence,
 )
 from atlas.provenance import ValidationError
@@ -672,10 +672,9 @@ class GitHubAIWorkHandoff:
     def upsert_implementation_packet(
         self, packet: AuditControlPacket, finding: AuditFinding
     ) -> dict[str, Any]:
-        safe = sanitize_finding(finding)
-        # Re-validate at this persistence boundary. Executor checks are not
-        # a substitute when a caller invokes the adapter directly.
-        safe = AuditFinding.from_dict(safe.to_dict())
+        # Same persistence boundary as FileWorkPacketHandoff. Executor checks
+        # are not a substitute when a caller invokes this adapter directly.
+        safe = finding_for_handoff_persistence(finding)
         marker = f"{HANDOFF_MARKER}{safe.finding_id} -->"
         title = f"[AI Work] Audit finding: {safe.finding_id}"[:240]
         body = (

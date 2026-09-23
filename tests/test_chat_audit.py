@@ -4845,7 +4845,12 @@ class ChatAuditTests(unittest.TestCase):
                 self.assertEqual(stored["audit_status"], status)
 
     def test_86_github_handoff_revalidates_finding_before_write(self):
-        from atlas.chat_audit import AuditControlPacket, AuditFinding, make_run_key
+        from atlas.chat_audit import (
+            AuditControlPacket,
+            AuditFinding,
+            FileWorkPacketHandoff,
+            make_run_key,
+        )
         from atlas.chat_audit_github import GitHubAIWorkHandoff
 
         packet = AuditControlPacket(
@@ -4866,7 +4871,7 @@ class ChatAuditTests(unittest.TestCase):
             raise AssertionError(f"github write attempted: {argv}")
 
         handoff = GitHubAIWorkHandoff(repository=REPO, command_runner=runner)
-        for finding in (
+        invalid = (
             AuditFinding(
                 finding_id="OPENAI_API_KEY:hunter2",
                 unit="changed_code",
@@ -4879,9 +4884,35 @@ class ChatAuditTests(unittest.TestCase):
                 summary="x",
                 severity="CRITICAL",
             ),
-        ):
+            AuditFinding(
+                finding_id="a/b",
+                unit="changed_code",
+                summary="x",
+                severity="P2",
+            ),
+            AuditFinding(
+                finding_id="ok-1",
+                unit="not_a_unit",
+                summary="x",
+                severity="P2",
+            ),
+            AuditFinding(
+                finding_id="ok-1",
+                unit="changed_code",
+                summary="x" * 4001,
+                severity="P2",
+            ),
+        )
+        for finding in invalid:
             with self.assertRaises(ValidationError):
                 handoff.upsert_implementation_packet(packet, finding)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = FileWorkPacketHandoff(Path(tmp) / "data")
+            for finding in invalid:
+                with self.assertRaises(ValidationError):
+                    local.upsert_implementation_packet(packet, finding)
+            self.assertEqual(local.handoffs, [])
+            self.assertFalse((Path(tmp) / "data" / "chat-audit-handoffs").exists())
 
     def test_87_offline_mode_rejects_github_checkpoint_selectors(self):
         import argparse

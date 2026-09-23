@@ -766,6 +766,24 @@ def sanitize_finding(finding: AuditFinding) -> AuditFinding:
     )
 
 
+def finding_for_handoff_persistence(finding: AuditFinding) -> AuditFinding:
+    """Sanitize and revalidate every finding field before a handoff write.
+
+    Direct adapter calls bypass executor canonicalization. Local and GitHub
+    handoffs must persist this object only, so a caller-built ``AuditFinding``
+    cannot place an invalid id, unit, severity, or unsanitized summary into
+    durable state.
+    """
+    sanitized = sanitize_finding(finding)
+    validated = AuditFinding.from_dict(sanitized.to_dict())
+    return AuditFinding(
+        finding_id=validated.finding_id,
+        unit=validated.unit,
+        summary=sanitize_durable_text(validated.summary),
+        severity=validated.severity,
+    )
+
+
 def sanitize_evidence(evidence: AuditEvidence) -> AuditEvidence:
     return AuditEvidence(
         status=evidence.status,
@@ -1587,9 +1605,7 @@ class FileWorkPacketHandoff:
     def upsert_implementation_packet(
         self, packet: AuditControlPacket, finding: AuditFinding
     ) -> dict[str, Any]:
-        safe_finding = sanitize_finding(finding)
-        # Re-validate id so filenames never embed secret-like material.
-        AuditFinding.from_dict(safe_finding.to_dict())
+        safe_finding = finding_for_handoff_persistence(finding)
         record = {
             "title": f"[AI Work] Audit finding: {safe_finding.finding_id}",
             "repository": packet.target_repository,
