@@ -6,8 +6,8 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "IN_SLICE",
-  "canonical_revision": 22,
+  "audit_status": "SLICE_COMPLETE",
+  "canonical_revision": 23,
   "completed_units": {
     "dc94f1af7853bb217878e1ee:affected_tests_ci:6b17b957e45c87012e5089f5dbe16ef671b7af3f": {
       "audit_request": "AUDIT_UNIT=affected_tests_ci\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=NULL..6b17b957e45c87012e5089f5dbe16ef671b7af3f\nMODE=delta\nRUN_KEY=dc94f1af7853bb217878e1ee\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
@@ -22,6 +22,20 @@
       "outcome": "PASS",
       "target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
       "unit": "affected_tests_ci"
+    },
+    "dc94f1af7853bb217878e1ee:changed_code:6b17b957e45c87012e5089f5dbe16ef671b7af3f": {
+      "audit_request": "AUDIT_UNIT=changed_code\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=NULL..6b17b957e45c87012e5089f5dbe16ef671b7af3f\nMODE=delta\nRUN_KEY=dc94f1af7853bb217878e1ee\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
+      "evidence": {
+        "notes": "Reviewed ad9a7f9..6b17b95 diff: shared finding_for_handoff_persistence centralizes existing sanitize+schema validation for File/GitHub handoff boundaries and expands regression coverage; targeted and full tests pass.",
+        "status": "COMPLETE",
+        "target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
+        "truncated": false,
+        "unit": "changed_code"
+      },
+      "findings": [],
+      "outcome": "PASS",
+      "target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
+      "unit": "changed_code"
     },
     "dc94f1af7853bb217878e1ee:docs_spec_drift:6b17b957e45c87012e5089f5dbe16ef671b7af3f": {
       "audit_request": "AUDIT_UNIT=docs_spec_drift\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=NULL..6b17b957e45c87012e5089f5dbe16ef671b7af3f\nMODE=delta\nRUN_KEY=dc94f1af7853bb217878e1ee\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
@@ -53,29 +67,29 @@
     }
   },
   "current_target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
-  "current_unit": "changed_code",
+  "current_unit": null,
   "current_unit_index": 0,
   "fair_start_index": 2,
   "idempotency_run_key": "dc94f1af7853bb217878e1ee",
   "include_release_readiness": false,
   "last_audited_sha": null,
   "last_completed_slice": {
-    "audit_request": "AUDIT_UNIT=docs_spec_drift\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=NULL..6b17b957e45c87012e5089f5dbe16ef671b7af3f\nMODE=delta\nRUN_KEY=dc94f1af7853bb217878e1ee\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
+    "audit_request": "AUDIT_UNIT=changed_code\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=NULL..6b17b957e45c87012e5089f5dbe16ef671b7af3f\nMODE=delta\nRUN_KEY=dc94f1af7853bb217878e1ee\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
     "evidence": {
-      "notes": "HEAD 6b17b95 changes only atlas/chat_audit.py, atlas/chat_audit_github.py, and tests/test_chat_audit.py. Supported production CLI/runbook behavior is unchanged; no documentation or published schema drift found.",
+      "notes": "Reviewed ad9a7f9..6b17b95 diff: shared finding_for_handoff_persistence centralizes existing sanitize+schema validation for File/GitHub handoff boundaries and expands regression coverage; targeted and full tests pass.",
       "status": "COMPLETE",
       "target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
       "truncated": false,
-      "unit": "docs_spec_drift"
+      "unit": "changed_code"
     },
     "findings": [],
     "outcome": "PASS",
     "target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
-    "unit": "docs_spec_drift"
+    "unit": "changed_code"
   },
   "last_coordination_refresh": null,
   "mode": "delta",
-  "next_action": "complete_or_resume_unit:changed_code",
+  "next_action": "run_next_audit_slice",
   "no_change_runs": 0,
   "open_findings": [],
   "schema_version": 1,
@@ -85,15 +99,7 @@
     "rollover_count": 0,
     "state": "ACTIVE"
   },
-  "slice_claim": {
-    "claim_id": "fbd599ae-95c1-4002-8d5b-67ca34ccf0a9",
-    "claimed_at": 1790166206.68496,
-    "lease_seconds": 900.0,
-    "run_key": "dc94f1af7853bb217878e1ee",
-    "state": "executing",
-    "target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
-    "unit": "changed_code"
-  },
+  "slice_claim": null,
   "target_branch": "feature/continuous-chat-audit-supervisor-poc",
   "target_repository": "datarelay-labs/datarelay-atlas"
 }
