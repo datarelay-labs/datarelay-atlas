@@ -14,11 +14,14 @@ from atlas.chat_audit import (
     ExternalEvidenceUnitExecutor,
     FakeBrowserRolloverProvider,
     FileWorkPacketHandoff,
+    FixedCoordinationRefresher,
     FixedUnitExecutor,
     StagehandRolloverProvider,
 )
 from atlas.chat_audit_github import (
     GitHubAIWorkHandoff,
+    GitHubCoordinationRefresher,
+    publish_active_checkpoint_pointer,
     resolve_checkpoint_store,
 )
 from atlas.codex_audit import CodexAuditProvider
@@ -274,11 +277,28 @@ def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
     if not worktree and not allow_trusted:
         # Production/default Chat path: derive identity from the worktree.
         worktree = str(Path.cwd())
+    if offline:
+        coordination = FixedCoordinationRefresher()
+    elif repository:
+        issue_number = getattr(store, "issue_number", None)
+        coordination = GitHubCoordinationRefresher(
+            repository=repository,
+            work_packet_issue=int(issue_number) if issue_number else None,
+        )
+    else:
+        coordination = FixedCoordinationRefresher(
+            {
+                "status": "HUMAN_REQUIRED",
+                "outcome": "HUMAN_REQUIRED",
+                "reasons": ["coordination_repository_required"],
+            }
+        )
     return ChatAuditController(
         store,
         executor=executor,
         handoff=handoff,
         rollover=rollover,
+        coordination=coordination,
         worktree_path=worktree,
         enforce_worktree_identity=bool(worktree),
         allow_trusted_identity=allow_trusted,
@@ -287,15 +307,24 @@ def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
 
 def cmd_ca_init(args: argparse.Namespace) -> int:
     ctl = _chat_audit_from_args(args)
-    _print_json(
-        ctl.initialize(
-            repository=args.repository,
-            branch=args.branch,
-            head=args.head,
-            include_release_readiness=bool(args.include_release_readiness),
-            mode=args.mode,
-        )
+    result = ctl.initialize(
+        repository=args.repository,
+        branch=args.branch,
+        head=args.head,
+        include_release_readiness=bool(args.include_release_readiness),
+        mode=args.mode,
     )
+    # Publish repo-managed pointer so fresh Chat can discover Issue N.
+    if not getattr(args, "allow_local_checkpoint", False):
+        issue = getattr(args, "checkpoint_issue", None)
+        if issue is None:
+            issue = getattr(getattr(ctl, "store", None), "issue_number", None)
+        if issue is not None:
+            result["active_checkpoint_pointer"] = publish_active_checkpoint_pointer(
+                repository=args.repository,
+                issue_number=int(issue),
+            )
+    _print_json(result)
     return 0
 
 

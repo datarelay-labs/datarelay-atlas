@@ -219,8 +219,12 @@ class AuditControlPacket:
     completed_units: dict[str, dict[str, Any]] = field(default_factory=dict)
     no_change_runs: int = 0
     slice_claim: dict[str, Any] | None = None
-    # Monotonic CAS token for GitHub-backed independent writers (0 = create).
+    # Monotonic observability counter (Contents blob SHA is the CAS token).
     canonical_revision: int = 0
+    # Rotating start index so HEAD advances cannot starve later audit units.
+    fair_start_index: int = 0
+    # Last same-HEAD coordination refresh evidence (PR/CI/review/work-packet).
+    last_coordination_refresh: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -244,6 +248,10 @@ class AuditControlPacket:
             "no_change_runs": self.no_change_runs,
             "slice_claim": copy.deepcopy(self.slice_claim),
             "canonical_revision": self.canonical_revision,
+            "fair_start_index": self.fair_start_index,
+            "last_coordination_refresh": copy.deepcopy(
+                self.last_coordination_refresh
+            ),
         }
 
     @classmethod
@@ -321,6 +329,16 @@ class AuditControlPacket:
         canonical_revision = int(raw.get("canonical_revision", 0))
         if canonical_revision < 0:
             raise ValidationError("canonical_revision must be non-negative")
+        fair_start_index = int(raw.get("fair_start_index", 0))
+        if fair_start_index < 0:
+            raise ValidationError("fair_start_index must be non-negative")
+        last_coordination_refresh = copy.deepcopy(
+            raw.get("last_coordination_refresh")
+        )
+        if last_coordination_refresh is not None and not isinstance(
+            last_coordination_refresh, dict
+        ):
+            raise ValidationError("last_coordination_refresh must be an object")
         slice_claim = copy.deepcopy(raw.get("slice_claim"))
         if slice_claim is not None:
             if not isinstance(slice_claim, dict):
@@ -385,6 +403,8 @@ class AuditControlPacket:
             no_change_runs=no_change_runs,
             slice_claim=slice_claim,
             canonical_revision=canonical_revision,
+            fair_start_index=fair_start_index % len(queue),
+            last_coordination_refresh=last_coordination_refresh,
         )
 
 
@@ -872,6 +892,38 @@ class RecordingWorkPacketHandoff:
         return record
 
 
+class CoordinationRefresher(Protocol):
+    """Same-HEAD refresh of Work Packet / PR / CI / review coordination state."""
+
+    def refresh(self, packet: AuditControlPacket) -> dict[str, Any]: ...
+
+
+class FixedCoordinationRefresher:
+    """Deterministic coordination adapter for tests / offline fixtures."""
+
+    def __init__(self, snapshot: dict[str, Any] | None = None):
+        self.snapshot = dict(
+            snapshot
+            or {
+                "status": "OK",
+                "outcome": "PASSED",
+                "reasons": [],
+                "work_packet": {"status": "ACTIVE"},
+                "pr": {"state": "OPEN"},
+                "ci": {"status": "OK"},
+                "reviews": {"actionable": False},
+            }
+        )
+        self.calls = 0
+
+    def refresh(self, packet: AuditControlPacket) -> dict[str, Any]:
+        self.calls += 1
+        out = copy.deepcopy(self.snapshot)
+        out["target_sha"] = packet.current_target_sha
+        out["collector"] = "atlas.chat_audit.FixedCoordinationRefresher"
+        return out
+
+
 def handoff_filename_for_finding_id(finding_id: str) -> str:
     """Collision-resistant filename: readable stem + digest of original ID."""
     digest = hashlib.sha256(finding_id.encode("utf-8")).hexdigest()[:16]
@@ -1003,6 +1055,7 @@ class ChatAuditController:
         executor: UnitExecutor | None = None,
         handoff: WorkPacketHandoff | None = None,
         rollover: BrowserRolloverProvider | None = None,
+        coordination: CoordinationRefresher | None = None,
         identity_resolver: IdentityResolver | None = None,
         git_runner: GitRunner = default_git_runner,
         worktree_path: str | None = None,
@@ -1013,6 +1066,7 @@ class ChatAuditController:
         self.executor = executor or FixedUnitExecutor()
         self.handoff = handoff or RecordingWorkPacketHandoff()
         self.rollover = rollover or FakeBrowserRolloverProvider()
+        self.coordination = coordination or FixedCoordinationRefresher()
         self.identity_resolver = identity_resolver
         self.git_runner = git_runner
         self.worktree_path = worktree_path
@@ -1492,8 +1546,14 @@ class ChatAuditController:
         packet.audit_queue = build_audit_queue(
             include_release_readiness=packet.include_release_readiness
         )
+        # Rotate start unit so continuous HEAD advances cannot starve later
+        # risk units forever while still requiring exact-head evidence per unit.
+        if packet.audit_queue:
+            packet.fair_start_index = (
+                int(packet.fair_start_index) + 1
+            ) % len(packet.audit_queue)
         packet.current_unit = None
-        packet.current_unit_index = 0
+        packet.current_unit_index = packet.fair_start_index
         packet.completed_units = {}
         packet.slice_claim = None
         # Prior findings belonged to the previous target SHA / handoff cycle.
@@ -1506,7 +1566,12 @@ class ChatAuditController:
         return packet
 
     def _select_next_unit(self, packet: AuditControlPacket) -> str | None:
-        for unit in packet.audit_queue:
+        queue = packet.audit_queue
+        if not queue:
+            return None
+        start = int(packet.fair_start_index) % len(queue)
+        for offset in range(len(queue)):
+            unit = queue[(start + offset) % len(queue)]
             unit_key = (
                 f"{packet.idempotency_run_key}:{unit}:"
                 f"{packet.current_target_sha}"
@@ -1530,6 +1595,43 @@ class ChatAuditController:
 
     def _cheap_no_change(self, packet: AuditControlPacket) -> dict[str, Any]:
         packet.no_change_runs += 1
+        snapshot = self.coordination.refresh(packet)
+        if not isinstance(snapshot, dict):
+            raise ValidationError("coordination refresh must return an object")
+        packet.last_coordination_refresh = copy.deepcopy(snapshot)
+        status = str(snapshot.get("status") or "ERROR").upper()
+        outcome = str(snapshot.get("outcome") or "").upper()
+        reasons = [
+            str(item) for item in (snapshot.get("reasons") or []) if item
+        ]
+        needs_attention = status not in {"OK", "PASSED"} or outcome in {
+            "HUMAN_REQUIRED",
+            "REWORK",
+            "FAIL",
+            "FAILED",
+            "ERROR",
+        }
+        if needs_attention or (status == "OK" and outcome == "HUMAN_REQUIRED"):
+            reason = reasons[0] if reasons else f"coordination_{status.lower()}"
+            packet.audit_status = "FINDINGS"
+            packet.current_unit = None
+            packet.slice_claim = None
+            packet.next_action = f"HUMAN_REQUIRED:coordination:{reason}"
+            packet.session.state = "STALLED"
+            packet.session.notes = sanitize_durable_text(
+                "; ".join(reasons)[:400] or reason
+            )
+            self.store.save(packet)
+            return {
+                "action": "cheap_no_change_rework",
+                "outcome": "HUMAN_REQUIRED",
+                "reason": reason,
+                "coordination": snapshot,
+                "packet": packet.to_dict(),
+                "cheap_no_change": True,
+                "units_executed": 0,
+                "idempotent_replay": False,
+            }
         packet.audit_status = (
             "FINDINGS" if packet.open_findings else "PASSED"
         )
@@ -1540,6 +1642,8 @@ class ChatAuditController:
         self.store.save(packet)
         return {
             "action": "cheap_no_change",
+            "outcome": "FINDINGS" if packet.open_findings else "PASSED",
+            "coordination": snapshot,
             "packet": packet.to_dict(),
             "cheap_no_change": True,
             "units_executed": 0,

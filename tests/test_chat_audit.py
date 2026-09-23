@@ -82,17 +82,18 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(ctl.show()["last_audited_sha"], HEAD_A)
             first_calls = list(executor.calls)
 
-            # Advance HEAD → new delta run should reset queue and execute again.
+            # Advance HEAD → fair rotation starts at affected_contracts (index 1).
             ctl._test_head["head"] = HEAD_B  # type: ignore[attr-defined]
             second = ctl.run_slice()
             self.assertEqual(second["action"], "slice_complete")
-            self.assertEqual(second["unit"], "changed_code")
+            self.assertEqual(second["unit"], "affected_contracts")
             packet = second["packet"]
             self.assertEqual(packet["last_audited_sha"], HEAD_A)
             self.assertEqual(packet["current_target_sha"], HEAD_B)
             self.assertEqual(packet["mode"], "delta")
+            self.assertEqual(packet["fair_start_index"], 1)
             self.assertIn(
-                ("changed_code", HEAD_B), executor.calls[len(first_calls) :]
+                ("affected_contracts", HEAD_B), executor.calls[len(first_calls) :]
             )
 
     def test_03_no_change_run_is_idempotent_and_cheap(self):
@@ -272,7 +273,7 @@ class ChatAuditTests(unittest.TestCase):
             self.assertIsNone(ctl.show()["last_audited_sha"])
             ctl._test_head["head"] = HEAD_B  # type: ignore[attr-defined]
             out = ctl.run_slice()
-            self.assertEqual(out["unit"], "changed_code")
+            self.assertEqual(out["unit"], "affected_contracts")
             packet = out["packet"]
             self.assertIsNone(packet["last_audited_sha"])
             self.assertEqual(packet["current_target_sha"], HEAD_B)
@@ -485,7 +486,7 @@ class ChatAuditTests(unittest.TestCase):
             ctl._test_head["head"] = HEAD_B  # type: ignore[attr-defined]
             ctl.executor = FixedUnitExecutor()
             nxt = ctl.run_slice()
-            self.assertEqual(nxt["unit"], "changed_code")
+            self.assertEqual(nxt["unit"], "affected_contracts")
             self.assertEqual(nxt["packet"]["open_findings"], [])
             # Drain remaining units on HEAD_B and ensure PASSED is reachable.
             while True:
@@ -1128,8 +1129,37 @@ class ChatAuditTests(unittest.TestCase):
         )
         state: dict[str, Any] = {"sha": None, "raw": None}
 
+        claims: dict[str, dict] = {}
+
         def runner(argv: list[str], cwd: str):
-            if argv[:2] == ["gh", "api"] and "--method" not in argv:
+            # Control-branch bootstrap metadata.
+            if argv[:2] == ["gh", "api"] and "repos/" + REPO == argv[-1]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"default_branch": "main"}), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "/git/ref/heads/" in argv[-1]:
+                if argv[-1].endswith("/atlas/chat-audit-control"):
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout=json.dumps({"object": {"sha": "1"*40}}), stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"object": {"sha": "1"*40}}), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "--method" not in argv and "/contents/" in " ".join(argv):
+                endpoint = argv[-1]
+                if "handoff-claims" in endpoint:
+                    key = endpoint.split("/contents/")[-1].split("?")[0]
+                    if key not in claims:
+                        return subprocess.CompletedProcess(
+                            argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                        )
+                    raw = claims[key]["raw"]
+                    encoded = base64.b64encode(raw.encode()).decode()
+                    return subprocess.CompletedProcess(
+                        argv, 0,
+                        stdout=json.dumps({"type":"file","sha":claims[key]["sha"],"content":encoded,"encoding":"base64"}),
+                        stderr="",
+                    )
                 if state["sha"] is None:
                     return subprocess.CompletedProcess(
                         argv, 1, stdout="", stderr="Not Found (HTTP 404)"
@@ -1151,8 +1181,25 @@ class ChatAuditTests(unittest.TestCase):
                     stderr="",
                 )
             if argv[:2] == ["gh", "api"] and "--method" in argv:
+                endpoint = ""
+                for a in argv:
+                    if a.startswith("repos/"):
+                        endpoint = a
                 idx = argv.index("--input")
                 body = json.loads(Path(argv[idx + 1]).read_text(encoding="utf-8"))
+                if "git/refs" in endpoint:
+                    return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+                if "handoff-claims" in endpoint:
+                    key = endpoint.split("/contents/")[-1]
+                    expected = body.get("sha")
+                    if key in claims and claims[key]["sha"] != expected:
+                        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="gh: HTTP 409")
+                    raw = base64.b64decode(body["content"]).decode()
+                    new_sha = hashlib.sha1(raw.encode()).hexdigest()
+                    claims[key] = {"raw": raw, "sha": new_sha}
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout=json.dumps({"content": {"sha": new_sha}}), stderr=""
+                    )
                 expected = body.get("sha")
                 if state["sha"] is None and expected:
                     return subprocess.CompletedProcess(
@@ -1228,24 +1275,41 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(record["issue_number"], 321)
 
             def runner2(argv: list[str], cwd: str):
-                if argv[:3] == ["gh", "issue", "list"]:
+                import subprocess
+
+                if argv[:2] == ["gh", "api"] and "repos/" + REPO == argv[-1]:
                     return subprocess.CompletedProcess(
                         argv,
                         0,
-                        stdout=json.dumps(
-                            [
-                                {
-                                    "number": 321,
-                                    "title": "[AI Work] Audit finding: gh-1",
-                                    "body": (
-                                        "<!-- atlas-chat-audit-finding-id:gh-1 -->\n"
-                                        "old"
-                                    ),
-                                    "url": "https://github.com/datarelay-labs/datarelay-atlas/issues/321",
-                                }
-                            ]
-                        ),
+                        stdout=json.dumps({"default_branch": "main"}),
                         stderr="",
+                    )
+                if argv[:2] == ["gh", "api"] and "/git/ref/heads/" in " ".join(argv):
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps({"object": {"sha": "1" * 40}}),
+                        stderr="",
+                    )
+                if argv[:2] == ["gh", "api"] and "/contents/" in " ".join(argv):
+                    # Claim already finalized by first handoff.
+                    for key, val in claims.items():
+                        if key in " ".join(argv):
+                            encoded = base64.b64encode(val["raw"].encode()).decode()
+                            return subprocess.CompletedProcess(
+                                argv,
+                                0,
+                                stdout=json.dumps(
+                                    {
+                                        "type": "file",
+                                        "sha": val["sha"],
+                                        "content": encoded,
+                                    }
+                                ),
+                                stderr="",
+                            )
+                    return subprocess.CompletedProcess(
+                        argv, 1, stdout="", stderr="Not Found (HTTP 404)"
                     )
                 if argv[:3] == ["gh", "issue", "edit"]:
                     return subprocess.CompletedProcess(
@@ -1582,6 +1646,288 @@ class ChatAuditTests(unittest.TestCase):
         self.assertEqual(
             final["next_action"],
             "writer-one" if winners[0] == "a" else "writer-two",
+        )
+
+
+    def test_44_cheap_path_fails_closed_on_coordination_rework(self):
+        from atlas.chat_audit import FixedCoordinationRefresher
+
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = FixedUnitExecutor()
+            ctl = self._ctl(tmp, executor=executor)
+            ctl.coordination = FixedCoordinationRefresher(
+                {
+                    "status": "HUMAN_REQUIRED",
+                    "outcome": "HUMAN_REQUIRED",
+                    "reasons": ["actionable_review"],
+                }
+            )
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            while ctl.run_slice()["action"] != "queue_complete":
+                pass
+            cheap = ctl.run_slice()
+            self.assertEqual(cheap["action"], "cheap_no_change_rework")
+            self.assertEqual(cheap["outcome"], "HUMAN_REQUIRED")
+            self.assertIn("actionable_review", cheap["reason"])
+            self.assertEqual(ctl.show()["audit_status"], "FINDINGS")
+            self.assertIsNotNone(ctl.show()["last_coordination_refresh"])
+
+    def test_45_head_advance_fair_rotation_avoids_starvation(self):
+        heads = [f"{i:040x}" for i in range(1, 8)]
+        executed = []
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = FixedUnitExecutor()
+            ctl = self._ctl(tmp, head=heads[0], executor=executor)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=heads[0])
+            for head in heads:
+                ctl._test_head["head"] = head  # type: ignore[attr-defined]
+                out = ctl.run_slice()
+                self.assertEqual(out["action"], "slice_complete")
+                executed.append(out["unit"])
+        # Across > queue-length HEAD advances, every default unit class appears.
+        for unit in [
+            "changed_code",
+            "affected_contracts",
+            "affected_tests_ci",
+            "security_impact",
+            "docs_spec_drift",
+        ]:
+            self.assertIn(unit, executed)
+        self.assertNotEqual(executed, ["changed_code"] * len(executed))
+
+    def test_46_failed_contents_put_does_not_poison_local_revision(self):
+        import base64
+        import hashlib
+        import subprocess
+
+        from atlas.chat_audit import AuditControlPacket, make_run_key
+        from atlas.chat_audit_github import GitHubContentsCheckpointStore
+        from atlas.provenance import ValidationError
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        packet = AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=[
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            idempotency_run_key=run_key,
+            canonical_revision=0,
+        )
+        state = {"sha": None, "raw": None, "fail_once": True}
+
+        def runner(argv: list[str], cwd: str):
+            if argv[:2] == ["gh", "api"] and "repos/" + REPO == argv[-1]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"default_branch": "main"}), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "/git/ref/heads/" in argv[-1]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"object": {"sha": "1"*40}}), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "--method" not in argv and "/contents/" in " ".join(argv):
+                if state["sha"] is None:
+                    return subprocess.CompletedProcess(
+                        argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                    )
+                encoded = base64.b64encode(state["raw"].encode()).decode()
+                return subprocess.CompletedProcess(
+                    argv, 0,
+                    stdout=json.dumps({"type":"file","sha":state["sha"],"content":encoded}),
+                    stderr="",
+                )
+            if argv[:2] == ["gh", "api"] and "--method" in argv:
+                endpoint = " ".join(argv)
+                if "git/refs" in endpoint:
+                    return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+                idx = argv.index("--input")
+                body = json.loads(Path(argv[idx + 1]).read_text(encoding="utf-8"))
+                if state["fail_once"]:
+                    state["fail_once"] = False
+                    return subprocess.CompletedProcess(
+                        argv, 1, stdout="", stderr="gh: HTTP 502 transient"
+                    )
+                raw = base64.b64decode(body["content"]).decode()
+                new_sha = hashlib.sha1(raw.encode()).hexdigest()
+                state["raw"] = raw
+                state["sha"] = new_sha
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"content": {"sha": new_sha}}), stderr=""
+                )
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="unexpected")
+
+        store = GitHubContentsCheckpointStore(
+            repository=REPO, issue_number=20, command_runner=runner
+        )
+        self.assertIsNone(store.load())
+        with self.assertRaises(ValidationError):
+            store.save(packet)
+        self.assertEqual(packet.canonical_revision, 0)
+        store.save(packet)
+        self.assertEqual(packet.canonical_revision, 1)
+
+
+    def test_47_concurrent_handoff_claim_cas_one_create(self):
+        """Barrier: two handoffs for same finding; exactly one issue create."""
+        import base64
+        import hashlib
+        import subprocess
+        import threading
+
+        from atlas.chat_audit import AuditControlPacket, AuditFinding, make_run_key
+        from atlas.chat_audit_github import GitHubAIWorkHandoff
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        packet = AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=[
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            idempotency_run_key=run_key,
+        )
+        finding = AuditFinding(
+            finding_id="same-id",
+            unit="changed_code",
+            summary="dup",
+            severity="P2",
+        )
+        claims: dict[str, dict] = {}
+        creates = {"n": 0}
+        lock = threading.Lock()
+        barrier = threading.Barrier(2, timeout=5)
+
+        def runner(argv: list[str], cwd: str):
+            if argv[:2] == ["gh", "api"] and argv[-1] == f"repos/{REPO}":
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"default_branch": "main"}), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "/git/ref/heads/" in " ".join(argv):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"object": {"sha": "1"*40}}), stderr=""
+                )
+            joined = " ".join(argv)
+            if argv[:2] == ["gh", "api"] and "--method" not in argv and "/contents/" in joined:
+                key = joined.split("/contents/")[-1].split("?")[0]
+                with lock:
+                    if key not in claims:
+                        return subprocess.CompletedProcess(
+                            argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                        )
+                    raw = claims[key]["raw"]
+                    encoded = base64.b64encode(raw.encode()).decode()
+                    return subprocess.CompletedProcess(
+                        argv, 0,
+                        stdout=json.dumps({"type":"file","sha":claims[key]["sha"],"content":encoded}),
+                        stderr="",
+                    )
+            if argv[:2] == ["gh", "api"] and "--method" in argv:
+                if "git/refs" in joined:
+                    return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+                idx = argv.index("--input")
+                body = json.loads(Path(argv[idx + 1]).read_text(encoding="utf-8"))
+                key = [a for a in argv if a.startswith("repos/")][0].split("/contents/")[-1]
+                # Synchronize only claim *creates* (no expected sha).
+                if body.get("sha") is None:
+                    barrier.wait()
+                with lock:
+                    expected = body.get("sha")
+                    if key in claims and claims[key]["sha"] != expected:
+                        return subprocess.CompletedProcess(
+                            argv, 1, stdout="", stderr="gh: HTTP 409"
+                        )
+                    if key not in claims and expected:
+                        return subprocess.CompletedProcess(
+                            argv, 1, stdout="", stderr="gh: HTTP 409"
+                        )
+                    raw = base64.b64decode(body["content"]).decode()
+                    new_sha = hashlib.sha1(raw.encode()).hexdigest()
+                    claims[key] = {"raw": raw, "sha": new_sha}
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout=json.dumps({"content": {"sha": new_sha}}), stderr=""
+                    )
+            if argv[:3] == ["gh", "issue", "create"]:
+                with lock:
+                    creates["n"] += 1
+                    n = 900 + creates["n"]
+                return subprocess.CompletedProcess(
+                    argv, 0,
+                    stdout=f"https://github.com/{REPO}/issues/{n}\n",
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="unexpected:"+str(argv[:6]))
+
+        a = GitHubAIWorkHandoff(repository=REPO, command_runner=runner)
+        b = GitHubAIWorkHandoff(repository=REPO, command_runner=runner)
+        outcomes = {}
+        errors = []
+
+        def run_a():
+            try:
+                outcomes["a"] = a.upsert_implementation_packet(packet, finding)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+                outcomes["a"] = {"error": str(exc)}
+
+        def run_b():
+            try:
+                outcomes["b"] = b.upsert_implementation_packet(packet, finding)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+                outcomes["b"] = {"error": str(exc)}
+
+        t1 = threading.Thread(target=run_a)
+        t2 = threading.Thread(target=run_b)
+        t1.start(); t2.start(); t1.join(5); t2.join(5)
+        self.assertEqual(errors, [])
+        self.assertEqual(creates["n"], 1)
+        actions = {outcomes["a"].get("action"), outcomes["b"].get("action")}
+        self.assertEqual(actions, {"created", "updated"})
+
+    def test_48_discover_checkpoint_issue_from_active_workstream(self):
+        import subprocess
+        from atlas.chat_audit_github import discover_checkpoint_issue
+
+        def runner(argv: list[str], cwd: str):
+            if argv[:2] == ["gh", "api"] and "/contents/" in " ".join(argv):
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                )
+            if argv[:3] == ["gh", "issue", "list"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        [
+                            {
+                                "number": 20,
+                                "title": "[AI Work] Continuous Chat Audit",
+                                "body": (
+                                    "WORKSTREAM=continuous-chat-audit-supervisor-poc\n"
+                                    "STATUS=ACTIVE\n"
+                                ),
+                            }
+                        ]
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="unexpected")
+
+        self.assertEqual(
+            discover_checkpoint_issue(repository=REPO, command_runner=runner),
+            20,
         )
 
 

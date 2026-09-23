@@ -12,10 +12,11 @@ Control Packet (and GitHub `[AI Work]` finding handoffs). Local
 ## Canonical checkpoint
 
 - Production: GitHub Contents API blob-SHA CAS via `--checkpoint-issue` /
-  `ATLAS_CHAT_AUDIT_ISSUE` (keys path
+  `ATLAS_CHAT_AUDIT_ISSUE` or automatic discovery (ACTIVE_CHECKPOINT_ISSUE
+  pointer / ACTIVE WORKSTREAM Issue). Path
   `.atlas/chat-audit/checkpoints/issue-N.json` on branch
-  `atlas/chat-audit-control`, overridable with
-  `ATLAS_CHAT_AUDIT_CHECKPOINT_BRANCH`). Issue body RMW is not canonical.
+  `atlas/chat-audit-control` (auto-bootstrapped from default branch).
+  Issue body RMW is not canonical.
 - Offline/test: `--allow-local-checkpoint` with `--unit-adapter fixed` or
   `--handoff local`.
 
