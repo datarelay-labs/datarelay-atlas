@@ -724,18 +724,47 @@ def _inline_body_actionable(text: str) -> bool:
     return False
 
 
+def _explicit_thread_resolution(entry: dict) -> bool:
+    """True only for a verified resolution signal, not an acknowledgement."""
+    for key in ("resolved", "is_resolved", "isResolved", "thread_resolved"):
+        if entry.get(key) is True:
+            return True
+    body = str(entry.get("body") or "")
+    if re.search(r"(?i)\bRESOLUTION\s*=\s*RESOLVED\b", body):
+        return True
+    if re.search(r"(?i)\bresolved:\s*true\b", body):
+        return True
+    return False
+
+
 def _historical_inline_thread_resolved(
-    entry: dict, replies: dict[object, list[dict]]
+    entry: dict,
+    replies: dict[object, list[dict]],
+    by_id: dict[object, dict],
 ) -> bool:
-    """A remapped old thread with a non-actionable reply is not a current finding."""
+    """Drop a remapped historical thread only when resolution is explicit.
+
+    A reply such as ``I'll investigate`` does not resolve an actionable
+    finding. GitHub thread-resolution fields and an exact ``RESOLUTION=RESOLVED``
+    or ``resolved: true`` marker do. Non-actionable historical noise is omitted
+    so it cannot exhaust the current-HEAD budget.
+    """
     parent = entry.get("in_reply_to_id")
     root_id = parent if parent is not None else entry.get("id")
-    thread_replies = replies.get(root_id, [])
-    if any(_inline_body_actionable(str(item.get("body") or "")) for item in thread_replies):
-        return False
-    if thread_replies:
+    root = by_id.get(root_id)
+    members: list[dict] = []
+    if isinstance(root, dict):
+        members.append(root)
+    elif isinstance(entry, dict):
+        members.append(entry)
+    members.extend(replies.get(root_id, []))
+    if any(_explicit_thread_resolution(item) for item in members):
         return True
-    return not _inline_body_actionable(str(entry.get("body") or ""))
+    if any(
+        _inline_body_actionable(str(item.get("body") or "")) for item in members
+    ):
+        return False
+    return True
 
 
 def _filter_inline_for_current_head(
@@ -745,13 +774,16 @@ def _filter_inline_for_current_head(
 
     GitHub may remap ``commit_id`` onto the current diff while
     ``original_commit_id`` stays the creation commit. Creation provenance
-    wins. A historical thread still on the current diff is kept only when it
-    has no resolving reply, so unresolved findings still block PASS.
+    wins. A historical actionable thread stays in the current set until an
+    explicit resolution signal is present.
     """
     replies: dict[object, list[dict]] = {}
+    by_id: dict[object, dict] = {}
     for entry in payload:
         if not isinstance(entry, dict):
             continue
+        if entry.get("id") is not None:
+            by_id[entry.get("id")] = entry
         parent = entry.get("in_reply_to_id")
         if parent is not None:
             replies.setdefault(parent, []).append(entry)
@@ -773,7 +805,9 @@ def _filter_inline_for_current_head(
             and mapped is not None
             and _commit_matches_target(mapped, target_sha)
         )
-        if remapped and not _historical_inline_thread_resolved(entry, replies):
+        if remapped and not _historical_inline_thread_resolved(
+            entry, replies, by_id
+        ):
             kept.append(entry)
     return kept
 

@@ -4230,7 +4230,8 @@ class ChatAuditTests(unittest.TestCase):
                     "id": 2000 + index,
                     "in_reply_to_id": root_id,
                     "user": {"login": "author"},
-                    "body": "fixed on a later commit",
+                    "body": "RESOLUTION=RESOLVED",
+                    "isResolved": True,
                     "commit_id": HEAD_A,
                     "original_commit_id": old,
                 }

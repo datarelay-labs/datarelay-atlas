@@ -1099,7 +1099,8 @@ class CodexAuditProviderTests(unittest.TestCase):
                     "id": 2000 + index,
                     "in_reply_to_id": root_id,
                     "user": {"login": "author"},
-                    "body": "fixed on a later commit",
+                    "body": "RESOLUTION=RESOLVED",
+                    "isResolved": True,
                     "commit_id": HEAD,
                     "original_commit_id": old,
                 }
@@ -1177,6 +1178,65 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertEqual(
             [item["id"] for item in open_result["inline_comments"]], [9]
         )
+
+        ack_thread = [
+            {
+                "id": 50,
+                "user": {"login": "reviewer"},
+                "body": "P1 still needs a fix",
+                "commit_id": HEAD,
+                "original_commit_id": old,
+            },
+            {
+                "id": 51,
+                "in_reply_to_id": 50,
+                "user": {"login": "author"},
+                "body": "I'll investigate",
+                "commit_id": HEAD,
+                "original_commit_id": old,
+            },
+        ]
+
+        def runner_ack(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [
+                    [
+                        {
+                            "id": 1,
+                            "user": {"login": "reviewer"},
+                            "state": "COMMENTED",
+                            "body": "exact-head review, no finding",
+                            "commit_id": HEAD,
+                        }
+                    ]
+                ]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [ack_thread]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        ack_result = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner_ack,
+            max_chars=2400,
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(ack_result["status"], "OK")
+        self.assertEqual(
+            [item["id"] for item in ack_result["inline_comments"]], [50, 51]
+        )
+        from atlas.chat_audit_github import _reviews_actionable_for_head
+
+        actionable, _count = _reviews_actionable_for_head(
+            ack_result, target_sha=HEAD
+        )
+        self.assertTrue(actionable)
 
     def test_bundle_includes_pr_reviews_when_ci_finds_pr(self):
         def fake_git(argv: list[str], cwd: str) -> str:
