@@ -1151,6 +1151,8 @@ def collect_audit_evidence_bundle(
                 repository=identity.repository,
                 pr_number=int(pr_number),
                 command_runner=command_runner,
+                target_sha=identity.head,
+                exclude_control_comments=True,
             )
         elif ci.get("status") == "ABSENT":
             bundle["pr_reviews"] = {

@@ -673,6 +673,9 @@ class GitHubAIWorkHandoff:
         self, packet: AuditControlPacket, finding: AuditFinding
     ) -> dict[str, Any]:
         safe = sanitize_finding(finding)
+        # Re-validate at this persistence boundary. Executor checks are not
+        # a substitute when a caller invokes the adapter directly.
+        safe = AuditFinding.from_dict(safe.to_dict())
         marker = f"{HANDOFF_MARKER}{safe.finding_id} -->"
         title = f"[AI Work] Audit finding: {safe.finding_id}"[:240]
         body = (

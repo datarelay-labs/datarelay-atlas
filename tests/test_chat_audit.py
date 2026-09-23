@@ -4844,6 +4844,45 @@ class ChatAuditTests(unittest.TestCase):
                 )
                 self.assertEqual(stored["audit_status"], status)
 
+    def test_86_github_handoff_revalidates_finding_before_write(self):
+        from atlas.chat_audit import AuditControlPacket, AuditFinding, make_run_key
+        from atlas.chat_audit_github import GitHubAIWorkHandoff
+
+        packet = AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=[
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            idempotency_run_key=make_run_key(REPO, BRANCH, HEAD_A),
+        )
+
+        def runner(argv, cwd):
+            raise AssertionError(f"github write attempted: {argv}")
+
+        handoff = GitHubAIWorkHandoff(repository=REPO, command_runner=runner)
+        for finding in (
+            AuditFinding(
+                finding_id="OPENAI_API_KEY:hunter2",
+                unit="changed_code",
+                summary="x",
+                severity="P1",
+            ),
+            AuditFinding(
+                finding_id="ok-1",
+                unit="changed_code",
+                summary="x",
+                severity="CRITICAL",
+            ),
+        ):
+            with self.assertRaises(ValidationError):
+                handoff.upsert_implementation_packet(packet, finding)
+
 
 if __name__ == "__main__":
     unittest.main()

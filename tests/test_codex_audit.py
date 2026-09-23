@@ -1533,6 +1533,9 @@ class CodexAuditProviderTests(unittest.TestCase):
                     argv, 0, stdout="check\tpass\n", stderr=""
                 )
             if argv[:2] == ["gh", "api"]:
+                graphql = _graphql_threads_result(argv)
+                if graphql is not None:
+                    return graphql
                 self.assertEqual(argv[2:4], ["--paginate", "--slurp"])
                 path = argv[4]
                 if path.endswith("/reviews"):
@@ -1663,6 +1666,137 @@ class CodexAuditProviderTests(unittest.TestCase):
             )
         self.assertEqual(bundle["ci"]["status"], "OK")
         self.assertEqual(bundle["pr_reviews"]["status"], "ERROR")
+
+    def test_bundle_review_evidence_ignores_historical_and_control_noise(self):
+        """Exact-HEAD Codex evidence must not be truncated by old review cycles."""
+        old = "cccccccccccccccccccccccccccccccccccccccc"
+        historical = []
+        for index in range(30):
+            historical.append(
+                {
+                    "id": 3000 + index,
+                    "user": {"login": "reviewer"},
+                    "body": "P1 historical finding " + ("y" * 500),
+                    "commit_id": old,
+                    "original_commit_id": old,
+                    "path": "atlas/chat_audit.py",
+                    "line": index + 1,
+                }
+            )
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            mapping = {
+                ("git", "status", "--short", "--branch"): "## feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "remote", "get-url", "origin"): "datarelay-labs/datarelay-atlas",
+                ("git", "diff", "--stat", "origin/main...HEAD"): "",
+                ("git", "diff", "--find-renames", "origin/main...HEAD"): "",
+                ("git", "diff", "--stat", "HEAD"): "",
+                ("git", "diff", "--find-renames", "HEAD"): "",
+                ("git", "diff", "--cached", "--stat"): "",
+                ("git", "diff", "--cached", "--find-renames"): "",
+            }
+            return mapping[tuple(argv)]
+
+        def fake_cmd(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "view"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "number": 12,
+                            "title": "[AI Work] x",
+                            "state": "OPEN",
+                            "updatedAt": "2026-09-21T00:00:00Z",
+                            "body": "STATUS=ACTIVE\n",
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "pr", "list"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        [
+                            {
+                                "number": 21,
+                                "url": "https://example.invalid/pr/21",
+                                "state": "OPEN",
+                                "title": "x",
+                                "headRefOid": HEAD,
+                            }
+                        ]
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
+            graphql = _graphql_threads_result(argv)
+            if graphql is not None:
+                self.assertIn(f"number=21", argv)
+                return graphql
+            if argv[:2] == ["gh", "api"]:
+                path = argv[-1]
+                if path.endswith("/reviews"):
+                    payload = [
+                        [
+                            {
+                                "id": 1,
+                                "user": {"login": "reviewer"},
+                                "state": "COMMENTED",
+                                "body": "P1 old review",
+                                "commit_id": old,
+                            },
+                            {
+                                "id": 2,
+                                "user": {"login": "reviewer"},
+                                "state": "COMMENTED",
+                                "body": "exact-head review, no finding",
+                                "commit_id": HEAD,
+                            },
+                        ]
+                    ]
+                elif "/pulls/" in path and path.endswith("/comments"):
+                    payload = [historical]
+                elif "/issues/" in path and path.endswith("/comments"):
+                    payload = [
+                        [
+                            {
+                                "id": 9,
+                                "user": {"login": "owner"},
+                                "body": (
+                                    "@codex review this exact HEAD. "
+                                    "P1 control request. Do not merge."
+                                ),
+                            }
+                        ]
+                    ]
+                else:
+                    raise AssertionError(argv)
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["python3", "-m", "unittest"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="OK\n", stderr="")
+            raise AssertionError(argv)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = collect_audit_evidence_bundle(
+                self._event(),
+                self._record(tmp),
+                identity=self._identity(tmp),
+                git_runner=fake_git,
+                command_runner=fake_cmd,
+            )
+        reviews = bundle["pr_reviews"]
+        self.assertEqual(reviews["status"], "OK")
+        self.assertEqual(reviews["target_sha"], HEAD)
+        self.assertEqual([item["id"] for item in reviews["reviews"]], [2])
+        self.assertEqual(reviews["inline_comments"], [])
+        self.assertEqual(reviews["conversation_comments"], [])
 
     def test_provider_skips_codex_when_pr_reviews_error(self):
         with tempfile.TemporaryDirectory() as tmp:
