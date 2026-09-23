@@ -1008,13 +1008,11 @@ def sanitize_coordination_snapshot(raw: dict[str, Any] | None) -> dict[str, Any]
     return out
 
 
-# Credential key, then a punctuation-only operator that ends in ``=``.
-# This covers valid Git branch text such as ``.=``, ``&&=``, ``||=``, and
-# ``@=`` without listing operators one review at a time. Alphanumeric branch
-# text (``feature/token-refresh``, ``feature/i+=1``) does not match.
+# Same path segment only. ``/`` starts a new Git ref segment, so
+# ``feature/PASSWORD/=docs`` is not the operator ``/=``.
 _BRANCH_COMPOUND_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?<![A-Za-z0-9_])(?:{_credential_name_pattern()})"
-    rf"[^A-Za-z0-9_=]*="
+    rf"[^A-Za-z0-9_=/]*="
 )
 
 
@@ -1022,10 +1020,10 @@ def require_persistable_branch(branch: str, *, label: str = "target_branch") -> 
     """Reject credential-bearing branch identities before durable writes.
 
     Redaction would change the canonical branch name, so unsafe material
-    fails closed instead of being rewritten. Append-style assignments such as
-    A credential key followed by a punctuation-only operator ending in ``=``
-    (``+=``, ``.=``, ``&&=``, ``||=``, ``@=``) is valid Git branch text and is
-    outside the shared prose sanitizer's ``key=value`` / ``key:value`` forms.
+    fails closed instead of being rewritten. A credential key followed by a
+    punctuation-only operator ending in ``=`` is rejected only inside the
+    same Git ref segment. ``/`` is a segment boundary, not part of the
+    operator.
     """
     value = str(branch or "").strip()
     if not value:

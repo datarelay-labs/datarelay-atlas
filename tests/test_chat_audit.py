@@ -5143,6 +5143,9 @@ class ChatAuditTests(unittest.TestCase):
             "feature/i.=1",
             "feature/i>>>=1",
             "feature/token-refresh",
+            "feature/PASSWORD/=docs",
+            "feature/TOKEN/@=docs",
+            "feature/SECRET/+=docs",
         ):
             safe = sanitize_packet_for_persistence(packet_for(branch))
             self.assertEqual(safe.target_branch, branch)
@@ -5152,7 +5155,6 @@ class ChatAuditTests(unittest.TestCase):
             "feature/PASSWORD+=hunter2",
             "feature/PASSWORD-=hunter2",
             "feature/PASSWORD.=hunter2",
-            "feature/PASSWORD/=hunter2",
             "feature/PASSWORD%=hunter2",
             "feature/PASSWORD&=hunter2",
             "feature/PASSWORD|=hunter2",
