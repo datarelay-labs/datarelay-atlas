@@ -47,6 +47,20 @@ DEFAULT_AUDIT_UNITS = (
     "docs_spec_drift",
 )
 FINDING_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+# Identifier policy, not prose redaction. Credential-key segments separated by
+# ``:`` / ``.`` / ``_`` / ``-`` are rejected even when the value is a short
+# identifier (``PASSWORD:hunter2``), which the prose classifier treats as a
+# type annotation.
+_FINDING_ID_CREDENTIAL_SEGMENT = re.compile(
+    r"(?i)^(?:"
+    r"OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|AWS_SECRET_ACCESS_KEY|"
+    r"AWS_ACCESS_KEY_ID|AZURE_CLIENT_SECRET|NPM_TOKEN|"
+    r"PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY_ID|ACCESS_KEY|APIKEY"
+    r")$"
+)
+_FINDING_ID_CREDENTIAL_SUFFIX = re.compile(
+    r"(?i)(?:PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY_ID|ACCESS_KEY)$"
+)
 FINDING_SEVERITIES = frozenset({"P0", "P1", "P2", "P3", "INFO"})
 ALLOWED_MODES = frozenset({"delta", "full"})
 CLAIM_STATES = frozenset(
@@ -82,6 +96,26 @@ SESSION_STATES = frozenset(
     }
 )
 EVIDENCE_STATUSES = frozenset({"COMPLETE", "TRUNCATED", "MISSING"})
+EXECUTOR_OUTCOMES = frozenset(
+    {"PASS", "FINDING", "TIMEOUT", "REJECTED", "AWAITING_EVIDENCE"}
+)
+
+
+def finding_id_embeds_credential_key(finding_id: str) -> bool:
+    """True when a finding id contains a credential-key segment.
+
+    This is intentionally stricter than ``contains_unsafe_secret``: prose
+    heuristics allow short colon values (``token: str``), but a finding id is
+    an identifier and must not carry ``PASSWORD:hunter2``-style assignments.
+    """
+    for segment in re.split(r"[^A-Za-z0-9]+", finding_id):
+        if not segment:
+            continue
+        if _FINDING_ID_CREDENTIAL_SEGMENT.match(segment):
+            return True
+        if _FINDING_ID_CREDENTIAL_SUFFIX.search(segment):
+            return True
+    return False
 
 
 @dataclass
@@ -102,6 +136,10 @@ class AuditFinding:
         if not FINDING_ID_RE.match(finding_id):
             raise ValidationError(
                 "finding_id must be a bounded [A-Za-z0-9._:-] identifier"
+            )
+        if finding_id_embeds_credential_key(finding_id):
+            raise ValidationError(
+                "finding_id must not contain credential-like material"
             )
         from atlas.secrets import contains_unsafe_secret
 
@@ -895,6 +933,81 @@ def sanitize_packet_for_persistence(
         sanitized.last_coordination_refresh
     )
     return sanitized
+
+
+def canonicalize_executor_slice_result(
+    result: SliceResult,
+    *,
+    expected_unit: str | None,
+    expected_sha: str,
+) -> SliceResult:
+    """Validate executor output through the same schema as durable state.
+
+    Runs before handoff and before any checkpoint mutation. Invalid finding
+    ids, severities, and evidence shapes raise ``ValidationError`` so they
+    cannot be handed off and then rejected only at persistence time.
+    """
+    if not isinstance(result, SliceResult):
+        raise ValidationError("executor result must be a SliceResult")
+    outcome = str(result.outcome or "").strip()
+    if outcome not in EXECUTOR_OUTCOMES:
+        raise ValidationError(f"unsupported executor outcome: {outcome!r}")
+    unit = str(result.unit or "").strip()
+    if not unit:
+        raise ValidationError("executor result missing unit")
+    if outcome in {"PASS", "FINDING"} and expected_unit and unit != expected_unit:
+        raise ValidationError("executor unit does not match claimed unit")
+    sha = require_exact_commit_sha(str(result.target_sha), label="result.target_sha")
+    if outcome in {"PASS", "FINDING"}:
+        checkpoint_sha = require_exact_commit_sha(
+            expected_sha, label="checkpoint target_sha"
+        )
+        if sha != checkpoint_sha:
+            raise ValidationError(
+                "stale evidence target SHA does not match checkpoint"
+            )
+    if not isinstance(result.findings, list):
+        raise ValidationError("executor findings must be a list")
+    findings: list[AuditFinding] = []
+    for item in result.findings:
+        raw = item.to_dict() if isinstance(item, AuditFinding) else item
+        finding = AuditFinding.from_dict(raw)
+        if finding.unit != unit:
+            raise ValidationError(
+                "finding.unit must match claimed/result/evidence unit"
+            )
+        findings.append(sanitize_finding(finding))
+    evidence: AuditEvidence | None = None
+    if result.evidence is not None:
+        raw_ev = (
+            result.evidence.to_dict()
+            if isinstance(result.evidence, AuditEvidence)
+            else result.evidence
+        )
+        if not isinstance(raw_ev, dict):
+            raise ValidationError("evidence must be an object")
+        if "truncated" not in raw_ev or not isinstance(raw_ev.get("truncated"), bool):
+            raise ValidationError(
+                "evidence.truncated must be an explicit boolean"
+            )
+        status = str(raw_ev.get("status") or "")
+        if status not in EVIDENCE_STATUSES:
+            raise ValidationError(f"unsupported evidence status: {status!r}")
+        evidence = sanitize_evidence(AuditEvidence.from_dict(raw_ev))
+        if outcome in {"PASS", "FINDING"}:
+            evidence_sha = require_exact_commit_sha(
+                evidence.target_sha, label="evidence.target_sha"
+            )
+            if evidence.unit != unit or evidence_sha != sha:
+                raise ValidationError("evidence unit/target_sha mismatch")
+    return SliceResult(
+        unit=unit,
+        target_sha=sha,
+        outcome=outcome,
+        findings=findings,
+        evidence=evidence,
+        audit_request=sanitize_durable_text(result.audit_request or ""),
+    )
 
 
 def sanitize_slice_result(result: SliceResult) -> SliceResult:
@@ -2034,54 +2147,80 @@ class ChatAuditController:
         phase: str,
         locked_packet: AuditControlPacket | None = None,
     ) -> dict[str, Any]:
-        """Fail closed after executor/handoff exception; allow immediate retry."""
+        """Fail closed after executor/handoff/save exception; allow immediate retry.
+
+        Always reloads canonical state. A locally mutated packet is not
+        authoritative: the result write may have committed before a cache
+        follow-up failed, or it may not have committed at all.
+        """
+
+        def _detail() -> str:
+            try:
+                return sanitize_durable_text(str(exc)[:400])
+            except ValidationError:
+                return "<redacted-exception>"
 
         def _apply(packet: AuditControlPacket) -> dict[str, Any]:
+            unit_key = (
+                f"{packet.idempotency_run_key}:{unit}:{packet.current_target_sha}"
+            )
+            if self._has_valid_completed_unit(packet, unit_key):
+                prior = packet.completed_units[unit_key]
+                return {
+                    "action": "idempotent_replay",
+                    "unit": unit,
+                    "outcome": prior.get("outcome"),
+                    "reason": "result_already_committed",
+                    "packet": packet.to_dict(),
+                    "cheap_no_change": False,
+                    "idempotent_replay": True,
+                }
             claim = packet.slice_claim or {}
             if claim.get("claim_id") != claim_id:
+                detail = _detail()
                 raise ValidationError(
+                    f"{phase} failed ({detail}); "
                     "slice claim lost or stolen during exception reconcile"
-                )
-            try:
-                detail = sanitize_durable_text(str(exc)[:400])
-            except ValidationError:
-                detail = "<redacted-exception>"
-            # Remain IN_SLICE with failed claim so the same unit is immediately
-            # reclaimable; next_action carries HUMAN_REQUIRED for operators.
-            packet.audit_status = "IN_SLICE"
-            packet.session.state = "STALLED"
-            packet.session.notes = detail
-            packet.next_action = f"HUMAN_REQUIRED:{phase}_exception:{unit}"
-            packet.slice_claim = {
+                ) from exc
+            detail = _detail()
+            # Copy until the failed-claim write succeeds so a second I/O
+            # error cannot drop the original executing claim from memory.
+            draft = copy.deepcopy(packet)
+            draft.audit_status = "IN_SLICE"
+            draft.session.state = "STALLED"
+            draft.session.notes = detail
+            draft.next_action = f"HUMAN_REQUIRED:{phase}_exception:{unit}"
+            draft.slice_claim = {
                 **claim,
                 "state": "failed",
                 "error_phase": phase,
                 "error": detail,
             }
-            # Keep current_unit so timeout/resume can reclaim the same slice.
-            packet.current_unit = unit
-            if unit in packet.audit_queue:
-                packet.current_unit_index = packet.audit_queue.index(unit)
-            self.store.save(packet)
+            draft.current_unit = unit
+            if unit in draft.audit_queue:
+                draft.current_unit_index = draft.audit_queue.index(unit)
+            self.store.save(draft)
             return {
                 "action": "failed_closed",
                 "unit": unit,
                 "outcome": "HUMAN_REQUIRED",
                 "reason": f"{phase}_exception",
-                "packet": packet.to_dict(),
+                "packet": draft.to_dict(),
                 "cheap_no_change": False,
                 "idempotent_replay": False,
             }
 
-        if locked_packet is not None:
-            return _apply(locked_packet)
         with self.store.lock():
             latest = self.store.load()
-            if latest is None:
-                raise ValidationError(
-                    "checkpoint disappeared during exception reconcile"
-                )
-            return _apply(latest)
+            if latest is not None:
+                return _apply(latest)
+            if locked_packet is not None and (
+                (locked_packet.slice_claim or {}).get("claim_id") == claim_id
+            ):
+                return _apply(copy.deepcopy(locked_packet))
+            raise ValidationError(
+                "checkpoint disappeared during exception reconcile"
+            ) from exc
 
     def _start_new_delta_run(
         self, packet: AuditControlPacket, new_head: str
@@ -2273,6 +2412,33 @@ class ChatAuditController:
             "idempotent_replay": False,
         }
 
+    def _persist_applied_packet(
+        self,
+        draft: AuditControlPacket,
+        *,
+        claim_id: str | None,
+        unit: str,
+    ) -> dict[str, Any] | None:
+        """Save a draft. On non-CAS failure, reconcile server truth.
+
+        Returns a terminal action when the write failed and was reconciled,
+        or None when the draft committed.
+        """
+        try:
+            self.store.save(draft)
+        except CheckpointCasConflict:
+            raise
+        except Exception as exc:
+            if not claim_id:
+                raise
+            return self._reconcile_slice_exception(
+                claim_id=claim_id,
+                unit=unit,
+                exc=exc,
+                phase="result_save",
+            )
+        return None
+
     def _apply_slice_result(
         self,
         packet: AuditControlPacket,
@@ -2284,7 +2450,32 @@ class ChatAuditController:
             claim = packet.slice_claim or {}
             if claim.get("claim_id") != claim_id:
                 raise ValidationError("slice claim mismatch while applying result")
-        result = sanitize_slice_result(result)
+        try:
+            result = canonicalize_executor_slice_result(
+                result,
+                expected_unit=packet.current_unit,
+                expected_sha=packet.current_target_sha,
+            )
+        except ValidationError as exc:
+            if not claim_id:
+                raise
+            unit = packet.current_unit or (
+                str(result.unit) if isinstance(result, SliceResult) else ""
+            )
+            return self._reconcile_slice_exception(
+                claim_id=claim_id,
+                unit=unit,
+                exc=exc,
+                phase="result_validation",
+            )
+        # Mutations land on a copy until save commits. The caller's packet
+        # keeps the original executing claim for any later reconcile.
+        packet = copy.deepcopy(packet)
+
+        def _commit() -> dict[str, Any] | None:
+            return self._persist_applied_packet(
+                packet, claim_id=claim_id, unit=result.unit
+            )
 
         if result.outcome == "TIMEOUT":
             packet.audit_status = "IN_SLICE"
@@ -2295,7 +2486,9 @@ class ChatAuditController:
                     **packet.slice_claim,
                     "state": "timed_out",
                 }
-            self.store.save(packet)
+            reconciled = _commit()
+            if reconciled is not None:
+                return reconciled
             return {
                 "action": "timeout_checkpointed",
                 "unit": result.unit,
@@ -2314,7 +2507,9 @@ class ChatAuditController:
                     **packet.slice_claim,
                     "state": "awaiting_evidence",
                 }
-            self.store.save(packet)
+            reconciled = _commit()
+            if reconciled is not None:
+                return reconciled
             return {
                 "action": "awaiting_evidence",
                 "unit": result.unit,
@@ -2332,7 +2527,9 @@ class ChatAuditController:
                 f"reject_incomplete_evidence:{result.unit}"
             )
             packet.slice_claim = None
-            self.store.save(packet)
+            reconciled = _commit()
+            if reconciled is not None:
+                return reconciled
             return {
                 "action": "failed_closed",
                 "unit": result.unit,
@@ -2372,7 +2569,9 @@ class ChatAuditController:
             packet.audit_status = "FAILED_CLOSED"
             packet.next_action = f"reject_unsupported_outcome:{result.outcome}"
             packet.slice_claim = None
-            self.store.save(packet)
+            reconciled = _commit()
+            if reconciled is not None:
+                return reconciled
             return {
                 "action": "failed_closed",
                 "unit": result.unit,
@@ -2387,7 +2586,9 @@ class ChatAuditController:
             packet.audit_status = "FAILED_CLOSED"
             packet.next_action = "reject_finding_without_payload"
             packet.slice_claim = None
-            self.store.save(packet)
+            reconciled = _commit()
+            if reconciled is not None:
+                return reconciled
             return {
                 "action": "failed_closed",
                 "unit": result.unit,
@@ -2402,7 +2603,9 @@ class ChatAuditController:
             packet.audit_status = "FAILED_CLOSED"
             packet.next_action = "reject_pass_with_findings"
             packet.slice_claim = None
-            self.store.save(packet)
+            reconciled = _commit()
+            if reconciled is not None:
+                return reconciled
             return {
                 "action": "failed_closed",
                 "unit": result.unit,
@@ -2437,7 +2640,9 @@ class ChatAuditController:
         packet.next_action = "run_next_audit_slice"
         if packet.session.state == "TIMEOUT":
             packet.session.state = "ACTIVE"
-        self.store.save(packet)
+        reconciled = _commit()
+        if reconciled is not None:
+            return reconciled
         return {
             "action": "slice_complete",
             "unit": result.unit,

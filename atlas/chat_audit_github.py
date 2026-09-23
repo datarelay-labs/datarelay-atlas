@@ -365,7 +365,12 @@ class GitHubContentsCheckpointStore:
         self._cas_blob_sha = blob_sha
         self._cas_loaded = True
         if self.cache is not None:
-            self.cache.save(packet)
+            try:
+                self.cache.save(packet)
+            except Exception:
+                # Cache is derived. A follow-up cache failure must not hide
+                # the canonical Contents payload already decoded above.
+                pass
         return packet
 
     def save(self, packet: AuditControlPacket) -> None:

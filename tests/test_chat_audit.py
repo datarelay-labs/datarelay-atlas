@@ -3307,6 +3307,231 @@ class ChatAuditTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 ctl.run_slice()
 
+    def _finding_executor(self, finding_id: str, severity: str = "P1"):
+        from atlas.chat_audit import AuditEvidence, AuditFinding, SliceResult
+
+        class _Executor:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def execute(self, packet, unit, audit_request):
+                self.calls.append(unit)
+                return SliceResult(
+                    unit=unit,
+                    target_sha=packet.current_target_sha,
+                    outcome="FINDING",
+                    findings=[
+                        AuditFinding(
+                            finding_id=finding_id,
+                            unit=unit,
+                            summary="bounded finding",
+                            severity=severity,
+                        )
+                    ],
+                    evidence=AuditEvidence(
+                        status="COMPLETE",
+                        unit=unit,
+                        target_sha=packet.current_target_sha,
+                        notes="complete evidence",
+                        truncated=False,
+                    ),
+                    audit_request=audit_request,
+                )
+
+        return _Executor()
+
+    def test_67_invalid_executor_findings_rejected_before_handoff(self):
+        from atlas.chat_audit import AuditFinding
+
+        cases = (
+            ("bad/id", "P1", "finding_id"),
+            ("ok-id", "INVALID", "severity"),
+        )
+        for finding_id, severity, needle in cases:
+            with self.subTest(finding_id=finding_id, severity=severity):
+                with self.assertRaises(ValidationError):
+                    AuditFinding.from_dict(
+                        {
+                            "finding_id": finding_id,
+                            "unit": "changed_code",
+                            "summary": "x",
+                            "severity": severity,
+                        }
+                    )
+                with tempfile.TemporaryDirectory() as tmp:
+                    handoff = RecordingWorkPacketHandoff()
+                    executor = self._finding_executor(finding_id, severity)
+                    ctl = self._ctl(tmp, executor=executor, handoff=handoff)
+                    ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+                    result = ctl.run_slice()
+                    self.assertEqual(result["action"], "failed_closed")
+                    self.assertEqual(result["reason"], "result_validation_exception")
+                    self.assertEqual(handoff.handoffs, [])
+                    self.assertEqual(executor.calls, ["changed_code"])
+                    packet = result["packet"]
+                    self.assertEqual(packet["audit_status"], "IN_SLICE")
+                    self.assertEqual(packet["slice_claim"]["state"], "failed")
+                    self.assertEqual(packet["open_findings"], [])
+                    self.assertEqual(packet["completed_units"], {})
+                    self.assertIn(needle, packet["session"]["notes"])
+                    self.assertNotIn("lost or stolen", packet["session"]["notes"])
+                    stored = json.loads(
+                        (Path(tmp) / "data" / "chat-audit.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    self.assertEqual(stored["audit_status"], "IN_SLICE")
+                    self.assertEqual(stored["slice_claim"]["state"], "failed")
+                    self.assertEqual(stored["slice_claim"]["claim_id"], packet["slice_claim"]["claim_id"])
+
+    def test_68_password_finding_id_rejected_before_handoff(self):
+        from atlas.chat_audit import AuditFinding
+        from atlas.secrets import contains_unsafe_secret
+
+        finding_id = "PASSWORD:hunter2"
+        self.assertFalse(contains_unsafe_secret(finding_id))
+        with self.assertRaises(ValidationError):
+            AuditFinding.from_dict(
+                {
+                    "finding_id": finding_id,
+                    "unit": "changed_code",
+                    "summary": "x",
+                    "severity": "P1",
+                }
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = RecordingWorkPacketHandoff()
+            ctl = self._ctl(
+                tmp,
+                executor=self._finding_executor(finding_id),
+                handoff=handoff,
+            )
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            result = ctl.run_slice()
+            self.assertEqual(result["action"], "failed_closed")
+            self.assertEqual(result["reason"], "result_validation_exception")
+            self.assertEqual(handoff.handoffs, [])
+            self.assertIn("credential-like", result["packet"]["session"]["notes"])
+            self.assertNotIn("hunter2", json.dumps(result["packet"]))
+            stored = json.loads(
+                (Path(tmp) / "data" / "chat-audit.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(stored["slice_claim"]["state"], "failed")
+            self.assertNotIn("hunter2", json.dumps(stored))
+            self.assertNotIn("lost or stolen", stored["slice_claim"].get("error", ""))
+
+    def test_69_result_save_failure_keeps_original_claim_retryable(self):
+        class FailBeforeCommit(FileCheckpointStore):
+            def __init__(self, data_root: Path):
+                super().__init__(data_root)
+                self.fail_result_saves = 1
+
+            def save(self, packet):
+                if (
+                    packet.audit_status == "SLICE_COMPLETE"
+                    and self.fail_result_saves > 0
+                ):
+                    self.fail_result_saves -= 1
+                    raise OSError("transient result save failure")
+                super().save(packet)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FailBeforeCommit(Path(tmp) / "data")
+            executor = FixedUnitExecutor()
+            current = {"head": HEAD_A}
+
+            def identity():
+                from atlas.chat_audit import Identity
+
+                return Identity(repository=REPO, branch=BRANCH, head=current["head"])
+
+            ctl = ChatAuditController(
+                store,
+                executor=executor,
+                handoff=RecordingWorkPacketHandoff(),
+                coordination=FixedCoordinationRefresher(),
+                identity_resolver=identity,
+            )
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            failed = ctl.run_slice()
+            self.assertEqual(failed["action"], "failed_closed")
+            self.assertEqual(failed["reason"], "result_save_exception")
+            self.assertIn(
+                "transient result save failure", failed["packet"]["session"]["notes"]
+            )
+            self.assertNotIn("lost or stolen", failed["packet"]["session"]["notes"])
+            claim = failed["packet"]["slice_claim"]
+            self.assertEqual(claim["state"], "failed")
+            self.assertEqual(failed["packet"]["audit_status"], "IN_SLICE")
+            self.assertEqual(failed["packet"]["completed_units"], {})
+            stored = json.loads(
+                (Path(tmp) / "data" / "chat-audit.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(stored["audit_status"], "IN_SLICE")
+            self.assertEqual(stored["slice_claim"]["state"], "failed")
+            self.assertEqual(stored["slice_claim"]["claim_id"], claim["claim_id"])
+            self.assertIn("transient result save failure", stored["slice_claim"]["error"])
+            retried = ctl.run_slice()
+            self.assertEqual(retried["action"], "slice_complete")
+            self.assertEqual(retried["unit"], "changed_code")
+            self.assertEqual(len(executor.calls), 2)
+
+    def test_70_committed_result_cache_error_replays_server_truth(self):
+        class CommitThenCacheError(FileCheckpointStore):
+            def __init__(self, data_root: Path):
+                super().__init__(data_root)
+                self.cache_failures = 0
+
+            def save(self, packet):
+                super().save(packet)
+                if (
+                    packet.audit_status == "SLICE_COMPLETE"
+                    and self.cache_failures == 0
+                ):
+                    self.cache_failures += 1
+                    raise OSError("cache follow-up failed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = CommitThenCacheError(Path(tmp) / "data")
+            executor = FixedUnitExecutor()
+            current = {"head": HEAD_A}
+
+            def identity():
+                from atlas.chat_audit import Identity
+
+                return Identity(repository=REPO, branch=BRANCH, head=current["head"])
+
+            ctl = ChatAuditController(
+                store,
+                executor=executor,
+                handoff=RecordingWorkPacketHandoff(),
+                coordination=FixedCoordinationRefresher(),
+                identity_resolver=identity,
+            )
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            replayed = ctl.run_slice()
+            self.assertEqual(replayed["action"], "idempotent_replay")
+            self.assertTrue(replayed["idempotent_replay"])
+            self.assertEqual(replayed["outcome"], "PASS")
+            self.assertEqual(replayed["reason"], "result_already_committed")
+            self.assertNotIn("lost or stolen", json.dumps(replayed))
+            packet = replayed["packet"]
+            self.assertEqual(packet["audit_status"], "SLICE_COMPLETE")
+            self.assertIsNone(packet["slice_claim"])
+            self.assertTrue(
+                any(key.endswith(f":changed_code:{HEAD_A}") for key in packet["completed_units"])
+            )
+            stored = json.loads(
+                (Path(tmp) / "data" / "chat-audit.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(stored["audit_status"], "SLICE_COMPLETE")
+            self.assertIsNone(stored["slice_claim"])
+            self.assertEqual(len(executor.calls), 1)
+            nxt = ctl.run_slice()
+            self.assertEqual(nxt["action"], "slice_complete")
+            self.assertEqual(nxt["unit"], "affected_contracts")
+            self.assertEqual(len(executor.calls), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
