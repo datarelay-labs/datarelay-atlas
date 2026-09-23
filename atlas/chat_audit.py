@@ -411,6 +411,24 @@ class AuditControlPacket:
         )
 
 
+def _claim_is_genuinely_live(claim: dict[str, Any] | None) -> bool:
+    """True only for an executing claim still inside its lease window."""
+    if not isinstance(claim, dict):
+        return False
+    if str(claim.get("state") or "") != "executing":
+        return False
+    claimed_raw = claim.get("claimed_at")
+    if isinstance(claimed_raw, bool) or not isinstance(claimed_raw, (int, float)):
+        return False
+    lease_raw = claim.get("lease_seconds", SLICE_CLAIM_LEASE_SECONDS)
+    if isinstance(lease_raw, bool) or not isinstance(lease_raw, (int, float)):
+        return False
+    if float(lease_raw) <= 0:
+        return False
+    age = time.time() - float(claimed_raw)
+    return 0 <= age < float(lease_raw)
+
+
 def make_run_key(repository: str, branch: str, target_sha: str) -> str:
     material = f"{repository}|{branch}|{target_sha.lower()}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
@@ -1127,14 +1145,41 @@ class ExternalEvidenceUnitExecutor:
             raise ValidationError(
                 "evidence target_sha must exactly equal current_target_sha"
             )
+        if "outcome" not in raw or raw.get("outcome") is None:
+            raise ValidationError(
+                "evidence payload must explicitly set outcome"
+            )
+        outcome = str(raw.get("outcome")).strip()
+        if outcome not in {"PASS", "FINDING", "TIMEOUT", "REJECTED"}:
+            raise ValidationError(
+                f"unsupported evidence outcome: {outcome!r}"
+            )
+        if "truncated" not in raw or not isinstance(raw.get("truncated"), bool):
+            raise ValidationError(
+                "evidence payload must explicitly set boolean truncated"
+            )
+        if "status" not in raw or not str(raw.get("status") or "").strip():
+            raise ValidationError(
+                "evidence payload must explicitly set status"
+            )
+        status = str(raw["status"]).strip()
+        if status not in EVIDENCE_STATUSES:
+            raise ValidationError(f"unsupported evidence status: {status!r}")
+        truncated = raw["truncated"]
+        if outcome == "PASS" and (
+            truncated is not False or status != "COMPLETE"
+        ):
+            raise ValidationError(
+                "PASS evidence requires status=COMPLETE and truncated=false"
+            )
         evidence = sanitize_evidence(
             AuditEvidence.from_dict(
                 {
-                    "status": raw.get("status", "MISSING"),
+                    "status": status,
                     "unit": str(raw["unit"]),
                     "target_sha": evidence_sha,
                     "notes": raw.get("notes", ""),
-                    "truncated": bool(raw.get("truncated", False)),
+                    "truncated": truncated,
                 }
             )
         )
@@ -1142,7 +1187,6 @@ class ExternalEvidenceUnitExecutor:
             sanitize_finding(AuditFinding.from_dict(item))
             for item in raw.get("findings", [])
         ]
-        outcome = str(raw.get("outcome", "PASS"))
         return SliceResult(
             unit=unit,
             target_sha=packet.current_target_sha,
@@ -1514,10 +1558,17 @@ class ChatAuditController:
         packet = self.store.load()
         if packet is None:
             raise ValidationError("no chat-audit checkpoint present")
+        # Bind repo/branch. HEAD drift is resumable: run-slice rotates delta.
         self._assert_packet_matches_identity(
-            packet, identity, require_head=True
+            packet, identity, require_head=False
         )
-        return packet.to_dict()
+        payload = packet.to_dict()
+        payload["worktree_head"] = identity.head
+        payload["head_drift"] = not heads_match(
+            packet.current_target_sha, identity.head
+        )
+        payload["resumable"] = True
+        return payload
 
     def run_slice(
         self,
@@ -1579,11 +1630,17 @@ class ChatAuditController:
 
             # Refresh target SHA / queue when HEAD advanced.
             if not heads_match(packet.current_target_sha, identity.head):
-                if packet.audit_status == "IN_SLICE":
+                if packet.audit_status == "IN_SLICE" and _claim_is_genuinely_live(
+                    packet.slice_claim
+                ):
                     raise ValidationError(
-                        "stale HEAD during IN_SLICE: refuse to advance another "
-                        "run's checkpoint"
+                        "stale HEAD during live IN_SLICE claim: refuse to "
+                        "advance another run's checkpoint"
                     )
+                # Non-live IN_SLICE (timed_out, failed, expired executing) is
+                # abandoned inside the delta rotation: claim cleared and run
+                # key rebound to the new HEAD so a stale executor result cannot
+                # apply. Do not persist a half-cleared IN_SLICE packet.
                 packet = self._start_new_delta_run(packet, identity.head)
             elif packet.last_audited_sha and heads_match(
                 packet.last_audited_sha, identity.head
@@ -1834,13 +1891,18 @@ class ChatAuditController:
         if packet is None:
             raise ValidationError("no chat-audit checkpoint present")
         self._assert_packet_matches_identity(
-            packet, identity, require_head=True
+            packet, identity, require_head=False
         )
         return {
             "resume_command": RESUME_COMMAND,
             "target_repository": packet.target_repository,
             "target_branch": packet.target_branch,
             "current_target_sha": packet.current_target_sha,
+            "worktree_head": identity.head,
+            "head_drift": not heads_match(
+                packet.current_target_sha, identity.head
+            ),
+            "resumable": True,
             "last_audited_sha": packet.last_audited_sha,
             "audit_status": packet.audit_status,
             "current_unit": packet.current_unit,

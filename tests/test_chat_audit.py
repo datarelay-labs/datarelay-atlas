@@ -173,14 +173,17 @@ class ChatAuditTests(unittest.TestCase):
             self.assertTrue(replay["idempotent_replay"])
             self.assertEqual(replay["unit"], "changed_code")
 
-    def test_06_stale_head_during_in_slice_fails_closed(self):
+    def test_06_non_live_timeout_slice_rotates_on_head_advance(self):
         with tempfile.TemporaryDirectory() as tmp:
             executor = FixedUnitExecutor(timeout_units={"changed_code"})
             ctl = self._ctl(tmp, executor=executor)
-            ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            timed = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(timed["action"], "timeout_checkpointed")
             ctl._test_head["head"] = HEAD_B  # type: ignore[attr-defined]
-            with self.assertRaises(ValidationError):
-                ctl.run_slice()
+            advanced = ctl.run_slice()
+            self.assertEqual(advanced["action"], "slice_complete")
+            self.assertEqual(ctl.show()["current_target_sha"], HEAD_B)
+            self.assertFalse(ctl.show()["head_drift"])
 
     def test_07_truncated_evidence_cannot_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -758,6 +761,7 @@ class ChatAuditTests(unittest.TestCase):
                     "target_sha": HEAD_A,
                     "notes": notes,
                     "outcome": "FINDING",
+                    "truncated": False,
                     "findings": [
                         {
                             "finding_id": "sec-1",
@@ -1018,6 +1022,7 @@ class ChatAuditTests(unittest.TestCase):
                         "target_sha": HEAD_A,
                         "notes": "ok",
                         "outcome": "FINDING",
+                        "truncated": False,
                         "findings": [
                             {
                                 "finding_id": "mismatch-1",
@@ -3109,6 +3114,143 @@ class ChatAuditTests(unittest.TestCase):
             store.ensure_control_branch()
         self.assertNotIn("exists_race", str(ctx.exception).lower())
         self.assertIn("422", str(ctx.exception))
+
+    def test_62_show_and_resume_expose_head_drift_as_resumable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            ctl._test_head["head"] = HEAD_B  # type: ignore[attr-defined]
+            shown = ctl.show()
+            self.assertEqual(shown["current_target_sha"], HEAD_A)
+            self.assertEqual(shown["worktree_head"], HEAD_B)
+            self.assertTrue(shown["head_drift"])
+            self.assertTrue(shown["resumable"])
+            payload = ctl.resume_instruction_payload()
+            self.assertTrue(payload["head_drift"])
+            self.assertTrue(payload["resumable"])
+            self.assertEqual(payload["worktree_head"], HEAD_B)
+            self.assertEqual(payload["current_target_sha"], HEAD_A)
+            advanced = ctl.run_slice()
+            self.assertEqual(advanced["action"], "slice_complete")
+            self.assertEqual(ctl.show()["current_target_sha"], HEAD_B)
+            self.assertFalse(ctl.show()["head_drift"])
+
+    def test_63_non_live_old_slice_rotates_on_head_advance(self):
+        import time
+
+        from atlas.chat_audit import AuditControlPacket
+
+        cases = ("timed_out", "failed", "expired_executing")
+        for label in cases:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    ctl = self._ctl(tmp)
+                    ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+                    packet = AuditControlPacket.from_dict(ctl.show())
+                    packet.audit_status = "IN_SLICE"
+                    packet.current_unit = "changed_code"
+                    packet.current_unit_index = 0
+                    claim = {
+                        "claim_id": f"old-{label}",
+                        "unit": "changed_code",
+                        "run_key": packet.idempotency_run_key,
+                        "target_sha": HEAD_A,
+                        "state": "executing" if label == "expired_executing" else label,
+                        "claimed_at": time.time() - 10_000,
+                        "lease_seconds": 900,
+                    }
+                    if label != "expired_executing":
+                        claim["state"] = label
+                    packet.slice_claim = claim
+                    FileCheckpointStore(Path(tmp) / "data").save(packet)
+                    ctl._test_head["head"] = HEAD_B  # type: ignore[attr-defined]
+                    out = ctl.run_slice()
+                    self.assertEqual(out["action"], "slice_complete")
+                    shown = ctl.show()
+                    self.assertEqual(shown["current_target_sha"], HEAD_B)
+                    self.assertNotEqual(shown["audit_status"], "IN_SLICE")
+                    self.assertIsNone(shown["slice_claim"])
+
+    def test_64_live_inslice_claim_refuses_head_advance(self):
+        import time
+
+        from atlas.chat_audit import AuditControlPacket
+
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = FixedUnitExecutor()
+            ctl = self._ctl(tmp, executor=executor)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            packet = AuditControlPacket.from_dict(ctl.show())
+            packet.audit_status = "IN_SLICE"
+            packet.current_unit = "changed_code"
+            packet.current_unit_index = 0
+            packet.slice_claim = {
+                "claim_id": "live-claim",
+                "unit": "changed_code",
+                "run_key": packet.idempotency_run_key,
+                "target_sha": HEAD_A,
+                "state": "executing",
+                "claimed_at": time.time(),
+                "lease_seconds": 900,
+            }
+            FileCheckpointStore(Path(tmp) / "data").save(packet)
+            ctl._test_head["head"] = HEAD_B  # type: ignore[attr-defined]
+            calls_before = len(executor.calls)
+            with self.assertRaises(ValidationError) as ctx:
+                ctl.run_slice()
+            self.assertIn("live", str(ctx.exception).lower())
+            self.assertEqual(len(executor.calls), calls_before)
+            reloaded = FileCheckpointStore(Path(tmp) / "data").load()
+            assert reloaded is not None
+            self.assertEqual(reloaded.current_target_sha, HEAD_A)
+            self.assertEqual(reloaded.slice_claim["state"], "executing")
+
+    def test_65_external_evidence_requires_explicit_outcome_and_truncated(self):
+        from atlas.chat_audit import ExternalEvidenceUnitExecutor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(
+                tmp,
+                executor=ExternalEvidenceUnitExecutor(
+                    {
+                        "status": "COMPLETE",
+                        "unit": "changed_code",
+                        "target_sha": HEAD_A,
+                        "notes": "P1: authentication bypass found",
+                    }
+                ),
+            )
+            out = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+            self.assertEqual(out["action"], "failed_closed")
+            self.assertEqual(out["outcome"], "HUMAN_REQUIRED")
+            self.assertNotEqual(out["packet"]["audit_status"], "PASSED")
+            self.assertEqual(out["packet"]["open_findings"], [])
+
+            ctl.executor = ExternalEvidenceUnitExecutor(
+                {
+                    "status": "COMPLETE",
+                    "unit": "changed_code",
+                    "target_sha": HEAD_A,
+                    "notes": "looks fine",
+                    "outcome": "PASS",
+                }
+            )
+            missing_flag = ctl.run_slice()
+            self.assertEqual(missing_flag["action"], "failed_closed")
+            self.assertIn("truncated", missing_flag["packet"]["session"]["notes"])
+
+            ctl.executor = ExternalEvidenceUnitExecutor(
+                {
+                    "status": "COMPLETE",
+                    "unit": "changed_code",
+                    "target_sha": HEAD_A,
+                    "notes": "looks fine",
+                    "outcome": "PASS",
+                    "truncated": "false",
+                }
+            )
+            non_bool = ctl.run_slice()
+            self.assertEqual(non_bool["action"], "failed_closed")
 
 
 if __name__ == "__main__":
