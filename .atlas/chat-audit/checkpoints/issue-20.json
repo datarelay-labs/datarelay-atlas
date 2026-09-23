@@ -6,8 +6,8 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "SLICE_COMPLETE",
-  "canonical_revision": 50,
+  "audit_status": "PASSED",
+  "canonical_revision": 51,
   "completed_units": {
     "6d3ff204c1ceada7e992bb1e:affected_contracts:979541a259aa05e718213dd5045b00dfc4056ca7": {
       "audit_request": "AUDIT_UNIT=affected_contracts\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
@@ -86,7 +86,7 @@
   "fair_start_index": 3,
   "idempotency_run_key": "6d3ff204c1ceada7e992bb1e",
   "include_release_readiness": false,
-  "last_audited_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
+  "last_audited_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
   "last_completed_slice": {
     "audit_request": "AUDIT_UNIT=affected_tests_ci\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
     "evidence": {
@@ -131,7 +131,7 @@
     }
   },
   "mode": "delta",
-  "next_action": "run_next_audit_slice",
+  "next_action": "idle_until_next_scheduled_audit",
   "no_change_runs": 3,
   "open_findings": [],
   "schema_version": 1,
