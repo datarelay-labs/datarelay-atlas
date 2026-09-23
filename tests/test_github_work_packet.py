@@ -273,6 +273,40 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
         secretish = "access_token: bare-secret-value-12345"
         self.assertTrue(_looks_like_secret(secretish), secretish)
 
+    def test_short_bare_colon_credentials_are_rejected(self):
+        from atlas.work_controller import (
+            _contains_unsafe_secret,
+            _looks_like_secret,
+        )
+
+        samples = (
+            "password: hunter2",
+            "token: letmein",
+            "password: hunter",
+            "client_secret: secret",
+        )
+        for sample in samples:
+            self.assertTrue(_looks_like_secret(sample), sample)
+            self.assertTrue(_contains_unsafe_secret(sample), sample)
+            with self.assertRaises(ValidationError):
+                sanitize_rework_findings(sample)
+            redacted = redact_sensitive_audit_text(sample)
+            self.assertIn("<redacted>", redacted)
+            self.assertFalse(_contains_unsafe_secret(redacted), redacted)
+            self.assertNotIn("hunter2", redacted)
+            self.assertNotIn("letmein", redacted)
+            self.assertNotIn("hunter", redacted)
+            self.assertNotRegex(redacted, r":\s*secret\b")
+        for safe in (
+            "token: str",
+            "token: Optional",
+            "password: None",
+            "apiKey: SecretStr",
+        ):
+            self.assertFalse(_looks_like_secret(safe), safe)
+            self.assertFalse(_contains_unsafe_secret(safe), safe)
+            self.assertEqual(redact_sensitive_audit_text(safe), safe)
+
     def test_quoted_credential_values_match_selected_delimiter(self):
         from atlas.work_controller import _looks_like_secret
 
@@ -391,6 +425,8 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             "state": "OPEN",
             "body": SAMPLE_BODY,
             "updatedAt": "2026-09-22T01:00:00Z",
+            "author": {"login": "packet-author"},
+            "authorAssociation": "NONE",
         }
         payload.update(overrides)
         return payload
@@ -423,6 +459,40 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             and "per_page=100" in argv[4]
         )
 
+    @staticmethod
+    def _is_author_permission(argv: list[str]) -> bool:
+        return (
+            len(argv) == 3
+            and argv[:2] == ["gh", "api"]
+            and "/collaborators/" in argv[2]
+            and argv[2].endswith("/permission")
+        )
+
+    def _author_permission_response(
+        self, argv: list[str]
+    ) -> subprocess.CompletedProcess[str] | None:
+        if not self._is_author_permission(argv):
+            return None
+        mode = getattr(self, "_author_permission_mode", "write")
+        if mode == "api_failure":
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="HTTP 500"
+            )
+        if mode == "non_json":
+            return subprocess.CompletedProcess(
+                argv, 0, stdout="not-json", stderr=""
+            )
+        if mode == "missing":
+            return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+        if mode == "non_object":
+            return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps({"permission": mode}),
+            stderr="",
+        )
+
     def _rework_kwargs(self, **overrides):
         kwargs = {
             "repository": "datarelay-labs/datarelay-atlas",
@@ -442,6 +512,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
             calls.append(list(argv))
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
             if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv, 0, stdout=self._scan_pages(), stderr=""
@@ -459,7 +532,7 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
         adapter = GitHubWorkPacketAdapter(command_runner=runner)
         adapter.apply_rework_findings(**self._rework_kwargs())
-        self.assertEqual(len(calls), 4)  # list, view, recheck view, edit
+        self.assertEqual(len(calls), 5)  # list, view, permission, recheck view, edit
         self.assertTrue(self._is_issue_scan(calls[0]))
         self.assertNotIn("--limit", calls[0])
         self.assertEqual(
@@ -472,20 +545,82 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                 "--repo",
                 "datarelay-labs/datarelay-atlas",
                 "--json",
-                "number,title,state,body,updatedAt",
+                "number,title,state,body,updatedAt,author",
             ],
         )
-        self.assertEqual(calls[1], calls[2])
         self.assertEqual(
-            calls[3][:6],
+            calls[2],
+            [
+                "gh",
+                "api",
+                "repos/datarelay-labs/datarelay-atlas/collaborators/packet-author/permission",
+            ],
+        )
+        self.assertEqual(calls[1], calls[3])
+        self.assertEqual(
+            calls[4][:6],
             ["gh", "issue", "edit", "12", "--repo", "datarelay-labs/datarelay-atlas"],
         )
-        joined = " ".join(calls[3])
+        joined = " ".join(calls[4])
         self.assertNotIn("$(rm -rf /)", joined)
         self.assertEqual(len(body_files), 1)
         self.assertIn("fix gaps", body_files[0])
         self.assertIn("do not $(rm -rf /)", body_files[0])
-        self.assertFalse(Path(calls[3][calls[3].index("--body-file") + 1]).exists())
+        self.assertFalse(Path(calls[4][calls[4].index("--body-file") + 1]).exists())
+
+    def test_author_permission_required_before_mutation(self):
+        """Trusted permissions may edit; weaker, missing, or failed lookups must not."""
+        edits: list[list[str]] = []
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
+            if self._is_issue_scan(argv):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=self._scan_pages(), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "view"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(self._view_body), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                edits.append(list(argv))
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            self.fail(f"unexpected argv: {argv}")
+
+        trusted = ("write", "maintain", "admin")
+        for permission in trusted:
+            edits.clear()
+            self._author_permission_mode = permission
+            self._view_body = self._payload(authorAssociation="NONE")
+            GitHubWorkPacketAdapter(command_runner=runner).apply_rework_findings(
+                **self._rework_kwargs(findings="x")
+            )
+            self.assertEqual(len(edits), 1, permission)
+
+        blocked = ("read", "triage", "none", "missing", "unknown", "api_failure", "non_json", "non_object")
+        for mode in blocked:
+            edits.clear()
+            self._author_permission_mode = mode
+            self._view_body = self._payload(authorAssociation="OWNER")
+            adapter = GitHubWorkPacketAdapter(command_runner=runner)
+            with self.assertRaises(ValidationError) as ctx:
+                adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
+            self.assertIn("WORK_PACKET_AUTHOR_UNTRUSTED", str(ctx.exception))
+            self.assertEqual(edits, [], mode)
+
+        edits.clear()
+        self._author_permission_mode = "admin"
+        missing_author = self._payload(authorAssociation="OWNER")
+        missing_author.pop("author")
+        self._view_body = missing_author
+        with self.assertRaises(ValidationError) as ctx:
+            GitHubWorkPacketAdapter(command_runner=runner).apply_rework_findings(
+                **self._rework_kwargs(findings="x")
+            )
+        self.assertIn("WORK_PACKET_AUTHOR_UNTRUSTED", str(ctx.exception))
+        self.assertEqual(edits, [])
 
     def test_concurrent_change_fails_closed(self):
         views = [
@@ -497,6 +632,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         ]
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
             if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv, 0, stdout=self._scan_pages(), stderr=""
@@ -515,6 +653,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
     def test_edit_failure_raises_validation_error(self):
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
             if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv, 0, stdout=self._scan_pages(), stderr=""
@@ -544,6 +685,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
     def test_rejects_non_ai_work_issue(self):
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
             if self._is_issue_scan(argv):
                 # Unique match points at #12, but configured issue is #10.
                 return subprocess.CompletedProcess(
@@ -580,6 +724,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         )
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
             if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv,
@@ -630,6 +777,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         }
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
             if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv,
@@ -664,6 +814,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
     def test_uniqueness_scan_fails_closed_on_malformed_page(self):
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
             if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv,
@@ -686,6 +839,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         )
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
             if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv,
@@ -716,6 +872,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         )
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
             if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv,
@@ -808,6 +967,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         landed_bodies: list[str] = []
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
             if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv, 0, stdout=self._scan_pages(), stderr=""

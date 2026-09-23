@@ -448,24 +448,22 @@ def _normalize_json_quote_escapes(text: str) -> str:
 
 
 def _is_colon_type_or_prose_value(value: str) -> bool:
-    """True for type annotations / short prose, not credential-like colon values.
+    """True only for recognized type annotations, not short credential values.
 
-    Distinguishes ``token: str`` from ``access_token: bare-secret-value-12345``.
+    ``token: str`` and ``token: SecretStr`` stay exempt. Arbitrary short
+    identifiers such as ``password: hunter2`` or ``token: letmein`` do not.
     """
     v = (value or "").strip()
     if not v:
         return True
-    if re.fullmatch(
-        r"(?:str|int|float|bool|bytes|None|True|False|Any|Optional|"
-        r"List|Dict|Set|Tuple|Mapping|Sequence|Callable|Iterable|Iterator|"
-        r"object|type|list|dict|set|tuple|[A-Z][A-Za-z0-9_]*)",
-        v,
-    ):
-        return True
-    # Short plain identifiers without digits/punctuation are type/prose, not secrets.
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v) and len(v) < 16:
-        return True
-    return False
+    return bool(
+        re.fullmatch(
+            r"(?:str|int|float|bool|bytes|None|True|False|Any|Optional|"
+            r"List|Dict|Set|Tuple|Mapping|Sequence|Callable|Iterable|Iterator|"
+            r"object|type|list|dict|set|tuple|[A-Z][A-Za-z0-9_]*)",
+            v,
+        )
+    )
 
 
 def _looks_like_secret(text: str) -> bool:
@@ -733,6 +731,26 @@ def _flatten_paginated_issue_pages(raw: object) -> list[dict]:
                 )
             flat.append(item)
     return flat
+
+
+_TRUSTED_WORK_PACKET_AUTHOR_PERMISSIONS = frozenset({"write", "maintain", "admin"})
+
+
+def _github_login_from_issue(payload: dict) -> str:
+    """Return the issue author login, or fail closed when it is unusable.
+
+    ``author_association`` is intentionally ignored. Authorization uses only
+    the authenticated collaborators permission API.
+    """
+    author = payload.get("author")
+    login = ""
+    if isinstance(author, dict):
+        login = str(author.get("login") or "").strip()
+    elif isinstance(author, str):
+        login = author.strip()
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login):
+        raise ValidationError("WORK_PACKET_AUTHOR_UNTRUSTED: issue author missing")
+    return login
 
 
 def _leading_packet_metadata_text(body: str) -> str:
@@ -1133,6 +1151,7 @@ class GitHubWorkPacketAdapter:
             payload.get("updatedAt") or payload.get("updated_at") or ""
         )
         self._assert_ai_work_issue(payload, issue_number=int(issue_number))
+        self._require_trusted_issue_author(repo, payload)
         new_body = render_rework_work_packet_body(
             original_body,
             repository=repo,
@@ -1233,6 +1252,7 @@ class GitHubWorkPacketAdapter:
             payload.get("updatedAt") or payload.get("updated_at") or ""
         )
         self._assert_ai_work_issue(payload, issue_number=int(issue_number))
+        self._require_trusted_issue_author(repo, payload)
         new_body = render_dispatch_blocked_work_packet_body(
             original_body,
             repository=repo,
@@ -1295,6 +1315,40 @@ class GitHubWorkPacketAdapter:
                 or f"gh issue edit failed with exit {edit.returncode}"
             )
 
+    def _require_trusted_issue_author(self, repository: str, payload: dict) -> None:
+        """Reject mutation unless the author has write, maintain, or admin.
+
+        Matches ``/work-resume`` provenance: authenticated
+        ``repos/{owner}/{repo}/collaborators/{author}/permission`` only.
+        API failure, a missing author, or any weaker/unknown permission fails
+        closed before the packet body is changed. ``author_association`` is
+        not read.
+        """
+        login = _github_login_from_issue(payload)
+        path = f"repos/{repository}/collaborators/{login}/permission"
+        result = self._run(["gh", "api", path])
+        if result.returncode != 0:
+            raise ValidationError(
+                "WORK_PACKET_AUTHOR_UNTRUSTED: permission lookup failed"
+            )
+        try:
+            parsed = json.loads(result.stdout or "")
+        except json.JSONDecodeError as exc:
+            raise ValidationError(
+                "WORK_PACKET_AUTHOR_UNTRUSTED: permission lookup returned non-JSON"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise ValidationError(
+                "WORK_PACKET_AUTHOR_UNTRUSTED: permission lookup returned non-object"
+            )
+        permission = str(parsed.get("permission") or "").strip().lower()
+        if permission not in _TRUSTED_WORK_PACKET_AUTHOR_PERMISSIONS:
+            shown = permission or "missing"
+            raise ValidationError(
+                "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                f"permission {shown!r} is not write, maintain, or admin"
+            )
+
     def _view_issue(self, repository: str, issue_number: int) -> dict:
         view = self._run(
             [
@@ -1305,7 +1359,7 @@ class GitHubWorkPacketAdapter:
                 "--repo",
                 repository,
                 "--json",
-                "number,title,state,body,updatedAt",
+                "number,title,state,body,updatedAt,author",
             ]
         )
         if view.returncode != 0:
