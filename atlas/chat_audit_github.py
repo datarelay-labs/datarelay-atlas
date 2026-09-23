@@ -765,9 +765,26 @@ class GitHubCoordinationRefresher:
             if chosen is None and items:
                 # Branch has an open PR but not at exact audited HEAD.
                 reasons.append("pr_head_mismatch")
-                evidence["pr"] = {"status": "MISMATCH", "candidates": items}
+                # Persist only allowlisted candidate fields (no bodies).
+                evidence["pr"] = {
+                    "status": "MISMATCH",
+                    "candidates": [
+                        {
+                            "number": item.get("number"),
+                            "title": item.get("title"),
+                            "state": item.get("state"),
+                            "headRefOid": item.get("headRefOid"),
+                            "url": item.get("url"),
+                        }
+                        for item in items
+                        if isinstance(item, dict)
+                    ],
+                }
             elif chosen is None:
+                # Fail closed: without a PR at exact HEAD we cannot inspect
+                # CI/reviews — synthetic PASS is forbidden.
                 evidence["pr"] = {"status": "ABSENT"}
+                reasons.append("pr_absent")
             else:
                 evidence["pr"] = {
                     "status": "OK",

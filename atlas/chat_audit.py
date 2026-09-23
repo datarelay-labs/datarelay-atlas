@@ -433,24 +433,206 @@ def sanitize_evidence(evidence: AuditEvidence) -> AuditEvidence:
 
 
 def sanitize_slice_dict(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Normalize a persisted slice dict to an allowlisted, sanitized shape."""
     if raw is None:
         return None
-    out = copy.deepcopy(raw)
-    if isinstance(out.get("evidence"), dict) and "notes" in out["evidence"]:
-        out["evidence"]["notes"] = sanitize_durable_text(
-            str(out["evidence"].get("notes", ""))
+    if not isinstance(raw, dict):
+        raise ValidationError("slice payload must be an object")
+    allowed = {
+        "unit",
+        "target_sha",
+        "outcome",
+        "findings",
+        "evidence",
+        "audit_request",
+    }
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise ValidationError(
+            f"slice payload contains unsupported fields: {', '.join(unknown)}"
         )
-    findings = out.get("findings")
-    if isinstance(findings, list):
-        sanitized = []
+    out: dict[str, Any] = {}
+    if "unit" in raw:
+        out["unit"] = str(raw.get("unit") or "")
+    if "target_sha" in raw and raw.get("target_sha") is not None:
+        out["target_sha"] = str(raw.get("target_sha") or "")
+    if "outcome" in raw:
+        out["outcome"] = str(raw.get("outcome") or "")
+    if "audit_request" in raw:
+        out["audit_request"] = sanitize_durable_text(
+            str(raw.get("audit_request") or "")
+        )
+    evidence = raw.get("evidence")
+    if evidence is not None:
+        if not isinstance(evidence, dict):
+            raise ValidationError("slice evidence must be an object")
+        evidence_allowed = {"status", "unit", "target_sha", "notes", "truncated"}
+        e_unknown = sorted(set(evidence) - evidence_allowed)
+        if e_unknown:
+            raise ValidationError(
+                "slice evidence contains unsupported fields: "
+                + ", ".join(e_unknown)
+            )
+        out["evidence"] = {
+            "status": str(evidence.get("status") or ""),
+            "unit": str(evidence.get("unit") or ""),
+            "target_sha": str(evidence.get("target_sha") or ""),
+            "notes": sanitize_durable_text(str(evidence.get("notes") or "")),
+            "truncated": bool(evidence.get("truncated", False)),
+        }
+    findings = raw.get("findings")
+    if findings is not None:
+        if not isinstance(findings, list):
+            raise ValidationError("slice findings must be a list")
+        cleaned_findings = []
         for item in findings:
-            if isinstance(item, dict) and "summary" in item:
-                item = dict(item)
-                item["summary"] = sanitize_durable_text(str(item.get("summary", "")))
-            sanitized.append(item)
-        out["findings"] = sanitized
-    if "audit_request" in out:
-        out["audit_request"] = sanitize_durable_text(str(out.get("audit_request", "")))
+            if not isinstance(item, dict):
+                raise ValidationError("slice finding must be an object")
+            f_allowed = {"finding_id", "unit", "summary", "severity"}
+            f_unknown = sorted(set(item) - f_allowed)
+            if f_unknown:
+                raise ValidationError(
+                    "slice finding contains unsupported fields: "
+                    + ", ".join(f_unknown)
+                )
+            cleaned_findings.append(
+                {
+                    "finding_id": str(item.get("finding_id") or ""),
+                    "unit": str(item.get("unit") or ""),
+                    "summary": sanitize_durable_text(str(item.get("summary") or "")),
+                    "severity": str(item.get("severity") or ""),
+                }
+            )
+        out["findings"] = cleaned_findings
+    return out
+
+
+_COORDINATION_TOP_KEYS = frozenset(
+    {
+        "collector",
+        "target_sha",
+        "status",
+        "outcome",
+        "reasons",
+        "work_packet",
+        "pr",
+        "ci",
+        "reviews",
+    }
+)
+_COORDINATION_NESTED_KEYS: dict[str, frozenset[str]] = {
+    "work_packet": frozenset({"status", "state", "number", "updated_at"}),
+    "pr": frozenset({"status", "number", "state", "headRefOid", "url", "candidates"}),
+    "ci": frozenset({"status", "exit_code"}),
+    "reviews": frozenset({"status", "actionable", "count"}),
+}
+_PR_CANDIDATE_KEYS = frozenset({"number", "title", "state", "headRefOid", "url"})
+
+
+def _sanitize_durable_strings(value: Any, *, label: str) -> Any:
+    """Recursively sanitize string leaves; preserve bool/int/null structure."""
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        if value != value:  # NaN
+            raise ValidationError(f"{label} must not be NaN")
+        return value
+    if isinstance(value, str):
+        return sanitize_durable_text(value)
+    if isinstance(value, list):
+        return [
+            _sanitize_durable_strings(item, label=f"{label}[]") for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_durable_strings(item, label=f"{label}.{key}")
+            for key, item in value.items()
+        }
+    raise ValidationError(f"{label} has unsupported durable type {type(value).__name__}")
+
+
+def _sanitize_coordination_section(name: str, value: Any) -> Any:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValidationError(f"coordination.{name} must be an object")
+    allowed = _COORDINATION_NESTED_KEYS[name]
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValidationError(
+            f"coordination.{name} contains unsupported fields: "
+            + ", ".join(unknown)
+        )
+    out: dict[str, Any] = {}
+    for key in allowed:
+        if key not in value:
+            continue
+        item = value[key]
+        if key == "candidates":
+            if not isinstance(item, list):
+                raise ValidationError("coordination.pr.candidates must be a list")
+            cleaned_candidates = []
+            for cand in item:
+                if not isinstance(cand, dict):
+                    raise ValidationError(
+                        "coordination.pr.candidates entries must be objects"
+                    )
+                c_unknown = sorted(set(cand) - _PR_CANDIDATE_KEYS)
+                if c_unknown:
+                    raise ValidationError(
+                        "coordination.pr.candidates entry has unsupported fields: "
+                        + ", ".join(c_unknown)
+                    )
+                cleaned_candidates.append(
+                    _sanitize_durable_strings(cand, label="coordination.pr.candidates")
+                )
+            out[key] = cleaned_candidates
+            continue
+        if key == "actionable":
+            out[key] = bool(item)
+            continue
+        if key in {"number", "count", "exit_code"} and item is not None:
+            try:
+                out[key] = int(item)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(
+                    f"coordination.{name}.{key} must be an integer"
+                ) from exc
+            continue
+        out[key] = _sanitize_durable_strings(
+            item, label=f"coordination.{name}.{key}"
+        )
+    return out
+
+
+def sanitize_coordination_snapshot(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Allowlist + recursively sanitize coordination refresh evidence."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValidationError("last_coordination_refresh must be an object")
+    unknown = sorted(set(raw) - _COORDINATION_TOP_KEYS)
+    if unknown:
+        raise ValidationError(
+            "last_coordination_refresh contains unsupported fields: "
+            + ", ".join(unknown)
+        )
+    out: dict[str, Any] = {}
+    for key in _COORDINATION_TOP_KEYS:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if key == "reasons":
+            if not isinstance(value, list):
+                raise ValidationError("coordination reasons must be a list")
+            out["reasons"] = [
+                sanitize_durable_text(str(item)) for item in value if item is not None
+            ]
+            continue
+        if key in {"collector", "target_sha", "status", "outcome"}:
+            out[key] = sanitize_durable_text(str(value or ""))
+            continue
+        out[key] = _sanitize_coordination_section(key, value)
     return out
 
 
@@ -473,6 +655,9 @@ def sanitize_packet_for_persistence(
     sanitized.completed_units = cleaned_units
     sanitized.next_action = sanitize_durable_text(sanitized.next_action)
     sanitized.session.notes = sanitize_durable_text(sanitized.session.notes)
+    sanitized.last_coordination_refresh = sanitize_coordination_snapshot(
+        sanitized.last_coordination_refresh
+    )
     return sanitized
 
 
@@ -1066,7 +1251,13 @@ class ChatAuditController:
         self.executor = executor or FixedUnitExecutor()
         self.handoff = handoff or RecordingWorkPacketHandoff()
         self.rollover = rollover or FakeBrowserRolloverProvider()
-        self.coordination = coordination or FixedCoordinationRefresher()
+        if coordination is None:
+            raise ValidationError(
+                "ChatAuditController requires an explicit CoordinationRefresher; "
+                "FixedCoordinationRefresher is offline/test-only and must not be "
+                "the implicit production default"
+            )
+        self.coordination = coordination
         self.identity_resolver = identity_resolver
         self.git_runner = git_runner
         self.worktree_path = worktree_path
@@ -1663,21 +1854,33 @@ class ChatAuditController:
         snapshot = self.coordination.refresh(packet)
         if not isinstance(snapshot, dict):
             raise ValidationError("coordination refresh must return an object")
-        packet.last_coordination_refresh = copy.deepcopy(snapshot)
-        status = str(snapshot.get("status") or "ERROR").upper()
-        outcome = str(snapshot.get("outcome") or "").upper()
+        # Normalize/sanitize before mutation so durable leaves never retain
+        # raw external text (including nested review_body / extras).
+        safe_snapshot = sanitize_coordination_snapshot(snapshot)
+        assert safe_snapshot is not None
+        packet.last_coordination_refresh = copy.deepcopy(safe_snapshot)
+        status = str(safe_snapshot.get("status") or "").upper()
+        outcome = str(safe_snapshot.get("outcome") or "").upper()
         reasons = [
-            str(item) for item in (snapshot.get("reasons") or []) if item
+            str(item) for item in (safe_snapshot.get("reasons") or []) if item
         ]
-        needs_attention = status not in {"OK", "PASSED"} or outcome in {
-            "HUMAN_REQUIRED",
-            "REWORK",
-            "FAIL",
-            "FAILED",
-            "ERROR",
-        }
-        if needs_attention or (status == "OK" and outcome == "HUMAN_REQUIRED"):
-            reason = reasons[0] if reasons else f"coordination_{status.lower()}"
+        # Fail closed: only explicit OK/PASSED with empty reasons may PASS.
+        # Missing/unknown/blank outcome must not silently succeed.
+        explicit_pass = (
+            status in {"OK", "PASSED"}
+            and outcome in {"OK", "PASSED"}
+            and not reasons
+        )
+        if not explicit_pass:
+            reason = (
+                reasons[0]
+                if reasons
+                else (
+                    "coordination_outcome_missing"
+                    if not outcome
+                    else f"coordination_{status.lower() or 'unknown'}"
+                )
+            )
             packet.audit_status = "FINDINGS"
             packet.current_unit = None
             packet.slice_claim = None
@@ -1691,7 +1894,7 @@ class ChatAuditController:
                 "action": "cheap_no_change_rework",
                 "outcome": "HUMAN_REQUIRED",
                 "reason": reason,
-                "coordination": snapshot,
+                "coordination": safe_snapshot,
                 "packet": packet.to_dict(),
                 "cheap_no_change": True,
                 "units_executed": 0,
@@ -1708,7 +1911,7 @@ class ChatAuditController:
         return {
             "action": "cheap_no_change",
             "outcome": "FINDINGS" if packet.open_findings else "PASSED",
-            "coordination": snapshot,
+            "coordination": safe_snapshot,
             "packet": packet.to_dict(),
             "cheap_no_change": True,
             "units_executed": 0,

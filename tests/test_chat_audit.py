@@ -13,6 +13,7 @@ from atlas.chat_audit import (
     ChatAuditController,
     FakeBrowserRolloverProvider,
     FileCheckpointStore,
+    FixedCoordinationRefresher,
     FixedUnitExecutor,
     MemoryCheckpointStore,
     RecordingWorkPacketHandoff,
@@ -51,6 +52,7 @@ class ChatAuditTests(unittest.TestCase):
             executor=executor or FixedUnitExecutor(),
             handoff=handoff or RecordingWorkPacketHandoff(),
             rollover=rollover or FakeBrowserRolloverProvider(),
+            coordination=FixedCoordinationRefresher(),
             identity_resolver=identity,
         )
         ctl._test_head = current  # type: ignore[attr-defined]
@@ -211,6 +213,7 @@ class ChatAuditTests(unittest.TestCase):
             fresh = ChatAuditController(
                 store,
                 executor=FixedUnitExecutor(),
+                coordination=FixedCoordinationRefresher(),
                 identity_resolver=lambda: __import__(
                     "atlas.chat_audit", fromlist=["Identity"]
                 ).Identity(REPO, BRANCH, HEAD_A),
@@ -252,6 +255,7 @@ class ChatAuditTests(unittest.TestCase):
         ctl = ChatAuditController(
             store,
             rollover=blocked,
+            coordination=FixedCoordinationRefresher(),
             identity_resolver=lambda: __import__(
                 "atlas.chat_audit", fromlist=["Identity"]
             ).Identity(REPO, BRANCH, HEAD_A),
@@ -958,6 +962,7 @@ class ChatAuditTests(unittest.TestCase):
             ctl = ChatAuditController(
                 store,
                 executor=FixedUnitExecutor(),
+                coordination=FixedCoordinationRefresher(),
                 allow_trusted_identity=False,
             )
             with self.assertRaises(ValidationError):
@@ -982,6 +987,7 @@ class ChatAuditTests(unittest.TestCase):
             ctl = ChatAuditController(
                 store,
                 executor=FixedUnitExecutor(),
+                coordination=FixedCoordinationRefresher(),
                 identity_resolver=identity,
             )
             with self.assertRaises(ValidationError):
@@ -1474,6 +1480,7 @@ class ChatAuditTests(unittest.TestCase):
         ctl = ChatAuditController(
             store=CasFailStore(packet),
             executor=FixedUnitExecutor(),
+            coordination=FixedCoordinationRefresher(),
             allow_trusted_identity=True,
         )
         result = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
@@ -1975,6 +1982,7 @@ class ChatAuditTests(unittest.TestCase):
                 git_runner=git_runner,
                 worktree_path=tmp,
                 enforce_worktree_identity=True,
+                coordination=FixedCoordinationRefresher(),
             )
             with self.assertRaises(ValidationError) as ctx:
                 ctl.mark_session("STALLED", notes="should-fail")
@@ -2026,6 +2034,144 @@ class ChatAuditTests(unittest.TestCase):
             )
             self.assertNotIn("more-secret", finding.summary)
             self.assertNotIn("hunter2", finding.summary)
+
+    def test_51_production_cli_injects_github_coordination_refresher(self):
+        """Production path must never fall back to FixedCoordinationRefresher."""
+        import argparse
+        from unittest.mock import patch
+
+        from atlas.chat_audit import FixedCoordinationRefresher
+        from atlas.chat_audit_github import GitHubCoordinationRefresher
+        from atlas.cli import _chat_audit_from_args
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(
+                data_root=tmp,
+                repository=REPO,
+                checkpoint_issue=20,
+                unit_adapter="evidence",
+                allow_local_checkpoint=False,
+                evidence_file=None,
+                handoff="local",
+                rollover_provider="fake",
+                stagehand_approved=False,
+                worktree=None,
+                allow_trusted_identity=False,
+            )
+            with patch(
+                "atlas.cli.resolve_checkpoint_store",
+                return_value=FileCheckpointStore(Path(tmp) / "data"),
+            ):
+                ctl = _chat_audit_from_args(args)
+            self.assertIsInstance(
+                ctl.coordination, GitHubCoordinationRefresher
+            )
+            self.assertNotIsInstance(
+                ctl.coordination, FixedCoordinationRefresher
+            )
+
+            # Controller refuses implicit Fixed default.
+            with self.assertRaises(ValidationError) as ctx:
+                ChatAuditController(FileCheckpointStore(Path(tmp) / "data2"))
+            self.assertIn("CoordinationRefresher", str(ctx.exception))
+
+            # Offline/test path may use Fixed explicitly.
+            offline_args = argparse.Namespace(
+                data_root=tmp,
+                repository=None,
+                checkpoint_issue=None,
+                unit_adapter="fixed",
+                allow_local_checkpoint=True,
+                evidence_file=None,
+                handoff="local",
+                rollover_provider="fake",
+                stagehand_approved=False,
+                worktree=None,
+                allow_trusted_identity=True,
+            )
+            offline = _chat_audit_from_args(offline_args)
+            self.assertIsInstance(
+                offline.coordination, FixedCoordinationRefresher
+            )
+
+    def test_52_sanitize_packet_rejects_nested_coordination_and_slice_secrets(self):
+        """Durable persistence must not leave nested/extra secret leaves intact."""
+        from atlas.chat_audit import (
+            AuditControlPacket,
+            make_run_key,
+            sanitize_coordination_snapshot,
+            sanitize_packet_for_persistence,
+            sanitize_slice_dict,
+        )
+
+        queue = [
+            "changed_code",
+            "affected_contracts",
+            "affected_tests_ci",
+            "security_impact",
+            "docs_spec_drift",
+        ]
+        packet = AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=queue,
+            idempotency_run_key=make_run_key(REPO, BRANCH, HEAD_A),
+            last_coordination_refresh={
+                "collector": "test",
+                "status": "OK",
+                "outcome": "PASSED",
+                "reasons": [],
+                "reviews": {
+                    "status": "OK",
+                    "actionable": False,
+                    "count": 1,
+                    "review_body": "PASSWORD=hunter2-live",
+                },
+            },
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            sanitize_packet_for_persistence(packet)
+        self.assertIn("review_body", str(ctx.exception))
+
+        # Unknown slice extras are rejected (not copied through).
+        with self.assertRaises(ValidationError) as ctx2:
+            sanitize_slice_dict(
+                {
+                    "unit": "changed_code",
+                    "outcome": "PASS",
+                    "GH_TOKEN": "ghs_live_secret_value",
+                }
+            )
+        self.assertIn("GH_TOKEN", str(ctx2.exception))
+
+        # Allowlisted nested strings are still recursively redacted.
+        cleaned = sanitize_coordination_snapshot(
+            {
+                "collector": "test",
+                "status": "OK",
+                "outcome": "PASSED",
+                "reasons": ["PASSWORD=hunter2 more-secret"],
+                "reviews": {"status": "OK", "actionable": False, "count": 0},
+            }
+        )
+        assert cleaned is not None
+        self.assertNotIn("hunter2", cleaned["reasons"][0])
+        self.assertNotIn("more-secret", cleaned["reasons"][0])
+
+        # Cheap-path missing outcome fails closed (not synthetic PASS).
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.coordination = FixedCoordinationRefresher(
+                {"status": "OK", "reasons": []}  # outcome intentionally absent
+            )
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            while ctl.run_slice()["action"] != "queue_complete":
+                pass
+            cheap = ctl.run_slice()
+            self.assertEqual(cheap["action"], "cheap_no_change_rework")
+            self.assertEqual(cheap["outcome"], "HUMAN_REQUIRED")
+            self.assertIn("outcome_missing", cheap["reason"])
 
 
 if __name__ == "__main__":

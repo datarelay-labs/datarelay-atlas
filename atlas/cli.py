@@ -232,11 +232,26 @@ def cmd_wc_reconcile(args: argparse.Namespace) -> int:
 
 
 def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
+    from atlas.work_controller import default_git_runner, normalize_github_repository
+
     adapter = getattr(args, "unit_adapter", "evidence")
     offline = adapter == "fixed" or bool(
         getattr(args, "allow_local_checkpoint", False)
     )
+    worktree = getattr(args, "worktree", None)
+    allow_trusted = bool(getattr(args, "allow_trusted_identity", False)) or offline
+    if not worktree and not allow_trusted:
+        # Production/default Chat path: derive identity from the worktree.
+        worktree = str(Path.cwd())
+
     repository = getattr(args, "repository", None)
+    if not repository and not offline and worktree:
+        # Authoritative production identity: resolve owner/repo from origin.
+        origin = default_git_runner(
+            ["git", "remote", "get-url", "origin"], worktree
+        ).strip()
+        repository = normalize_github_repository(origin)
+
     store = resolve_checkpoint_store(
         data_root=Path(args.data_root),
         repository=repository,
@@ -272,26 +287,20 @@ def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
         )
     else:
         rollover = FakeBrowserRolloverProvider()
-    worktree = getattr(args, "worktree", None)
-    allow_trusted = bool(getattr(args, "allow_trusted_identity", False)) or offline
-    if not worktree and not allow_trusted:
-        # Production/default Chat path: derive identity from the worktree.
-        worktree = str(Path.cwd())
     if offline:
+        # FixedCoordinationRefresher is explicit offline/test only.
         coordination = FixedCoordinationRefresher()
-    elif repository:
+    else:
+        if not repository:
+            raise ValidationError(
+                "repository is required for GitHub coordination refresh; "
+                "pass --repository or run inside a Git worktree with origin"
+            )
         issue_number = getattr(store, "issue_number", None)
         coordination = GitHubCoordinationRefresher(
             repository=repository,
             work_packet_issue=int(issue_number) if issue_number else None,
-        )
-    else:
-        coordination = FixedCoordinationRefresher(
-            {
-                "status": "HUMAN_REQUIRED",
-                "outcome": "HUMAN_REQUIRED",
-                "reasons": ["coordination_repository_required"],
-            }
+            cwd=worktree,
         )
     return ChatAuditController(
         store,
