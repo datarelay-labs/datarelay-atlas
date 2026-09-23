@@ -1256,6 +1256,28 @@ class ChatAuditTests(unittest.TestCase):
                     stdout="https://github.com/datarelay-labs/datarelay-atlas/issues/321\n",
                     stderr="",
                 )
+            if argv[:3] == ["gh", "issue", "view"]:
+                number = int(argv[3])
+                body = (
+                    f"<!-- atlas-chat-audit-finding-id:gh-1 -->\n"
+                    f"TARGET_REPO={REPO}\nSTATUS=ACTIVE\n"
+                )
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "number": number,
+                            "title": "[AI Work] Audit finding: gh-1",
+                            "state": "OPEN",
+                            "body": body,
+                            "url": f"https://github.com/{REPO}/issues/{number}",
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
             return subprocess.CompletedProcess(argv, 1, stdout="", stderr="unexpected")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1327,6 +1349,26 @@ class ChatAuditTests(unittest.TestCase):
                 if argv[:3] == ["gh", "issue", "edit"]:
                     return subprocess.CompletedProcess(
                         argv, 0, stdout="", stderr=""
+                    )
+                if argv[:3] == ["gh", "issue", "view"]:
+                    number = int(argv[3])
+                    body = (
+                        f"<!-- atlas-chat-audit-finding-id:gh-1 -->\n"
+                        f"TARGET_REPO={REPO}\nSTATUS=ACTIVE\n"
+                    )
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            {
+                                "number": number,
+                                "title": "[AI Work] Audit finding: gh-1",
+                                "state": "OPEN",
+                                "body": body,
+                                "url": f"https://github.com/{REPO}/issues/{number}",
+                            }
+                        ),
+                        stderr="",
                     )
                 return subprocess.CompletedProcess(
                     argv, 1, stdout="", stderr="unexpected"
@@ -1879,6 +1921,49 @@ class ChatAuditTests(unittest.TestCase):
                     stdout=f"https://github.com/{REPO}/issues/{n}\n",
                     stderr="",
                 )
+            if argv[:3] == ["gh", "issue", "list"]:
+                with lock:
+                    if creates["n"] == 0:
+                        return subprocess.CompletedProcess(
+                            argv, 0, stdout="[]", stderr=""
+                        )
+                    n = 900 + creates["n"]
+                    marker = "<!-- atlas-chat-audit-finding-id:same-id -->"
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            [
+                                {
+                                    "number": n,
+                                    "title": "[AI Work] Audit finding: same-id",
+                                    "body": f"{marker}\nTARGET_REPO={REPO}\nSTATUS=ACTIVE\n",
+                                    "url": f"https://github.com/{REPO}/issues/{n}",
+                                }
+                            ]
+                        ),
+                        stderr="",
+                    )
+            if argv[:3] == ["gh", "issue", "view"]:
+                number = int(argv[3])
+                body = (
+                    f"<!-- atlas-chat-audit-finding-id:same-id -->\n"
+                    f"TARGET_REPO={REPO}\nSTATUS=ACTIVE\n"
+                )
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "number": number,
+                            "title": "[AI Work] Audit finding: same-id",
+                            "state": "OPEN",
+                            "body": body,
+                            "url": f"https://github.com/{REPO}/issues/{number}",
+                        }
+                    ),
+                    stderr="",
+                )
             if argv[:3] == ["gh", "issue", "edit"]:
                 return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
             return subprocess.CompletedProcess(argv, 1, stdout="", stderr="unexpected:"+str(argv[:6]))
@@ -2302,6 +2387,456 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(cheap["outcome"], "HUMAN_REQUIRED")
             self.assertIn("outcome_unsupported", cheap["reason"])
             self.assertIn("maybe", cheap["reason"].lower())
+
+    def test_56_pending_handoff_claim_not_stealable_during_create(self):
+        """A owns pending+blocked create; B must not overwrite/create second Issue."""
+        import base64
+        import hashlib
+        import subprocess
+        import threading
+
+        from atlas.chat_audit import AuditControlPacket, AuditFinding, make_run_key
+        from atlas.chat_audit_github import GitHubAIWorkHandoff
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        packet = AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=[
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            idempotency_run_key=run_key,
+        )
+        finding = AuditFinding(
+            finding_id="steal-id",
+            unit="changed_code",
+            summary="dup",
+            severity="P2",
+        )
+        claims: dict[str, dict] = {}
+        creates = {"n": 0}
+        lock = threading.Lock()
+        a_in_create = threading.Event()
+        release_create = threading.Event()
+
+        def runner(argv: list[str], cwd: str):
+            if argv[:2] == ["gh", "api"] and argv[-1] == f"repos/{REPO}":
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"default_branch": "main"}), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "/git/ref/heads/" in " ".join(argv):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"object": {"sha": "1" * 40}}), stderr=""
+                )
+            joined = " ".join(argv)
+            if argv[:2] == ["gh", "api"] and "--method" not in argv and "/contents/" in joined:
+                key = joined.split("/contents/")[-1].split("?")[0]
+                with lock:
+                    if key not in claims:
+                        return subprocess.CompletedProcess(
+                            argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                        )
+                    raw = claims[key]["raw"]
+                    encoded = base64.b64encode(raw.encode()).decode()
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            {
+                                "type": "file",
+                                "sha": claims[key]["sha"],
+                                "content": encoded,
+                            }
+                        ),
+                        stderr="",
+                    )
+            if argv[:2] == ["gh", "api"] and "--method" in argv:
+                if "git/refs" in joined:
+                    return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+                idx = argv.index("--input")
+                body = json.loads(Path(argv[idx + 1]).read_text(encoding="utf-8"))
+                key = [a for a in argv if a.startswith("repos/")][0].split("/contents/")[-1]
+                with lock:
+                    expected = body.get("sha")
+                    if key in claims and claims[key]["sha"] != expected:
+                        return subprocess.CompletedProcess(
+                            argv, 1, stdout="", stderr="gh: HTTP 409"
+                        )
+                    # Refuse pending overwrite of live pending with different owner.
+                    raw = base64.b64decode(body["content"]).decode()
+                    incoming = json.loads(raw)
+                    if key in claims:
+                        existing = json.loads(claims[key]["raw"])
+                        if (
+                            existing.get("issue_number") is None
+                            and incoming.get("issue_number") is None
+                            and existing.get("owner_token")
+                            and incoming.get("owner_token")
+                            != existing.get("owner_token")
+                        ):
+                            return subprocess.CompletedProcess(
+                                argv, 1, stdout="", stderr="gh: HTTP 409"
+                            )
+                    new_sha = hashlib.sha1(raw.encode()).hexdigest()
+                    claims[key] = {"raw": raw, "sha": new_sha}
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps({"content": {"sha": new_sha}}),
+                        stderr="",
+                    )
+            if argv[:3] == ["gh", "issue", "list"]:
+                with lock:
+                    if creates["n"] == 0:
+                        return subprocess.CompletedProcess(
+                            argv, 0, stdout="[]", stderr=""
+                        )
+                    n = 901
+                    marker = "<!-- atlas-chat-audit-finding-id:steal-id -->"
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            [
+                                {
+                                    "number": n,
+                                    "title": "[AI Work] Audit finding: steal-id",
+                                    "body": f"{marker}\nTARGET_REPO={REPO}\n",
+                                    "url": f"https://github.com/{REPO}/issues/{n}",
+                                }
+                            ]
+                        ),
+                        stderr="",
+                    )
+            if argv[:3] == ["gh", "issue", "create"]:
+                a_in_create.set()
+                release_create.wait(timeout=5)
+                with lock:
+                    creates["n"] += 1
+                    n = 900 + creates["n"]
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=f"https://github.com/{REPO}/issues/{n}\n",
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "view"]:
+                number = int(argv[3])
+                body = (
+                    f"<!-- atlas-chat-audit-finding-id:steal-id -->\n"
+                    f"TARGET_REPO={REPO}\nSTATUS=ACTIVE\n"
+                )
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "number": number,
+                            "title": "[AI Work] Audit finding: steal-id",
+                            "state": "OPEN",
+                            "body": body,
+                            "url": f"https://github.com/{REPO}/issues/{number}",
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="unexpected:" + str(argv[:6])
+            )
+
+        a = GitHubAIWorkHandoff(repository=REPO, command_runner=runner)
+        b = GitHubAIWorkHandoff(repository=REPO, command_runner=runner)
+        outcomes: dict[str, Any] = {}
+        errors: list[BaseException] = []
+
+        def run_a():
+            try:
+                outcomes["a"] = a.upsert_implementation_packet(packet, finding)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+                outcomes["a"] = {"error": str(exc)}
+
+        def run_b():
+            self.assertTrue(a_in_create.wait(timeout=5))
+            try:
+                outcomes["b"] = b.upsert_implementation_packet(packet, finding)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+                outcomes["b"] = {"error": str(exc)}
+            finally:
+                release_create.set()
+
+        t1 = threading.Thread(target=run_a)
+        t2 = threading.Thread(target=run_b)
+        t1.start()
+        t2.start()
+        t1.join(10)
+        t2.join(10)
+        self.assertEqual(creates["n"], 1)
+        # B either waited then updated, or failed closed without creating.
+        self.assertTrue(
+            outcomes.get("b", {}).get("action") in {"updated", "created"}
+            or any("pending held" in str(e) for e in errors)
+            or outcomes.get("b", {}).get("action") == "updated"
+        )
+        if "error" not in outcomes.get("a", {}):
+            self.assertEqual(outcomes["a"]["action"], "created")
+        self.assertEqual(creates["n"], 1)
+
+    def test_57_pointer_publish_conflict_requires_matching_canonical(self):
+        import base64
+        import subprocess
+
+        from atlas.chat_audit import CheckpointCasConflict
+        from atlas.chat_audit_github import publish_active_checkpoint_pointer
+
+        state = {
+            "sha": "oldsha",
+            "raw": json.dumps(
+                {"issue_number": 99, "workstream": "continuous-chat-audit-supervisor-poc"}
+            ),
+        }
+
+        def runner(argv: list[str], cwd: str):
+            if argv[:2] == ["gh", "api"] and argv[-1] == f"repos/{REPO}":
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"default_branch": "main"}), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "/git/ref/heads/" in " ".join(argv):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"object": {"sha": "1" * 40}}), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "--method" not in argv and "/contents/" in " ".join(argv):
+                encoded = base64.b64encode(state["raw"].encode()).decode()
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {"type": "file", "sha": state["sha"], "content": encoded}
+                    ),
+                    stderr="",
+                )
+            if argv[:2] == ["gh", "api"] and "--method" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="gh: HTTP 409 Conflict"
+                )
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="unexpected")
+
+        with self.assertRaises(CheckpointCasConflict):
+            publish_active_checkpoint_pointer(
+                repository=REPO, issue_number=20, command_runner=runner
+            )
+
+        # Matching canonical pointer may succeed on conflict.
+        state["raw"] = json.dumps(
+            {
+                "issue_number": 20,
+                "workstream": "continuous-chat-audit-supervisor-poc",
+            }
+        )
+        out = publish_active_checkpoint_pointer(
+            repository=REPO, issue_number=20, command_runner=runner
+        )
+        self.assertEqual(out["issue_number"], 20)
+        self.assertTrue(out.get("already_matched"))
+
+    def test_58_discover_rejects_stale_wrong_workstream_pointer(self):
+        import base64
+        import subprocess
+
+        from atlas.chat_audit_github import discover_checkpoint_issue
+
+        pointer = {
+            "issue_number": 12,
+            "workstream": "other-workstream",
+        }
+
+        def runner(argv: list[str], cwd: str):
+            if argv[:2] == ["gh", "api"] and "/contents/" in " ".join(argv):
+                encoded = base64.b64encode(json.dumps(pointer).encode()).decode()
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {"type": "file", "sha": "p", "content": encoded}
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "list"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        [
+                            {
+                                "number": 20,
+                                "title": "[AI Work] continuous chat audit",
+                                "body": (
+                                    "WORKSTREAM=continuous-chat-audit-supervisor-poc\n"
+                                    "STATUS=ACTIVE\n"
+                                    f"TARGET_REPO={REPO}\n"
+                                ),
+                            }
+                        ]
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="unexpected")
+
+        self.assertEqual(
+            discover_checkpoint_issue(repository=REPO, command_runner=runner),
+            20,
+        )
+
+    def test_59_coordination_requires_active_wp_and_review_surfaces(self):
+        import subprocess
+
+        from atlas.chat_audit import AuditControlPacket, make_run_key
+        from atlas.chat_audit_github import GitHubCoordinationRefresher
+
+        packet = AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=[
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            idempotency_run_key=make_run_key(REPO, BRANCH, HEAD_A),
+        )
+        calls = {"inline": 0, "conversation": 0, "reviews": 0}
+
+        def mk(wp_status: str, *, include_pr: bool = True, inline_p1: bool = False):
+            def runner(argv: list[str], cwd: str):
+                joined = " ".join(argv)
+                if argv[:3] == ["gh", "issue", "view"]:
+                    body = (
+                        f"WORKSTREAM=continuous-chat-audit-supervisor-poc\n"
+                        f"STATUS={wp_status}\nTARGET_REPO={REPO}\n"
+                    )
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            {
+                                "number": 20,
+                                "title": "wp",
+                                "state": "OPEN",
+                                "body": body,
+                                "updatedAt": "t",
+                            }
+                        ),
+                        stderr="",
+                    )
+                if argv[:3] == ["gh", "pr", "list"]:
+                    if not include_pr:
+                        return subprocess.CompletedProcess(
+                            argv, 0, stdout="[]", stderr=""
+                        )
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            [
+                                {
+                                    "number": 21,
+                                    "title": "p",
+                                    "state": "OPEN",
+                                    "headRefOid": HEAD_A,
+                                    "url": "u",
+                                }
+                            ]
+                        ),
+                        stderr="",
+                    )
+                if argv[:3] == ["gh", "pr", "checks"]:
+                    out = (
+                        "adoption-compliance\tpass\t1s\t0\t\n"
+                        "enforcement-reconcile\tpass\t1s\t0\t\n"
+                        "affected-tests\tpass\t1s\t0\t\n"
+                    )
+                    return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+                if "--paginate" in argv and "--slurp" in argv:
+                    path = argv[-1]
+                    if path.endswith("/reviews"):
+                        calls["reviews"] += 1
+                        payload = [[{"body": "wrapper", "state": "COMMENTED", "commit_id": HEAD_A}]]
+                    elif path.endswith("/pulls/21/comments"):
+                        calls["inline"] += 1
+                        body = "P1 inline finding" if inline_p1 else "nit"
+                        payload = [[{"body": body, "commit_id": HEAD_A}]]
+                    elif path.endswith("/issues/21/comments"):
+                        calls["conversation"] += 1
+                        payload = [[{"body": "REWORK please"}]]
+                    else:
+                        payload = [[]]
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout=json.dumps(payload), stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="unexpected " + joined
+                )
+
+            return runner
+
+        for status in ["UNKNOWN", "COMPLETE", "HUMAN_REQUIRED", "REWORK"]:
+            snap = GitHubCoordinationRefresher(
+                repository=REPO,
+                work_packet_issue=20,
+                command_runner=mk(status),
+            ).refresh(packet)
+            self.assertEqual(snap["status"], "HUMAN_REQUIRED")
+            self.assertIn(f"work_packet_{status.lower()}", snap["reasons"])
+
+        absent = GitHubCoordinationRefresher(
+            repository=REPO,
+            work_packet_issue=20,
+            command_runner=mk("ACTIVE", include_pr=False),
+        ).refresh(packet)
+        self.assertEqual(absent["status"], "HUMAN_REQUIRED")
+        self.assertIn("pr_absent", absent["reasons"])
+
+        calls["inline"] = calls["conversation"] = calls["reviews"] = 0
+        inline = GitHubCoordinationRefresher(
+            repository=REPO,
+            work_packet_issue=20,
+            command_runner=mk("ACTIVE", inline_p1=True),
+        ).refresh(packet)
+        self.assertGreater(calls["inline"], 0)
+        self.assertGreater(calls["conversation"], 0)
+        self.assertGreater(calls["reviews"], 0)
+        self.assertEqual(inline["status"], "HUMAN_REQUIRED")
+        self.assertIn("actionable_review", inline["reasons"])
+
+        # Unrelated-only CI green is not PASS.
+        def unrelated_ci(argv: list[str], cwd: str):
+            base = mk("ACTIVE")(argv, cwd)
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout="unrelated-check\tpass\t1s\t0\t\n",
+                    stderr="",
+                )
+            return base
+
+        ci_only = GitHubCoordinationRefresher(
+            repository=REPO,
+            work_packet_issue=20,
+            command_runner=unrelated_ci,
+        ).refresh(packet)
+        self.assertEqual(ci_only["status"], "HUMAN_REQUIRED")
+        self.assertIn("ci_required_checks_missing", ci_only["reasons"])
 
 
 if __name__ == "__main__":

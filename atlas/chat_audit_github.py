@@ -35,6 +35,16 @@ from atlas.work_controller import normalize_github_repository
 
 DEFAULT_CHECKPOINT_BRANCH = "atlas/chat-audit-control"
 HANDOFF_MARKER = "<!-- atlas-chat-audit-finding-id:"
+HANDOFF_CLAIM_LEASE_SECONDS = 120.0
+CHECKPOINT_WORKSTREAM = "continuous-chat-audit-supervisor-poc"
+REQUIRED_PR_CHECK_NAMES = frozenset(
+    {
+        "adoption-compliance",
+        "enforcement-reconcile",
+        "affected-tests",
+    }
+)
+SUPPORTED_WORK_PACKET_STATUSES = frozenset({"ACTIVE"})
 CommandRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
 
@@ -301,13 +311,30 @@ class GitHubContentsCheckpointStore:
             Path(path).unlink(missing_ok=True)
         if created.returncode != 0:
             detail = f"{created.stderr or ''}\n{created.stdout or ''}"
-            # Concurrent bootstrap: treat already-exists as success.
-            if "Reference already exists" in detail or "422" in detail:
-                return {
-                    "action": "exists_race",
-                    "branch": self.branch,
-                    "base_sha": base_sha,
-                }
+            # Concurrent bootstrap: only the already-exists conflict is success.
+            already_exists = (
+                "Reference already exists" in detail
+                or '"message":"Reference already exists"' in detail
+                or (
+                    "already exists" in detail.lower() and "422" in detail
+                )
+            )
+            if already_exists:
+                verify = self._run(
+                    [
+                        "gh",
+                        "api",
+                        "-H",
+                        "Accept: application/vnd.github+json",
+                        f"repos/{self.repository}/git/ref/heads/{self.branch}",
+                    ]
+                )
+                if verify.returncode == 0:
+                    return {
+                        "action": "exists_race",
+                        "branch": self.branch,
+                        "base_sha": base_sha,
+                    }
             raise ValidationError(
                 (created.stderr or created.stdout or "").strip()[:500]
                 or "failed to bootstrap chat-audit control branch"
@@ -527,8 +554,47 @@ class GitHubAIWorkHandoff:
         )
         self._control.ensure_control_branch()
         claim, claim_sha = self._get_claim(safe.finding_id)
+
         if claim and claim.get("issue_number"):
-            number = int(claim["issue_number"])
+            return self._update_existing_claim(
+                claim=claim,
+                packet=packet,
+                safe=safe,
+                title=title,
+                body=body,
+                marker=marker,
+            )
+
+        # Crash/ambiguity reconcile before any create: durable marker search.
+        existing = self._find_issue_by_marker(marker)
+        if existing is not None:
+            number, url = existing
+            finalized = {
+                "finding_id": safe.finding_id,
+                "owner_token": str((claim or {}).get("owner_token") or uuid.uuid4()),
+                "issue_number": number,
+                "url": url,
+                "run_key": packet.idempotency_run_key,
+                "head": packet.current_target_sha,
+                "state": "finalized",
+                "repository": self.repository,
+            }
+            try:
+                self._put_claim(
+                    safe.finding_id, finalized, expected_sha=claim_sha
+                )
+            except CheckpointCasConflict:
+                claim, _ = self._get_claim(safe.finding_id)
+                if claim and claim.get("issue_number"):
+                    return self._update_existing_claim(
+                        claim=claim,
+                        packet=packet,
+                        safe=safe,
+                        title=title,
+                        body=body,
+                        marker=marker,
+                    )
+                raise
             self._edit_issue(number, title=title, body=body)
             record = {
                 "action": "updated",
@@ -536,11 +602,50 @@ class GitHubAIWorkHandoff:
                 "title": title,
                 "repository": self.repository,
                 "finding": safe.to_dict(),
-                "url": claim.get("url"),
-                "claim": "existing",
+                "url": url,
+                "claim": "reconciled_marker",
             }
             self.handoffs.append(record)
             return record
+
+        # Pending claim ownership: live pending is non-stealable.
+        if claim and not claim.get("issue_number"):
+            owner = str(claim.get("owner_token") or "")
+            claimed_at = float(claim.get("claimed_at") or 0)
+            lease = float(
+                claim.get("lease_seconds") or HANDOFF_CLAIM_LEASE_SECONDS
+            )
+            age = time.time() - claimed_at if claimed_at else lease + 1
+            if owner and age < lease:
+                for _ in range(40):
+                    time.sleep(0.01)
+                    claim, claim_sha = self._get_claim(safe.finding_id)
+                    if claim and claim.get("issue_number"):
+                        return self._update_existing_claim(
+                            claim=claim,
+                            packet=packet,
+                            safe=safe,
+                            title=title,
+                            body=body,
+                            marker=marker,
+                        )
+                    if claim:
+                        claimed_at = float(claim.get("claimed_at") or 0)
+                        lease = float(
+                            claim.get("lease_seconds")
+                            or HANDOFF_CLAIM_LEASE_SECONDS
+                        )
+                        if (
+                            str(claim.get("owner_token") or "") == owner
+                            and claimed_at
+                            and (time.time() - claimed_at) < lease
+                        ):
+                            continue
+                        break
+                raise ValidationError(
+                    "handoff claim pending held by another owner; "
+                    "refusing steal; retry required"
+                )
 
         owner_token = str(uuid.uuid4())
         pending = {
@@ -550,6 +655,10 @@ class GitHubAIWorkHandoff:
             "url": None,
             "run_key": packet.idempotency_run_key,
             "head": packet.current_target_sha,
+            "state": "pending",
+            "claimed_at": time.time(),
+            "lease_seconds": HANDOFF_CLAIM_LEASE_SECONDS,
+            "repository": self.repository,
         }
         try:
             claim_sha = self._put_claim(
@@ -557,42 +666,57 @@ class GitHubAIWorkHandoff:
             )
             claim = pending
         except CheckpointCasConflict:
-            import time
-
             claim = None
-            for _ in range(20):
+            for _ in range(40):
                 claim, claim_sha = self._get_claim(safe.finding_id)
                 if claim and claim.get("issue_number"):
                     break
                 time.sleep(0.01)
             if claim and claim.get("issue_number"):
-                number = int(claim["issue_number"])
-                self._edit_issue(number, title=title, body=body)
-                record = {
-                    "action": "updated",
-                    "issue_number": number,
-                    "title": title,
-                    "repository": self.repository,
-                    "finding": safe.to_dict(),
-                    "url": claim.get("url"),
-                    "claim": "lost_create_race",
-                }
-                self.handoffs.append(record)
-                return record
+                return self._update_existing_claim(
+                    claim=claim,
+                    packet=packet,
+                    safe=safe,
+                    title=title,
+                    body=body,
+                    marker=marker,
+                )
             raise ValidationError(
                 "handoff claim held by concurrent writer without issue_number; "
                 "retry required"
             )
 
-        # Only the claim owner may create the GitHub issue.
-        number, url = self._create_issue(title=title, body=body)
+        if str(claim.get("owner_token") or "") != owner_token:
+            raise ValidationError(
+                "handoff claim ownership lost before issue create"
+            )
+
+        existing = self._find_issue_by_marker(marker)
+        if existing is not None:
+            number, url = existing
+        else:
+            number, url = self._create_issue(title=title, body=body)
         claim = {
             **claim,
             "issue_number": number,
             "url": url,
             "owner_token": owner_token,
+            "state": "finalized",
+            "run_key": packet.idempotency_run_key,
+            "head": packet.current_target_sha,
         }
-        self._put_claim(safe.finding_id, claim, expected_sha=claim_sha)
+        try:
+            self._put_claim(safe.finding_id, claim, expected_sha=claim_sha)
+        except CheckpointCasConflict:
+            latest, latest_sha = self._get_claim(safe.finding_id)
+            if latest and latest.get("issue_number"):
+                if int(latest["issue_number"]) != int(number):
+                    raise ValidationError(
+                        "handoff claim finalized to a different issue after create; "
+                        "manual reconciliation required"
+                    )
+            else:
+                self._put_claim(safe.finding_id, claim, expected_sha=latest_sha)
         record = {
             "action": "created",
             "issue_number": number,
@@ -604,6 +728,115 @@ class GitHubAIWorkHandoff:
         }
         self.handoffs.append(record)
         return record
+
+    def _update_existing_claim(
+        self,
+        *,
+        claim: dict[str, Any],
+        packet: AuditControlPacket,
+        safe: AuditFinding,
+        title: str,
+        body: str,
+        marker: str,
+    ) -> dict[str, Any]:
+        number = int(claim["issue_number"])
+        claim_finding = str(claim.get("finding_id") or "")
+        if claim_finding and claim_finding != safe.finding_id:
+            raise ValidationError("handoff claim finding_id mismatch")
+        claimed_run = str(claim.get("run_key") or "")
+        claimed_head = str(claim.get("head") or "").lower()
+        viewed = self._run(
+            [
+                "gh",
+                "issue",
+                "view",
+                str(number),
+                "--repo",
+                self.repository,
+                "--json",
+                "number,title,state,body,url",
+            ]
+        )
+        if viewed.returncode != 0:
+            raise ValidationError(
+                f"handoff claim issue #{number} unavailable; refusing stale claim"
+            )
+        payload = json.loads(viewed.stdout or "{}")
+        state = str(payload.get("state") or "").upper()
+        issue_body = str(payload.get("body") or "")
+        issue_title = str(payload.get("title") or "")
+        if state != "OPEN":
+            raise ValidationError(
+                f"handoff claim issue #{number} is not OPEN; refusing update"
+            )
+        if marker not in issue_body and safe.finding_id not in issue_title:
+            raise ValidationError(
+                f"handoff claim issue #{number} missing finding marker/title"
+            )
+        if "TARGET_REPO=" in issue_body:
+            expected = f"TARGET_REPO={packet.target_repository}"
+            alt = f"TARGET_REPO={self.repository}"
+            if expected not in issue_body and alt not in issue_body:
+                raise ValidationError(
+                    f"handoff claim issue #{number} TARGET_REPO mismatch"
+                )
+        self._edit_issue(number, title=title, body=body)
+        record = {
+            "action": "updated",
+            "issue_number": number,
+            "title": title,
+            "repository": self.repository,
+            "finding": safe.to_dict(),
+            "url": claim.get("url") or payload.get("url"),
+            "claim": "existing",
+            "prior_run_key": claimed_run or None,
+            "prior_head": claimed_head or None,
+        }
+        self.handoffs.append(record)
+        return record
+
+    def _find_issue_by_marker(self, marker: str) -> tuple[int, str] | None:
+        """Locate an existing [AI Work] issue by durable finding marker."""
+        listed = self._run(
+            [
+                "gh",
+                "issue",
+                "list",
+                "--repo",
+                self.repository,
+                "--state",
+                "open",
+                "--search",
+                'in:title "[AI Work]"',
+                "--json",
+                "number,title,body,url",
+                "--limit",
+                "50",
+            ]
+        )
+        if listed.returncode != 0:
+            return None
+        try:
+            items = json.loads(listed.stdout or "[]")
+        except json.JSONDecodeError:
+            return None
+        matches = [
+            item
+            for item in items
+            if isinstance(item, dict) and marker in str(item.get("body") or "")
+        ]
+        if len(matches) == 1:
+            number = int(matches[0]["number"])
+            url = str(
+                matches[0].get("url")
+                or f"https://github.com/{self.repository}/issues/{number}"
+            )
+            return number, url
+        if len(matches) > 1:
+            raise ValidationError(
+                "multiple open handoff issues share the same finding marker"
+            )
+        return None
 
     def _create_issue(self, *, title: str, body: str) -> tuple[int, str]:
         with tempfile.NamedTemporaryFile(
@@ -627,7 +860,13 @@ class GitHubAIWorkHandoff:
             )
         finally:
             Path(path).unlink(missing_ok=True)
+        marker_line = body.splitlines()[0] if body else ""
         if completed.returncode != 0:
+            existing = (
+                self._find_issue_by_marker(marker_line) if marker_line else None
+            )
+            if existing is not None:
+                return existing
             detail = (completed.stderr or completed.stdout or "").strip()
             raise ValidationError(
                 detail[:500]
@@ -636,6 +875,11 @@ class GitHubAIWorkHandoff:
         url = (completed.stdout or "").strip().splitlines()[-1].strip()
         match = re.search(r"/issues/(\d+)\s*$", url)
         if not match:
+            existing = (
+                self._find_issue_by_marker(marker_line) if marker_line else None
+            )
+            if existing is not None:
+                return existing
             raise ValidationError("gh issue create did not return an issue URL")
         return int(match.group(1)), url
 
@@ -670,6 +914,7 @@ class GitHubAIWorkHandoff:
             )
 
 
+
 class GitHubCoordinationRefresher:
     """Same-HEAD Work Packet / PR / CI / review refresher for cheap path."""
 
@@ -690,6 +935,8 @@ class GitHubCoordinationRefresher:
         return self._runner(argv, self._cwd)
 
     def refresh(self, packet: AuditControlPacket) -> dict[str, Any]:
+        from atlas.codex_audit import collect_pr_review_evidence
+
         reasons: list[str] = []
         evidence: dict[str, Any] = {
             "collector": "atlas.chat_audit_github.GitHubCoordinationRefresher",
@@ -698,7 +945,9 @@ class GitHubCoordinationRefresher:
         issue = self.work_packet_issue
         if issue is None:
             discovered = discover_checkpoint_issue(
-                repository=self.repository, command_runner=self._runner, cwd=self._cwd
+                repository=self.repository,
+                command_runner=self._runner,
+                cwd=self._cwd,
             )
             issue = discovered
         if issue is not None:
@@ -722,16 +971,17 @@ class GitHubCoordinationRefresher:
                 body = str(payload.get("body") or "")
                 status_match = re.search(r"(?m)^STATUS=(\S+)", body)
                 status = status_match.group(1) if status_match else "UNKNOWN"
+                issue_state = str(payload.get("state") or "").upper()
                 evidence["work_packet"] = {
                     "status": status,
                     "state": payload.get("state"),
                     "number": payload.get("number"),
                     "updated_at": payload.get("updatedAt"),
                 }
-                if status in {"PAUSED", "BLOCKED"}:
-                    reasons.append(f"work_packet_{status.lower()}")
-                if str(payload.get("state") or "").upper() not in {"OPEN", ""}:
+                if issue_state != "OPEN":
                     reasons.append("work_packet_issue_not_open")
+                if status not in SUPPORTED_WORK_PACKET_STATUSES:
+                    reasons.append(f"work_packet_{status.lower()}")
         else:
             evidence["work_packet"] = {"status": "ABSENT"}
             reasons.append("work_packet_undiscovered")
@@ -763,9 +1013,7 @@ class GitHubCoordinationRefresher:
                     chosen = item
                     break
             if chosen is None and items:
-                # Branch has an open PR but not at exact audited HEAD.
                 reasons.append("pr_head_mismatch")
-                # Persist only allowlisted candidate fields (no bodies).
                 evidence["pr"] = {
                     "status": "MISMATCH",
                     "candidates": [
@@ -781,8 +1029,6 @@ class GitHubCoordinationRefresher:
                     ],
                 }
             elif chosen is None:
-                # Fail closed: without a PR at exact HEAD we cannot inspect
-                # CI/reviews — synthetic PASS is forbidden.
                 evidence["pr"] = {"status": "ABSENT"}
                 reasons.append("pr_absent")
             else:
@@ -803,55 +1049,52 @@ class GitHubCoordinationRefresher:
                         self.repository,
                     ]
                 )
-                if checks.returncode == 0:
-                    evidence["ci"] = {"status": "OK"}
-                elif checks.returncode == 8:
-                    evidence["ci"] = {"status": "PENDING"}
-                    reasons.append("ci_pending")
-                else:
-                    evidence["ci"] = {
-                        "status": "FAIL",
-                        "exit_code": checks.returncode,
-                    }
-                    reasons.append("ci_fail")
-                reviews = self._run(
-                    [
-                        "gh",
-                        "api",
-                        "-H",
-                        "Accept: application/vnd.github+json",
-                        f"repos/{self.repository}/pulls/{chosen.get('number')}/reviews",
-                    ]
+                ci_status, ci_reasons, ci_meta = _evaluate_required_pr_checks(
+                    checks.returncode, checks.stdout or ""
                 )
-                actionable = False
-                if reviews.returncode == 0:
-                    try:
-                        review_items = json.loads(reviews.stdout or "[]")
-                    except json.JSONDecodeError:
-                        review_items = []
-                        reasons.append("reviews_unparseable")
-                    for item in review_items if isinstance(review_items, list) else []:
-                        state = str(item.get("state") or "").upper()
-                        body = str(item.get("body") or "")
-                        if state in {"CHANGES_REQUESTED", "DISMISSED"}:
-                            actionable = True
-                        if re.search(r"\bP[012]\b", body) or "REWORK" in body.upper():
-                            actionable = True
+                # Persist only allowlisted CI fields; details live in reasons.
+                evidence["ci"] = {"status": ci_status}
+                if "exit_code" in ci_meta:
+                    evidence["ci"]["exit_code"] = ci_meta["exit_code"]
+                reasons.extend(ci_reasons)
+
+                review_ev = collect_pr_review_evidence(
+                    repository=self.repository,
+                    pr_number=int(chosen.get("number")),
+                    command_runner=self._runner,
+                )
+                review_status = str(review_ev.get("status") or "ERROR").upper()
+                if review_status != "OK":
+                    evidence["reviews"] = {
+                        "status": review_status,
+                        "actionable": True,
+                        "count": 0,
+                    }
+                    reasons.append(
+                        "reviews_incomplete"
+                        if review_status == "INCOMPLETE"
+                        else "reviews_unavailable"
+                    )
+                else:
+                    actionable, count = _reviews_actionable_for_head(
+                        review_ev, target_sha=packet.current_target_sha
+                    )
                     evidence["reviews"] = {
                         "status": "OK",
                         "actionable": actionable,
-                        "count": len(review_items)
-                        if isinstance(review_items, list)
-                        else 0,
+                        "count": count,
                     }
                     if actionable:
                         reasons.append("actionable_review")
-                else:
-                    evidence["reviews"] = {"status": "ERROR"}
-                    reasons.append("reviews_unavailable")
         else:
             evidence["pr"] = {"status": "ERROR"}
             reasons.append("pr_list_failed")
+
+        # Mandatory surfaces for PASS: WP/PR/CI/reviews must be present.
+        for surface in ("work_packet", "pr", "ci", "reviews"):
+            if surface not in evidence:
+                evidence[surface] = {"status": "ABSENT"}
+                reasons.append(f"{surface}_absent")
 
         if reasons:
             evidence["status"] = "HUMAN_REQUIRED"
@@ -862,6 +1105,109 @@ class GitHubCoordinationRefresher:
             evidence["outcome"] = "PASSED"
             evidence["reasons"] = []
         return evidence
+
+
+def _evaluate_required_pr_checks(
+    exit_code: int, stdout: str
+) -> tuple[str, list[str], dict[str, Any]]:
+    """Require Engineering System check jobs; unrelated-only green is not PASS."""
+    reasons: list[str] = []
+    rows: dict[str, str] = {}
+    for line in (stdout or "").splitlines():
+        parts = line.split("\t")
+        if not parts or not parts[0].strip():
+            continue
+        name = parts[0].strip()
+        state = parts[1].strip().lower() if len(parts) > 1 else ""
+        rows[name] = state
+    missing = sorted(REQUIRED_PR_CHECK_NAMES - set(rows))
+    failing = sorted(
+        name
+        for name, state in rows.items()
+        if name in REQUIRED_PR_CHECK_NAMES
+        and state not in {"pass", "success", "skipped"}
+    )
+    pending = sorted(
+        name
+        for name, state in rows.items()
+        if name in REQUIRED_PR_CHECK_NAMES
+        and state in {"pending", "queued", "in_progress", "waiting"}
+    )
+    meta: dict[str, Any] = {
+        "required": sorted(REQUIRED_PR_CHECK_NAMES),
+        "observed": sorted(rows),
+    }
+    if missing:
+        reasons.append("ci_required_checks_missing")
+        meta["missing"] = missing
+        return "ERROR", reasons, meta
+    if pending or exit_code == 8:
+        reasons.append("ci_pending")
+        meta["pending"] = pending
+        return "PENDING", reasons, meta
+    if failing or (exit_code not in {0, 8} and exit_code != 0):
+        reasons.append("ci_fail")
+        meta["failing"] = failing
+        return "FAIL", reasons, meta
+    if exit_code != 0:
+        reasons.append("ci_fail")
+        return "FAIL", reasons, meta
+    return "OK", [], meta
+
+
+def _commit_matches_head(commit_id: object, target_sha: str) -> bool:
+    if commit_id is None:
+        return False
+    value = str(commit_id).strip().lower()
+    head = target_sha.strip().lower()
+    if not value or not head:
+        return False
+    return value == head or value.startswith(head[:12]) or head.startswith(value[:12])
+
+
+def _body_actionable(text: str) -> bool:
+    upper = (text or "").upper()
+    if re.search(r"\bP[012]\b", text or "") or "REWORK" in upper:
+        if re.search(r"(?i)\bRESOLUTION\s*=\s*RESOLVED\b", text or ""):
+            return False
+        if re.search(r"(?i)\bresolved:\s*true\b", text or ""):
+            return False
+        return True
+    return False
+
+
+def _reviews_actionable_for_head(
+    review_ev: dict[str, Any], *, target_sha: str
+) -> tuple[bool, int]:
+    """Inspect reviews/inline/conversation; bind commit-addressable items to HEAD."""
+    count = 0
+    actionable = False
+    for label in ("reviews", "inline_comments", "conversation_comments"):
+        items = review_ev.get(label) or []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            count += 1
+            body = str(item.get("body") or "")
+            state = str(item.get("state") or "").upper()
+            if label == "conversation_comments":
+                if _body_actionable(body):
+                    actionable = True
+                continue
+            commit = item.get("commit_id") or item.get("original_commit_id")
+            if commit is not None and not _commit_matches_head(commit, target_sha):
+                # Historical review against another HEAD — ignore for current PASS.
+                continue
+            if state in {"CHANGES_REQUESTED"}:
+                actionable = True
+            if _body_actionable(body):
+                # Missing commit_id on a finding-bearing review fails closed.
+                if commit is None or _commit_matches_head(commit, target_sha):
+                    actionable = True
+    return actionable, count
+
 
 
 ACTIVE_CHECKPOINT_POINTER_PATH = ".atlas/chat-audit/ACTIVE_CHECKPOINT_ISSUE.json"
@@ -890,7 +1236,42 @@ def discover_checkpoint_issue(
     def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
         return runner(argv, workdir)
 
-    # 1) Explicit pointer file on control branch.
+    def _verify_work_packet_issue(number: int) -> bool:
+        viewed = _run(
+            [
+                "gh",
+                "issue",
+                "view",
+                str(number),
+                "--repo",
+                repo,
+                "--json",
+                "number,title,state,body",
+            ]
+        )
+        if viewed.returncode != 0:
+            return False
+        try:
+            payload = json.loads(viewed.stdout or "{}")
+        except json.JSONDecodeError:
+            return False
+        if str(payload.get("state") or "").upper() != "OPEN":
+            return False
+        body = str(payload.get("body") or "")
+        if not CHECKPOINT_WORKSTREAM_RE.search(body):
+            return False
+        if not re.search(r"(?m)^STATUS=ACTIVE\s*$", body):
+            return False
+        target = re.search(r"(?m)^TARGET_REPO=(\S+)\s*$", body)
+        if target:
+            try:
+                if normalize_github_repository(target.group(1)) != repo:
+                    return False
+            except ValidationError:
+                return False
+        return True
+
+    # 1) Explicit pointer file on control branch — validate before trust.
     pointer = _run(
         [
             "gh",
@@ -905,10 +1286,24 @@ def discover_checkpoint_issue(
         encoded = str(payload.get("content") or "")
         raw = base64.b64decode(encoded, validate=False).decode("utf-8")
         data = json.loads(raw)
-        number = int(data.get("issue_number"))
-        if number < 1:
-            raise ValidationError("ACTIVE_CHECKPOINT_ISSUE issue_number invalid")
-        return number
+        if not isinstance(data, dict):
+            raise ValidationError("ACTIVE_CHECKPOINT_ISSUE pointer must be an object")
+        workstream = str(data.get("workstream") or "").strip()
+        if workstream != CHECKPOINT_WORKSTREAM:
+            # Stale/wrong pointer: fall through to verified Issue search.
+            pass
+        else:
+            try:
+                number = int(data.get("issue_number"))
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(
+                    "ACTIVE_CHECKPOINT_ISSUE issue_number invalid"
+                ) from exc
+            if number < 1:
+                raise ValidationError("ACTIVE_CHECKPOINT_ISSUE issue_number invalid")
+            if _verify_work_packet_issue(number):
+                return number
+            # Pointer exists but referenced Issue is stale/closed/wrong.
 
     # 2) Open [AI Work] issue with matching WORKSTREAM marker.
     listed = _run(
@@ -941,6 +1336,20 @@ def discover_checkpoint_issue(
         and CHECKPOINT_WORKSTREAM_RE.search(str(item.get("body") or ""))
         and re.search(r"(?m)^STATUS=ACTIVE\s*$", str(item.get("body") or ""))
     ]
+    # Prefer TARGET_REPO match when present.
+    repo_matches = []
+    for item in matches:
+        body = str(item.get("body") or "")
+        target = re.search(r"(?m)^TARGET_REPO=(\S+)\s*$", body)
+        if target is None:
+            repo_matches.append(item)
+            continue
+        try:
+            if normalize_github_repository(target.group(1)) == repo:
+                repo_matches.append(item)
+        except ValidationError:
+            continue
+    matches = repo_matches or matches
     if len(matches) == 1:
         return int(matches[0]["number"])
     if len(matches) > 1:
@@ -953,6 +1362,7 @@ def discover_checkpoint_issue(
         "--checkpoint-issue or set ATLAS_CHAT_AUDIT_ISSUE, or publish "
         f"{ACTIVE_CHECKPOINT_POINTER_PATH} on {branch}"
     )
+
 
 
 def publish_active_checkpoint_pointer(
@@ -982,27 +1392,9 @@ def publish_active_checkpoint_pointer(
     store._cas_blob_sha = expected
     body = {
         "issue_number": int(issue_number),
-        "workstream": "continuous-chat-audit-supervisor-poc",
+        "workstream": CHECKPOINT_WORKSTREAM,
     }
-    raw_packet = AuditControlPacket(
-        target_repository=normalize_github_repository(repository),
-        target_branch="atlas/chat-audit-control",
-        current_target_sha="0" * 40,
-        audit_queue=[
-            "changed_code",
-            "affected_contracts",
-            "affected_tests_ci",
-            "security_impact",
-            "docs_spec_drift",
-        ],
-        idempotency_run_key=hashlib.sha256(
-            f"pointer|{issue_number}".encode()
-        ).hexdigest()[:24],
-        canonical_revision=0 if expected is None else 1,
-        next_action="pointer",
-    )
-    # Bypass packet schema for pointer: write raw JSON via _put_contents helper
-    # by temporarily swapping serialization — use direct PUT instead.
+    # Bypass packet schema for pointer: write raw JSON via Contents PUT.
     raw = json.dumps(body, indent=2, sort_keys=True) + "\n"
     put_body: dict[str, Any] = {
         "message": f"atlas chat-audit active checkpoint pointer -> #{issue_number}",
@@ -1032,12 +1424,49 @@ def publish_active_checkpoint_pointer(
         )
     finally:
         Path(tmp).unlink(missing_ok=True)
-    if completed.returncode != 0 and not _is_contents_conflict(completed):
-        # Conflict is acceptable if pointer already matches.
+    if completed.returncode == 0:
+        return {
+            "issue_number": int(issue_number),
+            "path": ACTIVE_CHECKPOINT_POINTER_PATH,
+        }
+    if not _is_contents_conflict(completed):
         detail = (completed.stderr or completed.stdout or "").strip()
-        if completed.returncode != 0:
-            raise ValidationError(detail[:500] or "failed to publish checkpoint pointer")
-    return {"issue_number": int(issue_number), "path": ACTIVE_CHECKPOINT_POINTER_PATH}
+        raise ValidationError(detail[:500] or "failed to publish checkpoint pointer")
+    # Conflict: success only if canonical pointer already matches request.
+    reloaded = store._get_contents()
+    if reloaded is None:
+        raise CheckpointCasConflict(
+            "ACTIVE_CHECKPOINT_ISSUE pointer conflict and canonical pointer absent"
+        )
+    encoded = str(reloaded.get("content") or "")
+    try:
+        current = json.loads(
+            base64.b64decode(encoded, validate=False).decode("utf-8")
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ValidationError(
+            "ACTIVE_CHECKPOINT_ISSUE pointer conflict with unreadable canonical value"
+        ) from exc
+    if not isinstance(current, dict):
+        raise ValidationError(
+            "ACTIVE_CHECKPOINT_ISSUE pointer conflict with non-object canonical value"
+        )
+    current_issue = current.get("issue_number")
+    current_ws = str(current.get("workstream") or "").strip()
+    if (
+        int(current_issue) == int(issue_number)
+        and current_ws == CHECKPOINT_WORKSTREAM
+    ):
+        return {
+            "issue_number": int(issue_number),
+            "path": ACTIVE_CHECKPOINT_POINTER_PATH,
+            "already_matched": True,
+        }
+    raise CheckpointCasConflict(
+        "ACTIVE_CHECKPOINT_ISSUE pointer conflict: canonical "
+        f"issue_number={current_issue!r} workstream={current_ws!r} "
+        f"does not match requested #{issue_number}"
+    )
 
 
 def resolve_checkpoint_store(
