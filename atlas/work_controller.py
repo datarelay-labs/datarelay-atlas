@@ -13,6 +13,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -324,6 +325,8 @@ class DispatchRequest:
 class DispatchResult:
     session_id: str
     command: list[str]
+    resource_preflight_result: str = ""
+    resource_preflight_reason: str = ""
 
 
 @dataclass
@@ -1828,19 +1831,114 @@ class PersistSession:
 
 
 def build_persist_resume_command(request: DispatchRequest) -> list[str]:
-    """Fixed argv for a fresh persistent /work-resume in a validated worktree.
+    """Fixed argv for a fresh unattended /work-resume in a validated worktree.
 
-    Installed Cursor CLI 2026.09.18-9a7762b create-with-prompt form (live process
-    evidence): `agent persist --trust <prompt>` with cwd set to the worktree.
-    The argv form `agent --trust persist` is incorrect and must not be used.
-    Non-interactive `agent -p` is not an acceptable persistence substitute.
+    Installed Cursor CLI global ``--force`` is Run Everything (no shell approval
+    prompts). ``--trust`` still trusts the workspace, and the prompt stays
+    ``/work-resume``. ``--force`` is a global option and must precede ``persist``.
+    ``agent --trust persist`` remains incorrect. Non-interactive ``agent -p`` /
+    ``--print`` is not an acceptable persistence substitute.
     """
     prompt = request.resume_prompt or RESUME_PROMPT
     if prompt != RESUME_PROMPT:
         raise ValidationError(
             f"resume_prompt must be {RESUME_PROMPT!r}, got {prompt!r}"
         )
-    return ["agent", "persist", "--trust", RESUME_PROMPT]
+    command = ["agent", "--force", "persist", "--trust", RESUME_PROMPT]
+    if "--print" in command or "-p" in command:
+        raise ValidationError("non-persistent print mode is prohibited")
+    return command
+
+
+class ResourcePreflightBlocked(ValidationError):
+    """New persistent session refused by the resource preflight.
+
+    Existing Cursor sessions must not be stopped or otherwise mutated.
+    """
+
+    def __init__(self, message: str, *, result: str, reason: str, exit_code: int) -> None:
+        super().__init__(message)
+        self.preflight_result = result
+        self.preflight_reason = reason
+        self.exit_code = exit_code
+
+
+def resolve_cursor_resource_preflight_script() -> Path | None:
+    """Locate the Engineering System preflight without a hardcoded checkout.
+
+    ``ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT`` is the script file.
+    ``ENGINEERING_SYSTEM_ROOT`` is the canonical checkout, and the script is
+    ``tools/cursor-resource-preflight.py`` under that root. A missing or unset
+    location is unavailable and must fail closed.
+    """
+    explicit = os.environ.get("ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT", "").strip()
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_file() else None
+    root = os.environ.get("ENGINEERING_SYSTEM_ROOT", "").strip()
+    if not root:
+        return None
+    path = Path(root) / "tools" / "cursor-resource-preflight.py"
+    return path if path.is_file() else None
+
+
+def _parse_preflight_report(output: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in (output or "").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        fields[key.strip()] = value.strip()
+    return fields
+
+
+def interpret_resource_preflight(exit_code: int, output: str) -> tuple[bool, str, str]:
+    """Return ``(may_spawn, RESULT, REASON)``.
+
+    Exit 0 with ``PASS`` or ``WARN`` may spawn. Any other exit, missing report,
+    or non-allow result is ``BLOCK``.
+    """
+    fields = _parse_preflight_report(output)
+    result = fields.get("RESULT", "").upper()
+    reason = fields.get("REASON", "").strip()
+    if exit_code == 0 and result in {"PASS", "WARN"}:
+        return True, result, reason or "resource preflight allowed spawn"
+    if not reason:
+        reason = f"resource preflight unavailable or unreadable (exit {exit_code})"
+    return False, "BLOCK", reason
+
+
+def default_cursor_resource_preflight() -> tuple[int, str]:
+    """Run the canonical preflight. Unavailable tools are BLOCK, not a guess."""
+    script = resolve_cursor_resource_preflight_script()
+    if script is None:
+        return (
+            3,
+            "RESULT=BLOCK\nEXIT_CODE=3\nREASON=cursor resource preflight unavailable\n",
+        )
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        detail = redact_absolute_paths(str(exc))[:300]
+        return (
+            3,
+            "RESULT=BLOCK\nEXIT_CODE=3\n"
+            f"REASON=cursor resource preflight failed to start: {detail}\n",
+        )
+    output = completed.stdout or ""
+    if not output.strip() and completed.stderr:
+        output = completed.stderr
+    return int(completed.returncode), output
+
+
+def _bounded_preflight_reason(reason: str) -> str:
+    return redact_absolute_paths(reason or "")[:300]
 
 
 def parse_persist_list(output: str) -> list[PersistSession]:
@@ -1934,6 +2032,7 @@ class PtyPersistCursorDispatcher:
         spawn: Callable[[list[str], str], int] | None = None,
         list_target_procs: Callable[[str], list[tuple[int, str]]] | None = None,
         git_runner: GitRunner | None = None,
+        resource_preflight: Callable[[], tuple[int, str]] | None = None,
         terminate_process_group: Callable[[int], None] | None = None,
         poll_interval_sec: float = 0.5,
         poll_timeout_sec: float = 45.0,
@@ -1943,6 +2042,8 @@ class PtyPersistCursorDispatcher:
         self._spawn = spawn or script_pty_spawn_persist
         self._list_target_procs = list_target_procs or list_persist_trust_processes
         self._git_runner = git_runner
+        self._resource_preflight = resource_preflight or default_cursor_resource_preflight
+        self.last_resource_preflight: dict[str, str] = {}
         self._terminate_process_group = (
             terminate_process_group or terminate_spawned_process_group
         )
@@ -1994,6 +2095,31 @@ class PtyPersistCursorDispatcher:
                 for item in sessions_for_worktree(self._list_sessions(), worktree)
             }
             before_pids = {pid for pid, _cmd in self._list_target_procs(worktree)}
+            try:
+                exit_code, output = self._resource_preflight()
+            except Exception as exc:
+                exit_code, output = (
+                    3,
+                    "RESULT=BLOCK\nEXIT_CODE=3\nREASON="
+                    + _bounded_preflight_reason(
+                        f"cursor resource preflight failed to start: {exc}"
+                    )
+                    + "\n",
+                )
+            may_spawn, result, reason = interpret_resource_preflight(exit_code, output)
+            reason = _bounded_preflight_reason(reason)
+            self.last_resource_preflight = {
+                "result": result,
+                "reason": reason,
+                "exit_code": str(exit_code),
+            }
+            if not may_spawn:
+                raise ResourcePreflightBlocked(
+                    f"resource preflight RESULT={result} REASON={reason}",
+                    result=result,
+                    reason=reason,
+                    exit_code=exit_code,
+                )
             # Final identity/porcelain check immediately before spawn — no external
             # observation between this validation and _spawn (TOCTOU close).
             validate_clean_worktree_identity(
@@ -2024,7 +2150,14 @@ class PtyPersistCursorDispatcher:
                 if new_sessions:
                     chosen = new_sessions[-1]
                     return DispatchResult(
-                        session_id=chosen.session_id, command=command
+                        session_id=chosen.session_id,
+                        command=command,
+                        resource_preflight_result=self.last_resource_preflight.get(
+                            "result", ""
+                        ),
+                        resource_preflight_reason=self.last_resource_preflight.get(
+                            "reason", ""
+                        ),
                     )
                 new_procs = [
                     (proc_pid, cmd)
@@ -2047,6 +2180,12 @@ class PtyPersistCursorDispatcher:
                 return DispatchResult(
                     session_id=f"proc:{proc_pid}",
                     command=command,
+                    resource_preflight_result=self.last_resource_preflight.get(
+                        "result", ""
+                    ),
+                    resource_preflight_reason=self.last_resource_preflight.get(
+                        "reason", ""
+                    ),
                 )
             self._sleep(self._poll_interval_sec)
         self._fail_unobserved(
@@ -2101,19 +2240,26 @@ def terminate_spawned_process_group(pid: int, *, wait_sec: float = 2.0) -> None:
 
 
 def _is_agent_persist_trust_cmdline(cmdline: str) -> bool:
-    """True when cmdline is the real ``agent`` child, not a ``script`` wrapper."""
+    """True when cmdline is the real Run Everything ``agent`` child.
+
+    The ``script(1)`` wrapper is not a confirmation. ``--force`` is required so
+    an approval-mode persist process is not treated as the unattended session.
+    """
     argv0 = cmdline.split("\x00", 1)[0]
     if Path(argv0).name != "agent":
         return False
-    if "persist" not in cmdline or "--trust" not in cmdline:
+    parts = [part for part in cmdline.split("\x00") if part]
+    if "--force" not in parts or "persist" not in parts or "--trust" not in parts:
         return False
-    if RESUME_PROMPT not in cmdline and "/work-resume" not in cmdline:
+    if "--print" in parts or "-p" in parts:
+        return False
+    if RESUME_PROMPT not in parts and "/work-resume" not in parts:
         return False
     return True
 
 
 def list_persist_trust_processes(worktree_path: str) -> list[tuple[int, str]]:
-    """List `agent persist --trust /work-resume` processes for one worktree only.
+    """List `agent --force persist --trust /work-resume` processes for one worktree.
 
     Excludes the ``script(1)`` PTY wrapper whose command line only embeds the
     agent argv as a string — confirmation requires the real ``agent`` executable.
@@ -2161,8 +2307,9 @@ def default_list_persist_sessions() -> list[PersistSession]:
 def script_pty_spawn_persist(command: list[str], worktree_path: str) -> int:
     """Spawn argv under `script(1)` PTY in the target worktree (host-proven).
 
-    Live Cursor CLI sessions on this host are started as:
-    `script -qec 'agent persist --trust <prompt>' /dev/null` with cwd=worktree.
+    Live Cursor CLI sessions are started as:
+    `script -qec 'agent --force persist --trust <prompt>' /dev/null` with
+    cwd=worktree. ``--force`` is Run Everything.
     """
     if not command or command[0] != "agent":
         raise ValidationError(f"refusing to spawn non-agent command: {command!r}")
@@ -2627,31 +2774,48 @@ class WorkController:
                                 f"{audit_result.findings}\n"
                                 f"rework dispatch blocked at boundary: {boundary_reason}"
                             ).strip()
+                            extra = {"reason": "dispatch_boundary_failed"}
+                            if isinstance(exc, ResourcePreflightBlocked):
+                                extra = {
+                                    "reason": "resource_preflight_blocked",
+                                    "resource_preflight_result": exc.preflight_result,
+                                    "resource_preflight_reason": _bounded_preflight_reason(
+                                        exc.preflight_reason
+                                    ),
+                                }
                             outcome = self._finalize(
                                 record,
                                 event,
                                 state="HUMAN_REQUIRED",
                                 action="stop",
                                 verdict="HUMAN_REQUIRED",
-                                extra={"reason": "dispatch_boundary_failed"},
+                                extra=extra,
                             )
                         else:
                             record.attempt = next_attempt
                             record.last_session_id = dispatch.session_id
                             record.expected_head = event.head
                             record.last_findings = audit_result.findings
+                            extra = {
+                                "dispatch_session_id": dispatch.session_id,
+                                "dispatch_command": dispatch.command,
+                                "next_attempt": next_attempt,
+                                "resume_prompt": RESUME_PROMPT,
+                            }
+                            if dispatch.resource_preflight_result:
+                                extra["resource_preflight_result"] = (
+                                    dispatch.resource_preflight_result
+                                )
+                                extra["resource_preflight_reason"] = (
+                                    dispatch.resource_preflight_reason
+                                )
                             outcome = self._finalize(
                                 record,
                                 event,
                                 state="REWORK_DISPATCHED",
                                 action="rework_dispatched",
                                 verdict="REWORK",
-                                extra={
-                                    "dispatch_session_id": dispatch.session_id,
-                                    "dispatch_command": dispatch.command,
-                                    "next_attempt": next_attempt,
-                                    "resume_prompt": RESUME_PROMPT,
-                                },
+                                extra=extra,
                             )
         self.observer.observe("completion_handled", outcome)
         return outcome

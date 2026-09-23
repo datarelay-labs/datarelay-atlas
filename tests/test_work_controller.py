@@ -247,6 +247,85 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(packets.updates, [])
             self.assertEqual(dispatcher.requests, [])
 
+    def test_resource_preflight_block_is_human_required_without_spawn(self):
+        from atlas.work_controller import PersistSession, PtyPersistCursorDispatcher
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            existing = [
+                PersistSession(session_id="keep-me", workspace="/tmp/unrelated")
+            ]
+            state = {"spawn": 0, "stopped": []}
+
+            def _refuse_spawn(_command: list[str], _worktree: str) -> int:
+                state["spawn"] += 1
+                return 1
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "branch", "--show-current"): (
+                        "feature/autonomous-work-controller-poc"
+                    ),
+                    ("git", "rev-parse", "HEAD"): HEAD_A,
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
+                }
+                return mapping[tuple(argv)]
+
+            def preflight() -> tuple[int, str]:
+                return (
+                    2,
+                    "RESULT=BLOCK\nEXIT_CODE=2\nREASON=persistent sessions reached block threshold\n",
+                )
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=lambda: list(existing),
+                list_target_procs=lambda _wt: [(111, "keep")],
+                spawn=_refuse_spawn,
+                git_runner=fake_git,
+                resource_preflight=preflight,
+                terminate_process_group=lambda pid: state["stopped"].append(pid),
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            packets = RecordingWorkPacketAdapter()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=dispatcher,
+                enforce_worktree_identity=True,
+                git_runner=fake_git,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "resource_preflight_blocked")
+            self.assertEqual(outcome["resource_preflight_result"], "BLOCK")
+            self.assertIn("block threshold", outcome["resource_preflight_reason"])
+            self.assertEqual(state["spawn"], 0)
+            self.assertEqual(state["stopped"], [])
+            self.assertEqual(existing[0].session_id, "keep-me")
+            self.assertTrue(
+                any(item.get("kind") == "dispatch_blocked" for item in packets.updates)
+            )
+
     def test_pass_rejected_when_worktree_already_dirty_before_finalize(self):
         """Dirty porcelain present for the whole PASS path still fails closed."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -342,7 +421,7 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(req.expected_head, HEAD_A)
             self.assertEqual(
                 build_persist_resume_command(req),
-                ["agent", "persist", "--trust", "/work-resume"],
+                ["agent", "--force", "persist", "--trust", "/work-resume"],
             )
             self.assertEqual(
                 build_persist_resume_command(req),

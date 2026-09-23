@@ -23,6 +23,10 @@ from atlas.work_controller import (
 )
 
 
+def _pass_resource_preflight() -> tuple[int, str]:
+    return 0, "RESULT=PASS\nEXIT_CODE=0\nREASON=within thresholds\n"
+
+
 SAMPLE_PERSIST_LIST = """\
 4 persistent sessions:
 
@@ -74,15 +78,229 @@ class CursorLauncherTests(unittest.TestCase):
 
     def test_build_persist_resume_command_canonical_argv(self):
         req = self._dispatch_request("/tmp/wt")
+        command = build_persist_resume_command(req)
         self.assertEqual(
-            build_persist_resume_command(req),
-            ["agent", "persist", "--trust", "/work-resume"],
+            command,
+            ["agent", "--force", "persist", "--trust", "/work-resume"],
         )
+        self.assertNotIn("--print", command)
+        self.assertNotIn("-p", command)
+        self.assertIn("--trust", command)
+        self.assertEqual(command[-1], "/work-resume")
 
     def test_build_persist_resume_command_rejects_divergent_prompt(self):
         req = self._dispatch_request("/tmp/wt", resume_prompt="/resume")
         with self.assertRaises(ValidationError):
             build_persist_resume_command(req)
+
+    def test_resource_preflight_pass_and_warn_allow_spawn(self):
+        from atlas.work_controller import interpret_resource_preflight
+
+        allowed, result, _reason = interpret_resource_preflight(
+            0, "RESULT=PASS\nEXIT_CODE=0\nREASON=within thresholds\n"
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(result, "PASS")
+        allowed, result, _reason = interpret_resource_preflight(
+            0, "RESULT=WARN\nEXIT_CODE=0\nREASON=session warning\n"
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(result, "WARN")
+
+        for label, output, code in (
+            ("warn", "RESULT=WARN\nEXIT_CODE=0\nREASON=session warning\n", 0),
+            ("pass", "RESULT=PASS\nEXIT_CODE=0\nREASON=within thresholds\n", 0),
+        ):
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "target-wt"
+                    target.mkdir()
+                    state = {"spawn": 0, "stopped": []}
+
+                    def preflight() -> tuple[int, str]:
+                        return code, output
+
+                    def spawn(command: list[str], worktree_path: str) -> int:
+                        state["spawn"] += 1
+                        self.assertEqual(
+                            command,
+                            ["agent", "--force", "persist", "--trust", "/work-resume"],
+                        )
+                        return 4242
+
+                    dispatcher = PtyPersistCursorDispatcher(
+                        list_sessions=lambda: [
+                            PersistSession(
+                                session_id="keep-me",
+                                workspace="/tmp/unrelated",
+                            )
+                        ],
+                        list_target_procs=lambda _wt: [],
+                        spawn=spawn,
+                        git_runner=self._clean_git(),
+                        resource_preflight=preflight,
+                        terminate_process_group=lambda pid: state["stopped"].append(pid),
+                        poll_interval_sec=0.01,
+                        poll_timeout_sec=0.05,
+                        sleeper=lambda _s: None,
+                    )
+                    with self.assertRaises(DispatchSpawnedButUnobservedError):
+                        dispatcher.start_resume(self._dispatch_request(str(target)))
+                    self.assertEqual(state["spawn"], 1)
+                    self.assertEqual(dispatcher.last_resource_preflight["result"], label.upper())
+                    self.assertEqual(state["stopped"], [4242])
+
+    def test_resource_preflight_block_and_failure_spawn_nothing(self):
+        from atlas.work_controller import (
+            ResourcePreflightBlocked,
+            interpret_resource_preflight,
+        )
+
+        blocked, result, reason = interpret_resource_preflight(
+            2, "RESULT=BLOCK\nEXIT_CODE=2\nREASON=session pressure\n"
+        )
+        self.assertFalse(blocked)
+        self.assertEqual(result, "BLOCK")
+        self.assertIn("session pressure", reason)
+        unknown, result, _reason = interpret_resource_preflight(0, "not a report")
+        self.assertFalse(unknown)
+        self.assertEqual(result, "BLOCK")
+
+        cases = (
+            ("block", 2, "RESULT=BLOCK\nEXIT_CODE=2\nREASON=session pressure\n"),
+            ("tool-failure", 3, ""),
+            ("raises", None, ""),
+        )
+        for label, code, output in cases:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "target-wt"
+                    target.mkdir()
+                    existing = [
+                        PersistSession(session_id="keep-me", workspace="/tmp/unrelated")
+                    ]
+                    state = {"spawn": 0, "stopped": []}
+
+                    def _refuse_spawn(_command: list[str], _worktree: str) -> int:
+                        state["spawn"] += 1
+                        return 1
+
+                    def preflight(
+                        code: int | None = code, output: str = output
+                    ) -> tuple[int, str]:
+                        if code is None:
+                            raise OSError("preflight tool missing")
+                        return code, output
+
+                    dispatcher = PtyPersistCursorDispatcher(
+                        list_sessions=lambda: list(existing),
+                        list_target_procs=lambda _wt: [(111, "unrelated")],
+                        spawn=_refuse_spawn,
+                        git_runner=self._clean_git(),
+                        resource_preflight=preflight,
+                        terminate_process_group=lambda pid: state["stopped"].append(pid),
+                        poll_interval_sec=0.01,
+                        poll_timeout_sec=0.05,
+                        sleeper=lambda _s: None,
+                    )
+                    with self.assertRaises(ResourcePreflightBlocked):
+                        dispatcher.start_resume(self._dispatch_request(str(target)))
+                    self.assertEqual(state["spawn"], 0)
+                    self.assertEqual(state["stopped"], [])
+                    self.assertEqual(dispatcher.spawned_pids, [])
+                    self.assertEqual(existing[0].session_id, "keep-me")
+                    self.assertEqual(
+                        dispatcher.last_resource_preflight["result"], "BLOCK"
+                    )
+
+    def test_identity_recheck_still_runs_immediately_before_spawn(self):
+        """HEAD drift during preflight is caught before spawn."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+            expected = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            drifted = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            git_state = {"head": expected}
+            state = {"spawn": 0}
+
+            def mutable_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "https://github.com/datarelay-labs/datarelay-atlas.git"
+                    ),
+                    ("git", "branch", "--show-current"): "feature/x",
+                    ("git", "rev-parse", "HEAD"): git_state["head"],
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
+                }
+                return mapping[tuple(argv)]
+
+            def preflight() -> tuple[int, str]:
+                git_state["head"] = drifted
+                return 0, "RESULT=PASS\nEXIT_CODE=0\nREASON=within thresholds\n"
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=lambda: [],
+                list_target_procs=lambda _wt: [],
+                spawn=lambda _cmd, _wt: state.__setitem__("spawn", 1) or 1,
+                git_runner=mutable_git,
+                resource_preflight=preflight,
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                dispatcher.start_resume(
+                    self._dispatch_request(str(target), expected_head=expected)
+                )
+            self.assertIn("head mismatch", str(ctx.exception))
+            self.assertEqual(state["spawn"], 0)
+
+    def test_preflight_script_resolution_is_configurable(self):
+        import inspect
+
+        from atlas.work_controller import resolve_cursor_resource_preflight_script
+
+        source = inspect.getsource(resolve_cursor_resource_preflight_script)
+        self.assertNotIn("/home/aella/engineering-system", source)
+        previous_root = os.environ.pop("ENGINEERING_SYSTEM_ROOT", None)
+        previous_file = os.environ.pop(
+            "ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT", None
+        )
+        try:
+            self.assertIsNone(resolve_cursor_resource_preflight_script())
+            with tempfile.TemporaryDirectory() as tmp:
+                script = Path(tmp) / "tools" / "cursor-resource-preflight.py"
+                script.parent.mkdir()
+                script.write_text("# preflight\n", encoding="utf-8")
+                os.environ["ENGINEERING_SYSTEM_ROOT"] = tmp
+                self.assertEqual(
+                    resolve_cursor_resource_preflight_script(), script
+                )
+                os.environ.pop("ENGINEERING_SYSTEM_ROOT")
+                missing = Path(tmp) / "missing.py"
+                os.environ["ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT"] = str(
+                    missing
+                )
+                self.assertIsNone(resolve_cursor_resource_preflight_script())
+                os.environ["ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT"] = str(
+                    script
+                )
+                self.assertEqual(
+                    resolve_cursor_resource_preflight_script(), script
+                )
+        finally:
+            if previous_root is None:
+                os.environ.pop("ENGINEERING_SYSTEM_ROOT", None)
+            else:
+                os.environ["ENGINEERING_SYSTEM_ROOT"] = previous_root
+            if previous_file is None:
+                os.environ.pop("ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT", None)
+            else:
+                os.environ["ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT"] = (
+                    previous_file
+                )
 
     def test_parse_persist_list_and_worktree_filter(self):
         sessions = parse_persist_list(SAMPLE_PERSIST_LIST)
@@ -119,7 +337,7 @@ class CursorLauncherTests(unittest.TestCase):
                     {"command": list(command), "cwd": worktree_path}
                 )
                 self.assertEqual(
-                    command, ["agent", "persist", "--trust", "/work-resume"]
+                    command, ["agent", "--force", "persist", "--trust", "/work-resume"]
                 )
                 self.assertEqual(worktree_path, str(target.resolve()))
                 state["sessions"].append(
@@ -137,6 +355,7 @@ class CursorLauncherTests(unittest.TestCase):
                 list_target_procs=lambda _wt: [],
                 spawn=spawn,
                 git_runner=self._clean_git(),
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=1.0,
                 sleeper=lambda _s: None,
@@ -144,7 +363,7 @@ class CursorLauncherTests(unittest.TestCase):
             result = dispatcher.start_resume(self._dispatch_request(str(target)))
             self.assertEqual(result.session_id, "target-new-1")
             self.assertEqual(
-                result.command, ["agent", "persist", "--trust", "/work-resume"]
+                result.command, ["agent", "--force", "persist", "--trust", "/work-resume"]
             )
             self.assertEqual(len(state["spawn_calls"]), 1)
             remaining_ids = {item.session_id for item in state["sessions"]}
@@ -175,6 +394,7 @@ class CursorLauncherTests(unittest.TestCase):
                 spawn=spawn,
                 terminate_process_group=lambda pid: state["terminated"].append(pid),
                 git_runner=self._clean_git(),
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=0.05,
                 sleeper=lambda _s: None,
@@ -199,6 +419,7 @@ class CursorLauncherTests(unittest.TestCase):
                 spawn=lambda _cmd, _wt: 4242,
                 terminate_process_group=lambda pid: state["terminated"].append(pid),
                 git_runner=self._clean_git(),
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=0.05,
                 sleeper=lambda _s: None,
@@ -210,11 +431,15 @@ class CursorLauncherTests(unittest.TestCase):
 
     def test_script_wrapper_cmdline_is_not_confirmed_agent(self):
         script_cmdline = (
-            "script\x00-qec\x00agent persist --trust /work-resume\x00/dev/null\x00"
+            "script\x00-qec\x00agent --force persist --trust /work-resume\x00/dev/null\x00"
         )
-        agent_cmdline = "agent\x00persist\x00--trust\x00/work-resume\x00"
+        agent_cmdline = "agent\x00--force\x00persist\x00--trust\x00/work-resume\x00"
+        approval_mode = "agent\x00persist\x00--trust\x00/work-resume\x00"
+        print_mode = "agent\x00--force\x00-p\x00--trust\x00/work-resume\x00"
         self.assertFalse(_is_agent_persist_trust_cmdline(script_cmdline))
         self.assertTrue(_is_agent_persist_trust_cmdline(agent_cmdline))
+        self.assertFalse(_is_agent_persist_trust_cmdline(approval_mode))
+        self.assertFalse(_is_agent_persist_trust_cmdline(print_mode))
 
     def test_pre_spawn_oserror_is_validation_error(self):
         """OSError before a live process exists must stay a boundary ValidationError."""
@@ -230,6 +455,7 @@ class CursorLauncherTests(unittest.TestCase):
                 list_target_procs=lambda _wt: [],
                 spawn=spawn,
                 git_runner=self._clean_git(),
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=0.05,
                 sleeper=lambda _s: None,
@@ -259,6 +485,7 @@ class CursorLauncherTests(unittest.TestCase):
                 list_target_procs=lambda _wt: [],
                 spawn=spawn,
                 git_runner=self._clean_git(),
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=0.05,
                 sleeper=lambda _s: None,
@@ -286,7 +513,7 @@ class CursorLauncherTests(unittest.TestCase):
                     )
                 ],
                 "procs": [
-                    (111, f"agent persist --trust /work-resume cwd={unrelated}")
+                    (111, f"agent --force persist --trust /work-resume cwd={unrelated}")
                 ],
             }
 
@@ -300,12 +527,12 @@ class CursorLauncherTests(unittest.TestCase):
 
             def spawn(command: list[str], worktree_path: str) -> int:
                 self.assertEqual(
-                    command, ["agent", "persist", "--trust", "/work-resume"]
+                    command, ["agent", "--force", "persist", "--trust", "/work-resume"]
                 )
                 state["target_ready"] = True
                 state["procs"] = [
                     (111, "unrelated keep"),
-                    (222, "agent persist --trust /work-resume"),
+                    (222, "agent --force persist --trust /work-resume"),
                 ]
                 return 222
 
@@ -314,6 +541,7 @@ class CursorLauncherTests(unittest.TestCase):
                 list_target_procs=list_procs,
                 spawn=spawn,
                 git_runner=self._clean_git(),
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=1.0,
                 sleeper=lambda _s: None,
@@ -342,6 +570,7 @@ class CursorLauncherTests(unittest.TestCase):
                 git_runner=self._clean_git(
                     head="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 ),
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=0.05,
                 sleeper=lambda _s: None,
@@ -386,6 +615,7 @@ class CursorLauncherTests(unittest.TestCase):
                 list_target_procs=lambda _wt: [],
                 spawn=spawn,
                 git_runner=mutable_git,
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=0.05,
                 sleeper=lambda _s: None,
@@ -414,6 +644,7 @@ class CursorLauncherTests(unittest.TestCase):
                 list_target_procs=lambda _wt: [],
                 spawn=spawn,
                 git_runner=self._clean_git(dirty=" M dirty.py\n"),
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=0.05,
                 sleeper=lambda _s: None,
@@ -462,6 +693,7 @@ class CursorLauncherTests(unittest.TestCase):
                 list_target_procs=lambda _wt: [],
                 spawn=spawn,
                 git_runner=mutable_git,
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=0.05,
                 sleeper=lambda _s: None,
@@ -511,6 +743,7 @@ class CursorLauncherTests(unittest.TestCase):
                 list_target_procs=list_procs,
                 spawn=spawn,
                 git_runner=mutable_git,
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=0.05,
                 sleeper=lambda _s: None,
@@ -560,6 +793,7 @@ class CursorLauncherTests(unittest.TestCase):
                 list_target_procs=lambda _wt: [],
                 spawn=spawn,
                 git_runner=fake_git,
+                resource_preflight=_pass_resource_preflight,
                 poll_interval_sec=0.01,
                 poll_timeout_sec=0.05,
                 sleeper=lambda _s: None,
@@ -609,7 +843,7 @@ class CursorLauncherTests(unittest.TestCase):
                             print(f"  Attach: agent persist attach {{item['session_id']}}")
                             print()
                         raise SystemExit(0)
-                    if argv[:3] == ["persist", "--trust", "/work-resume"]:
+                    if argv[:4] == ["--force", "persist", "--trust", "/work-resume"]:
                         cwd = str(Path.cwd().resolve())
                         sessions.append(
                             {{
@@ -638,6 +872,7 @@ class CursorLauncherTests(unittest.TestCase):
                 dispatcher = PtyPersistCursorDispatcher(
                     list_target_procs=lambda _wt: [],
                     git_runner=self._clean_git(),
+                    resource_preflight=_pass_resource_preflight,
                     poll_interval_sec=0.05,
                     poll_timeout_sec=2.0,
                 )
