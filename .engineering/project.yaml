@@ -1,39 +1,36 @@
 engineering_system:
-  version: "1.6.0"
+  version: 1.6.5
   mode: adopted
-  baseline: "673c3b339a0765657214d40a22400a04ed54425b"
+  baseline: 14150e424c922ff3a930b45dcf31d3a3d3ba28b2
   ci_mode: shared
   native_ci_workflows: []
   merge_gate_status: unknown
-
 project:
-  name: "datarelay-atlas"
-  type: "engineering-platform"
-  maturity: "development"
-
+  name: datarelay-atlas
+  type: engineering-platform
+  maturity: development
 domains:
-  - methodology
-  - project-registry
-  - lifecycle
-  - knowledge
-  - ai-context
-  - integrations
-  - product-docs
-
+- methodology
+- project-registry
+- lifecycle
+- knowledge
+- ai-context
+- integrations
+- product-docs
 platforms:
-  - linux
-  - web
-
+- linux
+- web
 operations:
   production_oriented: false
   runbook_required: false
   incident_response_required: false
   persistent_state: true
   runbook_paths:
-    - docs/runbooks/phase1-project-registry-canonical-sync.md
-    - docs/runbooks/autonomous-work-controller-poc.md
-  health_command: ""
-  backup_command: "cp -a \"${ATLAS_DATA_ROOT:-.atlas-data}\" \"${ATLAS_DATA_ROOT:-.atlas-data}.bak\""
-  restore_test_command: "test -f \"${ATLAS_DATA_ROOT:-.atlas-data}/registry.json\" -o ! -e \"${ATLAS_DATA_ROOT:-.atlas-data}/registry.json\""
-  upgrade_command: ""
-  rollback_command: ""
+  - docs/runbooks/phase1-project-registry-canonical-sync.md
+  - docs/runbooks/autonomous-work-controller-poc.md
+  health_command: ''
+  backup_command: cp -a "${ATLAS_DATA_ROOT:-.atlas-data}" "${ATLAS_DATA_ROOT:-.atlas-data}.bak"
+  restore_test_command: test -f "${ATLAS_DATA_ROOT:-.atlas-data}/registry.json" -o
+    ! -e "${ATLAS_DATA_ROOT:-.atlas-data}/registry.json"
+  upgrade_command: ''
+  rollback_command: ''
