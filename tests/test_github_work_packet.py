@@ -472,6 +472,7 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                 "title": "[AI Work] DRAtlas Autonomous Work Controller PoC",
                 "state": "OPEN",
                 "body": SAMPLE_BODY,
+                "user": {"login": "packet-author"},
             }
         ]
 
@@ -505,7 +506,15 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str] | None:
         if not self._is_author_permission(argv):
             return None
-        mode = getattr(self, "_author_permission_mode", "write")
+        script = getattr(self, "_author_permission_script", None)
+        if script:
+            mode = script.pop(0)
+        else:
+            mode = getattr(self, "_author_permission_mode", "write")
+        by_login = getattr(self, "_author_permission_by_login", None)
+        if by_login is not None:
+            login = argv[2].split("/collaborators/", 1)[1].split("/permission", 1)[0]
+            mode = by_login.get(login, "api_failure")
         if mode == "api_failure":
             return subprocess.CompletedProcess(
                 argv, 1, stdout="", stderr="HTTP 500"
@@ -564,11 +573,19 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
         adapter = GitHubWorkPacketAdapter(command_runner=runner)
         adapter.apply_rework_findings(**self._rework_kwargs())
-        self.assertEqual(len(calls), 5)  # list, view, permission, recheck view, edit
+        self.assertEqual(len(calls), 6)  # list, select permission, view, mutate permission, recheck, edit
         self.assertTrue(self._is_issue_scan(calls[0]))
         self.assertNotIn("--limit", calls[0])
         self.assertEqual(
             calls[1],
+            [
+                "gh",
+                "api",
+                "repos/datarelay-labs/datarelay-atlas/collaborators/packet-author/permission",
+            ],
+        )
+        self.assertEqual(
+            calls[2],
             [
                 "gh",
                 "issue",
@@ -580,25 +597,18 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                 "number,title,state,body,updatedAt,author",
             ],
         )
-        self.assertEqual(
-            calls[2],
-            [
-                "gh",
-                "api",
-                "repos/datarelay-labs/datarelay-atlas/collaborators/packet-author/permission",
-            ],
-        )
         self.assertEqual(calls[1], calls[3])
+        self.assertEqual(calls[2], calls[4])
         self.assertEqual(
-            calls[4][:6],
+            calls[5][:6],
             ["gh", "issue", "edit", "12", "--repo", "datarelay-labs/datarelay-atlas"],
         )
-        joined = " ".join(calls[4])
+        joined = " ".join(calls[5])
         self.assertNotIn("$(rm -rf /)", joined)
         self.assertEqual(len(body_files), 1)
         self.assertIn("fix gaps", body_files[0])
         self.assertIn("do not $(rm -rf /)", body_files[0])
-        self.assertFalse(Path(calls[4][calls[4].index("--body-file") + 1]).exists())
+        self.assertFalse(Path(calls[5][calls[5].index("--body-file") + 1]).exists())
 
     def test_author_permission_required_before_mutation(self):
         """Trusted permissions may edit; weaker, missing, or failed lookups must not."""
@@ -631,14 +641,27 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             )
             self.assertEqual(len(edits), 1, permission)
 
-        blocked = ("read", "triage", "none", "missing", "unknown", "api_failure", "non_json", "non_object")
-        for mode in blocked:
+        weaker = ("read", "triage", "none")
+        for mode in weaker:
             edits.clear()
             self._author_permission_mode = mode
             self._view_body = self._payload(authorAssociation="OWNER")
-            adapter = GitHubWorkPacketAdapter(command_runner=runner)
             with self.assertRaises(ValidationError) as ctx:
-                adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
+                GitHubWorkPacketAdapter(command_runner=runner).apply_rework_findings(
+                    **self._rework_kwargs(findings="x")
+                )
+            self.assertIn("no trusted ACTIVE Work Packet", str(ctx.exception))
+            self.assertEqual(edits, [], mode)
+
+        unverifiable = ("missing", "unknown", "api_failure", "non_json", "non_object")
+        for mode in unverifiable:
+            edits.clear()
+            self._author_permission_mode = mode
+            self._view_body = self._payload(authorAssociation="OWNER")
+            with self.assertRaises(ValidationError) as ctx:
+                GitHubWorkPacketAdapter(command_runner=runner).apply_rework_findings(
+                    **self._rework_kwargs(findings="x")
+                )
             self.assertIn("WORK_PACKET_AUTHOR_UNTRUSTED", str(ctx.exception))
             self.assertEqual(edits, [], mode)
 
@@ -652,6 +675,268 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                 **self._rework_kwargs(findings="x")
             )
         self.assertIn("WORK_PACKET_AUTHOR_UNTRUSTED", str(ctx.exception))
+        self.assertEqual(edits, [])
+
+    def test_trusted_author_selection_ignores_weaker_duplicates(self):
+        """An outsider duplicate must not create ambiguity or authorize itself."""
+        edits: list[str] = []
+        trusted_body = SAMPLE_BODY
+        outsider_body = SAMPLE_BODY.replace(
+            "OWNER_INTENT=Complete the AWC PoC safely.",
+            "OWNER_INTENT=Outsider duplicate.",
+        )
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
+            if self._is_issue_scan(argv):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=self._scan_pages(*self._pages), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "view"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(self._payload()), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                edits.append("edit")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            self.fail(f"unexpected argv: {argv}")
+
+        self._author_permission_by_login = {
+            "packet-author": "write",
+            "outsider": "read",
+        }
+        self._pages = (
+            [
+                {
+                    "number": 12,
+                    "title": "[AI Work] trusted",
+                    "state": "open",
+                    "body": trusted_body,
+                    "user": {"login": "packet-author"},
+                    "author_association": "NONE",
+                },
+                {
+                    "number": 40,
+                    "title": "[AI Work] outsider",
+                    "state": "open",
+                    "body": outsider_body,
+                    "user": {"login": "outsider"},
+                    "author_association": "OWNER",
+                },
+            ],
+        )
+        GitHubWorkPacketAdapter(command_runner=runner).apply_rework_findings(
+            **self._rework_kwargs(findings="x")
+        )
+        self.assertEqual(edits, ["edit"])
+
+        edits.clear()
+        self._author_permission_by_login = {"outsider": "none"}
+        self._pages = (
+            [
+                {
+                    "number": 12,
+                    "title": "[AI Work] outsider only",
+                    "state": "open",
+                    "body": SAMPLE_BODY,
+                    "user": {"login": "outsider"},
+                    "author_association": "OWNER",
+                }
+            ],
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            GitHubWorkPacketAdapter(command_runner=runner).apply_rework_findings(
+                **self._rework_kwargs(findings="x")
+            )
+        self.assertIn("no trusted ACTIVE Work Packet", str(ctx.exception))
+        self.assertEqual(edits, [])
+
+    def test_two_trusted_packets_and_unverifiable_candidates_fail_closed(self):
+        edits: list[str] = []
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
+            if self._is_issue_scan(argv):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=self._scan_pages(*self._pages), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                edits.append("edit")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            self.fail(f"must not mutate: {argv}")
+
+        other = SAMPLE_BODY.replace(
+            "OWNER_INTENT=Complete the AWC PoC safely.",
+            "OWNER_INTENT=Second trusted packet.",
+        )
+        self._author_permission_by_login = {
+            "packet-author": "admin",
+            "other-author": "maintain",
+        }
+        self._pages = (
+            [
+                {
+                    "number": 12,
+                    "title": "[AI Work] one",
+                    "state": "open",
+                    "body": SAMPLE_BODY,
+                    "user": {"login": "packet-author"},
+                },
+                {
+                    "number": 99,
+                    "title": "[AI Work] two",
+                    "state": "open",
+                    "body": other,
+                    "user": {"login": "other-author"},
+                },
+            ],
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            GitHubWorkPacketAdapter(command_runner=runner).apply_rework_findings(
+                **self._rework_kwargs(findings="x")
+            )
+        self.assertIn("ambiguous ACTIVE Work Packets", str(ctx.exception))
+        self.assertIn("#12", str(ctx.exception))
+        self.assertIn("#99", str(ctx.exception))
+        self.assertEqual(edits, [])
+
+        self._author_permission_by_login = {"packet-author": "api_failure"}
+        self._pages = (
+            [
+                {
+                    "number": 12,
+                    "title": "[AI Work] one",
+                    "state": "open",
+                    "body": SAMPLE_BODY,
+                    "user": {"login": "packet-author"},
+                }
+            ],
+        )
+        for mode in ("api_failure", "non_json", "missing", "unknown"):
+            self._author_permission_by_login = {"packet-author": mode}
+            with self.assertRaises(ValidationError) as ctx:
+                GitHubWorkPacketAdapter(command_runner=runner).apply_rework_findings(
+                    **self._rework_kwargs(findings="x")
+                )
+            self.assertIn("unverifiable", str(ctx.exception), mode)
+            self.assertEqual(edits, [])
+
+        self._pages = (
+            [
+                {
+                    "number": 12,
+                    "title": "[AI Work] one",
+                    "state": "open",
+                    "body": SAMPLE_BODY,
+                    "author_association": "OWNER",
+                }
+            ],
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            GitHubWorkPacketAdapter(command_runner=runner).apply_rework_findings(
+                **self._rework_kwargs(findings="x")
+            )
+        self.assertIn("issue author missing", str(ctx.exception))
+        self.assertEqual(edits, [])
+
+    def test_permission_downgrade_blocks_mutation_after_selection(self):
+        edits: list[str] = []
+        self._author_permission_by_login = None
+        self._author_permission_script = ["write", "read"]
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
+            if self._is_issue_scan(argv):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=self._scan_pages(), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "view"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(self._payload()), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                edits.append("edit")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            self.fail(f"unexpected argv: {argv}")
+
+        with self.assertRaises(ValidationError) as ctx:
+            GitHubWorkPacketAdapter(command_runner=runner).apply_rework_findings(
+                **self._rework_kwargs(findings="x")
+            )
+        self.assertIn("WORK_PACKET_AUTHOR_UNTRUSTED", str(ctx.exception))
+        self.assertEqual(edits, [])
+
+    def test_later_page_trusted_duplicate_is_not_hidden_by_an_outsider(self):
+        edits: list[str] = []
+        other = SAMPLE_BODY.replace(
+            "OWNER_INTENT=Complete the AWC PoC safely.",
+            "OWNER_INTENT=Later page trusted packet.",
+        )
+        self._author_permission_by_login = {
+            "packet-author": "write",
+            "outsider": "triage",
+            "other-author": "admin",
+        }
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
+            if self._is_issue_scan(argv):
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=self._scan_pages(
+                        [
+                            {
+                                "number": 12,
+                                "title": "[AI Work] trusted",
+                                "state": "open",
+                                "body": SAMPLE_BODY,
+                                "user": {"login": "packet-author"},
+                            },
+                            {
+                                "number": 40,
+                                "title": "[AI Work] outsider",
+                                "state": "open",
+                                "body": SAMPLE_BODY.replace(
+                                    "OWNER_INTENT=Complete the AWC PoC safely.",
+                                    "OWNER_INTENT=Outsider on page one.",
+                                ),
+                                "user": {"login": "outsider"},
+                                "author_association": "OWNER",
+                            },
+                        ],
+                        [
+                            {
+                                "number": 99,
+                                "title": "[AI Work] later",
+                                "state": "open",
+                                "body": other,
+                                "user": {"login": "other-author"},
+                            }
+                        ],
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                edits.append("edit")
+            self.fail(f"must not mutate: {argv}")
+
+        with self.assertRaises(ValidationError) as ctx:
+            GitHubWorkPacketAdapter(command_runner=runner).apply_rework_findings(
+                **self._rework_kwargs(findings="x")
+            )
+        message = str(ctx.exception)
+        self.assertIn("#12", message)
+        self.assertIn("#99", message)
+        self.assertNotIn("#40", message)
         self.assertEqual(edits, [])
 
     def test_concurrent_change_fails_closed(self):
@@ -770,12 +1055,14 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                                 "title": "[AI Work] one",
                                 "state": "OPEN",
                                 "body": SAMPLE_BODY,
+                                "user": {"login": "packet-author"},
                             },
                             {
                                 "number": 99,
                                 "title": "[AI Work] two",
                                 "state": "OPEN",
                                 "body": other,
+                                "user": {"login": "other-author"},
                             },
                         )
                     ),
@@ -824,12 +1111,14 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                                 "title": "[AI Work] one",
                                 "state": "open",
                                 "body": SAMPLE_BODY,
+                                "user": {"login": "packet-author"},
                             },
                             {
                                 "number": 99,
                                 "title": "[AI Work] two",
                                 "state": "open",
                                 "body": other,
+                                "user": {"login": "other-author"},
                             },
                         ],
                     ),
@@ -918,12 +1207,14 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                                 "title": "[AI Work] branched",
                                 "state": "OPEN",
                                 "body": SAMPLE_BODY,
+                                "user": {"login": "packet-author"},
                             },
                             {
                                 "number": 77,
                                 "title": "[AI Work] branchless",
                                 "state": "OPEN",
                                 "body": branchless,
+                                "user": {"login": "other-author"},
                             },
                         )
                     ),

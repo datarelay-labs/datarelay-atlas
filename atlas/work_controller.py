@@ -865,23 +865,60 @@ def _flatten_paginated_issue_pages(raw: object) -> list[dict]:
 
 
 _TRUSTED_WORK_PACKET_AUTHOR_PERMISSIONS = frozenset({"write", "maintain", "admin"})
+_WEAKER_WORK_PACKET_AUTHOR_PERMISSIONS = frozenset({"read", "triage", "none"})
 
 
 def _github_login_from_issue(payload: dict) -> str:
     """Return the issue author login, or fail closed when it is unusable.
 
+    REST issue lists use ``user.login``. ``gh issue view`` uses ``author.login``.
+    Either shape is accepted; disagreeing identities fail closed.
     ``author_association`` is intentionally ignored. Authorization uses only
     the authenticated collaborators permission API.
     """
-    author = payload.get("author")
-    login = ""
-    if isinstance(author, dict):
-        login = str(author.get("login") or "").strip()
-    elif isinstance(author, str):
-        login = author.strip()
+    found: list[str] = []
+    for key in ("user", "author"):
+        node = payload.get(key)
+        login = ""
+        if isinstance(node, dict):
+            login = str(node.get("login") or "").strip()
+        elif key == "author" and isinstance(node, str):
+            login = node.strip()
+        if login and login not in found:
+            found.append(login)
+    if len(found) != 1:
+        raise ValidationError("WORK_PACKET_AUTHOR_UNTRUSTED: issue author missing")
+    login = found[0]
     if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login):
         raise ValidationError("WORK_PACKET_AUTHOR_UNTRUSTED: issue author missing")
     return login
+
+
+def _classify_collaborator_permission(parsed: object) -> str:
+    """Return ``trusted`` or ``untrusted``; unknown results fail closed.
+
+    Known weaker permissions (``read``, ``triage``, ``none``) are untrusted
+    and must not create uniqueness ambiguity. Any other value, including a
+    missing field, is unverifiable and must not be discarded.
+    """
+    if not isinstance(parsed, dict):
+        raise ValidationError(
+            "WORK_PACKET_AUTHOR_UNTRUSTED: permission lookup returned non-object"
+        )
+    raw = parsed.get("permission")
+    permission = str(raw or "").strip().lower()
+    if raw is None or not permission:
+        raise ValidationError(
+            "WORK_PACKET_AUTHOR_UNTRUSTED: permission missing"
+        )
+    if permission in _TRUSTED_WORK_PACKET_AUTHOR_PERMISSIONS:
+        return "trusted"
+    if permission in _WEAKER_WORK_PACKET_AUTHOR_PERMISSIONS:
+        return "untrusted"
+    raise ValidationError(
+        "WORK_PACKET_AUTHOR_UNTRUSTED: "
+        f"permission {permission!r} is unknown"
+    )
 
 
 def _leading_packet_metadata_text(body: str) -> str:
@@ -1446,14 +1483,11 @@ class GitHubWorkPacketAdapter:
                 or f"gh issue edit failed with exit {edit.returncode}"
             )
 
-    def _require_trusted_issue_author(self, repository: str, payload: dict) -> None:
-        """Reject mutation unless the author has write, maintain, or admin.
+    def _lookup_author_trust(self, repository: str, payload: dict) -> str:
+        """Return ``trusted`` or ``untrusted`` for one issue author.
 
-        Matches ``/work-resume`` provenance: authenticated
-        ``repos/{owner}/{repo}/collaborators/{author}/permission`` only.
-        API failure, a missing author, or any weaker/unknown permission fails
-        closed before the packet body is changed. ``author_association`` is
-        not read.
+        Lookup failure, malformed JSON, a missing author, or an unknown
+        permission raises. ``author_association`` is not read.
         """
         login = _github_login_from_issue(payload)
         path = f"repos/{repository}/collaborators/{login}/permission"
@@ -1468,16 +1502,18 @@ class GitHubWorkPacketAdapter:
             raise ValidationError(
                 "WORK_PACKET_AUTHOR_UNTRUSTED: permission lookup returned non-JSON"
             ) from exc
-        if not isinstance(parsed, dict):
-            raise ValidationError(
-                "WORK_PACKET_AUTHOR_UNTRUSTED: permission lookup returned non-object"
-            )
-        permission = str(parsed.get("permission") or "").strip().lower()
-        if permission not in _TRUSTED_WORK_PACKET_AUTHOR_PERMISSIONS:
-            shown = permission or "missing"
+        return _classify_collaborator_permission(parsed)
+
+    def _require_trusted_issue_author(self, repository: str, payload: dict) -> None:
+        """Reject mutation unless the author has write, maintain, or admin.
+
+        Defense in depth after candidate selection. A permission downgrade
+        between selection and mutation still blocks the edit.
+        """
+        if self._lookup_author_trust(repository, payload) != "trusted":
             raise ValidationError(
                 "WORK_PACKET_AUTHOR_UNTRUSTED: "
-                f"permission {shown!r} is not write, maintain, or admin"
+                "permission is not write, maintain, or admin"
             )
 
     def _view_issue(self, repository: str, issue_number: int) -> dict:
@@ -1570,39 +1606,61 @@ class GitHubWorkPacketAdapter:
         issue_number: int,
         branch: str,
     ) -> None:
-        """Fail closed unless exactly one ACTIVE packet matches repo/branch.
+        """Fail closed unless exactly one trusted ACTIVE packet matches.
 
-        Selection criteria mirror `.cursor/commands/work-resume.md` (TARGET_REPO,
-        STATUS=ACTIVE, BRANCH). WORKSTREAM is validated separately on the
-        configured issue before mutation.
+        Metadata matches ``.cursor/commands/work-resume.md`` (TARGET_REPO,
+        STATUS=ACTIVE, BRANCH). Only authors with effective ``write``,
+        ``maintain``, or ``admin`` count toward uniqueness. A known weaker
+        permission cannot create ambiguity. An unverifiable author fails
+        closed instead of being ignored. WORKSTREAM is validated separately
+        on the configured issue before mutation.
         """
-        matches: list[int] = []
+        trusted: list[int] = []
+        saw_metadata_match = False
         for issue in self._list_open_ai_work_issues(repository):
             number = issue.get("number")
             try:
                 number_i = int(number)
             except (TypeError, ValueError):
-                continue
+                number_i = None
             body = str(issue.get("body") or "")
-            if self._active_packet_matches(
+            if not self._active_packet_matches(
                 body,
                 repository=repository,
                 branch=branch,
             ):
-                matches.append(number_i)
-        if not matches:
+                continue
+            if number_i is None:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: candidate issue number missing"
+                )
+            saw_metadata_match = True
+            try:
+                trust = self._lookup_author_trust(repository, issue)
+            except ValidationError as exc:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                    f"candidate #{number_i} unverifiable ({exc})"
+                ) from exc
+            if trust == "trusted":
+                trusted.append(number_i)
+        if not saw_metadata_match:
             raise ValidationError(
                 "no ACTIVE Work Packet matches repository/branch"
             )
-        if len(matches) > 1:
-            listed = ", ".join(f"#{n}" for n in sorted(matches))
+        if not trusted:
+            raise ValidationError(
+                "no trusted ACTIVE Work Packet matches repository/branch"
+            )
+        if len(trusted) > 1:
+            listed = ", ".join(f"#{n}" for n in sorted(trusted))
             raise ValidationError(
                 f"ambiguous ACTIVE Work Packets for repository/branch: {listed}"
             )
-        if matches[0] != int(issue_number):
+        if trusted[0] != int(issue_number):
             raise ValidationError(
                 f"configured issue #{issue_number} is not the unique ACTIVE "
-                f"Work Packet match (found #{matches[0]})"
+                f"Work Packet match (found #{trusted[0]})"
             )
 
     @staticmethod
