@@ -48,6 +48,27 @@ SUPPORTED_WORK_PACKET_STATUSES = frozenset({"ACTIVE"})
 # Cheap-path PASS requires an explicit terminal pass/ready gate. REWORK,
 # FINAL_AUDIT, IMPLEMENTATION, and any other non-terminal gate block PASS.
 WORK_PACKET_PASS_GATES = frozenset({"PASS", "PASSED", "READY", "COMPLETE"})
+# GitHub Contents GET omits inline `content` at 1 MiB. Stay strictly below
+# that boundary so a successful PUT remains readable by load().
+CONTENTS_INLINE_MAX_BYTES = 1_000_000
+CHECKPOINT_MAX_BYTES = CONTENTS_INLINE_MAX_BYTES - 1
+# Exact marker search page. A full page is not authoritative absence.
+HANDOFF_MARKER_SEARCH_LIMIT = 100
+
+
+def checkpoint_json_text(packet: AuditControlPacket) -> str:
+    return json.dumps(packet.to_dict(), indent=2, sort_keys=True) + "\n"
+
+
+def assert_checkpoint_inline_size(raw: str) -> None:
+    """Refuse a canonical payload GitHub Contents would not return inline."""
+    size = len(raw.encode("utf-8"))
+    if size > CHECKPOINT_MAX_BYTES:
+        raise ValidationError(
+            "checkpoint JSON exceeds GitHub Contents inline limit "
+            f"({size} > {CHECKPOINT_MAX_BYTES} bytes); refusing PUT so a "
+            "canonical checkpoint cannot become unreadable"
+        )
 CommandRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
 
@@ -283,7 +304,8 @@ class GitHubContentsCheckpointStore:
         packet: AuditControlPacket,
         expected_sha: str | None,
     ) -> str:
-        raw = json.dumps(packet.to_dict(), indent=2, sort_keys=True) + "\n"
+        raw = checkpoint_json_text(packet)
+        assert_checkpoint_inline_size(raw)
         body: dict[str, Any] = {
             "message": (
                 f"atlas chat-audit checkpoint issue-{self.issue_number} "
@@ -481,6 +503,9 @@ class GitHubContentsCheckpointStore:
             raise ValidationError(
                 "checkpoint save requires a prior load to bind Contents CAS sha"
             )
+        # Reject an already-oversized packet before durable-text scanning.
+        # That scan is not practical at the Contents inline boundary.
+        assert_checkpoint_inline_size(checkpoint_json_text(packet))
         safe = sanitize_packet_for_persistence(packet)
         expected_sha = self._cas_blob_sha
         if expected_sha is None:
@@ -970,7 +995,11 @@ class GitHubAIWorkHandoff:
         return record
 
     def _find_issue_by_marker(self, marker: str) -> tuple[int, str] | None:
-        """Locate an existing [AI Work] issue by durable finding marker."""
+        """Locate an existing issue by exact durable finding marker.
+
+        Search is server-side on the marker itself. A bounded title listing of
+        recent ``[AI Work]`` issues is not authoritative absence.
+        """
         listed = self._run(
             [
                 "gh",
@@ -981,11 +1010,11 @@ class GitHubAIWorkHandoff:
                 "--state",
                 "open",
                 "--search",
-                'in:title "[AI Work]"',
+                f'"{marker}" in:body',
                 "--json",
                 "number,title,body,url",
                 "--limit",
-                "50",
+                str(HANDOFF_MARKER_SEARCH_LIMIT),
             ]
         )
         if listed.returncode != 0:
@@ -1002,6 +1031,11 @@ class GitHubAIWorkHandoff:
             ) from exc
         if not isinstance(items, list):
             raise ValidationError("handoff marker lookup returned non-list JSON")
+        if len(items) >= HANDOFF_MARKER_SEARCH_LIMIT:
+            raise ValidationError(
+                "handoff marker lookup truncated; refusing to treat a full "
+                "result page as authoritative absence"
+            )
         matches = [
             item
             for item in items

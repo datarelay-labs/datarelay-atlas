@@ -4016,6 +4016,195 @@ class ChatAuditTests(unittest.TestCase):
             7,
         )
 
+    def test_77_marker_search_finds_issue_beyond_title_page(self):
+        import subprocess
+
+        from atlas.chat_audit import AuditFinding
+        from atlas.chat_audit_github import (
+            HANDOFF_MARKER_SEARCH_LIMIT,
+            GitHubAIWorkHandoff,
+        )
+
+        packet = self._blank_packet()
+        finding = AuditFinding(
+            finding_id="beyond-page",
+            unit="changed_code",
+            summary="older handoff",
+            severity="P2",
+        )
+        marker = "<!-- atlas-chat-audit-finding-id:beyond-page -->"
+        creates: list[int] = []
+        searches: list[str] = []
+
+        def runner(argv: list[str], cwd: str):
+            joined = " ".join(argv)
+            if argv[:2] == ["gh", "api"] and "--method" not in argv:
+                if "/contents/" in joined:
+                    return subprocess.CompletedProcess(
+                        argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                    )
+                if "/git/ref/heads/" in joined:
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps({"object": {"sha": "1" * 40}}),
+                        stderr="",
+                    )
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"default_branch": "main"}), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "--method" in argv and "/contents/" in joined:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps({"content": {"sha": "claim-sha"}}),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "list"]:
+                search = argv[argv.index("--search") + 1]
+                searches.append(search)
+                if marker not in search:
+                    decoys = [
+                        {
+                            "number": 1000 + i,
+                            "title": "[AI Work] other",
+                            "body": "no marker",
+                            "url": f"https://github.com/{REPO}/issues/{1000 + i}",
+                        }
+                        for i in range(60)
+                    ]
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout=json.dumps(decoys), stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        [
+                            {
+                                "number": 77,
+                                "title": "[AI Work] Audit finding: beyond-page",
+                                "body": (
+                                    f"{marker}\nTARGET_REPO={REPO}\nSTATUS=ACTIVE\n"
+                                ),
+                                "url": f"https://github.com/{REPO}/issues/77",
+                            }
+                        ]
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "create"]:
+                creates.append(901)
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=f"https://github.com/{REPO}/issues/901\n",
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="unexpected"
+            )
+
+        handoff = GitHubAIWorkHandoff(repository=REPO, command_runner=runner)
+        record = handoff.upsert_implementation_packet(packet, finding)
+        self.assertEqual(creates, [])
+        self.assertEqual(record["issue_number"], 77)
+        self.assertEqual(record["claim"], "reconciled_marker")
+        self.assertTrue(searches)
+        self.assertTrue(all(marker in item for item in searches))
+        self.assertGreater(HANDOFF_MARKER_SEARCH_LIMIT, 50)
+
+        def truncated(argv: list[str], cwd: str):
+            if argv[:3] == ["gh", "issue", "list"]:
+                page = [
+                    {
+                        "number": i,
+                        "title": "[AI Work] filler",
+                        "body": "no",
+                        "url": f"https://github.com/{REPO}/issues/{i}",
+                    }
+                    for i in range(1, HANDOFF_MARKER_SEARCH_LIMIT + 1)
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(page), stderr=""
+                )
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="unexpected"
+            )
+
+        limited = GitHubAIWorkHandoff(repository=REPO, command_runner=truncated)
+        with self.assertRaises(ValidationError) as raised:
+            limited._find_issue_by_marker(marker)
+        self.assertIn("truncated", str(raised.exception))
+
+    def test_78_checkpoint_over_contents_inline_limit_is_not_put(self):
+        from atlas.chat_audit_github import (
+            CHECKPOINT_MAX_BYTES,
+            GitHubContentsCheckpointStore,
+        )
+
+        state: dict[str, Any] = {"raw": None, "sha": None, "puts": 0}
+        store = GitHubContentsCheckpointStore(
+            repository=REPO,
+            issue_number=20,
+            command_runner=self._contents_runner(state),
+        )
+        packet = self._blank_packet()
+        self.assertIsNone(store.load())
+        packet.session.notes = "n" * (CHECKPOINT_MAX_BYTES + 1)
+        with self.assertRaises(ValidationError) as raised:
+            store.save(packet)
+        self.assertIn("inline limit", str(raised.exception))
+        self.assertEqual(state["puts"], 0)
+        self.assertEqual(packet.canonical_revision, 0)
+
+        from atlas.chat_audit_github import assert_checkpoint_inline_size
+
+        at_limit = "n" * CHECKPOINT_MAX_BYTES
+        assert_checkpoint_inline_size(at_limit)
+        with self.assertRaises(ValidationError):
+            assert_checkpoint_inline_size(at_limit + "n")
+        small_state: dict[str, Any] = {"raw": None, "sha": None, "puts": 0}
+        small_store = GitHubContentsCheckpointStore(
+            repository=REPO,
+            issue_number=20,
+            command_runner=self._contents_runner(small_state),
+        )
+        small = self._blank_packet()
+        self.assertIsNone(small_store.load())
+        small_store.save(small)
+        self.assertEqual(small_state["puts"], 1)
+        loaded = small_store.load()
+        assert loaded is not None
+        self.assertEqual(loaded.canonical_revision, 1)
+
+        def missing_content(argv: list[str], cwd: str):
+            import subprocess
+
+            if argv[:2] == ["gh", "api"] and "/contents/" in " ".join(argv):
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {"type": "file", "sha": "blob-only", "content": ""}
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="unexpected"
+            )
+
+        bare = GitHubContentsCheckpointStore(
+            repository=REPO,
+            issue_number=20,
+            command_runner=missing_content,
+        )
+        with self.assertRaises(ValidationError) as missing:
+            bare.load()
+        self.assertIn("missing content", str(missing.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
