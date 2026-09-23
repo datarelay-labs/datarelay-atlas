@@ -6,9 +6,23 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "IN_SLICE",
-  "canonical_revision": 47,
+  "audit_status": "SLICE_COMPLETE",
+  "canonical_revision": 48,
   "completed_units": {
+    "6d3ff204c1ceada7e992bb1e:affected_contracts:979541a259aa05e718213dd5045b00dfc4056ca7": {
+      "audit_request": "AUDIT_UNIT=affected_contracts\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
+      "evidence": {
+        "notes": "No public CLI command/argument, checkpoint schema version, GitHub checkpoint location/CAS contract, handoff record schema, provenance contract, or MCP contract changed. The delta tightens validation under the existing durable-state no-secrets contract and preserves normal branch identity behavior.",
+        "status": "COMPLETE",
+        "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
+        "truncated": false,
+        "unit": "affected_contracts"
+      },
+      "findings": [],
+      "outcome": "PASS",
+      "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
+      "unit": "affected_contracts"
+    },
     "6d3ff204c1ceada7e992bb1e:changed_code:979541a259aa05e718213dd5045b00dfc4056ca7": {
       "audit_request": "AUDIT_UNIT=changed_code\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
       "evidence": {
@@ -53,25 +67,25 @@
     }
   },
   "current_target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
-  "current_unit": "affected_contracts",
+  "current_unit": null,
   "current_unit_index": 1,
   "fair_start_index": 3,
   "idempotency_run_key": "6d3ff204c1ceada7e992bb1e",
   "include_release_readiness": false,
   "last_audited_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
   "last_completed_slice": {
-    "audit_request": "AUDIT_UNIT=changed_code\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
+    "audit_request": "AUDIT_UNIT=affected_contracts\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
     "evidence": {
-      "notes": "Independent review of 6b17b95..979541a verified bounded changes: fail-closed credential-bearing branch validation at packet and handoff persistence boundaries, generalized same-segment punctuation assignment detection, and regression coverage including cross-segment safe controls. No unrelated product behavior was changed.",
+      "notes": "No public CLI command/argument, checkpoint schema version, GitHub checkpoint location/CAS contract, handoff record schema, provenance contract, or MCP contract changed. The delta tightens validation under the existing durable-state no-secrets contract and preserves normal branch identity behavior.",
       "status": "COMPLETE",
       "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
       "truncated": false,
-      "unit": "changed_code"
+      "unit": "affected_contracts"
     },
     "findings": [],
     "outcome": "PASS",
     "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
-    "unit": "changed_code"
+    "unit": "affected_contracts"
   },
   "last_coordination_refresh": {
     "ci": {
@@ -103,7 +117,7 @@
     }
   },
   "mode": "delta",
-  "next_action": "complete_or_resume_unit:affected_contracts",
+  "next_action": "run_next_audit_slice",
   "no_change_runs": 3,
   "open_findings": [],
   "schema_version": 1,
@@ -113,15 +127,7 @@
     "rollover_count": 1,
     "state": "STALLED"
   },
-  "slice_claim": {
-    "claim_id": "001b455b-b545-412d-807a-4cdac6ddfc17",
-    "claimed_at": 1790169059.5596528,
-    "lease_seconds": 900.0,
-    "run_key": "6d3ff204c1ceada7e992bb1e",
-    "state": "executing",
-    "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
-    "unit": "affected_contracts"
-  },
+  "slice_claim": null,
   "target_branch": "feature/continuous-chat-audit-supervisor-poc",
   "target_repository": "datarelay-labs/datarelay-atlas"
 }
