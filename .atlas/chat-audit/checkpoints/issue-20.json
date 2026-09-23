@@ -7,7 +7,7 @@
     "docs_spec_drift"
   ],
   "audit_status": "IN_SLICE",
-  "canonical_revision": 44,
+  "canonical_revision": 45,
   "completed_units": {
     "6d3ff204c1ceada7e992bb1e:changed_code:979541a259aa05e718213dd5045b00dfc4056ca7": {
       "audit_request": "AUDIT_UNIT=changed_code\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
@@ -103,22 +103,24 @@
     }
   },
   "mode": "delta",
-  "next_action": "complete_or_resume_unit:affected_contracts",
+  "next_action": "HUMAN_REQUIRED:result_validation_exception:affected_contracts",
   "no_change_runs": 3,
   "open_findings": [],
   "schema_version": 1,
   "session": {
     "last_resume_command": "/chat-audit-resume",
-    "notes": "fresh chat resumed from durable checkpoint",
+    "notes": "evidence unit/target_sha mismatch",
     "rollover_count": 1,
-    "state": "ACTIVE"
+    "state": "STALLED"
   },
   "slice_claim": {
     "claim_id": "d3e30c5a-7f2c-4ae7-85eb-99f85f2f8af9",
     "claimed_at": 1790169049.2879992,
+    "error": "evidence unit/target_sha mismatch",
+    "error_phase": "result_validation",
     "lease_seconds": 900.0,
     "run_key": "6d3ff204c1ceada7e992bb1e",
-    "state": "executing",
+    "state": "failed",
     "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
     "unit": "affected_contracts"
   },
