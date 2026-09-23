@@ -1,0 +1,35 @@
+{
+  "audit_queue": [
+    "changed_code",
+    "affected_contracts",
+    "affected_tests_ci",
+    "security_impact",
+    "docs_spec_drift"
+  ],
+  "audit_status": "IDLE",
+  "canonical_revision": 1,
+  "completed_units": {},
+  "current_target_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "current_unit": null,
+  "current_unit_index": 0,
+  "fair_start_index": 0,
+  "idempotency_run_key": "c2caf432766bca7f67a8eb71",
+  "include_release_readiness": false,
+  "last_audited_sha": null,
+  "last_completed_slice": null,
+  "last_coordination_refresh": null,
+  "mode": "delta",
+  "next_action": "live_cas_proof",
+  "no_change_runs": 0,
+  "open_findings": [],
+  "schema_version": 1,
+  "session": {
+    "last_resume_command": "/chat-audit-resume",
+    "notes": "",
+    "rollover_count": 0,
+    "state": "ACTIVE"
+  },
+  "slice_claim": null,
+  "target_branch": "feature/continuous-chat-audit-supervisor-poc",
+  "target_repository": "datarelay-labs/datarelay-atlas"
+}
