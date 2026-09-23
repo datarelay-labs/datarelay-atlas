@@ -6,20 +6,48 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "IN_SLICE",
-  "canonical_revision": 5,
-  "completed_units": {},
+  "audit_status": "SLICE_COMPLETE",
+  "canonical_revision": 6,
+  "completed_units": {
+    "9bb6a822397b54ca92c584c8:affected_contracts:ad9a7f97959c67b1462707bee076f9eca73de925": {
+      "audit_request": "AUDIT_UNIT=affected_contracts\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=NULL..ad9a7f97959c67b1462707bee076f9eca73de925\nMODE=delta\nRUN_KEY=9bb6a822397b54ca92c584c8\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
+      "evidence": {
+        "notes": "Exact-head review of ad9a7f9 changed only atlas/chat_audit.py and tests/test_chat_audit.py; no public CLI/provenance/MCP/product contract was changed. Existing contract validation passed (ATLAS-CONTRACT-001).",
+        "status": "COMPLETE",
+        "target_sha": "ad9a7f97959c67b1462707bee076f9eca73de925",
+        "truncated": false,
+        "unit": "affected_contracts"
+      },
+      "findings": [],
+      "outcome": "PASS",
+      "target_sha": "ad9a7f97959c67b1462707bee076f9eca73de925",
+      "unit": "affected_contracts"
+    }
+  },
   "current_target_sha": "ad9a7f97959c67b1462707bee076f9eca73de925",
-  "current_unit": "affected_contracts",
+  "current_unit": null,
   "current_unit_index": 1,
   "fair_start_index": 1,
   "idempotency_run_key": "9bb6a822397b54ca92c584c8",
   "include_release_readiness": false,
   "last_audited_sha": null,
-  "last_completed_slice": null,
+  "last_completed_slice": {
+    "audit_request": "AUDIT_UNIT=affected_contracts\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=NULL..ad9a7f97959c67b1462707bee076f9eca73de925\nMODE=delta\nRUN_KEY=9bb6a822397b54ca92c584c8\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
+    "evidence": {
+      "notes": "Exact-head review of ad9a7f9 changed only atlas/chat_audit.py and tests/test_chat_audit.py; no public CLI/provenance/MCP/product contract was changed. Existing contract validation passed (ATLAS-CONTRACT-001).",
+      "status": "COMPLETE",
+      "target_sha": "ad9a7f97959c67b1462707bee076f9eca73de925",
+      "truncated": false,
+      "unit": "affected_contracts"
+    },
+    "findings": [],
+    "outcome": "PASS",
+    "target_sha": "ad9a7f97959c67b1462707bee076f9eca73de925",
+    "unit": "affected_contracts"
+  },
   "last_coordination_refresh": null,
   "mode": "delta",
-  "next_action": "complete_or_resume_unit:affected_contracts",
+  "next_action": "run_next_audit_slice",
   "no_change_runs": 0,
   "open_findings": [],
   "schema_version": 1,
@@ -29,15 +57,7 @@
     "rollover_count": 0,
     "state": "ACTIVE"
   },
-  "slice_claim": {
-    "claim_id": "fa154a99-9701-4733-8457-32ac720b8f02",
-    "claimed_at": 1790165937.495005,
-    "lease_seconds": 900.0,
-    "run_key": "9bb6a822397b54ca92c584c8",
-    "state": "executing",
-    "target_sha": "ad9a7f97959c67b1462707bee076f9eca73de925",
-    "unit": "affected_contracts"
-  },
+  "slice_claim": null,
   "target_branch": "feature/continuous-chat-audit-supervisor-poc",
   "target_repository": "datarelay-labs/datarelay-atlas"
 }
