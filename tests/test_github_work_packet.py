@@ -292,6 +292,16 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             "api_key: NotARealType",
             "password: Abc123",
             "token: Optional[DummySecret]",
+            "password: str,hunter2",
+            "token: Optional[str],letmein",
+            "password: str;letmein",
+            "token: str.hunter2",
+            "apiKey: SecretStr,hunter2",
+            "token: str | None,letmein",
+            "password: List[str],abc123",
+            "DATABASE_URL=postgresql://<redacted>@evil:secret@host/db",
+            "DATABASE_URL=mysql://<redacted>@user:pass@db.example/app",
+            "https://<redacted>@alice:hunter2@example.com/x",
         )
         leaked = (
             "hunter2",
@@ -303,6 +313,10 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             "sampleValue",
             "NotARealType",
             "Abc123",
+            "abc123",
+            "evil:secret",
+            "user:pass",
+            "alice:hunter2",
         )
         for sample in unsafe:
             prompt = f"audit evidence\n{sample}\n"
@@ -330,6 +344,12 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             "password: SecretStr | None",
             "api_key: dict[str, int]",
             "token: list[dict[str, int]]",
+            "token: List[str]",
+            "token: str}",
+            "DATABASE_URL=postgresql://<redacted>@host/db",
+            "https://<redacted>@example.com/path",
+            "Authorization: Bearer <redacted>",
+            "Authorization: Basic <redacted>",
         )
         for sample in safe:
             prompt = f"audit evidence\n{sample}\n"
@@ -338,6 +358,12 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             self.assertFalse(_contains_unsafe_secret(prompt), sample)
             self.assertEqual(sanitize_rework_findings(sample), sample)
             self.assertEqual(redact_sensitive_audit_text(sample), sample)
+
+        already_redacted = "OPENAI_API_KEY=<redacted>"
+        self.assertFalse(_contains_unsafe_secret(already_redacted))
+        self.assertFalse(_contains_unsafe_secret(f"audit evidence\n{already_redacted}\n"))
+        self.assertEqual(sanitize_rework_findings(already_redacted), already_redacted)
+        self.assertEqual(redact_sensitive_audit_text(already_redacted), already_redacted)
 
     def test_quoted_credential_values_match_selected_delimiter(self):
         from atlas.work_controller import _looks_like_secret

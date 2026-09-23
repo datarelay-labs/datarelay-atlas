@@ -544,18 +544,37 @@ def _parse_type_expr(text: str, index: int, depth: int) -> tuple[bool, int]:
             return False, index
 
 
+def _annotation_tail_is_structural(rest: str, end: int) -> bool:
+    """True when nothing after the annotation is more scalar payload.
+
+    Whitespace ends the scalar. ``)`` ``]`` ``}`` may close an outer form.
+    A comma, semicolon, or other suffix is further credential material.
+    """
+    index = end
+    while index < len(rest):
+        char = rest[index]
+        if char in " \t\r\n":
+            return True
+        if char in ")]}":
+            index += 1
+            continue
+        return False
+    return True
+
+
 def _colon_value_is_type_annotation(rest: str) -> tuple[bool, int]:
     """Return whether an unquoted colon value is only an explicit annotation.
 
-    ``consumed`` is the annotation length. An empty value is not a credential.
-    A quoted value is left to the quoted-credential matcher.
+    The grammar must consume the whole scalar. ``password: str,hunter2`` is
+    not an annotation. An empty value is not a credential. A quoted value is
+    left to the quoted-credential matcher.
     """
     if not rest or rest[0].isspace() or rest[0] in "\"'":
         return True, 0
     ok, end = _parse_type_expr(rest, 0, 0)
     if not ok or end <= 0:
         return False, 0
-    if end < len(rest) and rest[end] not in " \t\r\n,})]":
+    if not _annotation_tail_is_structural(rest, end):
         return False, 0
     return True, end
 
@@ -611,7 +630,7 @@ def _looks_like_secret(text: str) -> bool:
         return True
     if re.search(r"(?i)\bBasic\s+[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_-])", scan):
         return True
-    if _URL_USERINFO_RE.search(scan):
+    if _has_unsafe_url_userinfo(scan):
         return True
     if _PEM_PRIVATE_KEY_RE.search(text or ""):
         return True
@@ -629,6 +648,26 @@ _URL_RE = re.compile(r"https?://[^\s\"'`]+", re.IGNORECASE)
 _URL_USERINFO_RE = re.compile(
     r"(?i)(?P<scheme>\b[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/\s\"'`]+@)"
 )
+# scheme://<redacted>@host is safe only when that @ is the authority's only one.
+_SAFE_REDACTED_URL_RE = re.compile(
+    r"(?i)\b[a-z][a-z0-9+.-]*://<redacted>@(?=[^@\s/?#]*(?:[/?#]|\s|$))"
+)
+
+
+def _has_unsafe_url_userinfo(text: str) -> bool:
+    """True when a URL authority still carries live userinfo.
+
+    ``scheme://<redacted>@host`` is the safe redaction form. A second ``@``
+    or any other userinfo body is not.
+    """
+    for match in _URL_USERINFO_RE.finditer(text or ""):
+        userinfo = match.group("userinfo")
+        if not userinfo.endswith("@"):
+            return True
+        body = userinfo[:-1]
+        if body != "<redacted>" or "@" in body:
+            return True
+    return False
 _PEM_PRIVATE_KEY_RE = re.compile(
     # Full PEM label grammar for private keys: optional hyphenated tokens
     # before "PRIVATE KEY", with a matching END label.
@@ -708,7 +747,7 @@ def _redact_unquoted_colon_credentials(text: str) -> str:
         is_annotation, _consumed = _colon_value_is_type_annotation(text[match.end() :])
         if is_annotation:
             continue
-        bare = re.match(r"[^\s,\"'}\]]+", text[match.end() :])
+        bare = re.match(r"[^\r\n\"']*", text[match.end() :])
         value_len = len(bare.group(0)) if bare else 0
         key_q = match.group("kq") or ""
         key = match.group("key")
@@ -785,12 +824,9 @@ def _strip_safe_redaction_placeholders(text: str) -> str:
         "",
         cleaned,
     )
-    # Safe URL form after userinfo redaction: scheme://<redacted>@host...
-    cleaned = re.sub(
-        r"(?i)\b[a-z][a-z0-9+.-]*://<redacted>@",
-        "",
-        cleaned,
-    )
+    # Safe URL form after userinfo redaction: scheme://<redacted>@host with
+    # no second authority marker. A later @ still carries live userinfo.
+    cleaned = _SAFE_REDACTED_URL_RE.sub("", cleaned)
     cleaned = cleaned.replace("<redacted-private-key>", "")
     return cleaned
 
@@ -805,6 +841,8 @@ def _contains_unsafe_secret(text: str) -> bool:
     if re.search(r"(?i)Bearer\s+<redacted>", cleaned):
         return True
     if re.search(r"(?i)Basic\s+<redacted>", cleaned):
+        return True
+    if re.search(r"(?i)\b[a-z][a-z0-9+.-]*://<redacted>@[^/\s?#]*@", cleaned):
         return True
     return False
 
