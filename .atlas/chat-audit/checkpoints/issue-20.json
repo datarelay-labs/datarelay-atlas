@@ -6,9 +6,23 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "IN_SLICE",
-  "canonical_revision": 40,
+  "audit_status": "SLICE_COMPLETE",
+  "canonical_revision": 41,
   "completed_units": {
+    "6d3ff204c1ceada7e992bb1e:docs_spec_drift:979541a259aa05e718213dd5045b00dfc4056ca7": {
+      "audit_request": "AUDIT_UNIT=docs_spec_drift\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
+      "evidence": {
+        "notes": "Delta 6b17b95..979541a changes branch-identity persistence validation and regression tests only. Public chat-audit CLI, checkpoint schema, ADR/runbook operating contract, provenance contract, and MCP surface are unchanged; existing no-secrets durable-state guardrail already describes the intended behavior.",
+        "status": "COMPLETE",
+        "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
+        "truncated": false,
+        "unit": "docs_spec_drift"
+      },
+      "findings": [],
+      "outcome": "PASS",
+      "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
+      "unit": "docs_spec_drift"
+    },
     "6d3ff204c1ceada7e992bb1e:security_impact:979541a259aa05e718213dd5045b00dfc4056ca7": {
       "audit_request": "AUDIT_UNIT=security_impact\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
       "evidence": {
@@ -25,25 +39,25 @@
     }
   },
   "current_target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
-  "current_unit": "docs_spec_drift",
+  "current_unit": null,
   "current_unit_index": 4,
   "fair_start_index": 3,
   "idempotency_run_key": "6d3ff204c1ceada7e992bb1e",
   "include_release_readiness": false,
   "last_audited_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
   "last_completed_slice": {
-    "audit_request": "AUDIT_UNIT=security_impact\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
+    "audit_request": "AUDIT_UNIT=docs_spec_drift\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
     "evidence": {
-      "notes": "Independent exact-head audit verified durable branch identity rejects credential-bearing same-segment assignment forms while preserving cross-segment safe branch names. test_90 PASS; full 189-test suite PASS; ATLAS-CONTRACT-001 and ATLAS-INDEPENDENCE-001 PASS; Engineering System CI 35864515036 SUCCESS; fresh Codex exact-head review found no major issues and active native threads are zero.",
+      "notes": "Delta 6b17b95..979541a changes branch-identity persistence validation and regression tests only. Public chat-audit CLI, checkpoint schema, ADR/runbook operating contract, provenance contract, and MCP surface are unchanged; existing no-secrets durable-state guardrail already describes the intended behavior.",
       "status": "COMPLETE",
       "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
       "truncated": false,
-      "unit": "security_impact"
+      "unit": "docs_spec_drift"
     },
     "findings": [],
     "outcome": "PASS",
     "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
-    "unit": "security_impact"
+    "unit": "docs_spec_drift"
   },
   "last_coordination_refresh": {
     "ci": {
@@ -75,7 +89,7 @@
     }
   },
   "mode": "delta",
-  "next_action": "complete_or_resume_unit:docs_spec_drift",
+  "next_action": "run_next_audit_slice",
   "no_change_runs": 3,
   "open_findings": [],
   "schema_version": 1,
@@ -85,15 +99,7 @@
     "rollover_count": 1,
     "state": "ACTIVE"
   },
-  "slice_claim": {
-    "claim_id": "fcea254f-c9a7-49e2-8484-47a9603053e6",
-    "claimed_at": 1790169023.0845122,
-    "lease_seconds": 900.0,
-    "run_key": "6d3ff204c1ceada7e992bb1e",
-    "state": "executing",
-    "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
-    "unit": "docs_spec_drift"
-  },
+  "slice_claim": null,
   "target_branch": "feature/continuous-chat-audit-supervisor-poc",
   "target_repository": "datarelay-labs/datarelay-atlas"
 }
