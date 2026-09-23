@@ -2760,24 +2760,50 @@ class ChatAuditTests(unittest.TestCase):
                         stderr="",
                     )
                 if argv[:3] == ["gh", "pr", "checks"]:
+                    # Real GitHub Actions reusable-workflow check names.
                     out = (
-                        "adoption-compliance\tpass\t1s\t0\t\n"
-                        "enforcement-reconcile\tpass\t1s\t0\t\n"
-                        "affected-tests\tpass\t1s\t0\t\n"
+                        "adoption-compliance / compliance\tpass\t1s\t0\t\n"
+                        "enforcement-reconcile / reconcile\tpass\t1s\t0\t\n"
+                        "affected-tests / affected\tpass\t1s\t0\t\n"
                     )
                     return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
                 if "--paginate" in argv and "--slurp" in argv:
                     path = argv[-1]
                     if path.endswith("/reviews"):
                         calls["reviews"] += 1
-                        payload = [[{"body": "wrapper", "state": "COMMENTED", "commit_id": HEAD_A}]]
+                        # Historical old-HEAD P1 plus current wrapper.
+                        payload = [
+                            [
+                                {
+                                    "body": "P1 old finding",
+                                    "state": "COMMENTED",
+                                    "commit_id": HEAD_B,
+                                },
+                                {
+                                    "body": "wrapper",
+                                    "state": "COMMENTED",
+                                    "commit_id": HEAD_A,
+                                },
+                            ]
+                        ]
                     elif path.endswith("/pulls/21/comments"):
                         calls["inline"] += 1
                         body = "P1 inline finding" if inline_p1 else "nit"
                         payload = [[{"body": body, "commit_id": HEAD_A}]]
                     elif path.endswith("/issues/21/comments"):
                         calls["conversation"] += 1
-                        payload = [[{"body": "REWORK please"}]]
+                        payload = [
+                            [
+                                {
+                                    "body": (
+                                        "@codex review this exact HEAD for Issue #20 "
+                                        "REWORK: P1/P2. Do not merge."
+                                    ),
+                                    "user": {"login": "RickLee-kr"},
+                                },
+                                {"body": "REWORK please", "user": {"login": "reviewer"}},
+                            ]
+                        ]
                     else:
                         payload = [[]]
                     return subprocess.CompletedProcess(
@@ -2837,6 +2863,252 @@ class ChatAuditTests(unittest.TestCase):
         ).refresh(packet)
         self.assertEqual(ci_only["status"], "HUMAN_REQUIRED")
         self.assertIn("ci_required_checks_missing", ci_only["reasons"])
+
+        # Owner @codex request comments must not alone force actionable_review;
+        # old-HEAD P1 reviews must not block current HEAD when no current finding.
+        clean = GitHubCoordinationRefresher(
+            repository=REPO,
+            work_packet_issue=20,
+            command_runner=mk("ACTIVE", inline_p1=False),
+        ).refresh(packet)
+        # Conversation has @codex control request + "REWORK please" finding —
+        # the latter is still actionable. Use a runner without the human REWORK.
+        def clean_runner(argv: list[str], cwd: str):
+            base = mk("ACTIVE", inline_p1=False)(argv, cwd)
+            if "--paginate" in argv and argv[-1].endswith("/issues/21/comments"):
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        [
+                            [
+                                {
+                                    "body": (
+                                        "@codex review this exact HEAD for Issue #20 "
+                                        "REWORK: P1/P2. Do not merge."
+                                    ),
+                                    "user": {"login": "RickLee-kr"},
+                                }
+                            ]
+                        ]
+                    ),
+                    stderr="",
+                )
+            return base
+
+        clean2 = GitHubCoordinationRefresher(
+            repository=REPO,
+            work_packet_issue=20,
+            command_runner=clean_runner,
+        ).refresh(packet)
+        self.assertEqual(clean2["status"], "OK")
+        self.assertEqual(clean2["outcome"], "PASSED")
+        self.assertNotIn("actionable_review", clean2["reasons"])
+
+    def test_60_finalized_handoff_claim_requires_issue_lifecycle(self):
+        import base64
+        import hashlib
+        import subprocess
+
+        from atlas.chat_audit import AuditControlPacket, AuditFinding, make_run_key
+        from atlas.chat_audit_github import GitHubAIWorkHandoff
+
+        old_run = make_run_key(REPO, BRANCH, HEAD_B)
+        new_run = make_run_key(REPO, BRANCH, HEAD_A)
+        packet = AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=[
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            idempotency_run_key=new_run,
+        )
+        finding = AuditFinding(
+            finding_id="recurrence-1",
+            unit="changed_code",
+            summary="same finding new head",
+            severity="P2",
+        )
+        marker = "<!-- atlas-chat-audit-finding-id:recurrence-1 -->"
+        claim_raw = json.dumps(
+            {
+                "finding_id": "recurrence-1",
+                "issue_number": 77,
+                "url": f"https://github.com/{REPO}/issues/77",
+                "run_key": old_run,
+                "head": HEAD_B,
+                "state": "finalized",
+            },
+            indent=2,
+            sort_keys=True,
+        ) + "\n"
+        claims = {
+            # digest path computed inside adapter; capture via first GET 404 then PUT.
+        }
+        views = {"n": 0}
+        edits = {"n": 0}
+        issue_state = {"state": "OPEN", "marker": True, "title_ok": True, "repo_ok": True}
+
+        def runner(argv: list[str], cwd: str):
+            if argv[:2] == ["gh", "api"] and argv[-1] == f"repos/{REPO}":
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"default_branch": "main"}), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "/git/ref/heads/" in " ".join(argv):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"object": {"sha": "1" * 40}}), stderr=""
+                )
+            joined = " ".join(argv)
+            if argv[:2] == ["gh", "api"] and "--method" not in argv and "/contents/" in joined:
+                key = joined.split("/contents/")[-1].split("?")[0]
+                if "handoff-claims" in key and key not in claims:
+                    # Seed finalized claim on first GET by writing into map.
+                    claims[key] = {
+                        "raw": claim_raw,
+                        "sha": hashlib.sha1(claim_raw.encode()).hexdigest(),
+                    }
+                if key not in claims:
+                    return subprocess.CompletedProcess(
+                        argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                    )
+                encoded = base64.b64encode(claims[key]["raw"].encode()).decode()
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "type": "file",
+                            "sha": claims[key]["sha"],
+                            "content": encoded,
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:2] == ["gh", "api"] and "--method" in argv:
+                if "git/refs" in joined:
+                    return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+                idx = argv.index("--input")
+                body = json.loads(Path(argv[idx + 1]).read_text(encoding="utf-8"))
+                key = [a for a in argv if a.startswith("repos/")][0].split("/contents/")[-1]
+                raw = base64.b64decode(body["content"]).decode()
+                new_sha = hashlib.sha1(raw.encode()).hexdigest()
+                claims[key] = {"raw": raw, "sha": new_sha}
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"content": {"sha": new_sha}}), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "view"]:
+                views["n"] += 1
+                body = ""
+                if issue_state["marker"]:
+                    body += marker + "\n"
+                if issue_state["repo_ok"]:
+                    body += f"TARGET_REPO={REPO}\nSTATUS=ACTIVE\n"
+                title = (
+                    "[AI Work] Audit finding: recurrence-1"
+                    if issue_state["title_ok"]
+                    else "[AI Work] unrelated"
+                )
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "number": 77,
+                            "title": title,
+                            "state": issue_state["state"],
+                            "body": body,
+                            "url": f"https://github.com/{REPO}/issues/77",
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                edits["n"] += 1
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            if argv[:3] == ["gh", "issue", "list"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="unexpected:" + str(argv[:6])
+            )
+
+        handoff = GitHubAIWorkHandoff(repository=REPO, command_runner=runner)
+        out = handoff.upsert_implementation_packet(packet, finding)
+        self.assertTrue(out.get("issue_viewed"))
+        self.assertEqual(views["n"], 1)
+        self.assertEqual(edits["n"], 1)
+        self.assertEqual(out["claim"], "recurrence_update")
+        self.assertEqual(out["issue_number"], 77)
+
+        # Closed issue fails closed.
+        issue_state["state"] = "CLOSED"
+        views["n"] = 0
+        with self.assertRaises(ValidationError):
+            handoff.upsert_implementation_packet(packet, finding)
+        self.assertEqual(views["n"], 1)
+
+        # Wrong marker fails closed.
+        issue_state["state"] = "OPEN"
+        issue_state["marker"] = False
+        with self.assertRaises(ValidationError):
+            handoff.upsert_implementation_packet(packet, finding)
+
+        # Missing finding_id on claim fails closed (issue_number-only trust).
+        for key in list(claims):
+            if "handoff-claims" in key and not key.endswith("_bootstrap.json"):
+                claims[key] = {
+                    "raw": json.dumps(
+                        {"issue_number": 77, "run_key": old_run, "head": HEAD_B}
+                    )
+                    + "\n",
+                    "sha": "x",
+                }
+        with self.assertRaises(ValidationError) as ctx:
+            handoff.upsert_implementation_packet(packet, finding)
+        self.assertIn("finding_id", str(ctx.exception).lower())
+
+    def test_61_ensure_control_branch_rejects_arbitrary_422(self):
+        import subprocess
+
+        from atlas.chat_audit_github import GitHubContentsCheckpointStore
+
+        def runner(argv: list[str], cwd: str):
+            if argv[:2] == ["gh", "api"] and argv[-1] == f"repos/{REPO}":
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"default_branch": "main"}), stderr=""
+                )
+            if argv[:2] == ["gh", "api"] and "/git/ref/heads/main" in " ".join(argv):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"object": {"sha": "1" * 40}}), stderr=""
+                )
+            if (
+                argv[:2] == ["gh", "api"]
+                and "/git/ref/heads/atlas/chat-audit-control" in " ".join(argv)
+                and "--method" not in argv
+            ):
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                )
+            if argv[:2] == ["gh", "api"] and "--method" in argv and "git/refs" in " ".join(argv):
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    stdout="",
+                    stderr='gh: HTTP 422 {"message":"Invalid request: sha is not a commit"}',
+                )
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="unexpected")
+
+        store = GitHubContentsCheckpointStore(
+            repository=REPO, issue_number=20, command_runner=runner
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            store.ensure_control_branch()
+        self.assertNotIn("exists_race", str(ctx.exception).lower())
+        self.assertIn("422", str(ctx.exception))
 
 
 if __name__ == "__main__":

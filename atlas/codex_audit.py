@@ -589,14 +589,20 @@ def collect_pr_review_evidence(
     pr_number: int,
     command_runner: CommandRunner | None = None,
     max_chars: int = DEFAULT_MAX_REVIEW_CHARS,
+    target_sha: str | None = None,
+    exclude_control_comments: bool = False,
 ) -> dict:
     """Collect machine-observable PR review feedback (fail closed).
 
     Surfaces: submitted reviews, inline review comments, and top-level PR
     conversation comments. Each GitHub list endpoint is fetched with
-    ``gh api --paginate --slurp``, pages are flattened, then bounded. When a
-    section budget truncates uninspected entries, status is INCOMPLETE so the
-    auditor fails closed instead of terminal PASS.
+    ``gh api --paginate --slurp``, pages are flattened, then bounded.
+
+    When ``target_sha`` is set (cheap-path / current-HEAD mode), commit-
+    addressable items are filtered to that HEAD **before** applying the
+    persistence budget so historical review cycles cannot force INCOMPLETE.
+    When ``exclude_control_comments`` is set, owner ``@codex review`` request
+    comments are dropped before keyword scanning.
     """
     cwd = str(Path.cwd())
     pull_base = f"repos/{repository}/pulls/{pr_number}"
@@ -606,6 +612,8 @@ def collect_pr_review_evidence(
         "repository": repository,
         "pr_number": pr_number,
     }
+    if target_sha:
+        sections["target_sha"] = target_sha
     section_budget = max(1, max_chars // 3)
     truncated_sections: list[str] = []
     for label, path in (
@@ -657,6 +665,13 @@ def collect_pr_review_evidence(
                 "pr_number": pr_number,
                 "failed_section": label,
             }
+        if target_sha or exclude_control_comments:
+            payload = _filter_review_items_for_current_head(
+                payload,
+                label=label,
+                target_sha=target_sha,
+                exclude_control_comments=exclude_control_comments,
+            )
         items, truncated = _bounded_review_items(
             payload, max_chars=section_budget
         )
@@ -673,6 +688,58 @@ def collect_pr_review_evidence(
     else:
         sections["status"] = "OK"
     return sections
+
+
+def _commit_matches_target(commit_id: object, target_sha: str) -> bool:
+    if commit_id is None:
+        return False
+    value = str(commit_id).strip().lower()
+    head = target_sha.strip().lower()
+    if not value or not head:
+        return False
+    return value == head or value.startswith(head[:12]) or head.startswith(value[:12])
+
+
+def _is_control_request_comment(entry: dict) -> bool:
+    """Owner/control-plane review-request comments are not findings."""
+    body = str(entry.get("body") or "").strip()
+    if re.search(r"(?i)^@codex\b", body):
+        return True
+    if re.search(r"(?i)@codex\s+review\b", body):
+        return True
+    if re.search(r"(?i)\breview this exact HEAD\b", body) and re.search(
+        r"(?i)\bdo not merge\b", body
+    ):
+        return True
+    return False
+
+
+def _filter_review_items_for_current_head(
+    payload: list[object],
+    *,
+    label: str,
+    target_sha: str | None,
+    exclude_control_comments: bool,
+) -> list[object]:
+    """Keep only current-HEAD / non-control items before budget bounding."""
+    kept: list[object] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        if label == "conversation_comments":
+            if exclude_control_comments and _is_control_request_comment(entry):
+                continue
+            kept.append(entry)
+            continue
+        if target_sha:
+            commit = entry.get("commit_id") or entry.get("original_commit_id")
+            # Drop historical commit-addressable items for other HEADs.
+            if commit is not None and not _commit_matches_target(commit, target_sha):
+                continue
+            # Reviews/inline without commit provenance are kept for fail-closed
+            # inspection when they carry finding keywords (handled by caller).
+        kept.append(entry)
+    return kept
 
 
 def collect_audit_evidence_bundle(

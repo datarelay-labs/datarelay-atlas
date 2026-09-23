@@ -563,6 +563,7 @@ class GitHubAIWorkHandoff:
                 title=title,
                 body=body,
                 marker=marker,
+                claim_sha=claim_sha,
             )
 
         # Crash/ambiguity reconcile before any create: durable marker search.
@@ -593,6 +594,7 @@ class GitHubAIWorkHandoff:
                         title=title,
                         body=body,
                         marker=marker,
+                        claim_sha=claim_sha,
                     )
                 raise
             self._edit_issue(number, title=title, body=body)
@@ -628,6 +630,7 @@ class GitHubAIWorkHandoff:
                             title=title,
                             body=body,
                             marker=marker,
+                            claim_sha=claim_sha,
                         )
                     if claim:
                         claimed_at = float(claim.get("claimed_at") or 0)
@@ -680,6 +683,7 @@ class GitHubAIWorkHandoff:
                     title=title,
                     body=body,
                     marker=marker,
+                    claim_sha=claim_sha,
                 )
             raise ValidationError(
                 "handoff claim held by concurrent writer without issue_number; "
@@ -738,13 +742,21 @@ class GitHubAIWorkHandoff:
         title: str,
         body: str,
         marker: str,
+        claim_sha: str | None = None,
     ) -> dict[str, Any]:
+        if "issue_number" not in claim or claim.get("issue_number") is None:
+            raise ValidationError("finalized handoff claim missing issue_number")
         number = int(claim["issue_number"])
-        claim_finding = str(claim.get("finding_id") or "")
-        if claim_finding and claim_finding != safe.finding_id:
+        claim_finding = str(claim.get("finding_id") or "").strip()
+        if not claim_finding:
+            raise ValidationError(
+                "finalized handoff claim missing finding_id; refusing issue_number-only trust"
+            )
+        if claim_finding != safe.finding_id:
             raise ValidationError("handoff claim finding_id mismatch")
         claimed_run = str(claim.get("run_key") or "")
         claimed_head = str(claim.get("head") or "").lower()
+        # Always fetch the referenced Issue before trusting issue_number.
         viewed = self._run(
             [
                 "gh",
@@ -769,28 +781,60 @@ class GitHubAIWorkHandoff:
             raise ValidationError(
                 f"handoff claim issue #{number} is not OPEN; refusing update"
             )
-        if marker not in issue_body and safe.finding_id not in issue_title:
+        if marker not in issue_body:
             raise ValidationError(
-                f"handoff claim issue #{number} missing finding marker/title"
+                f"handoff claim issue #{number} missing finding marker"
             )
-        if "TARGET_REPO=" in issue_body:
-            expected = f"TARGET_REPO={packet.target_repository}"
-            alt = f"TARGET_REPO={self.repository}"
-            if expected not in issue_body and alt not in issue_body:
-                raise ValidationError(
-                    f"handoff claim issue #{number} TARGET_REPO mismatch"
-                )
+        if safe.finding_id not in issue_title:
+            raise ValidationError(
+                f"handoff claim issue #{number} missing finding title identity"
+            )
+        expected_repo = f"TARGET_REPO={packet.target_repository}"
+        alt_repo = f"TARGET_REPO={self.repository}"
+        if expected_repo not in issue_body and alt_repo not in issue_body:
+            raise ValidationError(
+                f"handoff claim issue #{number} missing/mismatched TARGET_REPO"
+            )
         self._edit_issue(number, title=title, body=body)
+        recurrence = (
+            (claimed_run and claimed_run != packet.idempotency_run_key)
+            or (
+                claimed_head
+                and claimed_head != packet.current_target_sha.lower()
+            )
+        )
+        # Explicit recurrence across new run/head: refresh claim identity after
+        # verified Issue update (never infer success from issue_number alone).
+        refreshed = {
+            **claim,
+            "finding_id": safe.finding_id,
+            "issue_number": number,
+            "url": claim.get("url") or payload.get("url"),
+            "run_key": packet.idempotency_run_key,
+            "head": packet.current_target_sha,
+            "state": "finalized",
+            "repository": self.repository,
+        }
+        try:
+            sha = claim_sha
+            if sha is None:
+                _, sha = self._get_claim(safe.finding_id)
+            self._put_claim(safe.finding_id, refreshed, expected_sha=sha)
+        except CheckpointCasConflict:
+            # Issue body already updated; concurrent claim refresh is acceptable
+            # when the Issue lifecycle was verified in this call.
+            pass
         record = {
             "action": "updated",
             "issue_number": number,
             "title": title,
             "repository": self.repository,
             "finding": safe.to_dict(),
-            "url": claim.get("url") or payload.get("url"),
-            "claim": "existing",
+            "url": refreshed.get("url"),
+            "claim": "recurrence_update" if recurrence else "existing",
             "prior_run_key": claimed_run or None,
             "prior_head": claimed_head or None,
+            "issue_viewed": True,
         }
         self.handoffs.append(record)
         return record
@@ -1062,6 +1106,8 @@ class GitHubCoordinationRefresher:
                     repository=self.repository,
                     pr_number=int(chosen.get("number")),
                     command_runner=self._runner,
+                    target_sha=packet.current_target_sha,
+                    exclude_control_comments=True,
                 )
                 review_status = str(review_ev.get("status") or "ERROR").upper()
                 if review_status != "OK":
@@ -1110,7 +1156,12 @@ class GitHubCoordinationRefresher:
 def _evaluate_required_pr_checks(
     exit_code: int, stdout: str
 ) -> tuple[str, list[str], dict[str, Any]]:
-    """Require Engineering System check jobs; unrelated-only green is not PASS."""
+    """Require Engineering System check jobs; unrelated-only green is not PASS.
+
+    GitHub Actions reusable-workflow check names are typically
+    ``<job-id> / <nested-job>`` (e.g. ``adoption-compliance / compliance``).
+    Match required job ids as exact names or validated prefixes.
+    """
     reasons: list[str] = []
     rows: dict[str, str] = {}
     for line in (stdout or "").splitlines():
@@ -1120,19 +1171,33 @@ def _evaluate_required_pr_checks(
         name = parts[0].strip()
         state = parts[1].strip().lower() if len(parts) > 1 else ""
         rows[name] = state
-    missing = sorted(REQUIRED_PR_CHECK_NAMES - set(rows))
-    failing = sorted(
-        name
-        for name, state in rows.items()
-        if name in REQUIRED_PR_CHECK_NAMES
-        and state not in {"pass", "success", "skipped"}
-    )
-    pending = sorted(
-        name
-        for name, state in rows.items()
-        if name in REQUIRED_PR_CHECK_NAMES
-        and state in {"pending", "queued", "in_progress", "waiting"}
-    )
+
+    def _covers(required: str) -> list[tuple[str, str]]:
+        matches: list[tuple[str, str]] = []
+        req = required.lower()
+        for name, state in rows.items():
+            n = name.lower()
+            if n == req or n.startswith(req + " /") or n.startswith(req + "/"):
+                matches.append((name, state))
+        return matches
+
+    missing: list[str] = []
+    failing: list[str] = []
+    pending: list[str] = []
+    for required in sorted(REQUIRED_PR_CHECK_NAMES):
+        matches = _covers(required)
+        if not matches:
+            missing.append(required)
+            continue
+        if any(
+            state in {"pending", "queued", "in_progress", "waiting"}
+            for _, state in matches
+        ):
+            pending.append(required)
+        elif not any(
+            state in {"pass", "success", "skipped"} for _, state in matches
+        ):
+            failing.append(required)
     meta: dict[str, Any] = {
         "required": sorted(REQUIRED_PR_CHECK_NAMES),
         "observed": sorted(rows),
@@ -1145,7 +1210,7 @@ def _evaluate_required_pr_checks(
         reasons.append("ci_pending")
         meta["pending"] = pending
         return "PENDING", reasons, meta
-    if failing or (exit_code not in {0, 8} and exit_code != 0):
+    if failing:
         reasons.append("ci_fail")
         meta["failing"] = failing
         return "FAIL", reasons, meta
@@ -1176,6 +1241,12 @@ def _body_actionable(text: str) -> bool:
     return False
 
 
+def _is_control_request_comment(item: dict[str, Any]) -> bool:
+    from atlas.codex_audit import _is_control_request_comment as _shared
+
+    return _shared(item)
+
+
 def _reviews_actionable_for_head(
     review_ev: dict[str, Any], *, target_sha: str
 ) -> tuple[bool, int]:
@@ -1189,10 +1260,12 @@ def _reviews_actionable_for_head(
         for item in items:
             if not isinstance(item, dict):
                 continue
-            count += 1
             body = str(item.get("body") or "")
             state = str(item.get("state") or "").upper()
             if label == "conversation_comments":
+                if _is_control_request_comment(item):
+                    continue
+                count += 1
                 if _body_actionable(body):
                     actionable = True
                 continue
@@ -1200,10 +1273,10 @@ def _reviews_actionable_for_head(
             if commit is not None and not _commit_matches_head(commit, target_sha):
                 # Historical review against another HEAD — ignore for current PASS.
                 continue
+            count += 1
             if state in {"CHANGES_REQUESTED"}:
                 actionable = True
             if _body_actionable(body):
-                # Missing commit_id on a finding-bearing review fails closed.
                 if commit is None or _commit_matches_head(commit, target_sha):
                     actionable = True
     return actionable, count
