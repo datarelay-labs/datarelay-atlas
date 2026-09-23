@@ -6,8 +6,8 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "SLICE_COMPLETE",
-  "canonical_revision": 41,
+  "audit_status": "IN_SLICE",
+  "canonical_revision": 42,
   "completed_units": {
     "6d3ff204c1ceada7e992bb1e:docs_spec_drift:979541a259aa05e718213dd5045b00dfc4056ca7": {
       "audit_request": "AUDIT_UNIT=docs_spec_drift\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
@@ -39,8 +39,8 @@
     }
   },
   "current_target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
-  "current_unit": null,
-  "current_unit_index": 4,
+  "current_unit": "changed_code",
+  "current_unit_index": 0,
   "fair_start_index": 3,
   "idempotency_run_key": "6d3ff204c1ceada7e992bb1e",
   "include_release_readiness": false,
@@ -89,7 +89,7 @@
     }
   },
   "mode": "delta",
-  "next_action": "run_next_audit_slice",
+  "next_action": "complete_or_resume_unit:changed_code",
   "no_change_runs": 3,
   "open_findings": [],
   "schema_version": 1,
@@ -99,7 +99,15 @@
     "rollover_count": 1,
     "state": "ACTIVE"
   },
-  "slice_claim": null,
+  "slice_claim": {
+    "claim_id": "8a70bb82-03b0-4f4c-8963-a6fe4ff0ffd3",
+    "claimed_at": 1790169028.092672,
+    "lease_seconds": 900.0,
+    "run_key": "6d3ff204c1ceada7e992bb1e",
+    "state": "executing",
+    "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
+    "unit": "changed_code"
+  },
   "target_branch": "feature/continuous-chat-audit-supervisor-poc",
   "target_repository": "datarelay-labs/datarelay-atlas"
 }
