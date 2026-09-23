@@ -5027,6 +5027,56 @@ class ChatAuditTests(unittest.TestCase):
                 ["same-id"],
             )
 
+    def test_89_completed_finding_id_blocks_handoff_after_open_findings_cleared(self):
+        from atlas.chat_audit import AuditEvidence, AuditFinding, SliceResult
+
+        class ScriptedFindings:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def execute(self, packet, unit, audit_request):
+                self.calls.append(unit)
+                return SliceResult(
+                    unit=unit,
+                    target_sha=packet.current_target_sha,
+                    outcome="FINDING",
+                    findings=[
+                        AuditFinding(
+                            finding_id="same-id",
+                            unit=unit,
+                            summary="duplicate",
+                            severity="P2",
+                        )
+                    ],
+                    audit_request=audit_request,
+                    evidence=AuditEvidence(
+                        status="COMPLETE",
+                        unit=unit,
+                        target_sha=packet.current_target_sha,
+                        notes="finding",
+                        truncated=False,
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = RecordingWorkPacketHandoff()
+            executor = ScriptedFindings()
+            ctl = self._ctl(tmp, executor=executor, handoff=handoff)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            first = ctl.run_slice()
+            self.assertEqual(first["action"], "slice_complete")
+            self.assertEqual(len(handoff.handoffs), 1)
+            path = Path(tmp) / "data" / "chat-audit.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(len(stored["completed_units"]), 1)
+            stored["open_findings"] = []
+            path.write_text(json.dumps(stored), encoding="utf-8")
+            second = ctl.run_slice()
+            self.assertEqual(second["action"], "failed_closed")
+            self.assertIn("duplicate finding_id", second["packet"]["session"]["notes"])
+            self.assertEqual(len(handoff.handoffs), 1)
+            self.assertEqual(len(executor.calls), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

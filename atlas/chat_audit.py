@@ -110,6 +110,35 @@ _FINDING_ID_CREDENTIAL_KEY = re.compile(
 )
 
 
+def finding_ids_bound_to_run(packet: "AuditControlPacket") -> set[str]:
+    """Finding IDs already committed for this HEAD, even if open_findings was cleared.
+
+    Validated completed FINDING entries remain the durable identity until a new
+    target HEAD resets the run. Handoff must consult them before any side effect.
+    An inconsistent FINDING entry fails closed before handoff.
+    """
+    seen = {item.finding_id for item in packet.open_findings}
+    for unit_key, entry in packet.completed_units.items():
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("outcome") or "") != "FINDING":
+            continue
+        validated = validate_completed_unit_entry(
+            str(unit_key),
+            entry,
+            expected_run_key=packet.idempotency_run_key,
+            expected_target_sha=packet.current_target_sha,
+        )
+        for item in validated.get("findings") or []:
+            finding = (
+                item
+                if isinstance(item, AuditFinding)
+                else AuditFinding.from_dict(item)
+            )
+            seen.add(finding.finding_id)
+    return seen
+
+
 def finding_id_embeds_credential_key(finding_id: str) -> bool:
     """True when a finding id contains a credential-key segment.
 
@@ -2738,7 +2767,7 @@ class ChatAuditController:
         # handoff failure leaves no partial finding commit for duplicate replay.
         handoff_records: list[dict[str, Any]] = []
         if result.outcome == "FINDING":
-            seen_ids = {item.finding_id for item in packet.open_findings}
+            seen_ids = finding_ids_bound_to_run(packet)
             batch_ids: set[str] = set()
             for finding in result.findings:
                 if finding.finding_id in batch_ids or finding.finding_id in seen_ids:
