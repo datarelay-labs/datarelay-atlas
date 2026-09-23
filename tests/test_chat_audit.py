@@ -3252,6 +3252,61 @@ class ChatAuditTests(unittest.TestCase):
             non_bool = ctl.run_slice()
             self.assertEqual(non_bool["action"], "failed_closed")
 
+    def test_66_restored_passed_without_evidence_rejected(self):
+        from atlas.chat_audit import AuditControlPacket, make_run_key
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        base = {
+            "schema_version": 1,
+            "target_repository": REPO,
+            "target_branch": BRANCH,
+            "current_target_sha": HEAD_A,
+            "audit_queue": [
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            "idempotency_run_key": run_key,
+            "completed_units": {},
+            "open_findings": [],
+        }
+        corrupted = [
+            {**base, "audit_status": "PASSED", "last_audited_sha": HEAD_A},
+            {**base, "audit_status": "FINDINGS", "last_audited_sha": None},
+            {**base, "audit_status": "IDLE", "last_audited_sha": HEAD_A},
+            {
+                **base,
+                "audit_status": "IN_SLICE",
+                "last_audited_sha": HEAD_A,
+                "current_unit": "changed_code",
+                "current_unit_index": 0,
+                "slice_claim": {
+                    "claim_id": "c",
+                    "unit": "changed_code",
+                    "run_key": run_key,
+                    "target_sha": HEAD_A,
+                    "state": "timed_out",
+                },
+            },
+        ]
+        for raw in corrupted:
+            with self.assertRaises(ValidationError):
+                AuditControlPacket.from_dict(raw)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            path = Path(tmp) / "data" / "chat-audit.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            stored["audit_status"] = "PASSED"
+            stored["last_audited_sha"] = HEAD_A
+            stored["completed_units"] = {}
+            path.write_text(json.dumps(stored), encoding="utf-8")
+            with self.assertRaises(ValidationError):
+                ctl.run_slice()
+
 
 if __name__ == "__main__":
     unittest.main()

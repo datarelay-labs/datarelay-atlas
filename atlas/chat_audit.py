@@ -379,6 +379,22 @@ class AuditControlPacket:
             run_k, unit_k, sha_k = parse_unit_key(str(key))
             canon_key = f"{run_k}:{unit_k}:{sha_k}"
             canonical_completed[canon_key] = entry
+        completed_units = validate_completed_units_map(
+            canonical_completed,
+            expected_run_key=run_key,
+            expected_target_sha=current_target_sha,
+        )
+        assert_audit_verdict_invariants(
+            status=status,
+            queue=queue,
+            run_key=run_key,
+            current_target_sha=current_target_sha,
+            last_audited_sha=last_audited_sha,
+            current_unit=current_unit,
+            slice_claim=slice_claim,
+            open_findings=findings,
+            completed_units=completed_units,
+        )
         return cls(
             target_repository=target_repository,
             target_branch=target_branch,
@@ -398,11 +414,7 @@ class AuditControlPacket:
             ),
             session=SessionState.from_dict(raw.get("session")),
             schema_version=version,
-            completed_units=validate_completed_units_map(
-                canonical_completed,
-                expected_run_key=run_key,
-                expected_target_sha=current_target_sha,
-            ),
+            completed_units=completed_units,
             no_change_runs=no_change_runs,
             slice_claim=slice_claim,
             canonical_revision=canonical_revision,
@@ -432,6 +444,107 @@ def _claim_is_genuinely_live(claim: dict[str, Any] | None) -> bool:
 def make_run_key(repository: str, branch: str, target_sha: str) -> str:
     material = f"{repository}|{branch}|{target_sha.lower()}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+_ACTIVE_AUDIT_STATUSES = frozenset(
+    {
+        "IDLE",
+        "IN_SLICE",
+        "AWAITING_EVIDENCE",
+        "SLICE_COMPLETE",
+        "FAILED_CLOSED",
+    }
+)
+
+
+def _completed_entries_for_queue(
+    *,
+    queue: list[str],
+    run_key: str,
+    current_target_sha: str,
+    completed_units: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]] | None:
+    entries: dict[str, dict[str, Any]] = {}
+    for unit in queue:
+        key = f"{run_key}:{unit}:{current_target_sha}"
+        entry = completed_units.get(key)
+        if not isinstance(entry, dict):
+            return None
+        entries[unit] = entry
+    return entries
+
+
+def assert_audit_verdict_invariants(
+    *,
+    status: str,
+    queue: list[str],
+    run_key: str,
+    current_target_sha: str,
+    last_audited_sha: str | None,
+    current_unit: str | None,
+    slice_claim: dict[str, Any] | None,
+    open_findings: list[AuditFinding],
+    completed_units: dict[str, dict[str, Any]],
+) -> None:
+    """Reject restored verdicts that are not evidence-derived."""
+    audited_this_head = (
+        last_audited_sha is not None and last_audited_sha == current_target_sha
+    )
+    entries = _completed_entries_for_queue(
+        queue=queue,
+        run_key=run_key,
+        current_target_sha=current_target_sha,
+        completed_units=completed_units,
+    )
+    if status in _ACTIVE_AUDIT_STATUSES and audited_this_head:
+        raise ValidationError(
+            f"{status} cannot claim last_audited_sha == current_target_sha"
+        )
+    if status == "AWAITING_EVIDENCE" and current_unit is None:
+        raise ValidationError("AWAITING_EVIDENCE requires current_unit")
+    if status == "SLICE_COMPLETE" and (
+        current_unit is not None or slice_claim is not None
+    ):
+        raise ValidationError(
+            "SLICE_COMPLETE cannot retain current_unit or slice_claim"
+        )
+    if status not in {"PASSED", "FINDINGS"}:
+        return
+    if current_unit is not None or slice_claim is not None:
+        raise ValidationError(f"{status} cannot retain an active slice")
+    if entries is None:
+        raise ValidationError(
+            f"{status} requires validated evidence for every audit unit "
+            "at the current run/HEAD"
+        )
+    finding_units = [
+        unit
+        for unit, entry in entries.items()
+        if str(entry.get("outcome")) == "FINDING"
+    ]
+    if status == "PASSED":
+        if not audited_this_head:
+            raise ValidationError(
+                "PASSED requires last_audited_sha == current_target_sha"
+            )
+        if open_findings:
+            raise ValidationError("PASSED cannot retain unresolved findings")
+        if finding_units:
+            raise ValidationError("PASSED requires every unit outcome PASS")
+        return
+    # FINDINGS: queue verdict needs finding evidence; same-HEAD coordination
+    # attention may follow a real PASSED baseline (all units PASS).
+    if audited_this_head:
+        return
+    if not finding_units:
+        raise ValidationError(
+            "FINDINGS requires finding evidence unless last_audited_sha "
+            "equals current_target_sha"
+        )
+    if not open_findings:
+        raise ValidationError(
+            "FINDINGS requires unresolved open_findings derived from evidence"
+        )
 
 
 _CLAIM_REQUIRED_FIELDS = ("claim_id", "unit", "run_key", "target_sha", "state")
