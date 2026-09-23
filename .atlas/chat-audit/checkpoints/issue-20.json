@@ -6,8 +6,8 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "AWAITING_EVIDENCE",
-  "canonical_revision": 4,
+  "audit_status": "IN_SLICE",
+  "canonical_revision": 5,
   "completed_units": {},
   "current_target_sha": "ad9a7f97959c67b1462707bee076f9eca73de925",
   "current_unit": "affected_contracts",
@@ -19,7 +19,7 @@
   "last_completed_slice": null,
   "last_coordination_refresh": null,
   "mode": "delta",
-  "next_action": "supply_evidence_for_unit:affected_contracts",
+  "next_action": "complete_or_resume_unit:affected_contracts",
   "no_change_runs": 0,
   "open_findings": [],
   "schema_version": 1,
@@ -30,11 +30,11 @@
     "state": "ACTIVE"
   },
   "slice_claim": {
-    "claim_id": "1c8ba874-ef21-4a76-834f-eab4ae5c87b7",
-    "claimed_at": 1790165908.8877814,
+    "claim_id": "fa154a99-9701-4733-8457-32ac720b8f02",
+    "claimed_at": 1790165937.495005,
     "lease_seconds": 900.0,
     "run_key": "9bb6a822397b54ca92c584c8",
-    "state": "awaiting_evidence",
+    "state": "executing",
     "target_sha": "ad9a7f97959c67b1462707bee076f9eca73de925",
     "unit": "affected_contracts"
   },
