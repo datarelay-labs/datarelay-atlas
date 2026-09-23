@@ -7,7 +7,7 @@
     "docs_spec_drift"
   ],
   "audit_status": "PASSED",
-  "canonical_revision": 54,
+  "canonical_revision": 55,
   "completed_units": {
     "6d3ff204c1ceada7e992bb1e:affected_contracts:979541a259aa05e718213dd5045b00dfc4056ca7": {
       "audit_request": "AUDIT_UNIT=affected_contracts\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
@@ -132,7 +132,7 @@
   },
   "mode": "delta",
   "next_action": "inspect_coordination_pr_ci_only",
-  "no_change_runs": 6,
+  "no_change_runs": 7,
   "open_findings": [],
   "schema_version": 1,
   "session": {
