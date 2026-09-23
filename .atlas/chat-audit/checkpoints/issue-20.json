@@ -7,7 +7,7 @@
     "docs_spec_drift"
   ],
   "audit_status": "IN_SLICE",
-  "canonical_revision": 46,
+  "canonical_revision": 47,
   "completed_units": {
     "6d3ff204c1ceada7e992bb1e:changed_code:979541a259aa05e718213dd5045b00dfc4056ca7": {
       "audit_request": "AUDIT_UNIT=changed_code\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=6b17b957e45c87012e5089f5dbe16ef671b7af3f..979541a259aa05e718213dd5045b00dfc4056ca7\nMODE=delta\nRUN_KEY=6d3ff204c1ceada7e992bb1e\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
@@ -103,7 +103,7 @@
     }
   },
   "mode": "delta",
-  "next_action": "HUMAN_REQUIRED:result_validation_exception:affected_contracts",
+  "next_action": "complete_or_resume_unit:affected_contracts",
   "no_change_runs": 3,
   "open_findings": [],
   "schema_version": 1,
@@ -114,14 +114,11 @@
     "state": "STALLED"
   },
   "slice_claim": {
-    "claim_id": "d3e30c5a-7f2c-4ae7-85eb-99f85f2f8af9",
-    "claimed_at": 1790169049.2879992,
-    "error": "evidence unit/target_sha mismatch",
-    "error_phase": "result_validation",
+    "claim_id": "001b455b-b545-412d-807a-4cdac6ddfc17",
+    "claimed_at": 1790169059.5596528,
     "lease_seconds": 900.0,
-    "reclaimed_from_failed_claim": true,
     "run_key": "6d3ff204c1ceada7e992bb1e",
-    "state": "timed_out",
+    "state": "executing",
     "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
     "unit": "affected_contracts"
   },
