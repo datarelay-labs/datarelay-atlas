@@ -74,7 +74,12 @@ resumed by a fresh Chat with only a stable resume instruction.
    `STALLED`, `TIMEOUT`, `ROLLOVER_REQUIRED`, `RESUMED`.
 6. **Idempotency**: duplicate invocations with the same
    `idempotency_run_key` + unit + target SHA return the prior outcome without
-   double-advancing the queue.
+   double-advancing the queue. GitHub-backed checkpoint writes use a monotonic
+   `canonical_revision` compare-and-set: every mutation binds to the revision
+   observed at load; stale independent writers fail closed
+   (`CheckpointCasConflict` → retryable `HUMAN_REQUIRED`) rather than
+   overwriting newer canonical state. Local file locks alone are not sufficient
+   across hosts.
 7. **Finding handoff**: open findings create/update a GitHub `[AI Work]` Issue
    via adapter (idempotent by finding_id marker); Chat must not modify product
    code. Local handoff JSON is offline/test cache only and is not success.

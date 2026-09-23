@@ -35,6 +35,10 @@ HEAD_RE = re.compile(r"^[0-9a-f]{7,40}$")
 RESUME_COMMAND = "/chat-audit-resume"
 SLICE_CLAIM_LEASE_SECONDS = 900
 
+
+class CheckpointCasConflict(ValidationError):
+    """Stale canonical checkpoint write refused (compare-and-set)."""
+
 DEFAULT_AUDIT_UNITS = (
     "changed_code",
     "affected_contracts",
@@ -215,6 +219,8 @@ class AuditControlPacket:
     completed_units: dict[str, dict[str, Any]] = field(default_factory=dict)
     no_change_runs: int = 0
     slice_claim: dict[str, Any] | None = None
+    # Monotonic CAS token for GitHub-backed independent writers (0 = create).
+    canonical_revision: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -237,6 +243,7 @@ class AuditControlPacket:
             "completed_units": copy.deepcopy(self.completed_units),
             "no_change_runs": self.no_change_runs,
             "slice_claim": copy.deepcopy(self.slice_claim),
+            "canonical_revision": self.canonical_revision,
         }
 
     @classmethod
@@ -311,6 +318,9 @@ class AuditControlPacket:
         no_change_runs = int(raw.get("no_change_runs", 0))
         if no_change_runs < 0:
             raise ValidationError("no_change_runs must be non-negative")
+        canonical_revision = int(raw.get("canonical_revision", 0))
+        if canonical_revision < 0:
+            raise ValidationError("canonical_revision must be non-negative")
         slice_claim = copy.deepcopy(raw.get("slice_claim"))
         if slice_claim is not None:
             if not isinstance(slice_claim, dict):
@@ -374,6 +384,7 @@ class AuditControlPacket:
             ),
             no_change_runs=no_change_runs,
             slice_claim=slice_claim,
+            canonical_revision=canonical_revision,
         )
 
 
@@ -1140,6 +1151,37 @@ class ChatAuditController:
         head: str | None = None,
         include_release_readiness: bool = False,
     ) -> dict[str, Any]:
+        try:
+            return self._run_slice_locked(
+                repository=repository,
+                branch=branch,
+                head=head,
+                include_release_readiness=include_release_readiness,
+            )
+        except CheckpointCasConflict as exc:
+            # Independent writer advanced canonical state; do not retry side
+            # effects from this stale invocation. Operator/scheduler may retry.
+            try:
+                detail = sanitize_durable_text(str(exc)[:400])
+            except ValidationError:
+                detail = "<redacted-cas-conflict>"
+            return {
+                "action": "failed_closed",
+                "outcome": "HUMAN_REQUIRED",
+                "reason": "checkpoint_cas_conflict",
+                "detail": detail,
+                "cheap_no_change": False,
+                "idempotent_replay": False,
+            }
+
+    def _run_slice_locked(
+        self,
+        *,
+        repository: str | None = None,
+        branch: str | None = None,
+        head: str | None = None,
+        include_release_readiness: bool = False,
+    ) -> dict[str, Any]:
         identity = self._resolve_identity(
             repository=repository, branch=branch, head=head
         )
@@ -1267,6 +1309,8 @@ class ChatAuditController:
                 return self._apply_slice_result(
                     latest, result, claim_id=claim_id
                 )
+            except CheckpointCasConflict:
+                raise
             except Exception as exc:
                 return self._reconcile_slice_exception(
                     claim_id=claim_id,

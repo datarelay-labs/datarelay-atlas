@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from atlas.chat_audit import (
     AuditControlPacket,
     AuditFinding,
+    CheckpointCasConflict,
     CheckpointStore,
     FileCheckpointStore,
     sanitize_finding,
@@ -193,11 +194,36 @@ class GitHubIssueCheckpointStore:
         return packet
 
     def save(self, packet: AuditControlPacket) -> None:
+        """Persist checkpoint with compare-and-set on canonical_revision.
+
+        Independent processes do not share the local cache lock. Every write
+        must bind to the revision observed at load (or 0 for create). A stale
+        writer that loses the race fails closed instead of overwriting newer
+        canonical state.
+        """
         safe = sanitize_packet_for_persistence(packet)
+        base_revision = int(safe.canonical_revision)
         payload = self._view_issue()
-        new_body = embed_checkpoint_in_issue_body(
-            str(payload.get("body") or ""), safe
-        )
+        current_body = str(payload.get("body") or "")
+        remote = extract_checkpoint_from_issue_body(current_body)
+        if remote is None:
+            if base_revision != 0:
+                raise CheckpointCasConflict(
+                    "checkpoint compare-and-set failed: expected revision "
+                    f"{base_revision} but canonical issue has no checkpoint"
+                )
+            next_revision = 1
+        else:
+            remote_revision = int(remote.canonical_revision)
+            if remote_revision != base_revision:
+                raise CheckpointCasConflict(
+                    "checkpoint compare-and-set failed: expected revision "
+                    f"{base_revision} but canonical is {remote_revision}"
+                )
+            next_revision = remote_revision + 1
+        safe.canonical_revision = next_revision
+        packet.canonical_revision = next_revision
+        new_body = embed_checkpoint_in_issue_body(current_body, safe)
         self._edit_body(new_body)
         if self.cache is not None:
             self.cache.save(safe)

@@ -1179,6 +1179,7 @@ class ChatAuditTests(unittest.TestCase):
             loaded = store.load()
             assert loaded is not None
             self.assertEqual(loaded.idempotency_run_key, run_key)
+            self.assertEqual(loaded.canonical_revision, 1)
             self.assertTrue(cache.path.exists())
 
             handoff = GitHubAIWorkHandoff(
@@ -1230,6 +1231,148 @@ class ChatAuditTests(unittest.TestCase):
             updated = handoff2.upsert_implementation_packet(packet, finding)
             self.assertEqual(updated["action"], "updated")
             self.assertEqual(updated["issue_number"], 321)
+
+    def test_41_github_checkpoint_cas_rejects_stale_independent_writer(self):
+        """Two stores observing the same body: later stale writer must not overwrite."""
+        from atlas.chat_audit import (
+            AuditControlPacket,
+            CheckpointCasConflict,
+            make_run_key,
+        )
+        from atlas.chat_audit_github import (
+            GitHubIssueCheckpointStore,
+            embed_checkpoint_in_issue_body,
+            extract_checkpoint_from_issue_body,
+        )
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        base = AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=[
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            idempotency_run_key=run_key,
+            canonical_revision=1,
+            next_action="writer-base",
+        )
+        bodies: dict[str, str] = {
+            "body": embed_checkpoint_in_issue_body(
+                "# Owner packet text preserved\n", base
+            )
+        }
+        edit_count = {"n": 0}
+
+        def runner(argv: list[str], cwd: str):
+            import subprocess
+
+            if argv[:3] == ["gh", "issue", "view"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "number": 20,
+                            "title": "Audit",
+                            "body": bodies["body"],
+                            "state": "OPEN",
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                idx = argv.index("--body-file")
+                bodies["body"] = Path(argv[idx + 1]).read_text(encoding="utf-8")
+                edit_count["n"] += 1
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="unexpected"
+            )
+
+        store_a = GitHubIssueCheckpointStore(
+            repository=REPO,
+            issue_number=20,
+            command_runner=runner,
+        )
+        store_b = GitHubIssueCheckpointStore(
+            repository=REPO,
+            issue_number=20,
+            command_runner=runner,
+        )
+        loaded_a = store_a.load()
+        loaded_b = store_b.load()
+        assert loaded_a is not None and loaded_b is not None
+        self.assertEqual(loaded_a.canonical_revision, 1)
+        self.assertEqual(loaded_b.canonical_revision, 1)
+
+        loaded_a.next_action = "writer-one"
+        store_a.save(loaded_a)
+        self.assertEqual(loaded_a.canonical_revision, 2)
+        self.assertEqual(edit_count["n"], 1)
+        after_a = extract_checkpoint_from_issue_body(bodies["body"])
+        assert after_a is not None
+        self.assertEqual(after_a.next_action, "writer-one")
+        self.assertEqual(after_a.canonical_revision, 2)
+        self.assertIn("Owner packet text preserved", bodies["body"])
+
+        loaded_b.next_action = "writer-two"
+        with self.assertRaises(CheckpointCasConflict) as ctx:
+            store_b.save(loaded_b)
+        self.assertIn("compare-and-set", str(ctx.exception))
+        self.assertEqual(edit_count["n"], 1)
+        after_b = extract_checkpoint_from_issue_body(bodies["body"])
+        assert after_b is not None
+        self.assertEqual(after_b.next_action, "writer-one")
+        self.assertEqual(after_b.canonical_revision, 2)
+        self.assertNotEqual(after_b.next_action, "writer-two")
+        self.assertIn("Owner packet text preserved", bodies["body"])
+
+    def test_42_cas_conflict_during_run_slice_is_human_required(self):
+        from atlas.chat_audit import (
+            AuditControlPacket,
+            ChatAuditController,
+            CheckpointCasConflict,
+            FixedUnitExecutor,
+            MemoryCheckpointStore,
+            make_run_key,
+        )
+
+        class CasFailStore(MemoryCheckpointStore):
+            def save(self, packet):
+                raise CheckpointCasConflict(
+                    "checkpoint compare-and-set failed: expected revision 1 "
+                    "but canonical is 2"
+                )
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        packet = AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=[
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            idempotency_run_key=run_key,
+            canonical_revision=1,
+        )
+        ctl = ChatAuditController(
+            store=CasFailStore(packet),
+            executor=FixedUnitExecutor(),
+            allow_trusted_identity=True,
+        )
+        result = ctl.run_slice(repository=REPO, branch=BRANCH, head=HEAD_A)
+        self.assertEqual(result["action"], "failed_closed")
+        self.assertEqual(result["outcome"], "HUMAN_REQUIRED")
+        self.assertEqual(result["reason"], "checkpoint_cas_conflict")
 
 
 if __name__ == "__main__":

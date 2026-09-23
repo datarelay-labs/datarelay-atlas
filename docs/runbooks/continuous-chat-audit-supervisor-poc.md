@@ -75,5 +75,8 @@ Fresh Chat / scheduled Chat entrypoint: `/chat-audit-resume`.
   are assertions and mismatch fails closed.
 - Finding handoff success requires GitHub `[AI Work]` create/update; local JSON
   is not canonical success.
+- GitHub checkpoint writes are compare-and-set on `canonical_revision`; a stale
+  independent writer fails closed (`HUMAN_REQUIRED` / retry) instead of
+  overwriting newer canonical state.
 - Stagehand rollover is optional and gated on Issue #19.
 - Do not merge from Chat; hand findings to Cursor `[AI Work]` packets.
