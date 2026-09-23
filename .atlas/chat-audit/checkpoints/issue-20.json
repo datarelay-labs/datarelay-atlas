@@ -6,8 +6,8 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "IN_SLICE",
-  "canonical_revision": 8,
+  "audit_status": "AWAITING_EVIDENCE",
+  "canonical_revision": 9,
   "completed_units": {},
   "current_target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
   "current_unit": "affected_tests_ci",
@@ -32,7 +32,7 @@
   },
   "last_coordination_refresh": null,
   "mode": "delta",
-  "next_action": "complete_or_resume_unit:affected_tests_ci",
+  "next_action": "supply_evidence_for_unit:affected_tests_ci",
   "no_change_runs": 0,
   "open_findings": [],
   "schema_version": 1,
@@ -47,7 +47,7 @@
     "claimed_at": 1790165958.5437737,
     "lease_seconds": 900.0,
     "run_key": "dc94f1af7853bb217878e1ee",
-    "state": "executing",
+    "state": "awaiting_evidence",
     "target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
     "unit": "affected_tests_ci"
   },
