@@ -96,6 +96,8 @@ class AuditFinding:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "AuditFinding":
+        if not isinstance(raw, dict):
+            raise ValidationError("finding must be an object")
         finding_id = str(raw.get("finding_id", "")).strip()
         if not FINDING_ID_RE.match(finding_id):
             raise ValidationError(
@@ -136,6 +138,8 @@ class AuditEvidence:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "AuditEvidence":
+        if not isinstance(raw, dict):
+            raise ValidationError("evidence must be an object")
         return cls(
             status=str(raw["status"]),
             unit=str(raw["unit"]),
@@ -184,15 +188,22 @@ class SessionState:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "SessionState":
-        if not raw:
+        if raw is None:
             return cls()
+        if not isinstance(raw, dict):
+            raise ValidationError("session must be an object")
         state = str(raw.get("state", "ACTIVE"))
         if state not in SESSION_STATES:
             raise ValidationError(f"unsupported session state: {state}")
+        rollover_raw = raw.get("rollover_count", 0)
+        if isinstance(rollover_raw, bool) or not isinstance(rollover_raw, int):
+            raise ValidationError("session.rollover_count must be an integer")
+        if rollover_raw < 0:
+            raise ValidationError("session.rollover_count must be non-negative")
         return cls(
             state=state,
             last_resume_command=str(raw.get("last_resume_command", RESUME_COMMAND)),
-            rollover_count=int(raw.get("rollover_count", 0)),
+            rollover_count=rollover_raw,
             notes=str(raw.get("notes", "")),
         )
 
@@ -335,37 +346,29 @@ class AuditControlPacket:
         last_coordination_refresh = copy.deepcopy(
             raw.get("last_coordination_refresh")
         )
-        if last_coordination_refresh is not None and not isinstance(
-            last_coordination_refresh, dict
-        ):
-            raise ValidationError("last_coordination_refresh must be an object")
-        slice_claim = copy.deepcopy(raw.get("slice_claim"))
-        if slice_claim is not None:
-            if not isinstance(slice_claim, dict):
-                raise ValidationError("slice_claim must be an object")
-            claim_state = str(slice_claim.get("state", ""))
-            if claim_state not in CLAIM_STATES:
-                raise ValidationError(
-                    f"unsupported slice_claim.state: {claim_state!r}"
-                )
-            claim_unit = str(slice_claim.get("unit", ""))
-            if claim_unit and claim_unit not in queue:
-                raise ValidationError(
-                    f"slice_claim.unit {claim_unit!r} is not in audit_queue"
-                )
-            claim_run = str(slice_claim.get("run_key", ""))
-            if claim_run and claim_run != run_key:
-                raise ValidationError("slice_claim.run_key mismatch")
-            if slice_claim.get("target_sha"):
-                claim_sha = require_exact_commit_sha(
-                    str(slice_claim["target_sha"]),
-                    label="slice_claim.target_sha",
-                )
-                if claim_sha != current_target_sha:
-                    raise ValidationError("slice_claim.target_sha mismatch")
+        if last_coordination_refresh is not None:
+            last_coordination_refresh = sanitize_coordination_snapshot(
+                last_coordination_refresh
+            )
+        last_completed_slice = copy.deepcopy(raw.get("last_completed_slice"))
+        if last_completed_slice is not None:
+            last_completed_slice = sanitize_slice_dict(last_completed_slice)
+        slice_claim = validate_slice_claim(
+            copy.deepcopy(raw.get("slice_claim")),
+            run_key=run_key,
+            current_target_sha=current_target_sha,
+            current_unit=current_unit,
+            audit_status=status,
+            audit_queue=queue,
+        )
+        open_findings_raw = raw.get("open_findings", [])
+        if open_findings_raw is None:
+            open_findings_raw = []
+        if not isinstance(open_findings_raw, list):
+            raise ValidationError("open_findings must be a list")
         findings = [
             AuditFinding.from_dict(item)
-            for item in raw.get("open_findings", [])
+            for item in open_findings_raw
         ]
         completed_raw = raw.get("completed_units") or {}
         if not isinstance(completed_raw, dict):
@@ -387,7 +390,7 @@ class AuditControlPacket:
             current_unit_index=current_unit_index,
             open_findings=findings,
             next_action=str(raw.get("next_action", "")),
-            last_completed_slice=copy.deepcopy(raw.get("last_completed_slice")),
+            last_completed_slice=last_completed_slice,
             idempotency_run_key=run_key,
             mode=mode,
             include_release_readiness=bool(
@@ -411,6 +414,108 @@ class AuditControlPacket:
 def make_run_key(repository: str, branch: str, target_sha: str) -> str:
     material = f"{repository}|{branch}|{target_sha.lower()}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+_CLAIM_REQUIRED_FIELDS = ("claim_id", "unit", "run_key", "target_sha", "state")
+_CLAIM_FUTURE_SKEW_SECONDS = 60.0
+
+
+def validate_slice_claim(
+    slice_claim: Any,
+    *,
+    run_key: str,
+    current_target_sha: str,
+    current_unit: str | None,
+    audit_status: str,
+    audit_queue: list[str],
+) -> dict[str, Any] | None:
+    """Fail closed on incomplete/inconsistent restored slice claims."""
+    if slice_claim is None:
+        if audit_status == "IN_SLICE":
+            raise ValidationError("IN_SLICE requires a complete slice_claim")
+        return None
+    if not isinstance(slice_claim, dict):
+        raise ValidationError("slice_claim must be an object")
+    claim_state = str(slice_claim.get("state", "")).strip()
+    if claim_state not in CLAIM_STATES:
+        raise ValidationError(f"unsupported slice_claim.state: {claim_state!r}")
+    missing = [
+        name
+        for name in _CLAIM_REQUIRED_FIELDS
+        if not str(slice_claim.get(name, "")).strip()
+    ]
+    if missing:
+        raise ValidationError(
+            "slice_claim missing required fields: " + ", ".join(missing)
+        )
+    claim_id = str(slice_claim.get("claim_id", "")).strip()
+    if len(claim_id) > 128:
+        raise ValidationError("slice_claim.claim_id exceeds max length")
+    claim_unit = str(slice_claim.get("unit", "")).strip()
+    if claim_unit not in audit_queue:
+        raise ValidationError(
+            f"slice_claim.unit {claim_unit!r} is not in audit_queue"
+        )
+    if current_unit is not None and claim_unit != current_unit:
+        raise ValidationError("slice_claim.unit does not match current_unit")
+    claim_run = str(slice_claim.get("run_key", "")).strip()
+    if claim_run != run_key:
+        raise ValidationError("slice_claim.run_key mismatch")
+    claim_sha = require_exact_commit_sha(
+        str(slice_claim.get("target_sha", "")),
+        label="slice_claim.target_sha",
+    )
+    if claim_sha != current_target_sha:
+        raise ValidationError("slice_claim.target_sha mismatch")
+
+    out = copy.deepcopy(slice_claim)
+    out["claim_id"] = claim_id
+    out["unit"] = claim_unit
+    out["run_key"] = claim_run
+    out["target_sha"] = claim_sha
+    out["state"] = claim_state
+
+    if "lease_seconds" in out and out.get("lease_seconds") is not None:
+        lease_raw = out.get("lease_seconds")
+        if isinstance(lease_raw, bool) or not isinstance(lease_raw, (int, float)):
+            raise ValidationError("slice_claim.lease_seconds must be numeric")
+        lease = float(lease_raw)
+        if lease <= 0 or lease != lease or lease == float("inf"):
+            raise ValidationError("slice_claim.lease_seconds must be positive finite")
+        out["lease_seconds"] = lease
+
+    if claim_state == "executing" or "claimed_at" in out:
+        if "claimed_at" not in out or out.get("claimed_at") is None:
+            raise ValidationError(
+                "slice_claim.executing requires numeric claimed_at"
+            )
+        claimed_raw = out.get("claimed_at")
+        if isinstance(claimed_raw, bool) or not isinstance(
+            claimed_raw, (int, float)
+        ):
+            raise ValidationError("slice_claim.claimed_at must be numeric")
+        claimed_at = float(claimed_raw)
+        if claimed_at != claimed_at or claimed_at == float("inf") or claimed_at < 0:
+            raise ValidationError(
+                "slice_claim.claimed_at must be a finite non-negative timestamp"
+            )
+        now = time.time()
+        if claimed_at > now + _CLAIM_FUTURE_SKEW_SECONDS:
+            raise ValidationError("slice_claim.claimed_at is unreasonably in the future")
+        out["claimed_at"] = claimed_at
+        if claim_state == "executing" and "lease_seconds" not in out:
+            out["lease_seconds"] = float(SLICE_CLAIM_LEASE_SECONDS)
+
+    if audit_status == "IN_SLICE" and claim_state not in {
+        "executing",
+        "timed_out",
+        "failed",
+        "awaiting_evidence",
+    }:
+        raise ValidationError(
+            f"IN_SLICE slice_claim.state {claim_state!r} is not resumable"
+        )
+    return out
 
 
 def sanitize_finding(finding: AuditFinding) -> AuditFinding:
@@ -1487,16 +1592,30 @@ class ChatAuditController:
 
             # Resume interrupted slice.
             if packet.audit_status == "IN_SLICE" and packet.current_unit:
+                # Re-validate claim shape before any executor side effects —
+                # in-memory/mutated packets must not bypass restore invariants.
+                claim = validate_slice_claim(
+                    packet.slice_claim,
+                    run_key=packet.idempotency_run_key,
+                    current_target_sha=packet.current_target_sha,
+                    current_unit=packet.current_unit,
+                    audit_status=packet.audit_status,
+                    audit_queue=packet.audit_queue,
+                )
+                packet.slice_claim = claim
                 claim = packet.slice_claim or {}
                 claim_state = str(claim.get("state", ""))
                 if claim_state == "executing":
-                    claimed_at = float(claim.get("claimed_at", 0) or 0)
-                    age = time.time() - claimed_at if claimed_at else None
-                    if age is not None and age < SLICE_CLAIM_LEASE_SECONDS:
+                    claimed_at = float(claim["claimed_at"])
+                    lease = float(
+                        claim.get("lease_seconds") or SLICE_CLAIM_LEASE_SECONDS
+                    )
+                    age = time.time() - claimed_at
+                    if age < lease:
                         raise ValidationError(
                             "active slice claim held; duplicate invocation refused"
                         )
-                    # Expired/abandoned executing claim is reclaimable.
+                    # Expired executing claim is reclaimable only when fully valid.
                     packet.slice_claim = {
                         **claim,
                         "state": "timed_out",
@@ -1864,23 +1983,43 @@ class ChatAuditController:
         reasons = [
             str(item) for item in (safe_snapshot.get("reasons") or []) if item
         ]
-        # Fail closed: only explicit OK/PASSED with empty reasons may PASS.
-        # Missing/unknown/blank outcome must not silently succeed.
+        # Fail closed: only explicit OK/PASSED with empty reasons and complete
+        # collector surfaces may PASS. Missing/unknown/denylisted outcomes never
+        # fall through to synthetic PASSED.
+        COORDINATION_PASS_STATUSES = frozenset({"OK", "PASSED"})
+        required_surfaces = ("work_packet", "pr", "ci", "reviews")
+        surfaces_complete = all(
+            isinstance(safe_snapshot.get(name), dict) for name in required_surfaces
+        )
+        collector = str(safe_snapshot.get("collector") or "").strip()
+        snapshot_sha = str(safe_snapshot.get("target_sha") or "").strip().lower()
         explicit_pass = (
-            status in {"OK", "PASSED"}
-            and outcome in {"OK", "PASSED"}
+            status in COORDINATION_PASS_STATUSES
+            and outcome in COORDINATION_PASS_STATUSES
             and not reasons
+            and bool(collector)
+            and snapshot_sha == packet.current_target_sha.lower()
+            and surfaces_complete
         )
         if not explicit_pass:
-            reason = (
-                reasons[0]
-                if reasons
-                else (
-                    "coordination_outcome_missing"
-                    if not outcome
-                    else f"coordination_{status.lower() or 'unknown'}"
-                )
-            )
+            if reasons:
+                reason = reasons[0]
+            elif not outcome:
+                reason = "coordination_outcome_missing"
+            elif outcome not in COORDINATION_PASS_STATUSES:
+                reason = f"coordination_outcome_unsupported:{outcome.lower()}"
+            elif not status:
+                reason = "coordination_status_missing"
+            elif status not in COORDINATION_PASS_STATUSES:
+                reason = f"coordination_status_unsupported:{status.lower()}"
+            elif not collector:
+                reason = "coordination_collector_missing"
+            elif snapshot_sha != packet.current_target_sha.lower():
+                reason = "coordination_target_sha_mismatch"
+            elif not surfaces_complete:
+                reason = "coordination_surfaces_incomplete"
+            else:
+                reason = "coordination_evidence_incomplete"
             packet.audit_status = "FINDINGS"
             packet.current_unit = None
             packet.slice_claim = None

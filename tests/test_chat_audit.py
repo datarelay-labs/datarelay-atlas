@@ -160,6 +160,13 @@ class ChatAuditTests(unittest.TestCase):
             # by selecting via IN_SLICE path with completed key:
             raw.audit_status = "IN_SLICE"
             raw.current_unit_index = 0
+            raw.slice_claim = {
+                "claim_id": "replay-claim",
+                "unit": "changed_code",
+                "run_key": raw.idempotency_run_key,
+                "target_sha": HEAD_A,
+                "state": "timed_out",
+            }
             store.save(raw)
             replay = ctl.run_slice()
             self.assertEqual(replay["action"], "idempotent_replay")
@@ -2172,6 +2179,129 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(cheap["action"], "cheap_no_change_rework")
             self.assertEqual(cheap["outcome"], "HUMAN_REQUIRED")
             self.assertIn("outcome_missing", cheap["reason"])
+
+    def test_53_malformed_nested_restore_and_negative_rollover_fail_closed(self):
+        from atlas.chat_audit import AuditControlPacket, make_run_key
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        base = {
+            "schema_version": 1,
+            "target_repository": REPO,
+            "target_branch": BRANCH,
+            "current_target_sha": HEAD_A,
+            "audit_status": "IDLE",
+            "audit_queue": [
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            "idempotency_run_key": run_key,
+        }
+        cases = [
+            {**base, "open_findings": "PASSWORD=x"},
+            {**base, "open_findings": [1]},
+            {**base, "session": "broken"},
+            {**base, "session": {"state": "ACTIVE", "rollover_count": -3}},
+        ]
+        for raw in cases:
+            with self.assertRaises(ValidationError):
+                AuditControlPacket.from_dict(raw)
+
+    def test_54_incomplete_executing_claim_fails_closed_before_executor(self):
+        import time
+
+        from atlas.chat_audit import AuditControlPacket, make_run_key
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        base = {
+            "schema_version": 1,
+            "target_repository": REPO,
+            "target_branch": BRANCH,
+            "current_target_sha": HEAD_A,
+            "audit_status": "IN_SLICE",
+            "current_unit": "changed_code",
+            "current_unit_index": 0,
+            "audit_queue": [
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            "idempotency_run_key": run_key,
+        }
+        with self.assertRaises(ValidationError):
+            AuditControlPacket.from_dict(
+                {**base, "slice_claim": {"state": "executing"}}
+            )
+        with self.assertRaises(ValidationError):
+            AuditControlPacket.from_dict(
+                {
+                    **base,
+                    "slice_claim": {
+                        "claim_id": "c1",
+                        "unit": "changed_code",
+                        "run_key": run_key,
+                        "target_sha": HEAD_A,
+                        "state": "executing",
+                        "claimed_at": "soon",
+                    },
+                }
+            )
+        with self.assertRaises(ValidationError):
+            AuditControlPacket.from_dict(
+                {
+                    **base,
+                    "slice_claim": {
+                        "claim_id": "c1",
+                        "unit": "changed_code",
+                        "run_key": run_key,
+                        "target_sha": HEAD_A,
+                        "state": "executing",
+                        "claimed_at": time.time() + 10_000,
+                    },
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            path = Path(tmp) / "data" / "chat-audit.json"
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw["audit_status"] = "IN_SLICE"
+            raw["current_unit"] = "changed_code"
+            raw["current_unit_index"] = 0
+            raw["slice_claim"] = {"state": "executing"}
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            calls_before = 0
+
+            class Counting(FixedUnitExecutor):
+                def execute(self, packet, unit, audit_request):
+                    nonlocal calls_before
+                    calls_before += 1
+                    return super().execute(packet, unit, audit_request)
+
+            ctl.executor = Counting()
+            with self.assertRaises(ValidationError):
+                ctl.run_slice()
+            self.assertEqual(calls_before, 0)
+
+    def test_55_coordination_maybe_outcome_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.coordination = FixedCoordinationRefresher(
+                {"status": "OK", "outcome": "MAYBE", "reasons": []}
+            )
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            while ctl.run_slice()["action"] != "queue_complete":
+                pass
+            cheap = ctl.run_slice()
+            self.assertEqual(cheap["action"], "cheap_no_change_rework")
+            self.assertEqual(cheap["outcome"], "HUMAN_REQUIRED")
+            self.assertIn("outcome_unsupported", cheap["reason"])
+            self.assertIn("maybe", cheap["reason"].lower())
 
 
 if __name__ == "__main__":
