@@ -19,7 +19,9 @@ Do not invent audit progress from prior conversation text.
    - git rev-parse HEAD
    - git status --short --branch
 3. Read `AGENTS.md`, then `.engineering/project.yaml`. Load only additional Engineering System context required for this audit slice.
-4. Load the durable Audit Control Packet for this repository from GitHub:
+4. Load the durable Audit Control Packet for this repository from GitHub
+   Contents API blob-SHA CAS (Issue number keys the path; Issue body is not
+   the mutation surface):
    - `python -m atlas chat-audit show --repository <owner/repo> --checkpoint-issue <N> --worktree "$PWD"`
    - Local `ATLAS_DATA_ROOT` / `.atlas-data/chat-audit.json` is cache only.
 5. Independently verify repository / branch / HEAD against the packet. Stale or mismatched identity fails closed. Exact 40-char SHAs only.

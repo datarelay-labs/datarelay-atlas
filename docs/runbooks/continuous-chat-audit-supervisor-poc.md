@@ -11,8 +11,11 @@ Control Packet (and GitHub `[AI Work]` finding handoffs). Local
 
 ## Canonical checkpoint
 
-- Production: GitHub Issue body markers via `--checkpoint-issue` or
-  `ATLAS_CHAT_AUDIT_ISSUE` (Issue #20 for this workstream).
+- Production: GitHub Contents API blob-SHA CAS via `--checkpoint-issue` /
+  `ATLAS_CHAT_AUDIT_ISSUE` (keys path
+  `.atlas/chat-audit/checkpoints/issue-N.json` on branch
+  `atlas/chat-audit-control`, overridable with
+  `ATLAS_CHAT_AUDIT_CHECKPOINT_BRANCH`). Issue body RMW is not canonical.
 - Offline/test: `--allow-local-checkpoint` with `--unit-adapter fixed` or
   `--handoff local`.
 
@@ -75,8 +78,7 @@ Fresh Chat / scheduled Chat entrypoint: `/chat-audit-resume`.
   are assertions and mismatch fails closed.
 - Finding handoff success requires GitHub `[AI Work]` create/update; local JSON
   is not canonical success.
-- GitHub checkpoint writes are compare-and-set on `canonical_revision`; a stale
-  independent writer fails closed (`HUMAN_REQUIRED` / retry) instead of
-  overwriting newer canonical state.
+- GitHub checkpoint writes are Contents API blob-SHA CAS; a stale/concurrent
+  writer fails closed (`HUMAN_REQUIRED` / retry) instead of last-writer-wins.
 - Stagehand rollover is optional and gated on Issue #19.
 - Do not merge from Chat; hand findings to Cursor `[AI Work]` packets.

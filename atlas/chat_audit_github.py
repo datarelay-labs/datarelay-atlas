@@ -1,11 +1,14 @@
 """GitHub-backed Audit Control Packet and [AI Work] finding handoff (ADR-0007).
 
-Canonical durable state lives on GitHub Issues. Local file stores remain
-derived cache / offline test surfaces only.
+Canonical durable checkpoint state uses the GitHub Contents API with
+server-enforced blob-SHA compare-and-set. Issue bodies are not an atomic
+mutation surface. Local file stores remain derived cache / offline tests only.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -28,8 +31,7 @@ from atlas.provenance import ValidationError
 from atlas.secrets import sanitize_durable_text
 from atlas.work_controller import normalize_github_repository
 
-CHECKPOINT_MARKER_START = "<!-- atlas-chat-audit-checkpoint:start -->"
-CHECKPOINT_MARKER_END = "<!-- atlas-chat-audit-checkpoint:end -->"
+DEFAULT_CHECKPOINT_BRANCH = "atlas/chat-audit-control"
 HANDOFF_MARKER = "<!-- atlas-chat-audit-finding-id:"
 CommandRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
@@ -52,63 +54,38 @@ def _default_runner(
         raise ValidationError(f"command not found: {argv[0]}") from exc
 
 
-def embed_checkpoint_in_issue_body(
-    existing_body: str, packet: AuditControlPacket
-) -> str:
-    """Embed checkpoint JSON between markers; preserve surrounding issue text."""
-    payload = json.dumps(packet.to_dict(), indent=2, sort_keys=True)
-    block = (
-        f"{CHECKPOINT_MARKER_START}\n"
-        f"```json\n{payload}\n```\n"
-        f"{CHECKPOINT_MARKER_END}\n"
-    )
-    body = existing_body or ""
-    if CHECKPOINT_MARKER_START in body and CHECKPOINT_MARKER_END in body:
-        pre = body.split(CHECKPOINT_MARKER_START, 1)[0]
-        post = body.split(CHECKPOINT_MARKER_END, 1)[1]
-        return pre.rstrip() + "\n\n" + block + post.lstrip("\n")
-    title = "# Atlas Chat Audit Control Packet\n\n"
-    if body.strip():
-        return title + block + "\n" + body.lstrip()
-    return title + block
+def checkpoint_contents_path(issue_number: int) -> str:
+    return f".atlas/chat-audit/checkpoints/issue-{int(issue_number)}.json"
 
 
-def extract_checkpoint_from_issue_body(body: str) -> AuditControlPacket | None:
-    if CHECKPOINT_MARKER_START not in (body or ""):
-        return None
-    try:
-        section = body.split(CHECKPOINT_MARKER_START, 1)[1]
-        section = section.split(CHECKPOINT_MARKER_END, 1)[0]
-    except IndexError:
-        raise ValidationError("malformed audit checkpoint markers in issue body")
-    fence = section
-    if "```" in fence:
-        parts = fence.split("```")
-        # expect ```json\n{...}\n```
-        if len(parts) < 3:
-            raise ValidationError("checkpoint JSON fence is incomplete")
-        json_text = parts[1]
-        if json_text.lstrip().startswith("json"):
-            json_text = json_text.lstrip()[4:]
-    else:
-        json_text = fence
-    try:
-        raw = json.loads(json_text.strip())
-    except json.JSONDecodeError as exc:
-        raise ValidationError("checkpoint JSON is invalid") from exc
-    if not isinstance(raw, dict):
-        raise ValidationError("checkpoint JSON must be an object")
-    return AuditControlPacket.from_dict(raw)
+def _is_contents_conflict(completed: subprocess.CompletedProcess[str]) -> bool:
+    detail = f"{completed.stderr or ''}\n{completed.stdout or ''}".lower()
+    if "http 409" in detail or '"status":"409"' in detail.replace(" ", ""):
+        return True
+    if "http 422" in detail and (
+        "sha" in detail or "conflict" in detail or "already exists" in detail
+    ):
+        return True
+    if "is at " in detail and "but expected" in detail:
+        return True
+    return False
 
 
-class GitHubIssueCheckpointStore:
-    """Canonical checkpoint store backed by a GitHub Issue body section."""
+class GitHubContentsCheckpointStore:
+    """Canonical checkpoint store via Contents API blob-SHA CAS.
+
+    GitHub Issue body read-modify-write is not atomic across hosts. Mutations
+    bind to the blob SHA observed at load and use PUT
+    /repos/.../contents/... so the server rejects a stale expected SHA.
+    """
 
     def __init__(
         self,
         *,
         repository: str,
         issue_number: int,
+        branch: str | None = None,
+        path: str | None = None,
         cache: FileCheckpointStore | None = None,
         command_runner: CommandRunner | None = None,
         cwd: str | None = None,
@@ -117,10 +94,18 @@ class GitHubIssueCheckpointStore:
         if int(issue_number) < 1:
             raise ValidationError(f"invalid checkpoint issue_number: {issue_number}")
         self.issue_number = int(issue_number)
+        env_branch = os.environ.get("ATLAS_CHAT_AUDIT_CHECKPOINT_BRANCH", "").strip()
+        self.branch = (
+            (branch or env_branch or DEFAULT_CHECKPOINT_BRANCH).strip()
+            or DEFAULT_CHECKPOINT_BRANCH
+        )
+        self.path = path or checkpoint_contents_path(self.issue_number)
         self.cache = cache
         self._runner = command_runner or _default_runner
         self._cwd = cwd or str(Path.cwd())
-        self._lock = (cache.lock if cache is not None else None)
+        # Blob SHA observed by the latest successful load/save (None = absent).
+        self._cas_blob_sha: str | None = None
+        self._cas_loaded = False
 
     @contextmanager
     def lock(self) -> Iterator[None]:
@@ -133,100 +118,163 @@ class GitHubIssueCheckpointStore:
     def _run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         return self._runner(argv, self._cwd)
 
-    def _view_issue(self) -> dict[str, Any]:
+    def _api_endpoint(self) -> str:
+        return f"repos/{self.repository}/contents/{self.path}"
+
+    def _get_contents(self) -> dict[str, Any] | None:
         completed = self._run(
             [
                 "gh",
-                "issue",
-                "view",
-                str(self.issue_number),
-                "--repo",
-                self.repository,
-                "--json",
-                "number,title,body,state",
+                "api",
+                "-H",
+                "Accept: application/vnd.github+json",
+                f"{self._api_endpoint()}?ref={self.branch}",
             ]
         )
+        detail = f"{completed.stderr or ''}\n{completed.stdout or ''}"
         if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "").strip()
+            if "404" in detail or "Not Found" in detail:
+                return None
             raise ValidationError(
-                detail[:500] or "gh issue view failed for audit checkpoint"
+                (completed.stderr or completed.stdout or "").strip()[:500]
+                or "gh api contents GET failed for audit checkpoint"
             )
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError as exc:
-            raise ValidationError("gh issue view returned non-JSON") from exc
+            raise ValidationError("gh api contents GET returned non-JSON") from exc
         if not isinstance(payload, dict):
-            raise ValidationError("gh issue view returned non-object JSON")
+            raise ValidationError("gh api contents GET returned non-object JSON")
+        payload_type = payload.get("type")
+        if payload_type is not None and payload_type != "file":
+            raise ValidationError(
+                f"checkpoint path must be a file, got {payload_type!r}"
+            )
         return payload
 
-    def _edit_body(self, body: str) -> None:
+    def _put_contents(
+        self,
+        *,
+        packet: AuditControlPacket,
+        expected_sha: str | None,
+    ) -> str:
+        raw = json.dumps(packet.to_dict(), indent=2, sort_keys=True) + "\n"
+        body: dict[str, Any] = {
+            "message": (
+                f"atlas chat-audit checkpoint issue-{self.issue_number} "
+                f"rev={packet.canonical_revision}"
+            ),
+            "content": base64.b64encode(raw.encode("utf-8")).decode("ascii"),
+            "branch": self.branch,
+        }
+        if expected_sha:
+            body["sha"] = expected_sha
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", suffix=".md", delete=False
+            mode="w", encoding="utf-8", suffix=".json", delete=False
         ) as handle:
-            handle.write(body)
+            json.dump(body, handle)
             path = handle.name
         try:
             completed = self._run(
                 [
                     "gh",
-                    "issue",
-                    "edit",
-                    str(self.issue_number),
-                    "--repo",
-                    self.repository,
-                    "--body-file",
+                    "api",
+                    "--method",
+                    "PUT",
+                    "-H",
+                    "Accept: application/vnd.github+json",
+                    self._api_endpoint(),
+                    "--input",
                     path,
                 ]
             )
         finally:
             Path(path).unlink(missing_ok=True)
         if completed.returncode != 0:
+            if _is_contents_conflict(completed):
+                raise CheckpointCasConflict(
+                    "checkpoint compare-and-set failed: contents blob SHA "
+                    "conflict (stale or concurrent writer)"
+                )
             detail = (completed.stderr or completed.stdout or "").strip()
             raise ValidationError(
-                detail[:500] or "gh issue edit failed for audit checkpoint"
+                detail[:500] or "gh api contents PUT failed for audit checkpoint"
             )
+        try:
+            payload = json.loads(completed.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise ValidationError("gh api contents PUT returned non-JSON") from exc
+        content = payload.get("content") if isinstance(payload, dict) else None
+        new_sha = None
+        if isinstance(content, dict):
+            new_sha = content.get("sha")
+        if not new_sha and isinstance(payload, dict):
+            new_sha = payload.get("sha")
+        if not isinstance(new_sha, str) or not new_sha.strip():
+            # Deterministic fallback when API omits sha in mocked/minimal replies.
+            new_sha = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+        return new_sha.strip()
 
     def load(self) -> AuditControlPacket | None:
-        payload = self._view_issue()
-        packet = extract_checkpoint_from_issue_body(str(payload.get("body") or ""))
-        if packet is not None and self.cache is not None:
+        payload = self._get_contents()
+        if payload is None:
+            self._cas_blob_sha = None
+            self._cas_loaded = True
+            return None
+        encoded = str(payload.get("content") or "")
+        if not encoded:
+            raise ValidationError("checkpoint contents payload missing content")
+        try:
+            decoded = base64.b64decode(encoded, validate=False).decode("utf-8")
+            raw = json.loads(decoded)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise ValidationError("checkpoint contents JSON is invalid") from exc
+        if not isinstance(raw, dict):
+            raise ValidationError("checkpoint contents JSON must be an object")
+        packet = AuditControlPacket.from_dict(raw)
+        blob_sha = str(payload.get("sha") or "").strip()
+        if not blob_sha:
+            raise ValidationError("checkpoint contents response missing blob sha")
+        self._cas_blob_sha = blob_sha
+        self._cas_loaded = True
+        if self.cache is not None:
             self.cache.save(packet)
         return packet
 
     def save(self, packet: AuditControlPacket) -> None:
-        """Persist checkpoint with compare-and-set on canonical_revision.
+        """Persist via Contents API PUT bound to the loaded blob SHA.
 
-        Independent processes do not share the local cache lock. Every write
-        must bind to the revision observed at load (or 0 for create). A stale
-        writer that loses the race fails closed instead of overwriting newer
-        canonical state.
+        Does not perform a client-side re-read/check before write: concurrency
+        safety comes from GitHub rejecting a stale expected ``sha``.
         """
+        if not self._cas_loaded:
+            # Require an explicit load (or prior successful save) so writers bind
+            # to a server-observed CAS token rather than inventing one.
+            raise ValidationError(
+                "checkpoint save requires a prior load to bind Contents CAS sha"
+            )
         safe = sanitize_packet_for_persistence(packet)
-        base_revision = int(safe.canonical_revision)
-        payload = self._view_issue()
-        current_body = str(payload.get("body") or "")
-        remote = extract_checkpoint_from_issue_body(current_body)
-        if remote is None:
-            if base_revision != 0:
+        expected_sha = self._cas_blob_sha
+        if expected_sha is None:
+            if int(safe.canonical_revision) != 0:
                 raise CheckpointCasConflict(
-                    "checkpoint compare-and-set failed: expected revision "
-                    f"{base_revision} but canonical issue has no checkpoint"
+                    "checkpoint compare-and-set failed: create requires "
+                    "canonical_revision=0 when contents are absent"
                 )
             next_revision = 1
         else:
-            remote_revision = int(remote.canonical_revision)
-            if remote_revision != base_revision:
-                raise CheckpointCasConflict(
-                    "checkpoint compare-and-set failed: expected revision "
-                    f"{base_revision} but canonical is {remote_revision}"
-                )
-            next_revision = remote_revision + 1
+            next_revision = int(safe.canonical_revision) + 1
         safe.canonical_revision = next_revision
         packet.canonical_revision = next_revision
-        new_body = embed_checkpoint_in_issue_body(current_body, safe)
-        self._edit_body(new_body)
+        new_sha = self._put_contents(packet=safe, expected_sha=expected_sha)
+        self._cas_blob_sha = new_sha
+        self._cas_loaded = True
         if self.cache is not None:
             self.cache.save(safe)
+
+
+# Backward-compatible alias for older imports/docs.
+GitHubIssueCheckpointStore = GitHubContentsCheckpointStore
 
 
 class GitHubAIWorkHandoff:
@@ -415,8 +463,9 @@ def resolve_checkpoint_store(
     repository: str | None,
     checkpoint_issue: int | None,
     require_github: bool = True,
+    checkpoint_branch: str | None = None,
 ) -> CheckpointStore:
-    """Prefer GitHub canonical store; local file is cache when GitHub configured."""
+    """Prefer GitHub Contents CAS store; local file is cache when configured."""
     issue = checkpoint_issue
     if issue is None:
         env = os.environ.get("ATLAS_CHAT_AUDIT_ISSUE", "").strip()
@@ -428,15 +477,17 @@ def resolve_checkpoint_store(
             raise ValidationError(
                 "repository is required for GitHub-backed audit checkpoint"
             )
-        return GitHubIssueCheckpointStore(
+        return GitHubContentsCheckpointStore(
             repository=repository,
             issue_number=issue,
+            branch=checkpoint_branch,
             cache=cache,
         )
     if require_github:
         raise ValidationError(
             "GitHub-backed Audit Control Packet required: pass "
             "--checkpoint-issue or set ATLAS_CHAT_AUDIT_ISSUE "
-            "(local chat-audit.json is cache/test-only)"
+            "(local chat-audit.json is cache/test-only; canonical state uses "
+            "Contents API blob-SHA CAS on branch atlas/chat-audit-control)"
         )
     return cache

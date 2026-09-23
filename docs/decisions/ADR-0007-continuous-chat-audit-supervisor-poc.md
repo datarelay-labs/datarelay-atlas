@@ -33,10 +33,10 @@ resumed by a fresh Chat with only a stable resume instruction.
 4. **State / migration impact** — Atlas-owned file
    `<data-root>/chat-audit.json` with `schema_version: 1` is derived cache /
    offline-test evidence only. Canonical coordination for live Chat resume is
-   the GitHub-backed Audit Control Packet (Issue body markers via adapter).
-   Finding handoff success requires GitHub `[AI Work]` create/update; local
-   JSON is not a canonical success signal. Unsupported schema versions fail
-   closed.
+   the GitHub Contents API Audit Control Packet (blob-SHA CAS on a dedicated
+   control branch; Issue numbers key the path). Finding handoff success
+   requires GitHub `[AI Work]` create/update; local JSON is not a canonical
+   success signal. Unsupported schema versions fail closed.
 5. **Security / operations impact** — No secrets in checkpoints/Git; no shell
    execution from packet bodies; truncated/incomplete evidence cannot PASS;
    stale HEAD/run-key mismatches fail closed; Stagehand remains gated on Issue
@@ -74,12 +74,13 @@ resumed by a fresh Chat with only a stable resume instruction.
    `STALLED`, `TIMEOUT`, `ROLLOVER_REQUIRED`, `RESUMED`.
 6. **Idempotency**: duplicate invocations with the same
    `idempotency_run_key` + unit + target SHA return the prior outcome without
-   double-advancing the queue. GitHub-backed checkpoint writes use a monotonic
-   `canonical_revision` compare-and-set: every mutation binds to the revision
-   observed at load; stale independent writers fail closed
-   (`CheckpointCasConflict` → retryable `HUMAN_REQUIRED`) rather than
-   overwriting newer canonical state. Local file locks alone are not sufficient
-   across hosts.
+   double-advancing the queue. Canonical GitHub checkpoint mutations use the
+   Contents API with server-enforced blob-SHA compare-and-set (expected `sha`
+   on PUT). Client-only Issue body read-then-edit is not acceptable: concurrent
+   writers that both observe revision N must not both succeed. Stale/concurrent
+   writers fail closed (`CheckpointCasConflict` → retryable `HUMAN_REQUIRED`).
+   `canonical_revision` remains an observability counter inside the packet.
+   Local file locks alone are not sufficient across hosts.
 7. **Finding handoff**: open findings create/update a GitHub `[AI Work]` Issue
    via adapter (idempotent by finding_id marker); Chat must not modify product
    code. Local handoff JSON is offline/test cache only and is not success.
@@ -91,8 +92,9 @@ resumed by a fresh Chat with only a stable resume instruction.
    (`/chat-audit-resume`). A fresh Chat loads only GitHub/local checkpoint
    state; conversation history is non-canonical.
 10. **Reuse ADR-0005 data root** for the local derived checkpoint cache
-    `chat-audit.json`. Live Chat coordination mirrors the same schema through
-    the GitHub Issue adapter without forking field semantics.
+    `chat-audit.json`. Live Chat coordination mirrors the same packet schema
+    through the Contents API adapter without forking field semantics. Owner
+    Work Packet Issue text is not overwritten by checkpoint mutations.
 
 ## Consequences
 

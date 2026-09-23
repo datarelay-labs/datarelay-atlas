@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from atlas.chat_audit import (
     RESUME_COMMAND,
@@ -1101,12 +1102,14 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(flaky.calls, 2)
 
     def test_40_github_checkpoint_and_handoff_adapters_roundtrip(self):
+        import base64
+        import hashlib
+        import subprocess
+
         from atlas.chat_audit import AuditControlPacket, AuditFinding, make_run_key
         from atlas.chat_audit_github import (
             GitHubAIWorkHandoff,
-            GitHubIssueCheckpointStore,
-            embed_checkpoint_in_issue_body,
-            extract_checkpoint_from_issue_body,
+            GitHubContentsCheckpointStore,
         )
 
         run_key = make_run_key(REPO, BRANCH, HEAD_A)
@@ -1123,37 +1126,65 @@ class ChatAuditTests(unittest.TestCase):
             ],
             idempotency_run_key=run_key,
         )
-        body = embed_checkpoint_in_issue_body("existing note", packet)
-        restored = extract_checkpoint_from_issue_body(body)
-        assert restored is not None
-        self.assertEqual(restored.current_target_sha, HEAD_A)
-
-        calls: list[list[str]] = []
-        bodies: dict[str, str] = {"body": body}
+        state: dict[str, Any] = {"sha": None, "raw": None}
 
         def runner(argv: list[str], cwd: str):
-            import subprocess
-
-            calls.append(list(argv))
-            if argv[:3] == ["gh", "issue", "view"]:
+            if argv[:2] == ["gh", "api"] and "--method" not in argv:
+                if state["sha"] is None:
+                    return subprocess.CompletedProcess(
+                        argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                    )
+                encoded = base64.b64encode(
+                    str(state["raw"]).encode("utf-8")
+                ).decode("ascii")
                 return subprocess.CompletedProcess(
                     argv,
                     0,
                     stdout=json.dumps(
                         {
-                            "number": 20,
-                            "title": "Audit",
-                            "body": bodies["body"],
-                            "state": "OPEN",
+                            "type": "file",
+                            "sha": state["sha"],
+                            "content": encoded,
+                            "encoding": "base64",
                         }
                     ),
                     stderr="",
                 )
-            if argv[:3] == ["gh", "issue", "edit"]:
-                # body-file path is last or after --body-file
-                idx = argv.index("--body-file")
-                bodies["body"] = Path(argv[idx + 1]).read_text(encoding="utf-8")
-                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            if argv[:2] == ["gh", "api"] and "--method" in argv:
+                idx = argv.index("--input")
+                body = json.loads(Path(argv[idx + 1]).read_text(encoding="utf-8"))
+                expected = body.get("sha")
+                if state["sha"] is None and expected:
+                    return subprocess.CompletedProcess(
+                        argv, 1, stdout="", stderr="gh: HTTP 409"
+                    )
+                if state["sha"] is not None and expected != state["sha"]:
+                    return subprocess.CompletedProcess(
+                        argv,
+                        1,
+                        stdout="",
+                        stderr=(
+                            f'gh: HTTP 409 {{"message":"is at {state["sha"]} '
+                            f'but expected {expected}"}}'
+                        ),
+                    )
+                if state["sha"] is not None and expected is None:
+                    return subprocess.CompletedProcess(
+                        argv,
+                        1,
+                        stdout="",
+                        stderr='gh: HTTP 422 {"message":"sha wasn\'t supplied"}',
+                    )
+                raw = base64.b64decode(body["content"]).decode("utf-8")
+                new_sha = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+                state["raw"] = raw
+                state["sha"] = new_sha
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps({"content": {"sha": new_sha}}),
+                    stderr="",
+                )
             if argv[:3] == ["gh", "issue", "list"]:
                 return subprocess.CompletedProcess(
                     argv, 0, stdout="[]", stderr=""
@@ -1169,12 +1200,13 @@ class ChatAuditTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             cache = FileCheckpointStore(Path(tmp) / "cache")
-            store = GitHubIssueCheckpointStore(
+            store = GitHubContentsCheckpointStore(
                 repository=REPO,
                 issue_number=20,
                 cache=cache,
                 command_runner=runner,
             )
+            self.assertIsNone(store.load())
             store.save(packet)
             loaded = store.load()
             assert loaded is not None
@@ -1194,10 +1226,8 @@ class ChatAuditTests(unittest.TestCase):
             record = handoff.upsert_implementation_packet(packet, finding)
             self.assertEqual(record["action"], "created")
             self.assertEqual(record["issue_number"], 321)
-            # Idempotent update path
-            def runner2(argv: list[str], cwd: str):
-                import subprocess
 
+            def runner2(argv: list[str], cwd: str):
                 if argv[:3] == ["gh", "issue", "list"]:
                     return subprocess.CompletedProcess(
                         argv,
@@ -1232,18 +1262,19 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(updated["action"], "updated")
             self.assertEqual(updated["issue_number"], 321)
 
-    def test_41_github_checkpoint_cas_rejects_stale_independent_writer(self):
-        """Two stores observing the same body: later stale writer must not overwrite."""
+    def test_41_github_contents_cas_rejects_stale_independent_writer(self):
+        """Sequential stale writer must lose after the first Contents PUT."""
+        import base64
+        import hashlib
+        import subprocess
+        import threading
+
         from atlas.chat_audit import (
             AuditControlPacket,
             CheckpointCasConflict,
             make_run_key,
         )
-        from atlas.chat_audit_github import (
-            GitHubIssueCheckpointStore,
-            embed_checkpoint_in_issue_body,
-            extract_checkpoint_from_issue_body,
-        )
+        from atlas.chat_audit_github import GitHubContentsCheckpointStore
 
         run_key = make_run_key(REPO, BRANCH, HEAD_A)
         base = AuditControlPacket(
@@ -1261,76 +1292,88 @@ class ChatAuditTests(unittest.TestCase):
             canonical_revision=1,
             next_action="writer-base",
         )
-        bodies: dict[str, str] = {
-            "body": embed_checkpoint_in_issue_body(
-                "# Owner packet text preserved\n", base
-            )
+        raw0 = json.dumps(base.to_dict(), indent=2, sort_keys=True) + "\n"
+        state = {
+            "sha": hashlib.sha1(raw0.encode("utf-8")).hexdigest(),
+            "raw": raw0,
+            "puts": 0,
+            "lock": threading.Lock(),
         }
-        edit_count = {"n": 0}
 
         def runner(argv: list[str], cwd: str):
-            import subprocess
-
-            if argv[:3] == ["gh", "issue", "view"]:
+            if argv[:2] == ["gh", "api"] and "--method" not in argv:
+                encoded = base64.b64encode(state["raw"].encode("utf-8")).decode(
+                    "ascii"
+                )
                 return subprocess.CompletedProcess(
                     argv,
                     0,
                     stdout=json.dumps(
                         {
-                            "number": 20,
-                            "title": "Audit",
-                            "body": bodies["body"],
-                            "state": "OPEN",
+                            "type": "file",
+                            "sha": state["sha"],
+                            "content": encoded,
+                            "encoding": "base64",
                         }
                     ),
                     stderr="",
                 )
-            if argv[:3] == ["gh", "issue", "edit"]:
-                idx = argv.index("--body-file")
-                bodies["body"] = Path(argv[idx + 1]).read_text(encoding="utf-8")
-                edit_count["n"] += 1
-                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            if argv[:2] == ["gh", "api"] and "--method" in argv:
+                idx = argv.index("--input")
+                body = json.loads(Path(argv[idx + 1]).read_text(encoding="utf-8"))
+                with state["lock"]:
+                    expected = body.get("sha")
+                    if expected != state["sha"]:
+                        return subprocess.CompletedProcess(
+                            argv,
+                            1,
+                            stdout="",
+                            stderr=(
+                                f'gh: HTTP 409 {{"message":"is at {state["sha"]} '
+                                f'but expected {expected}"}}'
+                            ),
+                        )
+                    raw = base64.b64decode(body["content"]).decode("utf-8")
+                    new_sha = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+                    state["raw"] = raw
+                    state["sha"] = new_sha
+                    state["puts"] += 1
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps({"content": {"sha": new_sha}}),
+                        stderr="",
+                    )
             return subprocess.CompletedProcess(
                 argv, 1, stdout="", stderr="unexpected"
             )
 
-        store_a = GitHubIssueCheckpointStore(
-            repository=REPO,
-            issue_number=20,
-            command_runner=runner,
+        store_a = GitHubContentsCheckpointStore(
+            repository=REPO, issue_number=20, command_runner=runner
         )
-        store_b = GitHubIssueCheckpointStore(
-            repository=REPO,
-            issue_number=20,
-            command_runner=runner,
+        store_b = GitHubContentsCheckpointStore(
+            repository=REPO, issue_number=20, command_runner=runner
         )
         loaded_a = store_a.load()
         loaded_b = store_b.load()
         assert loaded_a is not None and loaded_b is not None
         self.assertEqual(loaded_a.canonical_revision, 1)
-        self.assertEqual(loaded_b.canonical_revision, 1)
+        self.assertEqual(store_a._cas_blob_sha, store_b._cas_blob_sha)
 
         loaded_a.next_action = "writer-one"
         store_a.save(loaded_a)
+        self.assertEqual(state["puts"], 1)
         self.assertEqual(loaded_a.canonical_revision, 2)
-        self.assertEqual(edit_count["n"], 1)
-        after_a = extract_checkpoint_from_issue_body(bodies["body"])
-        assert after_a is not None
-        self.assertEqual(after_a.next_action, "writer-one")
-        self.assertEqual(after_a.canonical_revision, 2)
-        self.assertIn("Owner packet text preserved", bodies["body"])
+        after_a = json.loads(state["raw"])
+        self.assertEqual(after_a["next_action"], "writer-one")
 
         loaded_b.next_action = "writer-two"
-        with self.assertRaises(CheckpointCasConflict) as ctx:
+        with self.assertRaises(CheckpointCasConflict):
             store_b.save(loaded_b)
-        self.assertIn("compare-and-set", str(ctx.exception))
-        self.assertEqual(edit_count["n"], 1)
-        after_b = extract_checkpoint_from_issue_body(bodies["body"])
-        assert after_b is not None
-        self.assertEqual(after_b.next_action, "writer-one")
-        self.assertEqual(after_b.canonical_revision, 2)
-        self.assertNotEqual(after_b.next_action, "writer-two")
-        self.assertIn("Owner packet text preserved", bodies["body"])
+        self.assertEqual(state["puts"], 1)
+        after_b = json.loads(state["raw"])
+        self.assertEqual(after_b["next_action"], "writer-one")
+        self.assertEqual(after_b["canonical_revision"], 2)
 
     def test_42_cas_conflict_during_run_slice_is_human_required(self):
         from atlas.chat_audit import (
@@ -1345,8 +1388,8 @@ class ChatAuditTests(unittest.TestCase):
         class CasFailStore(MemoryCheckpointStore):
             def save(self, packet):
                 raise CheckpointCasConflict(
-                    "checkpoint compare-and-set failed: expected revision 1 "
-                    "but canonical is 2"
+                    "checkpoint compare-and-set failed: contents blob SHA "
+                    "conflict (stale or concurrent writer)"
                 )
 
         run_key = make_run_key(REPO, BRANCH, HEAD_A)
@@ -1373,6 +1416,173 @@ class ChatAuditTests(unittest.TestCase):
         self.assertEqual(result["action"], "failed_closed")
         self.assertEqual(result["outcome"], "HUMAN_REQUIRED")
         self.assertEqual(result["reason"], "checkpoint_cas_conflict")
+
+    def test_43_concurrent_writers_barrier_exactly_one_contents_put_wins(self):
+        """Both stores finish load before either PUT; server CAS allows one win."""
+        import base64
+        import hashlib
+        import subprocess
+        import threading
+
+        from atlas.chat_audit import (
+            AuditControlPacket,
+            CheckpointCasConflict,
+            make_run_key,
+        )
+        from atlas.chat_audit_github import GitHubContentsCheckpointStore
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        base = AuditControlPacket(
+            target_repository=REPO,
+            target_branch=BRANCH,
+            current_target_sha=HEAD_A,
+            audit_queue=[
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            idempotency_run_key=run_key,
+            canonical_revision=1,
+            next_action="writer-base",
+        )
+        raw0 = json.dumps(base.to_dict(), indent=2, sort_keys=True) + "\n"
+        state = {
+            "sha": hashlib.sha1(raw0.encode("utf-8")).hexdigest(),
+            "raw": raw0,
+            "puts_attempted": 0,
+            "puts_succeeded": 0,
+            "lock": threading.Lock(),
+        }
+        put_barrier = threading.Barrier(2, timeout=5)
+        load_barrier = threading.Barrier(2, timeout=5)
+
+        def runner(argv: list[str], cwd: str):
+            if argv[:2] == ["gh", "api"] and "--method" not in argv:
+                encoded = base64.b64encode(state["raw"].encode("utf-8")).decode(
+                    "ascii"
+                )
+                sha = state["sha"]
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "type": "file",
+                            "sha": sha,
+                            "content": encoded,
+                            "encoding": "base64",
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:2] == ["gh", "api"] and "--method" in argv:
+                idx = argv.index("--input")
+                body = json.loads(Path(argv[idx + 1]).read_text(encoding="utf-8"))
+                # Force both writers to enter PUT holding the same loaded SHA.
+                put_barrier.wait()
+                with state["lock"]:
+                    state["puts_attempted"] += 1
+                    expected = body.get("sha")
+                    if expected != state["sha"]:
+                        return subprocess.CompletedProcess(
+                            argv,
+                            1,
+                            stdout="",
+                            stderr=(
+                                f'gh: HTTP 409 {{"message":"is at {state["sha"]} '
+                                f'but expected {expected}"}}'
+                            ),
+                        )
+                    raw = base64.b64decode(body["content"]).decode("utf-8")
+                    new_sha = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+                    state["raw"] = raw
+                    state["sha"] = new_sha
+                    state["puts_succeeded"] += 1
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps({"content": {"sha": new_sha}}),
+                        stderr="",
+                    )
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="unexpected"
+            )
+
+        store_a = GitHubContentsCheckpointStore(
+            repository=REPO, issue_number=20, command_runner=runner
+        )
+        store_b = GitHubContentsCheckpointStore(
+            repository=REPO, issue_number=20, command_runner=runner
+        )
+        loaded: dict[str, AuditControlPacket | None] = {"a": None, "b": None}
+        errors: list[BaseException] = []
+
+        def load_a():
+            loaded["a"] = store_a.load()
+            load_barrier.wait()
+
+        def load_b():
+            loaded["b"] = store_b.load()
+            load_barrier.wait()
+
+        t1 = threading.Thread(target=load_a)
+        t2 = threading.Thread(target=load_b)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+        self.assertIsNotNone(loaded["a"])
+        self.assertIsNotNone(loaded["b"])
+        assert loaded["a"] is not None and loaded["b"] is not None
+        self.assertEqual(store_a._cas_blob_sha, store_b._cas_blob_sha)
+        self.assertEqual(loaded["a"].canonical_revision, 1)
+
+        loaded["a"].next_action = "writer-one"
+        loaded["b"].next_action = "writer-two"
+        outcomes: dict[str, str] = {}
+
+        def save_a():
+            try:
+                store_a.save(loaded["a"])  # type: ignore[arg-type]
+                outcomes["a"] = "ok"
+            except CheckpointCasConflict as exc:
+                outcomes["a"] = f"conflict:{exc}"
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+                outcomes["a"] = f"error:{exc}"
+
+        def save_b():
+            try:
+                store_b.save(loaded["b"])  # type: ignore[arg-type]
+                outcomes["b"] = "ok"
+            except CheckpointCasConflict as exc:
+                outcomes["b"] = f"conflict:{exc}"
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+                outcomes["b"] = f"error:{exc}"
+
+        s1 = threading.Thread(target=save_a)
+        s2 = threading.Thread(target=save_b)
+        s1.start()
+        s2.start()
+        s1.join(timeout=5)
+        s2.join(timeout=5)
+        self.assertEqual(errors, [])
+        self.assertEqual(state["puts_attempted"], 2)
+        self.assertEqual(state["puts_succeeded"], 1)
+        winners = [k for k, v in outcomes.items() if v == "ok"]
+        losers = [k for k, v in outcomes.items() if v.startswith("conflict:")]
+        self.assertEqual(len(winners), 1)
+        self.assertEqual(len(losers), 1)
+        final = json.loads(state["raw"])
+        self.assertEqual(final["canonical_revision"], 2)
+        self.assertIn(final["next_action"], {"writer-one", "writer-two"})
+        self.assertEqual(
+            final["next_action"],
+            "writer-one" if winners[0] == "a" else "writer-two",
+        )
 
 
 if __name__ == "__main__":

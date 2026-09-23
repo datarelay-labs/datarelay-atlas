@@ -522,7 +522,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--checkpoint-issue",
         type=int,
         default=None,
-        help="GitHub Issue number hosting the canonical Audit Control Packet",
+        help=(
+            "Workstream issue id keying Contents API checkpoint path "
+            "(.atlas/chat-audit/checkpoints/issue-N.json) with blob-SHA CAS"
+        ),
     )
     ca_init.add_argument(
         "--allow-local-checkpoint",
