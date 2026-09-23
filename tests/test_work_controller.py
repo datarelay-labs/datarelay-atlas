@@ -195,6 +195,58 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(packets.updates, [])
             self.assertEqual(dispatcher.requests, [])
 
+    def test_rework_rejected_when_head_changes_during_clean_check(self):
+        """A commit between identity and porcelain must not mutate or dispatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            git_state = {"head": HEAD_A}
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                if argv == ["git", "status", "--porcelain", "--untracked-files=all"]:
+                    git_state["head"] = HEAD_B
+                    return ""
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "branch", "--show-current"): (
+                        "feature/autonomous-work-controller-poc"
+                    ),
+                    ("git", "rev-parse", "HEAD"): git_state["head"],
+                }
+                return mapping[tuple(argv)]
+
+            packets = RecordingWorkPacketAdapter()
+            dispatcher = RecordingCursorDispatcher()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=dispatcher,
+                enforce_worktree_identity=True,
+                git_runner=fake_git,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "rework_unclean_snapshot")
+            self.assertIn("head mismatch", outcome["findings"])
+            self.assertEqual(packets.updates, [])
+            self.assertEqual(dispatcher.requests, [])
+
     def test_pass_rejected_when_worktree_already_dirty_before_finalize(self):
         """Dirty porcelain present for the whole PASS path still fails closed."""
         with tempfile.TemporaryDirectory() as tmp:

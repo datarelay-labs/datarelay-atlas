@@ -299,6 +299,19 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             "apiKey: SecretStr,hunter2",
             "token: str | None,letmein",
             "password: List[str],abc123",
+            'token: str = "hunter2"',
+            'password: SecretStr = "Password1"',
+            'token: Optional[str] = "letmein"',
+            'token: str="hunter2"',
+            'apiKey: List[str] = ["abc123"]',
+            'token: str | None = "letmein"',
+            "password: str = hunter2",
+            "token: str hunter2",
+            "password: <redacted> hunter2",
+            "token: <redacted> letmein",
+            "api_key: <redacted>\thunter2",
+            '"password": "<redacted> extra"',
+            "OPENAI_API_KEY=<redacted> live",
             "DATABASE_URL=postgresql://<redacted>@evil:secret@host/db",
             "DATABASE_URL=mysql://<redacted>@user:pass@db.example/app",
             "https://<redacted>@alice:hunter2@example.com/x",
@@ -317,6 +330,9 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             "evil:secret",
             "user:pass",
             "alice:hunter2",
+            "Password1",
+            "extra",
+            "live",
         )
         for sample in unsafe:
             prompt = f"audit evidence\n{sample}\n"
@@ -359,11 +375,29 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             self.assertEqual(sanitize_rework_findings(sample), sample)
             self.assertEqual(redact_sensitive_audit_text(sample), sample)
 
-        already_redacted = "OPENAI_API_KEY=<redacted>"
-        self.assertFalse(_contains_unsafe_secret(already_redacted))
-        self.assertFalse(_contains_unsafe_secret(f"audit evidence\n{already_redacted}\n"))
-        self.assertEqual(sanitize_rework_findings(already_redacted), already_redacted)
-        self.assertEqual(redact_sensitive_audit_text(already_redacted), already_redacted)
+        already_safe = (
+            "OPENAI_API_KEY=<redacted>",
+            "password: <redacted>",
+            "token: <redacted>\n",
+            '"password": "<redacted>"',
+            '{"apiKey": "<redacted>"}',
+            'PASSWORD="<redacted>"',
+            "token: str\nnext",
+        )
+        for sample in already_safe:
+            self.assertFalse(_contains_unsafe_secret(sample), sample)
+            self.assertFalse(
+                _contains_unsafe_secret(f"audit evidence\n{sample}\n"), sample
+            )
+            self.assertEqual(sanitize_rework_findings(sample).strip(), sample.strip())
+            redacted = redact_sensitive_audit_text(sample)
+            self.assertFalse(_contains_unsafe_secret(redacted), redacted)
+        for sample in (
+            "OPENAI_API_KEY=<redacted>",
+            'PASSWORD="<redacted>"',
+            "token: str\nnext",
+        ):
+            self.assertEqual(redact_sensitive_audit_text(sample), sample)
 
     def test_quoted_credential_values_match_selected_delimiter(self):
         from atlas.work_controller import _looks_like_secret

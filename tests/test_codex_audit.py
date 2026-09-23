@@ -1146,8 +1146,9 @@ class CodexAuditProviderTests(unittest.TestCase):
         transcript = (
             "HEAD_MARKER_start\n"
             + noise
-            + "FAIL: test_boundary AssertionError: preserved-failure "
-            + f"{secret} {host_path} TAIL_MARKER_9f3a\n"
+            + "FAIL: test_boundary AssertionError: preserved-failure\n"
+            + f"{secret}\n"
+            + f"{host_path} TAIL_MARKER_9f3a\n"
         )
         self.assertGreater(len(transcript), 300)
 

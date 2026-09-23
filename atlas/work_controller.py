@@ -227,16 +227,27 @@ def validate_clean_worktree_identity(
     expected_head: str,
     git_runner: GitRunner | None = None,
 ) -> WorktreeIdentity:
-    """Validate exact repo/branch/HEAD and require a clean porcelain worktree."""
-    identity = validate_worktree_identity(
+    """Validate exact repo/branch/HEAD and require a clean porcelain worktree.
+
+    Porcelain is checked after the first identity read. A commit in that
+    window can be clean at a new HEAD, so identity is read again and the
+    post-clean identity is what callers receive.
+    """
+    validate_worktree_identity(
         worktree_path,
         repository=repository,
         branch=branch,
         expected_head=expected_head,
         git_runner=git_runner,
     )
-    require_clean_porcelain(identity.worktree_path, git_runner=git_runner)
-    return identity
+    require_clean_porcelain(worktree_path, git_runner=git_runner)
+    return validate_worktree_identity(
+        worktree_path,
+        repository=repository,
+        branch=branch,
+        expected_head=expected_head,
+        git_runner=git_runner,
+    )
 
 
 @dataclass(frozen=True)
@@ -547,13 +558,17 @@ def _parse_type_expr(text: str, index: int, depth: int) -> tuple[bool, int]:
 def _annotation_tail_is_structural(rest: str, end: int) -> bool:
     """True when nothing after the annotation is more scalar payload.
 
-    Whitespace ends the scalar. ``)`` ``]`` ``}`` may close an outer form.
-    A comma, semicolon, or other suffix is further credential material.
+    A newline ends the scalar. Horizontal whitespace may precede a structural
+    closer, but ``token: str = ...`` and any other same-line payload are not
+    annotations. ``)`` ``]`` ``}`` may close an outer form.
     """
     index = end
     while index < len(rest):
         char = rest[index]
-        if char in " \t\r\n":
+        if char in " \t":
+            index += 1
+            continue
+        if char in "\r\n":
             return True
         if char in ")]}":
             index += 1
@@ -685,11 +700,11 @@ _SECRET_KV_QUOTED_RE = re.compile(
     rf'(?i)(?P<kq>(?:(?:\\){{0,8}}["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
     rf'\s*[:=]\s*(?P<vq>(?:\\){{0,8}}["\'])(?P<val>(?:\\.|(?!(?P=vq)).)*)(?P=vq)'
 )
-# Bare key=value without whitespace in the value. Colon assignments are
-# handled separately so explicit type annotations are not redacted.
+# Bare key=value. Spaces stay in the value so ``KEY=<redacted> live`` is
+# removed together; a leading quote belongs to the quoted matcher.
 _SECRET_KV_BARE_RE = re.compile(
     rf'(?i)(?P<kq>(?:(?:\\){{0,8}}["\'])?)(?P<key>{_CREDENTIAL_NAME})(?P=kq)'
-    rf'\s*=\s*(?P<val>[^\s,"\'}}\]]+)'
+    rf'\s*=\s*(?P<val>[^\r\n\"\']+)'
 )
 _SECRET_TOKEN_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -747,7 +762,7 @@ def _redact_unquoted_colon_credentials(text: str) -> str:
         is_annotation, _consumed = _colon_value_is_type_annotation(text[match.end() :])
         if is_annotation:
             continue
-        bare = re.match(r"[^\r\n\"']*", text[match.end() :])
+        bare = re.match(r"[^\r\n]*", text[match.end() :])
         value_len = len(bare.group(0)) if bare else 0
         key_q = match.group("kq") or ""
         key = match.group("key")
@@ -791,8 +806,11 @@ def _strip_safe_redaction_placeholders(text: str) -> str:
     # accepted for colon assignments (not shell ``PASSWORD="...", "x":``).
     key_q = r'((?:\\?["\'])?)'
     val_q = r'(\\?["\'])'
+    # Horizontal whitespace terminates a placeholder only when no further
+    # same-line scalar follows. ``password: <redacted> hunter2`` stays live.
     common_end = (
-        r'$|\s|\\["n]'
+        r'$|[\r\n]|\\["n]'
+        r'|[ \t]*(?:$|[\r\n])'
         r'|[\}\]](?=$|[\s,\}\]]|\\["n])'
         r'|\\?["\'](?=$|[\s,\}\]]|\\["n])'
     )
@@ -843,6 +861,8 @@ def _contains_unsafe_secret(text: str) -> bool:
     if re.search(r"(?i)Basic\s+<redacted>", cleaned):
         return True
     if re.search(r"(?i)\b[a-z][a-z0-9+.-]*://<redacted>@[^/\s?#]*@", cleaned):
+        return True
+    if re.search(r"<redacted>[ \t]+\S", cleaned):
         return True
     return False
 

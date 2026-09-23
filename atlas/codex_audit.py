@@ -31,7 +31,7 @@ from atlas.work_controller import (
     normalize_github_repository,
     parse_audit_verdict_payload,
     redact_sensitive_audit_text,
-    require_clean_porcelain,
+    validate_clean_worktree_identity,
     validate_worktree_identity,
 )
 
@@ -1045,7 +1045,7 @@ def _revalidate_clean_audited_snapshot(
     autonomous snapshot is still valid. Never raises for expected drift.
     """
     try:
-        validate_worktree_identity(
+        validate_clean_worktree_identity(
             record.worktree_path,
             repository=record.repository,
             branch=event.branch,
@@ -1053,15 +1053,10 @@ def _revalidate_clean_audited_snapshot(
             git_runner=git_runner,
         )
     except ValidationError as exc:
+        message = str(exc)
+        if "dirty" in message.lower():
+            return f"worktree dirty: {exc}"
         return f"worktree identity drift: {exc}"
-
-    try:
-        require_clean_porcelain(
-            record.worktree_path,
-            git_runner=git_runner,
-        )
-    except ValidationError as exc:
-        return f"worktree dirty: {exc}"
     return None
 
 

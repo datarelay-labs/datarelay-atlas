@@ -352,6 +352,52 @@ class CursorLauncherTests(unittest.TestCase):
             self.assertEqual(state["spawn_calls"], 0)
             self.assertEqual(dispatcher.spawned_pids, [])
 
+    def test_dispatch_boundary_rejects_head_change_during_clean_check(self):
+        """HEAD commit between identity and porcelain ⇒ zero spawn."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+            expected = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            drifted = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            git_state = {"head": expected}
+            state = {"spawn_calls": 0}
+
+            def mutable_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                if argv == ["git", "status", "--porcelain", "--untracked-files=all"]:
+                    git_state["head"] = drifted
+                    return ""
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "https://github.com/datarelay-labs/datarelay-atlas.git"
+                    ),
+                    ("git", "branch", "--show-current"): "feature/x",
+                    ("git", "rev-parse", "HEAD"): git_state["head"],
+                }
+                return mapping[tuple(argv)]
+
+            def spawn(command: list[str], worktree_path: str) -> int:
+                state["spawn_calls"] += 1
+                raise AssertionError("spawn must not run after mid-check HEAD change")
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=lambda: [],
+                list_target_procs=lambda _wt: [],
+                spawn=spawn,
+                git_runner=mutable_git,
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                dispatcher.start_resume(
+                    self._dispatch_request(str(target), expected_head=expected)
+                )
+            self.assertIn("head mismatch", str(ctx.exception))
+            self.assertEqual(state["spawn_calls"], 0)
+            self.assertEqual(dispatcher.spawned_pids, [])
+
     def test_dispatch_boundary_rejects_dirty_tree_without_spawn(self):
         """Dirty porcelain at dispatch boundary ⇒ zero spawn."""
         with tempfile.TemporaryDirectory() as tmp:
