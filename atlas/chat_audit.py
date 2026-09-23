@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
 from atlas.provenance import ValidationError
-from atlas.secrets import sanitize_durable_text
+from atlas.secrets import contains_unsafe_secret, sanitize_durable_text
 from atlas.work_controller import (
     GitRunner,
     WorktreeIdentity,
@@ -387,9 +387,7 @@ class AuditControlPacket:
         target_repository = normalize_github_repository(
             str(raw["target_repository"])
         )
-        target_branch = str(raw["target_branch"]).strip()
-        if not target_branch:
-            raise ValidationError("target_branch is required")
+        target_branch = require_persistable_branch(str(raw["target_branch"]))
         current_target_sha = require_exact_commit_sha(
             str(raw["current_target_sha"]),
             label="current_target_sha",
@@ -1006,6 +1004,22 @@ def sanitize_coordination_snapshot(raw: dict[str, Any] | None) -> dict[str, Any]
     return out
 
 
+def require_persistable_branch(branch: str, *, label: str = "target_branch") -> str:
+    """Reject credential-bearing branch identities before durable writes.
+
+    Redaction would change the canonical branch name, so unsafe material
+    fails closed instead of being rewritten.
+    """
+    value = str(branch or "").strip()
+    if not value:
+        raise ValidationError(f"{label} is required")
+    if contains_unsafe_secret(value):
+        raise ValidationError(
+            f"{label} must not contain credential-like material"
+        )
+    return value
+
+
 def sanitize_packet_for_persistence(
     packet: AuditControlPacket,
 ) -> AuditControlPacket:
@@ -1606,10 +1620,11 @@ class FileWorkPacketHandoff:
         self, packet: AuditControlPacket, finding: AuditFinding
     ) -> dict[str, Any]:
         safe_finding = finding_for_handoff_persistence(finding)
+        branch = require_persistable_branch(packet.target_branch)
         record = {
             "title": f"[AI Work] Audit finding: {safe_finding.finding_id}",
             "repository": packet.target_repository,
-            "branch": packet.target_branch,
+            "branch": branch,
             "head": packet.current_target_sha,
             "finding": safe_finding.to_dict(),
             "next_action": (

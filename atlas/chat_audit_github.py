@@ -27,6 +27,7 @@ from atlas.chat_audit import (
     CheckpointStore,
     FileCheckpointStore,
     finding_for_handoff_persistence,
+    require_persistable_branch,
     sanitize_packet_for_persistence,
 )
 from atlas.provenance import ValidationError
@@ -675,6 +676,7 @@ class GitHubAIWorkHandoff:
         # Same persistence boundary as FileWorkPacketHandoff. Executor checks
         # are not a substitute when a caller invokes this adapter directly.
         safe = finding_for_handoff_persistence(finding)
+        branch = require_persistable_branch(packet.target_branch)
         marker = f"{HANDOFF_MARKER}{safe.finding_id} -->"
         title = f"[AI Work] Audit finding: {safe.finding_id}"[:240]
         body = (
@@ -682,7 +684,7 @@ class GitHubAIWorkHandoff:
             f"PACKET_VERSION=2\n"
             f"TARGET_REPO={packet.target_repository}\n"
             f"STATUS=ACTIVE\n"
-            f"BRANCH={packet.target_branch}\n"
+            f"BRANCH={branch}\n"
             f"TASK_KIND=DEVELOPMENT\n"
             f"OWNER_INTENT=Implement bounded audit finding {safe.finding_id}\n"
             f"LAST_VERIFIED_HEAD={packet.current_target_sha}\n"

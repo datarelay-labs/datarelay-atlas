@@ -5108,6 +5108,71 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(len(handoff.handoffs), 1)
             self.assertEqual(len(executor.calls), 2)
 
+    def test_90_credential_bearing_branch_rejected_before_persistence(self):
+        from atlas.chat_audit import (
+            AuditControlPacket,
+            AuditFinding,
+            FileWorkPacketHandoff,
+            make_run_key,
+            sanitize_packet_for_persistence,
+        )
+        from atlas.chat_audit_github import GitHubAIWorkHandoff
+
+        queue = [
+            "changed_code",
+            "affected_contracts",
+            "affected_tests_ci",
+            "security_impact",
+            "docs_spec_drift",
+        ]
+
+        def packet_for(branch: str) -> AuditControlPacket:
+            return AuditControlPacket(
+                target_repository=REPO,
+                target_branch=branch,
+                current_target_sha=HEAD_A,
+                audit_queue=list(queue),
+                idempotency_run_key=make_run_key(REPO, branch, HEAD_A),
+            )
+
+        for branch in ("main", "feature/continuous-chat-audit-supervisor-poc"):
+            safe = sanitize_packet_for_persistence(packet_for(branch))
+            self.assertEqual(safe.target_branch, branch)
+
+        secret_branch = "PASSWORD=hunter2"
+        with self.assertRaises(ValidationError) as restored:
+            AuditControlPacket.from_dict(packet_for(secret_branch).to_dict())
+        self.assertIn("credential-like", str(restored.exception))
+        with self.assertRaises(ValidationError):
+            sanitize_packet_for_persistence(packet_for(secret_branch))
+
+        finding = AuditFinding(
+            finding_id="ok-1",
+            unit="changed_code",
+            summary="ordinary finding",
+            severity="P2",
+        )
+
+        def runner(argv, cwd):
+            raise AssertionError(f"github write attempted: {argv}")
+
+        github = GitHubAIWorkHandoff(repository=REPO, command_runner=runner)
+        with self.assertRaises(ValidationError) as handed:
+            github.upsert_implementation_packet(packet_for(secret_branch), finding)
+        self.assertIn("credential-like", str(handed.exception))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            local = FileWorkPacketHandoff(Path(tmp) / "data")
+            with self.assertRaises(ValidationError):
+                local.upsert_implementation_packet(
+                    packet_for(secret_branch), finding
+                )
+            self.assertEqual(local.handoffs, [])
+            self.assertFalse((Path(tmp) / "data" / "chat-audit-handoffs").exists())
+            saved = local.upsert_implementation_packet(packet_for("main"), finding)
+            self.assertEqual(saved["branch"], "main")
+            self.assertTrue(Path(saved["handoff_path"]).is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
