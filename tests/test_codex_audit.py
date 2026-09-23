@@ -36,6 +36,52 @@ HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 HEAD2 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 
+def _empty_review_threads_stdout() -> str:
+    return json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {
+                                "hasNextPage": False,
+                                "endCursor": None,
+                            },
+                            "nodes": [],
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+
+def _graphql_threads_result(
+    argv: list[str], nodes: list[dict] | None = None
+) -> subprocess.CompletedProcess[str] | None:
+    if "graphql" not in argv:
+        return None
+    if nodes is None:
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=_empty_review_threads_stdout(), stderr=""
+        )
+    payload = {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": nodes,
+                    }
+                }
+            }
+        }
+    }
+    return subprocess.CompletedProcess(
+        argv, 0, stdout=json.dumps(payload), stderr=""
+    )
+
+
 class WorktreeIdentityTests(unittest.TestCase):
     def test_normalize_github_repository_variants(self):
         self.assertEqual(
@@ -1109,6 +1155,9 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertTrue(truncated)
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            graphql = _graphql_threads_result(argv)
+            if graphql is not None:
+                return graphql
             path = argv[-1]
             if path.endswith("/reviews"):
                 payload = [
@@ -1155,6 +1204,9 @@ class CodexAuditProviderTests(unittest.TestCase):
         }
 
         def runner_open(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            graphql = _graphql_threads_result(argv)
+            if graphql is not None:
+                return graphql
             path = argv[-1]
             if path.endswith("/reviews"):
                 payload = [[]]
@@ -1198,6 +1250,9 @@ class CodexAuditProviderTests(unittest.TestCase):
         ]
 
         def runner_ack(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            graphql = _graphql_threads_result(argv)
+            if graphql is not None:
+                return graphql
             path = argv[-1]
             if path.endswith("/reviews"):
                 payload = [
@@ -1237,6 +1292,116 @@ class CodexAuditProviderTests(unittest.TestCase):
             ack_result, target_sha=HEAD
         )
         self.assertTrue(actionable)
+
+    def test_graphql_thread_resolution_excludes_historical_root_without_rest_flag(self):
+        """REST comments omit isResolved; GraphQL reviewThreads supplies it."""
+        old = "cccccccccccccccccccccccccccccccccccccccc"
+        root_id = 4077518821
+        rest_root = {
+            "id": root_id,
+            "user": {"login": "reviewer"},
+            "body": "P1 historical finding still listed",
+            "commit_id": HEAD,
+            "original_commit_id": old,
+            "path": "atlas/chat_audit.py",
+            "line": 12,
+        }
+        resolved_thread = {
+            "id": "PRRT_kwDOUjCU4M6k9Nkq",
+            "isResolved": True,
+            "isOutdated": False,
+            "comments": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{"databaseId": root_id}],
+            },
+        }
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            graphql = _graphql_threads_result(argv, nodes=[resolved_thread])
+            if graphql is not None:
+                return graphql
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [
+                    [
+                        {
+                            "id": 1,
+                            "user": {"login": "reviewer"},
+                            "state": "COMMENTED",
+                            "body": "exact-head review, no finding",
+                            "commit_id": HEAD,
+                        }
+                    ]
+                ]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [[rest_root]]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        resolved = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner,
+            max_chars=2400,
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(resolved["status"], "OK")
+        self.assertEqual(resolved["inline_comments"], [])
+
+        open_thread = {
+            **resolved_thread,
+            "isResolved": False,
+        }
+
+        def runner_open(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            graphql = _graphql_threads_result(argv, nodes=[open_thread])
+            if graphql is not None:
+                return graphql
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [[]]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [[rest_root]]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        still_open = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner_open,
+            max_chars=2400,
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(still_open["status"], "OK")
+        self.assertEqual(
+            [item["id"] for item in still_open["inline_comments"]], [root_id]
+        )
+
+        def runner_down(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if "graphql" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="graphql unavailable"
+                )
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps([[]]), stderr=""
+            )
+
+        failed = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner_down,
+            target_sha=HEAD,
+        )
+        self.assertEqual(failed["status"], "ERROR")
+        self.assertEqual(failed["failed_section"], "review_threads")
 
     def test_bundle_includes_pr_reviews_when_ci_finds_pr(self):
         def fake_git(argv: list[str], cwd: str) -> str:

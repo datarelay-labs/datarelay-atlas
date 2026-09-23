@@ -178,12 +178,21 @@ class AuditEvidence:
     def from_dict(cls, raw: dict[str, Any]) -> "AuditEvidence":
         if not isinstance(raw, dict):
             raise ValidationError("evidence must be an object")
+        for key in ("status", "unit", "target_sha"):
+            if key not in raw:
+                raise ValidationError(f"evidence.{key} is required")
+            if not isinstance(raw[key], str):
+                raise ValidationError(f"evidence.{key} must be a string")
+        if "truncated" not in raw or not isinstance(raw.get("truncated"), bool):
+            raise ValidationError(
+                "evidence.truncated must be an explicit boolean"
+            )
         return cls(
-            status=str(raw["status"]),
-            unit=str(raw["unit"]),
-            target_sha=str(raw["target_sha"]),
+            status=raw["status"],
+            unit=raw["unit"],
+            target_sha=raw["target_sha"],
             notes=str(raw.get("notes", "")),
-            truncated=bool(raw.get("truncated", False)),
+            truncated=raw["truncated"],
         )
 
     def is_passable(self) -> bool:
@@ -412,10 +421,20 @@ class AuditControlPacket:
         if not isinstance(completed_raw, dict):
             raise ValidationError("completed_units must be an object")
         # Canonicalize completed-unit keys to lowercase SHA form.
+        # Distinct raw keys that collapse to one canonical key are a collision:
+        # never keep either outcome.
         canonical_completed: dict[str, Any] = {}
+        canonical_sources: dict[str, str] = {}
         for key, entry in completed_raw.items():
             run_k, unit_k, sha_k = parse_unit_key(str(key))
             canon_key = f"{run_k}:{unit_k}:{sha_k}"
+            prior = canonical_sources.get(canon_key)
+            if prior is not None:
+                raise ValidationError(
+                    "completed_units canonical key collision: "
+                    f"{prior!r} and {key!r} both map to {canon_key!r}"
+                )
+            canonical_sources[canon_key] = str(key)
             canonical_completed[canon_key] = entry
         completed_units = validate_completed_units_map(
             canonical_completed,
@@ -747,12 +766,18 @@ def sanitize_slice_dict(raw: dict[str, Any] | None) -> dict[str, Any] | None:
                 "slice evidence contains unsupported fields: "
                 + ", ".join(e_unknown)
             )
+        if "truncated" not in evidence or not isinstance(
+            evidence.get("truncated"), bool
+        ):
+            raise ValidationError(
+                "evidence.truncated must be an explicit boolean"
+            )
         out["evidence"] = {
             "status": str(evidence.get("status") or ""),
             "unit": str(evidence.get("unit") or ""),
             "target_sha": str(evidence.get("target_sha") or ""),
             "notes": sanitize_durable_text(str(evidence.get("notes") or "")),
-            "truncated": bool(evidence.get("truncated", False)),
+            "truncated": evidence["truncated"],
         }
     findings = raw.get("findings")
     if findings is not None:

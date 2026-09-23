@@ -272,7 +272,12 @@ def _chat_audit_from_args(args: argparse.Namespace) -> ChatAuditController:
                 raise ValidationError("evidence file must contain a JSON object")
         executor = ExternalEvidenceUnitExecutor(evidence_payload)
     handoff_mode = getattr(args, "handoff", "github")
-    if handoff_mode == "local" or offline:
+    if handoff_mode == "local" and not offline:
+        raise ValidationError(
+            "local finding handoff requires offline or "
+            "--allow-local-checkpoint mode"
+        )
+    if offline or handoff_mode == "local":
         handoff = FileWorkPacketHandoff(Path(args.data_root))
     else:
         if not repository:

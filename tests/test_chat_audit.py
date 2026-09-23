@@ -2150,12 +2150,17 @@ class ChatAuditTests(unittest.TestCase):
                 unit_adapter="evidence",
                 allow_local_checkpoint=False,
                 evidence_file=None,
-                handoff="local",
+                handoff="github",
                 rollover_provider="fake",
                 stagehand_approved=False,
                 worktree=None,
                 allow_trusted_identity=False,
             )
+            local_args = argparse.Namespace(**vars(args))
+            local_args.handoff = "local"
+            with self.assertRaises(ValidationError) as local_rejected:
+                _chat_audit_from_args(local_args)
+            self.assertIn("local finding handoff", str(local_rejected.exception))
             with patch(
                 "atlas.cli.resolve_checkpoint_store",
                 return_value=FileCheckpointStore(Path(tmp) / "data"),
@@ -2781,6 +2786,29 @@ class ChatAuditTests(unittest.TestCase):
                         "affected-tests / affected\tpass\t1s\t0\t\n"
                     )
                     return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+                if len(argv) >= 3 and argv[2] == "graphql":
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            {
+                                "data": {
+                                    "repository": {
+                                        "pullRequest": {
+                                            "reviewThreads": {
+                                                "pageInfo": {
+                                                    "hasNextPage": False,
+                                                    "endCursor": None,
+                                                },
+                                                "nodes": [],
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        ),
+                        stderr="",
+                    )
                 if "--paginate" in argv and "--slurp" in argv:
                     path = argv[-1]
                     if path.endswith("/reviews"):
@@ -4282,6 +4310,29 @@ class ChatAuditTests(unittest.TestCase):
                         "affected-tests / affected\tpass\t1s\t0\t\n"
                     )
                     return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+                if len(argv) >= 3 and argv[2] == "graphql":
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            {
+                                "data": {
+                                    "repository": {
+                                        "pullRequest": {
+                                            "reviewThreads": {
+                                                "pageInfo": {
+                                                    "hasNextPage": False,
+                                                    "endCursor": None,
+                                                },
+                                                "nodes": [],
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        ),
+                        stderr="",
+                    )
                 if "--paginate" in argv and "--slurp" in argv:
                     path = argv[-1]
                     if path.endswith("/reviews"):
@@ -4516,6 +4567,113 @@ class ChatAuditTests(unittest.TestCase):
         with self.assertRaises(ValidationError) as rejected:
             sanitize_durable_text(over)
         self.assertIn("exceeds 4000", str(rejected.exception))
+
+    def test_82_completed_unit_canonical_key_collision_rejected(self):
+        from atlas.chat_audit import AuditControlPacket, AuditEvidence, make_run_key
+
+        run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        base = {
+            "schema_version": 1,
+            "target_repository": REPO,
+            "target_branch": BRANCH,
+            "current_target_sha": HEAD_A,
+            "audit_status": "IDLE",
+            "audit_queue": [
+                "changed_code",
+                "affected_contracts",
+                "affected_tests_ci",
+                "security_impact",
+                "docs_spec_drift",
+            ],
+            "idempotency_run_key": run_key,
+        }
+
+        def entry(outcome: str) -> dict[str, Any]:
+            return {
+                "unit": "changed_code",
+                "target_sha": HEAD_A,
+                "outcome": outcome,
+                "findings": (
+                    [
+                        {
+                            "finding_id": "finding-1",
+                            "unit": "changed_code",
+                            "summary": "kept",
+                            "severity": "P1",
+                        }
+                    ]
+                    if outcome == "FINDING"
+                    else []
+                ),
+                "evidence": AuditEvidence(
+                    status="COMPLETE",
+                    unit="changed_code",
+                    target_sha=HEAD_A,
+                    notes="ok",
+                    truncated=False,
+                ).to_dict(),
+                "audit_request": "",
+            }
+
+        finding_key = f"{run_key}:changed_code:{HEAD_A}"
+        alias_key = f"{run_key}:changed_code:{HEAD_A.upper()}"
+        orders = (
+            [(finding_key, entry("FINDING")), (alias_key, entry("PASS"))],
+            [(alias_key, entry("PASS")), (finding_key, entry("FINDING"))],
+        )
+        for pairs in orders:
+            with self.assertRaises(ValidationError) as rejected:
+                AuditControlPacket.from_dict(
+                    {**base, "completed_units": dict(pairs)}
+                )
+            self.assertIn("canonical key collision", str(rejected.exception))
+
+    def test_83_restored_evidence_requires_explicit_fields(self):
+        from atlas.chat_audit import AuditEvidence, sanitize_slice_dict
+
+        complete = {
+            "status": "COMPLETE",
+            "unit": "changed_code",
+            "target_sha": HEAD_A,
+            "notes": "ok",
+            "truncated": False,
+        }
+        loaded = AuditEvidence.from_dict(complete)
+        self.assertFalse(loaded.truncated)
+        self.assertEqual(loaded.status, "COMPLETE")
+        for key in ("status", "unit", "target_sha"):
+            missing = dict(complete)
+            del missing[key]
+            with self.assertRaises(ValidationError) as rejected:
+                AuditEvidence.from_dict(missing)
+            self.assertIn(f"evidence.{key} is required", str(rejected.exception))
+            self.assertNotIsInstance(rejected.exception, KeyError)
+        omitted = dict(complete)
+        del omitted["truncated"]
+        for raw in (
+            omitted,
+            {**complete, "truncated": None},
+            {**complete, "truncated": 0},
+            {**complete, "truncated": "false"},
+        ):
+            with self.assertRaises(ValidationError) as rejected:
+                AuditEvidence.from_dict(raw)
+            self.assertIn(
+                "evidence.truncated must be an explicit boolean",
+                str(rejected.exception),
+            )
+        with self.assertRaises(ValidationError) as slice_rejected:
+            sanitize_slice_dict(
+                {
+                    "unit": "changed_code",
+                    "outcome": "PASS",
+                    "evidence": omitted,
+                }
+            )
+        self.assertIn(
+            "evidence.truncated must be an explicit boolean",
+            str(slice_rejected.exception),
+        )
 
 
 if __name__ == "__main__":
