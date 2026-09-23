@@ -6,11 +6,11 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "IDLE",
-  "canonical_revision": 35,
+  "audit_status": "IN_SLICE",
+  "canonical_revision": 36,
   "completed_units": {},
   "current_target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
-  "current_unit": null,
+  "current_unit": "security_impact",
   "current_unit_index": 3,
   "fair_start_index": 3,
   "idempotency_run_key": "6d3ff204c1ceada7e992bb1e",
@@ -60,7 +60,7 @@
     }
   },
   "mode": "delta",
-  "next_action": "run_next_audit_slice",
+  "next_action": "complete_or_resume_unit:security_impact",
   "no_change_runs": 3,
   "open_findings": [],
   "schema_version": 1,
@@ -70,7 +70,15 @@
     "rollover_count": 1,
     "state": "ACTIVE"
   },
-  "slice_claim": null,
+  "slice_claim": {
+    "claim_id": "6bf60893-b442-4eca-a3eb-2bdc04112c8f",
+    "claimed_at": 1790168970.4038825,
+    "lease_seconds": 900.0,
+    "run_key": "6d3ff204c1ceada7e992bb1e",
+    "state": "executing",
+    "target_sha": "979541a259aa05e718213dd5045b00dfc4056ca7",
+    "unit": "security_impact"
+  },
   "target_branch": "feature/continuous-chat-audit-supervisor-poc",
   "target_repository": "datarelay-labs/datarelay-atlas"
 }
