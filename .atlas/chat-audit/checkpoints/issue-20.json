@@ -6,8 +6,8 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "AWAITING_EVIDENCE",
-  "canonical_revision": 13,
+  "audit_status": "IN_SLICE",
+  "canonical_revision": 14,
   "completed_units": {
     "dc94f1af7853bb217878e1ee:affected_tests_ci:6b17b957e45c87012e5089f5dbe16ef671b7af3f": {
       "audit_request": "AUDIT_UNIT=affected_tests_ci\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=NULL..6b17b957e45c87012e5089f5dbe16ef671b7af3f\nMODE=delta\nRUN_KEY=dc94f1af7853bb217878e1ee\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
@@ -47,7 +47,7 @@
   },
   "last_coordination_refresh": null,
   "mode": "delta",
-  "next_action": "supply_evidence_for_unit:security_impact",
+  "next_action": "complete_or_resume_unit:security_impact",
   "no_change_runs": 0,
   "open_findings": [],
   "schema_version": 1,
@@ -58,11 +58,11 @@
     "state": "ACTIVE"
   },
   "slice_claim": {
-    "claim_id": "291eadb5-2ecd-4bc8-8690-80d974a33ad9",
-    "claimed_at": 1790166184.5775442,
+    "claim_id": "235958ad-cd35-416a-b7fb-b412432ba61d",
+    "claimed_at": 1790166189.1763668,
     "lease_seconds": 900.0,
     "run_key": "dc94f1af7853bb217878e1ee",
-    "state": "awaiting_evidence",
+    "state": "executing",
     "target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
     "unit": "security_impact"
   },
