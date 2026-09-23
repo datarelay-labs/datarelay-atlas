@@ -712,6 +712,29 @@ def sanitize_rework_findings(
     return cleaned[:max_chars] + "\n...[truncated]...\n"
 
 
+def _flatten_paginated_issue_pages(raw: object) -> list[dict]:
+    """Flatten ``gh api --paginate --slurp`` issue pages.
+
+    Fail closed unless every page is a JSON array of objects, so a partial
+    window cannot be treated as the full open-issue set.
+    """
+    if not isinstance(raw, list):
+        raise ValidationError("gh api issues --slurp returned non-array")
+    flat: list[dict] = []
+    for page_idx, page in enumerate(raw):
+        if not isinstance(page, list):
+            raise ValidationError(
+                f"gh api issues --slurp page {page_idx} is not a JSON array"
+            )
+        for item in page:
+            if not isinstance(item, dict):
+                raise ValidationError(
+                    f"gh api issues page {page_idx} returned non-object entry"
+                )
+            flat.append(item)
+    return flat
+
+
 def _leading_packet_metadata_text(body: str) -> str:
     """Return only the leading KEY=VALUE metadata block (before blank/##)."""
     lines: list[str] = []
@@ -1300,37 +1323,29 @@ class GitHubWorkPacketAdapter:
         return payload
 
     def _list_open_ai_work_issues(self, repository: str) -> list[dict]:
-        listed = self._run(
-            [
-                "gh",
-                "issue",
-                "list",
-                "--repo",
-                repository,
-                "--state",
-                "open",
-                "--limit",
-                "100",
-                "--json",
-                "number,title,body,state",
-            ]
-        )
+        """List every open ``[AI Work]`` issue, following GitHub pagination.
+
+        ``gh issue list --limit`` cannot prove repository-wide uniqueness: the
+        CLI cap hides older matches. ``gh api --paginate`` follows Link headers
+        until the set is complete; a truncated or malformed page fails closed.
+        The issues API also returns pull requests, which are excluded.
+        """
+        path = f"repos/{repository}/issues?state=open&per_page=100"
+        listed = self._run(["gh", "api", "--paginate", "--slurp", path])
         if listed.returncode != 0:
             detail = (listed.stderr or listed.stdout or "").strip()
             raise ValidationError(
                 detail[:500]
-                or f"gh issue list failed with exit {listed.returncode}"
+                or f"gh api issues failed with exit {listed.returncode}"
             )
         try:
-            payload = json.loads(listed.stdout)
+            payload = json.loads(listed.stdout or "")
         except json.JSONDecodeError as exc:
-            raise ValidationError("gh issue list returned non-JSON") from exc
-        if not isinstance(payload, list):
-            raise ValidationError("gh issue list returned non-list JSON")
+            raise ValidationError("gh api issues returned non-JSON") from exc
         issues: list[dict] = []
-        for item in payload:
-            if not isinstance(item, dict):
-                raise ValidationError("gh issue list returned non-object entry")
+        for item in _flatten_paginated_issue_pages(payload):
+            if "pull_request" in item:
+                continue
             title = str(item.get("title") or "")
             if title.startswith("[AI Work]"):
                 issues.append(item)

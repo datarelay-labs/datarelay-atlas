@@ -407,6 +407,22 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             }
         ]
 
+    def _scan_pages(self, *pages: list[dict]) -> str:
+        """``gh api --paginate --slurp`` body: a JSON array of issue pages."""
+        if not pages:
+            pages = (self._list_payload(),)
+        return json.dumps(list(pages))
+
+    @staticmethod
+    def _is_issue_scan(argv: list[str]) -> bool:
+        return (
+            len(argv) >= 5
+            and argv[:4] == ["gh", "api", "--paginate", "--slurp"]
+            and "/issues?" in argv[4]
+            and "state=open" in argv[4]
+            and "per_page=100" in argv[4]
+        )
+
     def _rework_kwargs(self, **overrides):
         kwargs = {
             "repository": "datarelay-labs/datarelay-atlas",
@@ -426,9 +442,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
             calls.append(list(argv))
-            if argv[:3] == ["gh", "issue", "list"]:
+            if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps(self._list_payload()), stderr=""
+                    argv, 0, stdout=self._scan_pages(), stderr=""
                 )
             if argv[:3] == ["gh", "issue", "view"]:
                 return subprocess.CompletedProcess(
@@ -444,7 +460,8 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         adapter = GitHubWorkPacketAdapter(command_runner=runner)
         adapter.apply_rework_findings(**self._rework_kwargs())
         self.assertEqual(len(calls), 4)  # list, view, recheck view, edit
-        self.assertEqual(calls[0][:4], ["gh", "issue", "list", "--repo"])
+        self.assertTrue(self._is_issue_scan(calls[0]))
+        self.assertNotIn("--limit", calls[0])
         self.assertEqual(
             calls[1],
             [
@@ -480,9 +497,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         ]
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            if argv[:3] == ["gh", "issue", "list"]:
+            if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps(self._list_payload()), stderr=""
+                    argv, 0, stdout=self._scan_pages(), stderr=""
                 )
             if argv[:3] == ["gh", "issue", "view"]:
                 payload = views.pop(0)
@@ -498,9 +515,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
     def test_edit_failure_raises_validation_error(self):
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            if argv[:3] == ["gh", "issue", "list"]:
+            if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps(self._list_payload()), stderr=""
+                    argv, 0, stdout=self._scan_pages(), stderr=""
                 )
             if argv[:3] == ["gh", "issue", "view"]:
                 return subprocess.CompletedProcess(
@@ -527,10 +544,10 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
     def test_rejects_non_ai_work_issue(self):
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            if argv[:3] == ["gh", "issue", "list"]:
+            if self._is_issue_scan(argv):
                 # Unique match points at #12, but configured issue is #10.
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps(self._list_payload()), stderr=""
+                    argv, 0, stdout=self._scan_pages(), stderr=""
                 )
             return subprocess.CompletedProcess(
                 argv,
@@ -563,11 +580,11 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         )
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            if argv[:3] == ["gh", "issue", "list"]:
+            if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv,
                     0,
-                    stdout=json.dumps(
+                    stdout=self._scan_pages(
                         self._list_payload(
                             {
                                 "number": 12,
@@ -592,6 +609,75 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
         self.assertIn("ambiguous ACTIVE Work Packets", str(ctx.exception))
 
+    def test_uniqueness_scan_includes_later_pages_and_skips_pulls(self):
+        """A match past the first page is visible; pull requests are not packets."""
+        other = SAMPLE_BODY.replace(
+            "OWNER_INTENT=Complete the AWC PoC safely.",
+            "OWNER_INTENT=Later page packet.",
+        )
+        filler = {
+            "number": 1,
+            "title": "ordinary issue",
+            "state": "open",
+            "body": "not a work packet",
+        }
+        pull = {
+            "number": 50,
+            "title": "[AI Work] pull request",
+            "state": "open",
+            "body": SAMPLE_BODY,
+            "pull_request": {"url": "https://api.github.com/repos/x/y/pulls/50"},
+        }
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if self._is_issue_scan(argv):
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=self._scan_pages(
+                        [filler, pull],
+                        [
+                            {
+                                "number": 12,
+                                "title": "[AI Work] one",
+                                "state": "open",
+                                "body": SAMPLE_BODY,
+                            },
+                            {
+                                "number": 99,
+                                "title": "[AI Work] two",
+                                "state": "open",
+                                "body": other,
+                            },
+                        ],
+                    ),
+                    stderr="",
+                )
+            self.fail(f"must not continue after later-page ambiguity: {argv}")
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        with self.assertRaises(ValidationError) as ctx:
+            adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
+        self.assertIn("#12", str(ctx.exception))
+        self.assertIn("#99", str(ctx.exception))
+        self.assertNotIn("#50", str(ctx.exception))
+
+    def test_uniqueness_scan_fails_closed_on_malformed_page(self):
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if self._is_issue_scan(argv):
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps([self._list_payload(), {"not": "a page"}]),
+                    stderr="",
+                )
+            self.fail(f"must not continue after malformed scan: {argv}")
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        with self.assertRaises(ValidationError) as ctx:
+            adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
+        self.assertIn("not a JSON array", str(ctx.exception))
+
     def test_clone_url_target_repo_does_not_match_active_packet(self):
         """URL-form TARGET_REPO must not count as the unique ACTIVE packet."""
         url_body = SAMPLE_BODY.replace(
@@ -600,11 +686,11 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         )
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            if argv[:3] == ["gh", "issue", "list"]:
+            if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv,
                     0,
-                    stdout=json.dumps(
+                    stdout=self._scan_pages(
                         self._list_payload(
                             {
                                 "number": 12,
@@ -630,11 +716,11 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         )
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            if argv[:3] == ["gh", "issue", "list"]:
+            if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
                     argv,
                     0,
-                    stdout=json.dumps(
+                    stdout=self._scan_pages(
                         self._list_payload(
                             {
                                 "number": 12,
@@ -722,9 +808,9 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         landed_bodies: list[str] = []
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            if argv[:3] == ["gh", "issue", "list"]:
+            if self._is_issue_scan(argv):
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps(self._list_payload()), stderr=""
+                    argv, 0, stdout=self._scan_pages(), stderr=""
                 )
             if argv[:3] == ["gh", "issue", "view"]:
                 if landed_bodies:
