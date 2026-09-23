@@ -6,8 +6,8 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "FINDINGS",
-  "canonical_revision": 29,
+  "audit_status": "PASSED",
+  "canonical_revision": 30,
   "completed_units": {
     "dc94f1af7853bb217878e1ee:affected_contracts:6b17b957e45c87012e5089f5dbe16ef671b7af3f": {
       "audit_request": "AUDIT_UNIT=affected_contracts\nREPO=datarelay-labs/datarelay-atlas\nBRANCH=feature/continuous-chat-audit-supervisor-poc\nDELTA=NULL..6b17b957e45c87012e5089f5dbe16ef671b7af3f\nMODE=delta\nRUN_KEY=dc94f1af7853bb217878e1ee\nRESUME=/chat-audit-resume\nRULES=fail_closed_on_truncated_evidence;no_product_code_changes;persist_checkpoint_before_exit",
@@ -106,7 +106,7 @@
       "status": "OK"
     },
     "collector": "atlas.chat_audit_github.GitHubCoordinationRefresher",
-    "outcome": "HUMAN_REQUIRED",
+    "outcome": "PASSED",
     "pr": {
       "headRefOid": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
       "number": 21,
@@ -114,34 +114,32 @@
       "status": "OK",
       "url": "https://github.com/datarelay-labs/datarelay-atlas/pull/21"
     },
-    "reasons": [
-      "work_packet_gate_codex_review_pending"
-    ],
+    "reasons": [],
     "reviews": {
       "actionable": false,
-      "count": 1,
+      "count": 2,
       "status": "OK"
     },
-    "status": "HUMAN_REQUIRED",
+    "status": "OK",
     "target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
     "work_packet": {
-      "gate": "CODEX_REVIEW_PENDING",
+      "gate": "PASS",
       "number": 20,
       "state": "OPEN",
       "status": "ACTIVE",
-      "updated_at": "2026-09-23T12:22:59Z"
+      "updated_at": "2026-09-23T12:25:02Z"
     }
   },
   "mode": "delta",
-  "next_action": "HUMAN_REQUIRED:coordination:work_packet_gate_codex_review_pending",
-  "no_change_runs": 1,
+  "next_action": "inspect_coordination_pr_ci_only",
+  "no_change_runs": 2,
   "open_findings": [],
   "schema_version": 1,
   "session": {
     "last_resume_command": "/chat-audit-resume",
     "notes": "work_packet_gate_codex_review_pending",
     "rollover_count": 0,
-    "state": "STALLED"
+    "state": "ACTIVE"
   },
   "slice_claim": null,
   "target_branch": "feature/continuous-chat-audit-supervisor-poc",
