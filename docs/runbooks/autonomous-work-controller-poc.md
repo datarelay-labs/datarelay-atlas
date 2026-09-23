@@ -82,9 +82,9 @@ python3 -m atlas work-controller enqueue-completion /tmp/awc-completion.json
 python3 -m atlas work-controller drain-inbox \
   --audit-adapter fixed --audit-verdict PASS
 
-# Re-register in a fresh data root to exercise REWORK dispatch argv:
-# `--audit-adapter fixed` defaults to `--work-packet-adapter recording`
-# so offline dogfood does not mutate GitHub Issue #12.
+# Offline fixed REWORK with the default recording adapter and no
+# `--spawn-dispatch`. This records the finding locally and does not launch
+# Cursor. It must not be read as `REWORK_DISPATCHED`.
 rm -rf "$ATLAS_DATA_ROOT"
 python3 -m atlas work-controller register autonomous-work-controller-poc \
   --repository datarelay-labs/datarelay-atlas \
@@ -100,9 +100,18 @@ python3 -m atlas work-controller completion /tmp/awc-completion.json \
 python3 -m atlas work-controller show autonomous-work-controller-poc
 ```
 
-Expected REWORK outcome includes:
-`dispatch_command = ["agent", "persist", "--trust", "/work-resume"]`
-and `resume_prompt = "/work-resume"`.
+Expected outcome of that recording / no-spawn completion:
+
+- `state` = `HUMAN_REQUIRED`
+- `verdict` = `HUMAN_REQUIRED`
+- `action` = `stop`
+- `reason` = `dispatch_boundary_failed`
+- findings say audit-only mode cannot claim Cursor dispatch
+- no `dispatch_command` and no `resume_prompt`
+- `show` reports `state` = `HUMAN_REQUIRED`
+
+`--audit-adapter fixed` defaults to `--work-packet-adapter recording`, so this
+example does not mutate GitHub Issue #12 and does not start a Cursor session.
 
 Production Codex/OpenAI paths default to `--work-packet-adapter github`, which
 updates the same canonical `[AI Work]` Issue (findings + next action) via safe
@@ -110,11 +119,13 @@ updates the same canonical `[AI Work]` Issue (findings + next action) via safe
 recheck. GitHub Issues PATCH rejects conditional headers (`If-Match` /
 `If-Unmodified-Since` → HTTP 400), so a residual TOCTOU remains and is accepted
 as a platform limit for this PoC. Mutation failure fails closed as
-`HUMAN_REQUIRED` with no spawn / no `REWORK_DISPATCHED`.
+`HUMAN_REQUIRED` with no spawn / no `REWORK_DISPATCHED`. GitHub mutation is
+paired only with real `--spawn-dispatch`.
 
-To exercise the real PTY launcher (creates a live Cursor persist session in
-this worktree only), pair fixed audit with the canonical GitHub Work Packet
-adapter:
+Real dispatch is a later milestone. It is not a substitute for the audit-only
+example above. When that milestone is in scope, pair fixed audit with the
+canonical GitHub Work Packet adapter and an explicit spawn. That command
+mutates Issue #12 and creates a live Cursor persist session in this worktree:
 
 ```bash
 python3 -m atlas work-controller completion /tmp/awc-completion.json \
@@ -125,8 +136,11 @@ python3 -m atlas work-controller completion /tmp/awc-completion.json \
   --spawn-dispatch
 ```
 
-Stop only the newly created target session afterward via
-`agent persist stop <session>` if needed. Do not stop unrelated sessions.
+Only that spawned path includes
+`dispatch_command = ["agent", "persist", "--trust", "/work-resume"]`
+and `resume_prompt = "/work-resume"`. Stop only the newly created target
+session afterward via `agent persist stop <session>` if needed. Do not stop
+unrelated sessions.
 
 ## Live Codex audit adapter (default production)
 

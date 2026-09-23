@@ -1065,9 +1065,31 @@ def _revalidate_clean_audited_snapshot(
     return None
 
 
+def _head_and_tail(text: str, *, max_chars: int) -> str:
+    """Keep the start and the end of ``text`` inside ``max_chars``.
+
+    Unittest and check transcripts put the failing assertion or check name
+    after earlier output. A prefix-only cut drops that identity.
+    """
+    if len(text) <= max_chars:
+        return text
+    marker = "\n...[truncated]...\n"
+    if max_chars <= len(marker) + 2:
+        return text[:max_chars]
+    budget = max_chars - len(marker)
+    head_len = budget // 2
+    tail_len = budget - head_len
+    return text[:head_len] + marker + text[-tail_len:]
+
+
 def _safe_detail(value: object, *, max_chars: int = 300) -> str:
-    """Bound and redact detail text before it enters AuditResult.findings."""
-    return redact_sensitive_audit_text(str(value or ""), max_chars=max_chars)
+    """Redact, then keep a bounded head and tail for durable findings.
+
+    Redaction runs on the full detail first so a secret cannot survive by
+    sitting in the kept tail. The result stays within ``max_chars``.
+    """
+    redacted = redact_sensitive_audit_text(str(value or ""), max_chars=10**9)
+    return _head_and_tail(redacted, max_chars=max_chars)
 
 
 def _deterministic_gate_before_codex(bundle: dict) -> AuditResult | None:

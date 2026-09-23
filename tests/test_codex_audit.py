@@ -1135,6 +1135,90 @@ class CodexAuditProviderTests(unittest.TestCase):
             self.assertIn("tests FAIL", result.findings)
             self.assertIsNone(provider.last_command)
 
+    def test_deterministic_rework_preserves_verbose_failure_tail(self):
+        """A long unittest transcript must keep the trailing failure identity."""
+        from atlas.codex_audit import _deterministic_gate_before_codex
+        from atlas.work_controller import sanitize_rework_findings
+
+        noise = "test_ok (tests.test_noise.Noise) ... ok\n" * 40
+        secret = "OPENAI_API_KEY" + "=" + "live-tail-secret"
+        host_path = "/tmp/awc-host-path/file.py"
+        transcript = (
+            "HEAD_MARKER_start\n"
+            + noise
+            + "FAIL: test_boundary AssertionError: preserved-failure "
+            + f"{secret} {host_path} TAIL_MARKER_9f3a\n"
+        )
+        self.assertGreater(len(transcript), 300)
+
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "FAIL", "transcript": transcript},
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "REWORK")
+            self.assertIn("HEAD_MARKER_start", result.findings)
+            self.assertIn("TAIL_MARKER_9f3a", result.findings)
+            self.assertIn("test_boundary", result.findings)
+            self.assertNotIn("live-tail-secret", result.findings)
+            self.assertNotIn(host_path, result.findings)
+            self.assertIn("<local-path>", result.findings)
+            self.assertLessEqual(len(result.findings), 400)
+            persisted = sanitize_rework_findings(result.findings)
+            self.assertIn("TAIL_MARKER_9f3a", persisted)
+            self.assertNotIn("live-tail-secret", persisted)
+
+        error = _deterministic_gate_before_codex(
+            {
+                "tests": {
+                    "status": "ERROR",
+                    "detail": ("x" * 400) + "\nIMPORT_TAIL_REASON missing_dep",
+                }
+            }
+        )
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertEqual(error.verdict, "HUMAN_REQUIRED")
+        self.assertIn("IMPORT_TAIL_REASON", error.findings)
+        self.assertLessEqual(len(error.findings), 400)
+
+        ci_fail = _deterministic_gate_before_codex(
+            {
+                "ci": {
+                    "status": "FAIL",
+                    "detail": ("c" * 400) + "\nCHECK_TAIL affected-tests",
+                }
+            }
+        )
+        self.assertIsNotNone(ci_fail)
+        assert ci_fail is not None
+        self.assertEqual(ci_fail.verdict, "REWORK")
+        self.assertIn("CHECK_TAIL", ci_fail.findings)
+        self.assertLessEqual(len(ci_fail.findings), 400)
+
     def test_deterministic_gate_redacts_secrets_in_findings(self):
         assigned = "OPENAI_API_KEY" + "=" + "live-secret-value"
         def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
