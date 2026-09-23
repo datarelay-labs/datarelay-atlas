@@ -45,6 +45,9 @@ REQUIRED_PR_CHECK_NAMES = frozenset(
     }
 )
 SUPPORTED_WORK_PACKET_STATUSES = frozenset({"ACTIVE"})
+# Cheap-path PASS requires an explicit terminal pass/ready gate. REWORK,
+# FINAL_AUDIT, IMPLEMENTATION, and any other non-terminal gate block PASS.
+WORK_PACKET_PASS_GATES = frozenset({"PASS", "PASSED", "READY", "COMPLETE"})
 CommandRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
 
@@ -900,13 +903,25 @@ class GitHubAIWorkHandoff:
             raise ValidationError(
                 f"handoff claim issue #{number} missing finding marker"
             )
-        if safe.finding_id not in issue_title:
+        expected_title = f"[AI Work] Audit finding: {safe.finding_id}"[:240]
+        if issue_title.strip() != expected_title:
             raise ValidationError(
-                f"handoff claim issue #{number} missing finding title identity"
+                f"handoff claim issue #{number} title is not the audit-finding identity"
             )
-        expected_repo = f"TARGET_REPO={packet.target_repository}"
-        alt_repo = f"TARGET_REPO={self.repository}"
-        if expected_repo not in issue_body and alt_repo not in issue_body:
+        repo_line = re.search(r"(?m)^TARGET_REPO=(\S+)\s*$", issue_body)
+        if not repo_line:
+            raise ValidationError(
+                f"handoff claim issue #{number} missing TARGET_REPO"
+            )
+        try:
+            declared_repo = normalize_github_repository(repo_line.group(1))
+        except ValidationError as exc:
+            raise ValidationError(
+                f"handoff claim issue #{number} missing/mismatched TARGET_REPO"
+            ) from exc
+        if declared_repo != self.repository or declared_repo != normalize_github_repository(
+            packet.target_repository
+        ):
             raise ValidationError(
                 f"handoff claim issue #{number} missing/mismatched TARGET_REPO"
             )
@@ -974,11 +989,19 @@ class GitHubAIWorkHandoff:
             ]
         )
         if listed.returncode != 0:
-            return None
+            detail = (listed.stderr or listed.stdout or "").strip()
+            raise ValidationError(
+                "handoff marker lookup unavailable: "
+                + (detail[:400] or "gh issue list failed")
+            )
         try:
             items = json.loads(listed.stdout or "[]")
-        except json.JSONDecodeError:
-            return None
+        except json.JSONDecodeError as exc:
+            raise ValidationError(
+                "handoff marker lookup returned non-JSON"
+            ) from exc
+        if not isinstance(items, list):
+            raise ValidationError("handoff marker lookup returned non-list JSON")
         matches = [
             item
             for item in items
@@ -1130,9 +1153,12 @@ class GitHubCoordinationRefresher:
                 body = str(payload.get("body") or "")
                 status_match = re.search(r"(?m)^STATUS=(\S+)", body)
                 status = status_match.group(1) if status_match else "UNKNOWN"
+                gate_match = re.search(r"(?m)^GATE=(\S+)", body)
+                gate = gate_match.group(1).strip() if gate_match else ""
                 issue_state = str(payload.get("state") or "").upper()
                 evidence["work_packet"] = {
                     "status": status,
+                    "gate": gate or "ABSENT",
                     "state": payload.get("state"),
                     "number": payload.get("number"),
                     "updated_at": payload.get("updatedAt"),
@@ -1141,6 +1167,10 @@ class GitHubCoordinationRefresher:
                     reasons.append("work_packet_issue_not_open")
                 if status not in SUPPORTED_WORK_PACKET_STATUSES:
                     reasons.append(f"work_packet_{status.lower()}")
+                if not gate:
+                    reasons.append("work_packet_gate_missing")
+                elif gate.upper() not in WORK_PACKET_PASS_GATES:
+                    reasons.append(f"work_packet_gate_{gate.lower()}")
         else:
             evidence["work_packet"] = {"status": "ABSENT"}
             reasons.append("work_packet_undiscovered")
@@ -1524,20 +1554,23 @@ def discover_checkpoint_issue(
         and CHECKPOINT_WORKSTREAM_RE.search(str(item.get("body") or ""))
         and re.search(r"(?m)^STATUS=ACTIVE\s*$", str(item.get("body") or ""))
     ]
-    # Prefer TARGET_REPO match when present.
-    repo_matches = []
+    # TARGET_REPO is an exclusion filter. An explicit other-repo candidate is
+    # never restored. Legacy bodies without TARGET_REPO are used only when no
+    # explicit match for this repository exists.
+    explicit_matches = []
+    legacy = []
     for item in matches:
         body = str(item.get("body") or "")
         target = re.search(r"(?m)^TARGET_REPO=(\S+)\s*$", body)
         if target is None:
-            repo_matches.append(item)
+            legacy.append(item)
             continue
         try:
             if normalize_github_repository(target.group(1)) == repo:
-                repo_matches.append(item)
+                explicit_matches.append(item)
         except ValidationError:
             continue
-    matches = repo_matches or matches
+    matches = explicit_matches or legacy
     if len(matches) == 1:
         return int(matches[0]["number"])
     if len(matches) > 1:

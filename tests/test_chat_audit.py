@@ -2721,7 +2721,13 @@ class ChatAuditTests(unittest.TestCase):
         )
         calls = {"inline": 0, "conversation": 0, "reviews": 0}
 
-        def mk(wp_status: str, *, include_pr: bool = True, inline_p1: bool = False):
+        def mk(
+            wp_status: str,
+            *,
+            include_pr: bool = True,
+            inline_p1: bool = False,
+            gate: str | None = "READY",
+        ):
             def runner(argv: list[str], cwd: str):
                 joined = " ".join(argv)
                 if argv[:3] == ["gh", "issue", "view"]:
@@ -2729,6 +2735,8 @@ class ChatAuditTests(unittest.TestCase):
                         f"WORKSTREAM=continuous-chat-audit-supervisor-poc\n"
                         f"STATUS={wp_status}\nTARGET_REPO={REPO}\n"
                     )
+                    if gate:
+                        body += f"GATE={gate}\n"
                     return subprocess.CompletedProcess(
                         argv,
                         0,
@@ -2909,6 +2917,54 @@ class ChatAuditTests(unittest.TestCase):
         self.assertEqual(clean2["status"], "OK")
         self.assertEqual(clean2["outcome"], "PASSED")
         self.assertNotIn("actionable_review", clean2["reasons"])
+
+        def gated(gate: str | None):
+            def runner(argv: list[str], cwd: str):
+                base = mk("ACTIVE", inline_p1=False, gate=gate)(argv, cwd)
+                if "--paginate" in argv and argv[-1].endswith("/issues/21/comments"):
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            [
+                                [
+                                    {
+                                        "body": (
+                                            "@codex review this exact HEAD for Issue #20 "
+                                            "REWORK: P1/P2. Do not merge."
+                                        ),
+                                        "user": {"login": "RickLee-kr"},
+                                    }
+                                ]
+                            ]
+                        ),
+                        stderr="",
+                    )
+                return base
+
+            return runner
+
+        rework_gate = GitHubCoordinationRefresher(
+            repository=REPO,
+            work_packet_issue=20,
+            command_runner=gated("CHATGPT_EXACT_HEAD_REWORK"),
+        ).refresh(packet)
+        self.assertEqual(rework_gate["work_packet"]["status"], "ACTIVE")
+        self.assertEqual(rework_gate["status"], "HUMAN_REQUIRED")
+        self.assertNotEqual(rework_gate["outcome"], "PASSED")
+        self.assertTrue(
+            any(
+                str(item).startswith("work_packet_gate_")
+                for item in rework_gate["reasons"]
+            )
+        )
+        missing_gate = GitHubCoordinationRefresher(
+            repository=REPO,
+            work_packet_issue=20,
+            command_runner=gated(None),
+        ).refresh(packet)
+        self.assertIn("work_packet_gate_missing", missing_gate["reasons"])
+        self.assertNotEqual(missing_gate["outcome"], "PASSED")
 
     def test_60_finalized_handoff_claim_requires_issue_lifecycle(self):
         import base64
@@ -3775,6 +3831,190 @@ class ChatAuditTests(unittest.TestCase):
         self.assertEqual(reset_sha, "remote-claim-sha")
         self.assertEqual(claim_state["puts"], 2)
         self.assertEqual(claim_state["expected_shas"][1], "real-claim-sha")
+
+    def test_74_marker_lookup_failure_does_not_create_issue(self):
+        import subprocess
+
+        from atlas.chat_audit import AuditControlPacket, AuditFinding, make_run_key
+        from atlas.chat_audit_github import GitHubAIWorkHandoff
+
+        packet = self._blank_packet()
+        packet.idempotency_run_key = make_run_key(REPO, BRANCH, HEAD_A)
+        finding = AuditFinding(
+            finding_id="safe-id",
+            unit="changed_code",
+            summary="lookup",
+            severity="P2",
+        )
+        creates: list[int] = []
+
+        def runner(argv: list[str], cwd: str, *, list_mode: str = "rate"):
+            joined = " ".join(argv)
+            if argv[:2] == ["gh", "api"] and "--method" not in argv:
+                if "/contents/" in joined:
+                    return subprocess.CompletedProcess(
+                        argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                    )
+                if "/git/ref/heads/" in joined:
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps({"object": {"sha": "1" * 40}}),
+                        stderr="",
+                    )
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"default_branch": "main"}), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "list"]:
+                if list_mode == "rate":
+                    return subprocess.CompletedProcess(
+                        argv, 1, stdout="", stderr="rate limit exceeded"
+                    )
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout="not-json", stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "create"]:
+                creates.append(901)
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=f"https://github.com/{REPO}/issues/901\n",
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="unexpected"
+            )
+
+        handoff = GitHubAIWorkHandoff(
+            repository=REPO,
+            command_runner=lambda argv, cwd: runner(argv, cwd, list_mode="rate"),
+        )
+        with self.assertRaises(ValidationError) as raised:
+            handoff.upsert_implementation_packet(packet, finding)
+        self.assertIn("unavailable", str(raised.exception))
+        self.assertEqual(creates, [])
+
+        handoff_bad = GitHubAIWorkHandoff(
+            repository=REPO,
+            command_runner=lambda argv, cwd: runner(argv, cwd, list_mode="json"),
+        )
+        with self.assertRaises(ValidationError) as raised_json:
+            handoff_bad.upsert_implementation_packet(packet, finding)
+        self.assertIn("non-JSON", str(raised_json.exception))
+        self.assertEqual(creates, [])
+
+    def test_75_substring_title_is_not_handoff_identity(self):
+        import subprocess
+
+        from atlas.chat_audit import AuditFinding
+        from atlas.chat_audit_github import GitHubAIWorkHandoff
+
+        packet = self._blank_packet()
+        finding = AuditFinding(
+            finding_id="stable-id",
+            unit="changed_code",
+            summary="identity",
+            severity="P1",
+        )
+        marker = "<!-- atlas-chat-audit-finding-id:stable-id -->"
+        edits: list[int] = []
+
+        def runner(argv: list[str], cwd: str):
+            if argv[:3] == ["gh", "issue", "view"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "number": 77,
+                            "title": "Unrelated stable-id migration note",
+                            "state": "OPEN",
+                            "body": "ordinary unrelated issue body",
+                            "url": f"https://github.com/{REPO}/issues/77",
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                edits.append(77)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="unexpected"
+            )
+
+        handoff = GitHubAIWorkHandoff(repository=REPO, command_runner=runner)
+        with self.assertRaises(ValidationError):
+            handoff._update_existing_claim(
+                claim={
+                    "issue_number": 77,
+                    "finding_id": "stable-id",
+                    "run_key": "old",
+                    "head": HEAD_B,
+                },
+                packet=packet,
+                safe=finding,
+                title="[AI Work] Audit finding: stable-id",
+                body=f"{marker}\nTARGET_REPO={REPO}\n",
+                marker=marker,
+            )
+        self.assertEqual(edits, [])
+
+    def test_76_discover_excludes_explicit_wrong_target_repo(self):
+        import subprocess
+
+        from atlas.chat_audit_github import discover_checkpoint_issue
+
+        def runner_for(items: list[dict[str, Any]]):
+            def runner(argv: list[str], cwd: str):
+                if argv[:2] == ["gh", "api"] and "/contents/" in " ".join(argv):
+                    return subprocess.CompletedProcess(
+                        argv, 1, stdout="", stderr="Not Found (HTTP 404)"
+                    )
+                if argv[:3] == ["gh", "issue", "list"]:
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout=json.dumps(items), stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="unexpected"
+                )
+
+            return runner
+
+        workstream = (
+            "WORKSTREAM=continuous-chat-audit-supervisor-poc\nSTATUS=ACTIVE\n"
+        )
+        wrong = {
+            "number": 99,
+            "title": "[AI Work] other repo",
+            "body": workstream + "TARGET_REPO=other-owner/other-repo\n",
+        }
+        legacy = {
+            "number": 7,
+            "title": "[AI Work] legacy",
+            "body": workstream,
+        }
+        matching = {
+            "number": 20,
+            "title": "[AI Work] this repo",
+            "body": workstream + f"TARGET_REPO={REPO}\n",
+        }
+        with self.assertRaises(ValidationError):
+            discover_checkpoint_issue(
+                repository=REPO, command_runner=runner_for([wrong])
+            )
+        self.assertEqual(
+            discover_checkpoint_issue(
+                repository=REPO,
+                command_runner=runner_for([wrong, legacy, matching]),
+            ),
+            20,
+        )
+        self.assertEqual(
+            discover_checkpoint_issue(
+                repository=REPO, command_runner=runner_for([wrong, legacy])
+            ),
+            7,
+        )
 
 
 if __name__ == "__main__":
