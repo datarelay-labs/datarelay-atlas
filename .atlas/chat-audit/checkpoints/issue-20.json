@@ -6,11 +6,11 @@
     "security_impact",
     "docs_spec_drift"
   ],
-  "audit_status": "IDLE",
-  "canonical_revision": 7,
+  "audit_status": "IN_SLICE",
+  "canonical_revision": 8,
   "completed_units": {},
   "current_target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
-  "current_unit": null,
+  "current_unit": "affected_tests_ci",
   "current_unit_index": 2,
   "fair_start_index": 2,
   "idempotency_run_key": "dc94f1af7853bb217878e1ee",
@@ -32,7 +32,7 @@
   },
   "last_coordination_refresh": null,
   "mode": "delta",
-  "next_action": "run_next_audit_slice",
+  "next_action": "complete_or_resume_unit:affected_tests_ci",
   "no_change_runs": 0,
   "open_findings": [],
   "schema_version": 1,
@@ -42,7 +42,15 @@
     "rollover_count": 0,
     "state": "ACTIVE"
   },
-  "slice_claim": null,
+  "slice_claim": {
+    "claim_id": "bbbf9471-02c3-4caf-9b4e-d9c58e57aadc",
+    "claimed_at": 1790165958.5437737,
+    "lease_seconds": 900.0,
+    "run_key": "dc94f1af7853bb217878e1ee",
+    "state": "executing",
+    "target_sha": "6b17b957e45c87012e5089f5dbe16ef671b7af3f",
+    "unit": "affected_tests_ci"
+  },
   "target_branch": "feature/continuous-chat-audit-supervisor-poc",
   "target_repository": "datarelay-labs/datarelay-atlas"
 }
