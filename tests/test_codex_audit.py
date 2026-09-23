@@ -1069,6 +1069,115 @@ class CodexAuditProviderTests(unittest.TestCase):
         )
         self.assertEqual(err["status"], "ERROR")
 
+    def test_remapped_historical_inline_threads_do_not_exhaust_current_budget(self):
+        """Old threads remapped onto the current diff must not force INCOMPLETE.
+
+        GitHub sets commit_id to the current HEAD while original_commit_id
+        stays the creation SHA. A resolved historical thread is not a current
+        finding. An unresolved thread created on, or still open against, the
+        current HEAD still remains in the bounded set.
+        """
+        from atlas.codex_audit import _bounded_review_items
+
+        old = "cccccccccccccccccccccccccccccccccccccccc"
+        historical: list[dict] = []
+        for index in range(40):
+            root_id = 1000 + index
+            historical.append(
+                {
+                    "id": root_id,
+                    "user": {"login": "reviewer"},
+                    "body": "P1 historical finding " + ("y" * 400),
+                    "commit_id": HEAD,
+                    "original_commit_id": old,
+                    "path": "atlas/chat_audit.py",
+                    "line": index + 1,
+                }
+            )
+            historical.append(
+                {
+                    "id": 2000 + index,
+                    "in_reply_to_id": root_id,
+                    "user": {"login": "author"},
+                    "body": "fixed on a later commit",
+                    "commit_id": HEAD,
+                    "original_commit_id": old,
+                }
+            )
+        _raw, truncated = _bounded_review_items(historical, max_chars=800)
+        self.assertTrue(truncated)
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [
+                    [
+                        {
+                            "id": 1,
+                            "user": {"login": "reviewer"},
+                            "state": "COMMENTED",
+                            "body": "exact-head review, no finding",
+                            "commit_id": HEAD,
+                            "submitted_at": "2026-09-23T05:00:00Z",
+                        }
+                    ]
+                ]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [historical]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        result = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner,
+            max_chars=2400,
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(result["status"], "OK")
+        self.assertNotIn("truncated_sections", result)
+        self.assertEqual(result["inline_comments"], [])
+        self.assertEqual(len(result["reviews"]), 1)
+
+        unresolved = {
+            "id": 9,
+            "user": {"login": "reviewer"},
+            "body": "P1 still open on this head",
+            "commit_id": HEAD,
+            "original_commit_id": old,
+            "path": "atlas/chat_audit.py",
+            "line": 3,
+        }
+
+        def runner_open(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [[]]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [[unresolved, *historical]]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        open_result = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner_open,
+            max_chars=2400,
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(open_result["status"], "OK")
+        self.assertEqual(
+            [item["id"] for item in open_result["inline_comments"]], [9]
+        )
+
     def test_bundle_includes_pr_reviews_when_ci_finds_pr(self):
         def fake_git(argv: list[str], cwd: str) -> str:
             mapping = {

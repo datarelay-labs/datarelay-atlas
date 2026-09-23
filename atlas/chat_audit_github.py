@@ -54,6 +54,7 @@ CONTENTS_INLINE_MAX_BYTES = 1_000_000
 CHECKPOINT_MAX_BYTES = CONTENTS_INLINE_MAX_BYTES - 1
 # Exact marker search page. A full page is not authoritative absence.
 HANDOFF_MARKER_SEARCH_LIMIT = 100
+CHECKPOINT_DISCOVERY_SEARCH_LIMIT = 100
 
 
 def checkpoint_json_text(packet: AuditControlPacket) -> str:
@@ -1502,11 +1503,17 @@ def discover_checkpoint_issue(
             ]
         )
         if viewed.returncode != 0:
-            return False
+            detail = (viewed.stderr or viewed.stdout or "").strip()
+            raise ValidationError(
+                f"checkpoint issue #{number} verification unavailable: "
+                + (detail[:400] or "gh issue view failed")
+            )
         try:
             payload = json.loads(viewed.stdout or "{}")
-        except json.JSONDecodeError:
-            return False
+        except json.JSONDecodeError as exc:
+            raise ValidationError(
+                f"checkpoint issue #{number} verification returned non-JSON"
+            ) from exc
         if str(payload.get("state") or "").upper() != "OPEN":
             return False
         body = str(payload.get("body") or "")
@@ -1533,11 +1540,24 @@ def discover_checkpoint_issue(
             f"repos/{repo}/contents/{ACTIVE_CHECKPOINT_POINTER_PATH}?ref={branch}",
         ]
     )
-    if pointer.returncode == 0:
-        payload = json.loads(pointer.stdout)
-        encoded = str(payload.get("content") or "")
-        raw = base64.b64decode(encoded, validate=False).decode("utf-8")
-        data = json.loads(raw)
+    if pointer.returncode != 0:
+        detail = f"{pointer.stderr or ''}\n{pointer.stdout or ''}"
+        absent = "404" in detail or "Not Found" in detail
+        if not absent:
+            raise ValidationError(
+                "ACTIVE_CHECKPOINT_ISSUE pointer unavailable: "
+                + (detail.strip()[:400] or "contents GET failed")
+            )
+    else:
+        try:
+            payload = json.loads(pointer.stdout or "")
+            encoded = str(payload.get("content") or "")
+            raw = base64.b64decode(encoded, validate=False).decode("utf-8")
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            raise ValidationError(
+                "ACTIVE_CHECKPOINT_ISSUE pointer is malformed"
+            ) from exc
         if not isinstance(data, dict):
             raise ValidationError("ACTIVE_CHECKPOINT_ISSUE pointer must be an object")
         workstream = str(data.get("workstream") or "").strip()
@@ -1557,7 +1577,8 @@ def discover_checkpoint_issue(
                 return number
             # Pointer exists but referenced Issue is stale/closed/wrong.
 
-    # 2) Open [AI Work] issue with matching WORKSTREAM marker.
+    # 2) Authoritative absence only: server-side workstream search. A full
+    # result page is not proof the Issue is missing.
     listed = _run(
         [
             "gh",
@@ -1568,19 +1589,32 @@ def discover_checkpoint_issue(
             "--state",
             "open",
             "--search",
-            'in:title "[AI Work]"',
+            f'"WORKSTREAM={CHECKPOINT_WORKSTREAM}" in:body',
             "--json",
             "number,title,body",
             "--limit",
-            "50",
+            str(CHECKPOINT_DISCOVERY_SEARCH_LIMIT),
         ]
     )
     if listed.returncode != 0:
         detail = (listed.stderr or listed.stdout or "").strip()
         raise ValidationError(
-            detail[:500] or "failed to discover chat-audit checkpoint issue"
+            "checkpoint discovery lookup unavailable: "
+            + (detail[:400] or "gh issue list failed")
         )
-    items = json.loads(listed.stdout or "[]")
+    try:
+        items = json.loads(listed.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise ValidationError(
+            "checkpoint discovery lookup returned non-JSON"
+        ) from exc
+    if not isinstance(items, list):
+        raise ValidationError("checkpoint discovery lookup returned non-list JSON")
+    if len(items) >= CHECKPOINT_DISCOVERY_SEARCH_LIMIT:
+        raise ValidationError(
+            "checkpoint discovery lookup truncated; pass --checkpoint-issue "
+            "explicitly"
+        )
     matches = [
         item
         for item in items

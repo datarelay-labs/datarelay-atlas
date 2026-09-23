@@ -714,6 +714,70 @@ def _is_control_request_comment(entry: dict) -> bool:
     return False
 
 
+def _inline_body_actionable(text: str) -> bool:
+    if re.search(r"\bP[012]\b", text or "") or "REWORK" in (text or "").upper():
+        if re.search(r"(?i)\bRESOLUTION\s*=\s*RESOLVED\b", text or ""):
+            return False
+        if re.search(r"(?i)\bresolved:\s*true\b", text or ""):
+            return False
+        return True
+    return False
+
+
+def _historical_inline_thread_resolved(
+    entry: dict, replies: dict[object, list[dict]]
+) -> bool:
+    """A remapped old thread with a non-actionable reply is not a current finding."""
+    parent = entry.get("in_reply_to_id")
+    root_id = parent if parent is not None else entry.get("id")
+    thread_replies = replies.get(root_id, [])
+    if any(_inline_body_actionable(str(item.get("body") or "")) for item in thread_replies):
+        return False
+    if thread_replies:
+        return True
+    return not _inline_body_actionable(str(entry.get("body") or ""))
+
+
+def _filter_inline_for_current_head(
+    payload: list[object], target_sha: str
+) -> list[object]:
+    """Select current-HEAD inline threads before the evidence budget.
+
+    GitHub may remap ``commit_id`` onto the current diff while
+    ``original_commit_id`` stays the creation commit. Creation provenance
+    wins. A historical thread still on the current diff is kept only when it
+    has no resolving reply, so unresolved findings still block PASS.
+    """
+    replies: dict[object, list[dict]] = {}
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        parent = entry.get("in_reply_to_id")
+        if parent is not None:
+            replies.setdefault(parent, []).append(entry)
+    kept: list[object] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        original = entry.get("original_commit_id")
+        mapped = entry.get("commit_id")
+        provenance = original or mapped
+        if provenance is None:
+            kept.append(entry)
+            continue
+        if _commit_matches_target(provenance, target_sha):
+            kept.append(entry)
+            continue
+        remapped = (
+            original is not None
+            and mapped is not None
+            and _commit_matches_target(mapped, target_sha)
+        )
+        if remapped and not _historical_inline_thread_resolved(entry, replies):
+            kept.append(entry)
+    return kept
+
+
 def _filter_review_items_for_current_head(
     payload: list[object],
     *,
@@ -722,6 +786,8 @@ def _filter_review_items_for_current_head(
     exclude_control_comments: bool,
 ) -> list[object]:
     """Keep only current-HEAD / non-control items before budget bounding."""
+    if label == "inline_comments" and target_sha:
+        return _filter_inline_for_current_head(payload, target_sha)
     kept: list[object] = []
     for entry in payload:
         if not isinstance(entry, dict):
@@ -732,11 +798,11 @@ def _filter_review_items_for_current_head(
             kept.append(entry)
             continue
         if target_sha:
-            commit = entry.get("commit_id") or entry.get("original_commit_id")
+            commit = entry.get("original_commit_id") or entry.get("commit_id")
             # Drop historical commit-addressable items for other HEADs.
             if commit is not None and not _commit_matches_target(commit, target_sha):
                 continue
-            # Reviews/inline without commit provenance are kept for fail-closed
+            # Reviews without commit provenance are kept for fail-closed
             # inspection when they carry finding keywords (handled by caller).
         kept.append(entry)
     return kept

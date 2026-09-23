@@ -12,19 +12,29 @@ import re
 from atlas.provenance import ValidationError
 
 def _credential_name_pattern() -> str:
-    """Shared credential-name alternation for assignment detection/redaction."""
-    return (
-        r"(?:"
+    """Shared credential-name alternation for assignment detection/redaction.
+
+    The generic form is a bounded identifier that ends in a known suffix.
+    An unbounded lazy prefix retries that suffix at every character and makes
+    ordinary long text super-linear.
+    """
+    specific = (
         r"OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|"
         r"AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|"
         r"AZURE_CLIENT_SECRET|NPM_TOKEN|"
         # Standalone names first so bare `password` / `secret` / `token` /
         # camelCase `apiKey` and hyphenated `api-key` / `X-API-Key` match.
         r"PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY_ID|ACCESS_KEY|apiKey|"
-        r"X-API-Key|API-Key|"
-        r"[A-Za-z_][A-Za-z0-9_-]*?(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|ACCESS_KEY_ID|ApiKey|API-Key)"
-        r")"
+        r"X-API-Key|API-Key"
     )
+    generic = (
+        r"(?<![A-Za-z0-9_-])"
+        r"[A-Za-z_]"
+        r"[A-Za-z0-9_-]{0,80}?"
+        r"(?:ACCESS_KEY_ID|API_KEY|ACCESS_KEY|PASSWORD|SECRET|TOKEN|ApiKey|API-Key)"
+        r"(?![A-Za-z0-9_-])"
+    )
+    return rf"(?:(?:{specific})|(?:{generic}))"
 
 
 def _normalize_json_quote_escapes(text: str) -> str:
@@ -290,8 +300,18 @@ def contains_unsafe_secret(text: str) -> bool:
 
 
 def sanitize_durable_text(text: str, *, max_chars: int = 4000) -> str:
-    """Redact secrets for durable persistence; fail closed if unsafe residue remains."""
-    cleaned = redact_sensitive_audit_text(text or "", max_chars=max_chars)
+    """Redact secrets for durable persistence; fail closed if unsafe residue remains.
+
+    Over-limit raw text is rejected before scanning so a cut-off assignment
+    cannot be persisted as an ordinary truncated field.
+    """
+    raw = text or ""
+    if len(raw) > max_chars:
+        raise ValidationError(
+            f"durable text exceeds {max_chars} characters; "
+            "refusing to persist a truncated field"
+        )
+    cleaned = redact_sensitive_audit_text(raw, max_chars=max_chars)
     if contains_unsafe_secret(cleaned):
         raise ValidationError(
             "refusing to persist text that still looks like secrets after redaction"

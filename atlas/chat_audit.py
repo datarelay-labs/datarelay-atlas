@@ -795,7 +795,9 @@ _COORDINATION_TOP_KEYS = frozenset(
     }
 )
 _COORDINATION_NESTED_KEYS: dict[str, frozenset[str]] = {
-    "work_packet": frozenset({"status", "state", "number", "updated_at"}),
+    "work_packet": frozenset(
+        {"status", "gate", "state", "number", "updated_at"}
+    ),
     "pr": frozenset({"status", "number", "state", "headRefOid", "url", "candidates"}),
     "ci": frozenset({"status", "exit_code"}),
     "reviews": frozenset({"status", "actionable", "count"}),

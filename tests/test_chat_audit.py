@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
@@ -4204,6 +4205,316 @@ class ChatAuditTests(unittest.TestCase):
         with self.assertRaises(ValidationError) as missing:
             bare.load()
         self.assertIn("missing content", str(missing.exception))
+
+    def test_79_work_packet_gate_persists_through_same_head_coordination(self):
+        import subprocess
+
+        from atlas.chat_audit_github import GitHubCoordinationRefresher
+        from atlas.chat_audit import sanitize_coordination_snapshot
+
+        old = "cccccccccccccccccccccccccccccccccccccccc"
+        historical = []
+        for index in range(40):
+            root_id = 1000 + index
+            historical.append(
+                {
+                    "id": root_id,
+                    "user": {"login": "reviewer"},
+                    "body": "P1 historical finding " + ("y" * 400),
+                    "commit_id": HEAD_A,
+                    "original_commit_id": old,
+                }
+            )
+            historical.append(
+                {
+                    "id": 2000 + index,
+                    "in_reply_to_id": root_id,
+                    "user": {"login": "author"},
+                    "body": "fixed on a later commit",
+                    "commit_id": HEAD_A,
+                    "original_commit_id": old,
+                }
+            )
+
+        def runner_for(gate: str):
+            def runner(argv: list[str], cwd: str):
+                if argv[:3] == ["gh", "issue", "view"]:
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            {
+                                "number": 20,
+                                "title": "wp",
+                                "state": "OPEN",
+                                "body": (
+                                    "WORKSTREAM=continuous-chat-audit-supervisor-poc\n"
+                                    f"STATUS=ACTIVE\nTARGET_REPO={REPO}\n"
+                                    f"GATE={gate}\n"
+                                ),
+                                "updatedAt": "t",
+                            }
+                        ),
+                        stderr="",
+                    )
+                if argv[:3] == ["gh", "pr", "list"]:
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(
+                            [
+                                {
+                                    "number": 21,
+                                    "title": "p",
+                                    "state": "OPEN",
+                                    "headRefOid": HEAD_A,
+                                    "url": "u",
+                                }
+                            ]
+                        ),
+                        stderr="",
+                    )
+                if argv[:3] == ["gh", "pr", "checks"]:
+                    out = (
+                        "adoption-compliance / compliance\tpass\t1s\t0\t\n"
+                        "enforcement-reconcile / reconcile\tpass\t1s\t0\t\n"
+                        "affected-tests / affected\tpass\t1s\t0\t\n"
+                    )
+                    return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+                if "--paginate" in argv and "--slurp" in argv:
+                    path = argv[-1]
+                    if path.endswith("/reviews"):
+                        payload = [
+                            [
+                                {
+                                    "body": "exact-head review, no finding",
+                                    "state": "COMMENTED",
+                                    "commit_id": HEAD_A,
+                                }
+                            ]
+                        ]
+                    elif path.endswith("/pulls/21/comments"):
+                        payload = [historical]
+                    else:
+                        payload = [
+                            [
+                                {
+                                    "body": (
+                                        "@codex review this exact HEAD. Do not merge."
+                                    ),
+                                    "user": {"login": "RickLee-kr"},
+                                }
+                            ]
+                        ]
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout=json.dumps(payload), stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="unexpected"
+                )
+
+            return runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = self._ctl(tmp)
+            ctl.initialize(repository=REPO, branch=BRANCH, head=HEAD_A)
+            while ctl.run_slice()["action"] != "queue_complete":
+                pass
+            ctl.coordination = GitHubCoordinationRefresher(
+                repository=REPO,
+                work_packet_issue=20,
+                command_runner=runner_for("CHATGPT_EXACT_HEAD_REWORK"),
+            )
+            blocked = ctl.run_slice()
+            self.assertEqual(blocked["action"], "cheap_no_change_rework")
+            self.assertEqual(blocked["outcome"], "HUMAN_REQUIRED")
+            self.assertNotIn("reviews_incomplete", blocked["coordination"]["reasons"])
+            self.assertEqual(
+                blocked["coordination"]["work_packet"]["gate"],
+                "CHATGPT_EXACT_HEAD_REWORK",
+            )
+            self.assertEqual(blocked["coordination"]["reviews"]["status"], "OK")
+            stored = ctl.store.load()
+            assert stored is not None
+            assert stored.last_coordination_refresh is not None
+            self.assertEqual(
+                stored.last_coordination_refresh["work_packet"]["gate"],
+                "CHATGPT_EXACT_HEAD_REWORK",
+            )
+            poisoned = copy.deepcopy(stored.last_coordination_refresh)
+            poisoned["work_packet"]["extra"] = "nope"
+            with self.assertRaises(ValidationError) as rejected:
+                sanitize_coordination_snapshot(poisoned)
+            self.assertIn("unsupported fields: extra", str(rejected.exception))
+
+            ctl.coordination = GitHubCoordinationRefresher(
+                repository=REPO,
+                work_packet_issue=20,
+                command_runner=runner_for("READY"),
+            )
+            passed = ctl.run_slice()
+            self.assertEqual(passed["action"], "cheap_no_change")
+            self.assertEqual(passed["outcome"], "PASSED")
+            self.assertEqual(passed["coordination"]["reviews"]["status"], "OK")
+            self.assertFalse(passed["coordination"]["reviews"]["actionable"])
+            reloaded = ctl.store.load()
+            assert reloaded is not None
+            assert reloaded.last_coordination_refresh is not None
+            self.assertEqual(
+                reloaded.last_coordination_refresh["work_packet"]["gate"], "READY"
+            )
+
+    def test_80_checkpoint_pointer_errors_do_not_select_fallback(self):
+        import base64
+        import subprocess
+
+        from atlas.chat_audit_github import (
+            CHECKPOINT_DISCOVERY_SEARCH_LIMIT,
+            discover_checkpoint_issue,
+        )
+
+        def encoded_pointer(number: int) -> str:
+            raw = json.dumps(
+                {
+                    "workstream": "continuous-chat-audit-supervisor-poc",
+                    "issue_number": number,
+                }
+            ).encode("utf-8")
+            return json.dumps(
+                {"content": base64.b64encode(raw).decode("ascii"), "encoding": "base64"}
+            )
+
+        fallback = [
+            {
+                "number": 99,
+                "title": "[AI Work] fallback",
+                "body": (
+                    "WORKSTREAM=continuous-chat-audit-supervisor-poc\n"
+                    "STATUS=ACTIVE\n"
+                    f"TARGET_REPO={REPO}\n"
+                ),
+            }
+        ]
+
+        def runner_for(
+            *,
+            pointer_code: int,
+            pointer_stdout: str = "",
+            pointer_stderr: str = "",
+            view_code: int = 0,
+            view_stdout: str = "",
+            list_items: list[dict[str, Any]] | None = None,
+        ):
+            calls = {"list": 0}
+
+            def runner(argv: list[str], cwd: str):
+                if argv[:2] == ["gh", "api"] and "/contents/" in " ".join(argv):
+                    return subprocess.CompletedProcess(
+                        argv,
+                        pointer_code,
+                        stdout=pointer_stdout,
+                        stderr=pointer_stderr,
+                    )
+                if argv[:3] == ["gh", "issue", "view"]:
+                    return subprocess.CompletedProcess(
+                        argv, view_code, stdout=view_stdout, stderr="rate limit exceeded"
+                    )
+                if argv[:3] == ["gh", "issue", "list"]:
+                    calls["list"] += 1
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        stdout=json.dumps(list_items if list_items is not None else fallback),
+                        stderr="",
+                    )
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="unexpected")
+
+            return runner, calls
+
+        missing, missing_calls = runner_for(
+            pointer_code=1, pointer_stderr="Not Found (HTTP 404)"
+        )
+        self.assertEqual(
+            discover_checkpoint_issue(repository=REPO, command_runner=missing),
+            99,
+        )
+        self.assertEqual(missing_calls["list"], 1)
+
+        limited, limited_calls = runner_for(
+            pointer_code=1, pointer_stderr="rate limit exceeded"
+        )
+        with self.assertRaises(ValidationError) as rate:
+            discover_checkpoint_issue(repository=REPO, command_runner=limited)
+        self.assertIn("pointer unavailable", str(rate.exception))
+        self.assertEqual(limited_calls["list"], 0)
+
+        malformed, malformed_calls = runner_for(
+            pointer_code=0, pointer_stdout="not-json"
+        )
+        with self.assertRaises(ValidationError) as bad:
+            discover_checkpoint_issue(repository=REPO, command_runner=malformed)
+        self.assertIn("malformed", str(bad.exception))
+        self.assertEqual(malformed_calls["list"], 0)
+
+        unverified, unverified_calls = runner_for(
+            pointer_code=0,
+            pointer_stdout=encoded_pointer(20),
+            view_code=1,
+        )
+        with self.assertRaises(ValidationError) as view_err:
+            discover_checkpoint_issue(repository=REPO, command_runner=unverified)
+        self.assertIn("verification unavailable", str(view_err.exception))
+        self.assertEqual(unverified_calls["list"], 0)
+
+        full_page = [
+            {
+                "number": index,
+                "title": "[AI Work] page",
+                "body": "WORKSTREAM=continuous-chat-audit-supervisor-poc\nSTATUS=ACTIVE\n",
+            }
+            for index in range(1, CHECKPOINT_DISCOVERY_SEARCH_LIMIT + 1)
+        ]
+        truncated, _calls = runner_for(
+            pointer_code=1,
+            pointer_stderr="Not Found (HTTP 404)",
+            list_items=full_page,
+        )
+        with self.assertRaises(ValidationError) as page:
+            discover_checkpoint_issue(repository=REPO, command_runner=truncated)
+        self.assertIn("truncated", str(page.exception))
+
+    def test_81_durable_sanitizer_stays_cheap_on_ordinary_text(self):
+        import time
+
+        from atlas.secrets import contains_unsafe_secret, sanitize_durable_text
+
+        ceiling_s = 0.5
+        for size in (1000, 4000):
+            raw = "x" * size
+            started = time.perf_counter()
+            cleaned = sanitize_durable_text(raw)
+            elapsed = time.perf_counter() - started
+            self.assertEqual(cleaned, raw)
+            self.assertLess(elapsed, ceiling_s)
+        adversarial = ("abc_" * 1000)[:4000]
+        near_miss = ("key=" * 800)[:4000]
+        for raw in (adversarial, near_miss):
+            started = time.perf_counter()
+            cleaned = sanitize_durable_text(raw)
+            elapsed = time.perf_counter() - started
+            self.assertEqual(cleaned, raw)
+            self.assertFalse(contains_unsafe_secret(cleaned))
+            self.assertLess(elapsed, ceiling_s)
+        assigned = "POSTGRES_PASSWORD=hunter2-literal"
+        redacted = sanitize_durable_text(assigned)
+        self.assertIn("<redacted>", redacted)
+        self.assertNotIn("hunter2", redacted)
+        self.assertFalse(contains_unsafe_secret(redacted))
+        over = ("n" * 3990) + "PASSWORD=hunter2-live-value"
+        self.assertGreater(len(over), 4000)
+        with self.assertRaises(ValidationError) as rejected:
+            sanitize_durable_text(over)
+        self.assertIn("exceeds 4000", str(rejected.exception))
 
 
 if __name__ == "__main__":
