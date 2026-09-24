@@ -85,7 +85,15 @@ Search one registered project's successful projections. The keyword index is reb
 PYTHONPATH=. python3 -m atlas search datarelay-atlas "product charter"
 ```
 
-No matches print `[]` and exit 0. Missing projection bytes or malformed provenance exit non-zero.
+Optional semantic ranking uses a self-hosted embeddings endpoint compatible with Hugging Face Text Embeddings Inference `POST /v1/embeddings`. Omit the endpoint to keep keyword-only search. The endpoint and model are runtime flags; do not commit them.
+
+```bash
+PYTHONPATH=. python3 -m atlas search datarelay-atlas "product charter" \
+  --embedding-endpoint http://127.0.0.1:8080 \
+  --embedding-model bge-small-en-v1.5
+```
+
+No matches print `[]` and exit 0. Missing projection bytes, malformed provenance, or embedding transport/payload failures exit non-zero.
 
 ## Autonomous Work Controller PoC
 

@@ -21,6 +21,14 @@ from atlas.provenance import (
 )
 from atlas.retrieval import IndexedDocument, KeywordIndex, Retriever, normalize_path
 from atlas.security import require_project_scope
+from atlas.semantic_retrieval import (
+    EmbeddingClient,
+    EmbeddingConfig,
+    EmbeddingSemanticProvider,
+    HttpEmbeddingClient,
+    SemanticDocument,
+    validate_embedding_config,
+)
 
 INDEXABLE_SYNC_STATES = frozenset({"success", "unchanged", "ok"})
 _REQUIRED_PROVENANCE = (
@@ -33,12 +41,27 @@ _REQUIRED_PROVENANCE = (
 )
 
 
-def build_keyword_retriever(store: ProjectionStore, project_id: str) -> Retriever:
-    """Index one project's successful projections with metadata provenance."""
+def build_keyword_retriever(
+    store: ProjectionStore,
+    project_id: str,
+    *,
+    embedding: EmbeddingConfig | None = None,
+    embedder: EmbeddingClient | None = None,
+) -> Retriever:
+    """Index one project's successful projections with metadata provenance.
+
+    ``embedding`` opts into in-memory semantic ranking over the same records.
+    Omit it to keep keyword-only retrieval.
+    """
     require_project_scope(project_id)
+    if embedding is not None:
+        embedding = validate_embedding_config(embedding)
+    elif embedder is not None:
+        raise ValidationError("embedding endpoint is required when semantic retrieval is configured")
     records = _load_records(store, project_id)
     index = KeywordIndex()
     provenance_by_path: dict[tuple[str, str], Provenance] = {}
+    semantic_documents: list[SemanticDocument] = []
     seen_identities: set[str] = set()
 
     for meta in records:
@@ -68,8 +91,26 @@ def build_keyword_retriever(store: ProjectionStore, project_id: str) -> Retrieve
             )
         )
         provenance_by_path[(project_id, identity)] = provenance
+        semantic_documents.append(
+            SemanticDocument(
+                project_id=project_id,
+                path=identity,
+                title=path,
+                text=text,
+            )
+        )
 
-    return Retriever(index, provenance_by_path=provenance_by_path)
+    semantic = None
+    if embedding is not None:
+        client = embedder or HttpEmbeddingClient(embedding)
+        semantic = EmbeddingSemanticProvider(
+            project_id=project_id,
+            documents=semantic_documents,
+            client=client,
+            query_prefix=embedding.query_prefix,
+            document_prefix=embedding.document_prefix,
+        )
+    return Retriever(index, semantic=semantic, provenance_by_path=provenance_by_path)
 
 
 def _load_records(store: ProjectionStore, project_id: str) -> list[dict]:
