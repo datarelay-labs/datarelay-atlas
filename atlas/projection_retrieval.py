@@ -15,6 +15,7 @@ from atlas.provenance import (
     REPO_RE,
     Provenance,
     ValidationError,
+    rendered_projection_identity,
     validate_source_path,
 )
 from atlas.retrieval import IndexedDocument, KeywordIndex, Retriever, normalize_path
@@ -54,6 +55,7 @@ def build_keyword_retriever(store: ProjectionStore, project_id: str) -> Retrieve
             label,
             meta.get("content_digest"),
         )
+        _require_rendered_identity(text, provenance, label)
         index.add(
             IndexedDocument(
                 project_id=project_id,
@@ -99,6 +101,8 @@ def _provenance_from_record(meta: dict, *, project_id: str, label: str) -> Prove
         values[field] = value
     if values["project_id"] != project_id:
         raise ValidationError(f"malformed projection provenance: {label}")
+    if meta.get("source_revision") != values["source_revision"]:
+        raise ValidationError(f"projection provenance mismatch: {label}")
     if raw.get("canonical") is not False or raw.get("derived") is not True:
         raise ValidationError(f"malformed projection provenance: {label}")
     if values["provider"] != "github" or not REPO_RE.match(values["repository"]):
@@ -151,3 +155,21 @@ def _read_projection_text(
         return raw.decode("utf-8")
     except UnicodeError as exc:
         raise ValidationError(f"projection bytes unreadable: {label}") from exc
+
+
+def _require_rendered_identity(text: str, provenance: Provenance, label: str) -> None:
+    """Returned identity must match the digest-bound rendered projection contract."""
+    try:
+        rendered = rendered_projection_identity(text)
+    except ValidationError as exc:
+        raise ValidationError(f"projection provenance mismatch: {label}") from exc
+    expected = {
+        "project_id": provenance.project_id,
+        "provider": provenance.provider,
+        "repository": provenance.repository,
+        "ref": provenance.ref,
+        "source_path": provenance.source_path,
+        "source_revision": provenance.source_revision,
+    }
+    if rendered != expected:
+        raise ValidationError(f"projection provenance mismatch: {label}")

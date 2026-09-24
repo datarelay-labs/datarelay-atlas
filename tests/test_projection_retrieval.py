@@ -218,6 +218,53 @@ class ProjectionRetrievalTests(unittest.TestCase):
                 "projection bytes digest mismatch: datarelay-atlas/charter",
             )
 
+    def test_metadata_source_revision_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = self._seed(tmp)
+            rel = svc.projection_records("datarelay-atlas")
+            charter = next(row for row in rel if row["source_id"] == "charter")
+            self.assertEqual(charter["source_revision"], "rev-charter")
+            meta_path = svc.projections.root / "projections.json"
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            entry = payload["projections"]["datarelay-atlas/charter"]
+            entry["provenance"]["source_revision"] = "forged-rev"
+            meta_path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ValidationError) as mismatch:
+                svc.search("datarelay-atlas", UNIQUE_PHRASE)
+            self.assertEqual(
+                str(mismatch.exception),
+                "projection provenance mismatch: datarelay-atlas/charter",
+            )
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            kept = stored["projections"]["datarelay-atlas/charter"]
+            self.assertEqual(kept["source_revision"], "rev-charter")
+            body = (svc.projections.root / charter["projection_path"]).read_text(encoding="utf-8")
+            self.assertIn("rev-charter", body)
+            self.assertNotIn("forged-rev", body)
+
+    def test_metadata_source_path_misattribution_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = self._seed(tmp)
+            rel = svc.projection_records("datarelay-atlas")
+            charter = next(row for row in rel if row["source_id"] == "charter")
+            meta_path = svc.projections.root / "projections.json"
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            entry = payload["projections"]["datarelay-atlas/charter"]
+            entry["provenance"]["source_path"] = "docs/forged.md"
+            meta_path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ValidationError) as mismatch:
+                svc.search("datarelay-atlas", UNIQUE_PHRASE)
+            self.assertEqual(
+                str(mismatch.exception),
+                "projection provenance mismatch: datarelay-atlas/charter",
+            )
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            kept = stored["projections"]["datarelay-atlas/charter"]
+            self.assertEqual(kept["projection_path"], charter["projection_path"])
+            body = (svc.projections.root / charter["projection_path"]).read_text(encoding="utf-8")
+            self.assertIn("docs/product/PRODUCT-CHARTER.md", body)
+            self.assertNotIn("docs/forged.md", body)
+
     def test_cli_search_returns_attributable_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._seed(tmp)
