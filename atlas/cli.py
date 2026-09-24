@@ -26,6 +26,7 @@ from atlas.chat_audit_github import (
 )
 from atlas.codex_audit import CodexAuditProvider
 from atlas.provenance import ValidationError
+from atlas.semantic_retrieval import embedding_config_from_cli
 from atlas.service import AtlasService
 from atlas.work_controller import (
     AuditOnlyCursorDispatcher,
@@ -146,7 +147,14 @@ def cmd_projections(args: argparse.Namespace) -> int:
 
 def cmd_search(args: argparse.Namespace) -> int:
     svc = _service(args)
-    hits = svc.search(args.project_id, args.query, limit=args.limit)
+    embedding = embedding_config_from_cli(
+        endpoint=args.embedding_endpoint,
+        model=args.embedding_model,
+        query_prefix=args.embedding_query_prefix,
+        document_prefix=args.embedding_document_prefix,
+        timeout_seconds=args.embedding_timeout,
+    )
+    hits = svc.search(args.project_id, args.query, limit=args.limit, embedding=embedding)
     _print_json([asdict(hit) for hit in hits])
     return 0
 
@@ -570,6 +578,32 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("project_id")
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=8)
+    search.add_argument(
+        "--embedding-endpoint",
+        default=None,
+        help="Self-hosted TEI-compatible base URL. Omit to keep keyword-only search.",
+    )
+    search.add_argument(
+        "--embedding-model",
+        default=None,
+        help="Model name sent to the embeddings endpoint.",
+    )
+    search.add_argument(
+        "--embedding-query-prefix",
+        default="",
+        help="Optional prefix applied to the query before embedding. Default empty.",
+    )
+    search.add_argument(
+        "--embedding-document-prefix",
+        default="",
+        help="Optional prefix applied to each projection before embedding. Default empty.",
+    )
+    search.add_argument(
+        "--embedding-timeout",
+        type=float,
+        default=30.0,
+        help="Embeddings HTTP timeout in seconds.",
+    )
     search.set_defaults(func=cmd_search)
 
     wc = sub.add_parser(
