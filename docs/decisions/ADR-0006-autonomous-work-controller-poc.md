@@ -15,16 +15,24 @@ Phase 1 already selected local filesystem JSON under `.atlas-data/` (ADR-0005).
 `.engineering/project.yaml` still advertised `persistent_state: false`, which
 conflicts with that durable boundary and with this controller's state file.
 
-Installed Cursor CLI `2026.09.18-9a7762b` supports persistent session create via
-`agent persist --trust <prompt>` when run under a PTY with cwd set to the
-validated worktree (confirmed by live host process evidence). The incorrect argv
+Installed Cursor CLI supports persistent session create via
+`agent persist --force --trust <prompt>` when run under a PTY with cwd set to
+the validated worktree. `--force` follows `persist` and is Run Everything, so a
+fresh unattended session does not stop at shell approval. `agent --force persist`
+is an unknown command. `--trust` still
+trusts the workspace, and the prompt remains `/work-resume`. The incorrect argv
 form `agent --workspace <path> --trust persist` does not create a prompted
-session. `agent help persist` listing only `list|attach|stop` is incomplete
-relative to `agent persist --help`, which documents `[prompt...]`.
-Non-interactive `agent -p` is not an acceptable silent substitute for
-persistent/observable rework sessions. Built-in Cursor `/resume` is not the
-Engineering System resume workflow; the canonical slash command is
-`/work-resume` (`.cursor/commands/work-resume.md`).
+session. Non-interactive `agent -p` / `--print` is not an acceptable silent
+substitute for persistent/observable rework sessions. Built-in Cursor `/resume`
+is not the Engineering System resume workflow; the canonical slash command is
+`/work-resume` (`.cursor/commands/work-resume.md`). Before that spawn, the
+dispatcher runs `tools/cursor-resource-preflight.py` from the checkout named by
+`ENGINEERING_SYSTEM_ROOT`, or the explicit script path named by
+`ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD` (the override in
+`/work-resume`). `ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT` is a
+compatibility alias used only when `..._GUARD` is unset. Exit 0 `PASS` or
+`WARN` may spawn. Any other result is `BLOCK`: no new session, and existing
+sessions are not stopped.
 
 ## Minimal design gate
 
@@ -89,10 +97,15 @@ Engineering System resume workflow; the canonical slash command is
    then dispatch a **fresh** Cursor session in the validated worktree using the
    fixed resume surface `/work-resume`. Never attach/reuse unrelated sessions.
 9. **Cursor dispatch adapter (v0)**:
-   - Native create argv: `agent persist --trust /work-resume` with
+   - Native create argv: `agent persist --force --trust /work-resume` with
      `cwd=<validated-worktree>`, spawned under a PTY/`script` transport.
-   - Observe the new session via `agent persist list` filtered to the target
-     worktree; do not stop/attach/modify unrelated sessions.
+     `--force` follows `persist` and is Run Everything. A resource-preflight
+     `BLOCK` or an unavailable preflight refuses the spawn.
+   - Durable success requires a new `agent persist list` session for the target
+     worktree that is named by the owned spawn's process tree. Another new
+     session in the same worktree is not this launch. A target process is
+     diagnostic only and is not dispatch success. Do not stop/attach/modify
+     unrelated sessions.
    - PTY/tmux usage is transport only, not controller business state.
    - Do not fall back to `agent -p`.
 10. **Retry bound**: configurable `max_attempts` (default 3). Exhaustion →

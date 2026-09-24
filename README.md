@@ -93,6 +93,7 @@ PYTHONPATH=. python3 -m atlas work-controller register <workstream> \
   --worktree "$(pwd)" \
   --expected-head "$(git rev-parse HEAD)"
 PYTHONPATH=. python3 -m atlas work-controller completion /path/to/event.json \
+  --audit-adapter fixed \
   --audit-verdict PASS
 ```
 

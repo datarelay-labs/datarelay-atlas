@@ -26,9 +26,12 @@ from atlas.work_controller import (
     CompletionEvent,
     WorkstreamRecord,
     WorktreeIdentity,
+    _contains_unsafe_secret,
     default_git_runner,
     normalize_github_repository,
     parse_audit_verdict_payload,
+    redact_sensitive_audit_text,
+    validate_clean_worktree_identity,
     validate_worktree_identity,
 )
 
@@ -168,8 +171,8 @@ def collect_git_evidence(
     Porcelain ``status`` is stored only in bounded form. Completeness is
     reported as ``evidence_status`` (OK / INCOMPLETE / ERROR) so truncated
     diffs/status or untracked paths whose contents are not included cannot
-    silently permit PASS. ``status_digest`` fingerprints the temporary raw
-    status for TOCTOU snapshot checks without retaining unbounded text.
+    silently permit PASS. ``status_digest`` remains informational only;
+    autonomous audit/dispatch gates require clean porcelain instead.
     """
     runner = git_runner or default_git_runner
     cwd = str(Path(worktree_path).resolve())
@@ -385,13 +388,51 @@ def collect_test_evidence(
     transcript = "\n".join(
         part for part in (completed.stdout, completed.stderr) if part
     ).strip()
-    return {
+    status = classify_unittest_result(completed.returncode, transcript)
+    result = {
         "collector": "atlas.codex_audit.collect_test_evidence",
-        "status": "PASS" if completed.returncode == 0 else "FAIL",
+        "status": status,
         "exit_code": completed.returncode,
         "command": argv,
         "transcript": _trim(transcript, max_chars),
     }
+    if status == "ERROR" and completed.returncode != 0:
+        result["detail"] = _trim(
+            "unittest collection/infrastructure failure; "
+            "refusing autonomous REWORK",
+            300,
+        )
+    return result
+
+
+_UNITTEST_COLLECTION_RE = re.compile(
+    r"(?is)"
+    r"unittest\.loader\._FailedTest|"
+    r"failed to import test module|"
+    r"ImportError:\s+Failed to import|"
+    r"ERROR:\s+Discovery failure|"
+    r"Start directory is not importable"
+)
+
+
+def classify_unittest_result(returncode: int, transcript: str) -> str:
+    """Map unittest exit + transcript to PASS|FAIL|ERROR.
+
+    Assertion and executed-test failures remain FAIL → autonomous REWORK.
+    Infrastructure ERROR is only collection/discovery structure, or a nonzero
+    run with no ``Ran N tests`` summary. ``SyntaxError``,
+    ``ModuleNotFoundError``, and ``PermissionError`` raised by an executed
+    test, and assertion text that mentions those names, stay FAIL.
+    """
+    if returncode == 0:
+        return "PASS"
+    text = transcript or ""
+    if _UNITTEST_COLLECTION_RE.search(text):
+        return "ERROR"
+    # Nonzero exit with no runnable summary is also infrastructure, not FAIL.
+    if not re.search(r"(?m)^Ran \d+ tests?", text):
+        return "ERROR"
+    return "FAIL"
 
 
 def collect_ci_evidence(
@@ -487,14 +528,10 @@ def collect_ci_evidence(
             "detail": "gh pr checks timed out",
             "pr": chosen,
         }
-    # gh pr checks: 0=pass, 8=pending, other=fail (see `gh pr checks --help`).
-    if checks.returncode == 0:
-        status = "OK"
-    elif checks.returncode == 8:
-        status = "PENDING"
-    else:
-        status = "FAIL"
-    return {
+    status, detail = classify_gh_pr_checks_result(
+        checks.returncode, checks.stdout or "", checks.stderr or ""
+    )
+    result: dict = {
         "collector": "atlas.codex_audit.collect_ci_evidence",
         "status": status,
         "head": head,
@@ -507,6 +544,79 @@ def collect_ci_evidence(
             max_chars,
         ),
     }
+    if detail:
+        result["detail"] = _trim(detail, 500)
+    return result
+
+
+def classify_gh_pr_checks_result(
+    returncode: int, stdout: str, stderr: str
+) -> tuple[str, str]:
+    """Map ``gh pr checks`` exit + output to OK|PENDING|FAIL|ABSENT|ERROR.
+
+    ``gh pr checks --help`` documents exit 0 (success) and 8 (pending).
+    ``gh help exit-codes`` documents exit 1 (command failed) and 4 (auth).
+    Non-0/8 exits are not proof of a failed check unless parseable check
+    rows show a failure state; otherwise return ERROR so the deterministic
+    gate fails closed to HUMAN_REQUIRED instead of autonomous REWORK.
+    A PR with no reported checks is ABSENT (allowed by the AWC contract),
+    not a transport ERROR.
+    """
+    if returncode == 0:
+        return "OK", ""
+    if returncode == 8:
+        return "PENDING", ""
+    if returncode == 4:
+        return "ERROR", "gh pr checks authentication failure"
+
+    states: list[str] = []
+    for line in (stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0].strip():
+            states.append(parts[1].strip().lower())
+
+    fail_states = {
+        "fail",
+        "failed",
+        "failure",
+        "cancel",
+        "cancelled",
+        "canceled",
+        "timed_out",
+        "timedout",
+        "error",
+        "action_required",
+        "startup_failure",
+    }
+    pending_states = {
+        "pending",
+        "queued",
+        "in_progress",
+        "expected",
+        "waiting",
+        "requested",
+    }
+    if states:
+        if any(state in fail_states for state in states):
+            return "FAIL", ""
+        if any(state in pending_states for state in states):
+            return "PENDING", ""
+        return (
+            "ERROR",
+            f"gh pr checks exit {returncode} with unrecognized row states: "
+            f"{sorted(set(states))}",
+        )
+
+    detail = "\n".join(part for part in (stdout, stderr) if part).strip()
+    # gh reports this for a PR/branch with zero check runs (exit 1, no rows).
+    if returncode == 1 and re.search(
+        r"(?i)no checks reported on the\b", detail
+    ):
+        return "ABSENT", detail[:500] or "no checks reported"
+    return (
+        "ERROR",
+        detail[:500] or f"gh pr checks command failure (exit {returncode})",
+    )
 
 
 def _bounded_review_items(
@@ -743,9 +853,13 @@ def collect_audit_evidence_bundle(
         )
         bundle["ci"] = ci
         # Fail closed: when a PR is in scope, review feedback must be inspectable.
+        # CI ABSENT (PR exists, no check runs) still requires review collection.
         pr = ci.get("pr") if isinstance(ci.get("pr"), dict) else None
         pr_number = pr.get("number") if pr else None
-        if ci.get("status") in {"OK", "PENDING", "FAIL"} and pr_number is not None:
+        if (
+            ci.get("status") in {"OK", "PENDING", "FAIL", "ABSENT"}
+            and pr_number is not None
+        ):
             bundle["pr_reviews"] = collect_pr_review_evidence(
                 repository=identity.repository,
                 pr_number=int(pr_number),
@@ -918,46 +1032,19 @@ def _codex_child_env() -> dict[str, str]:
     return env
 
 
-def _looks_like_secret(text: str) -> bool:
-    """Detect likely live credentials, not mere documentation mentions."""
-    if re.search(r"OPENAI_API_KEY\s*=\s*\S+", text):
-        return True
-    if re.search(r"\bsk-[A-Za-z0-9]{20,}\b", text):
-        return True
-    if re.search(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", text):
-        return True
-    return False
-
-
-def _git_run(
-    argv: list[str],
-    cwd: str,
-    *,
-    git_runner: GitRunner | None,
-) -> str:
-    runner = git_runner or default_git_runner
-    return runner(argv, cwd)
-
-
-def _status_digest(raw_status: str) -> str:
-    return hashlib.sha256(raw_status.encode("utf-8")).hexdigest()
-
-
-def _revalidate_audited_snapshot(
+def _revalidate_clean_audited_snapshot(
     event: CompletionEvent,
     record: WorkstreamRecord,
     *,
     git_runner: GitRunner | None,
-    expected_status_digest: str | None,
-    require_clean_porcelain: bool,
 ) -> str | None:
-    """Revalidate exact repo/branch/HEAD (and optional status snapshot).
+    """Revalidate exact repo/branch/HEAD and require clean porcelain.
 
-    Returns an error detail string on mismatch; None when the snapshot still
-    matches the audited completion event. Never raises for expected drift.
+    Returns an error detail string on mismatch/dirty state; None when the
+    autonomous snapshot is still valid. Never raises for expected drift.
     """
     try:
-        validate_worktree_identity(
+        validate_clean_worktree_identity(
             record.worktree_path,
             repository=record.repository,
             branch=event.branch,
@@ -965,34 +1052,102 @@ def _revalidate_audited_snapshot(
             git_runner=git_runner,
         )
     except ValidationError as exc:
+        message = str(exc)
+        if "dirty" in message.lower():
+            return f"worktree dirty: {exc}"
         return f"worktree identity drift: {exc}"
+    return None
 
-    cwd = str(Path(record.worktree_path).resolve())
-    try:
-        raw_status = _git_run(
-            ["git", "status", "--short", "--branch"],
-            cwd,
-            git_runner=git_runner,
-        )
-    except ValidationError as exc:
-        return f"git status revalidation failed: {exc}"
 
-    if expected_status_digest:
-        observed = _status_digest(raw_status)
-        if observed != expected_status_digest:
-            return "git status snapshot changed during audit"
+def _head_and_tail(text: str, *, max_chars: int) -> str:
+    """Keep the start and the end of ``text`` inside ``max_chars``.
 
-    if require_clean_porcelain:
-        try:
-            porcelain = _git_run(
-                ["git", "status", "--porcelain"],
-                cwd,
-                git_runner=git_runner,
+    Unittest and check transcripts put the failing assertion or check name
+    after earlier output. A prefix-only cut drops that identity.
+    """
+    if len(text) <= max_chars:
+        return text
+    marker = "\n...[truncated]...\n"
+    if max_chars <= len(marker) + 2:
+        return text[:max_chars]
+    budget = max_chars - len(marker)
+    head_len = budget // 2
+    tail_len = budget - head_len
+    return text[:head_len] + marker + text[-tail_len:]
+
+
+def _safe_detail(value: object, *, max_chars: int = 300) -> str:
+    """Redact, then keep a bounded head and tail for durable findings.
+
+    Redaction runs on the full detail first so a secret cannot survive by
+    sitting in the kept tail. The result stays within ``max_chars``.
+    """
+    redacted = redact_sensitive_audit_text(str(value or ""), max_chars=10**9)
+    return _head_and_tail(redacted, max_chars=max_chars)
+
+
+def _deterministic_gate_before_codex(bundle: dict) -> AuditResult | None:
+    """Short-circuit known deterministic failures/errors before spending Codex.
+
+    Evaluate tests and CI together so infrastructure/pending blockers win:
+    tests PASS / CI OK|ABSENT => continue (return None)
+    tests ERROR / CI PENDING|ERROR / unrecognized => HUMAN_REQUIRED
+    tests FAIL / CI FAIL => REWORK (only when no HUMAN_REQUIRED blocker)
+    Missing sections are ignored (offline/overrides may omit them).
+    """
+    human_parts: list[str] = []
+    rework_parts: list[str] = []
+
+    tests = bundle.get("tests")
+    if isinstance(tests, dict):
+        status = str(tests.get("status") or "")
+        if status == "ERROR":
+            detail = _safe_detail(tests.get("detail") or "")
+            human_parts.append(
+                f"deterministic gate: tests ERROR before Codex; {detail}".strip()
             )
-        except ValidationError as exc:
-            return f"git porcelain revalidation failed: {exc}"
-        if porcelain.strip():
-            return "worktree dirty at PASS gate; git status --porcelain not empty"
+        elif status == "FAIL":
+            detail = _safe_detail(
+                tests.get("detail") or tests.get("transcript") or ""
+            )
+            rework_parts.append(
+                f"deterministic gate: tests FAIL before Codex; {detail}".strip()
+            )
+        elif status and status != "PASS":
+            human_parts.append(
+                "deterministic gate: unrecognized tests status "
+                f"{status!r} before Codex"
+            )
+
+    ci = bundle.get("ci")
+    if isinstance(ci, dict):
+        status = str(ci.get("status") or "")
+        if status in {"PENDING", "ERROR"}:
+            detail = _safe_detail(ci.get("detail") or ci.get("checks") or "")
+            human_parts.append(
+                f"deterministic gate: CI {status} before Codex; {detail}".strip()
+            )
+        elif status == "FAIL":
+            detail = _safe_detail(ci.get("detail") or ci.get("checks") or "")
+            rework_parts.append(
+                f"deterministic gate: CI FAIL before Codex; {detail}".strip()
+            )
+        elif status and status not in {"OK", "ABSENT"}:
+            human_parts.append(
+                "deterministic gate: unrecognized CI status "
+                f"{status!r} before Codex"
+            )
+
+    if human_parts:
+        return AuditResult(
+            verdict="HUMAN_REQUIRED",
+            findings="\n".join(human_parts),
+        )
+    if rework_parts:
+        return AuditResult(
+            verdict="REWORK",
+            findings="\n".join(rework_parts),
+        )
     return None
 
 
@@ -1002,10 +1157,12 @@ class CodexAuditProvider:
     Default behavior:
     1. Validate worktree identity.
     2. Gather deterministic evidence (git/work packet/tests/CI).
-    3. Revalidate exact repo/branch/HEAD (+ status snapshot) before Codex.
-    4. Invoke Codex with tools/apps/browser/shell disabled to judge the bundle.
-    5. Before accepting PASS or REWORK, revalidate identity/snapshot again;
-       PASS additionally requires a clean worktree.
+    3. Revalidate exact repo/branch/HEAD + clean porcelain (dirty/drift ⇒
+       HUMAN_REQUIRED; never autonomous PASS/REWORK from a dirty tree).
+    4. Apply deterministic test/CI gates only from a clean snapshot
+       (skip Codex on known FAIL/ERROR).
+    5. Invoke Codex with tools/apps/browser/shell disabled to judge the bundle.
+    6. Before accepting PASS or REWORK, revalidate identity + clean porcelain.
     """
 
     def __init__(
@@ -1112,26 +1269,20 @@ class CodexAuditProvider:
                 ),
             )
 
-        status_digest = None
-        if isinstance(git, dict):
-            digest = git.get("status_digest")
-            if isinstance(digest, str) and digest:
-                status_digest = digest
-
+        # Clean autonomous snapshot before any deterministic REWORK mapping.
         if self.require_identity:
-            drift = _revalidate_audited_snapshot(
+            drift = _revalidate_clean_audited_snapshot(
                 event,
                 record,
                 git_runner=self._git_runner,
-                expected_status_digest=status_digest,
-                require_clean_porcelain=False,
             )
             if drift:
                 return AuditResult(
                     verdict="HUMAN_REQUIRED",
                     findings=(
-                        "codex audit skipped: audited worktree snapshot drift "
-                        f"after evidence collection ({drift[:300]})"
+                        "codex audit skipped: audited worktree not a clean "
+                        f"autonomous snapshot after evidence collection "
+                        f"({drift[:300]})"
                     ),
                 )
             identity = validate_worktree_identity(
@@ -1143,6 +1294,10 @@ class CodexAuditProvider:
             )
             self.last_identity = identity
 
+        gated = _deterministic_gate_before_codex(bundle)
+        if gated is not None:
+            return gated
+
         prompt = build_codex_audit_prompt(
             event,
             record,
@@ -1151,8 +1306,15 @@ class CodexAuditProvider:
             base_ref=self.base_ref,
         )
         self.last_prompt = prompt
-        if _looks_like_secret(prompt):
-            raise ValidationError("refusing to send credential-like material to Codex")
+        if _contains_unsafe_secret(prompt):
+            self.last_prompt = None
+            return AuditResult(
+                verdict="HUMAN_REQUIRED",
+                findings=(
+                    "codex audit skipped: evidence or prompt contained "
+                    "credential-like material; refusing to send it to Codex"
+                ),
+            )
 
         with tempfile.TemporaryDirectory(prefix="awc-codex-") as tmp:
             last_message_path = str(Path(tmp) / "last-message.txt")
@@ -1183,22 +1345,20 @@ class CodexAuditProvider:
             )
 
         # Fail closed before returning PASS or REWORK: never dispatch/accept
-        # stale evidence if the audited worktree advanced during Codex.
+        # from a dirty or drifted worktree after Codex returns.
         if self.require_identity and result.verdict in {"PASS", "REWORK"}:
-            drift = _revalidate_audited_snapshot(
+            drift = _revalidate_clean_audited_snapshot(
                 event,
                 record,
                 git_runner=self._git_runner,
-                expected_status_digest=status_digest,
-                require_clean_porcelain=(result.verdict == "PASS"),
             )
             if drift:
                 label = result.verdict
                 return AuditResult(
                     verdict="HUMAN_REQUIRED",
                     findings=(
-                        f"codex {label} rejected: audited worktree snapshot "
-                        f"drift at {label} gate ({drift[:300]})"
+                        f"codex {label} rejected: audited worktree not a clean "
+                        f"autonomous snapshot at {label} gate ({drift[:300]})"
                     ),
                 )
         return result

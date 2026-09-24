@@ -219,6 +219,77 @@ class OpenAIAuditContractTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             transport.request_json("GET", "/responses/x", api_key="")
 
+    def test_controller_rejects_openai_pass_on_dirty_worktree(self):
+        """OpenAI adapter PASS must not become PASSED when porcelain is dirty."""
+        transport = FakeTransport(
+            [
+                {
+                    "response": {
+                        "id": "resp_dirty",
+                        "status": "completed",
+                        "output_text": '{"verdict":"PASS","findings":"openai ok"}',
+                    }
+                }
+            ]
+        )
+        adapter = OpenAIResponsesAuditAdapter(
+            transport=transport,  # type: ignore[arg-type]
+            sleeper=lambda _s: None,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "branch", "--show-current"): "feature/x",
+                    ("git", "rev-parse", "HEAD"): HEAD,
+                    ("git", "status", "--porcelain", "--untracked-files=all"): (
+                        " M dirty.py\n"
+                    ),
+                }
+                return mapping[tuple(argv)]
+
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=adapter,
+                work_packet=RecordingWorkPacketAdapter(),
+                dispatcher=RecordingCursorDispatcher(),
+                enforce_worktree_identity=True,
+                git_runner=fake_git,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/x",
+                worktree_path=str(worktree),
+                expected_head=HEAD,
+            )
+            os.environ["OPENAI_API_KEY"] = "test-key-not-real"
+            try:
+                outcome = ctl.handle_completion(
+                    {
+                        "event_id": "evt-openai-dirty",
+                        "workstream": "awc-poc",
+                        "issue_number": 12,
+                        "branch": "feature/x",
+                        "head": HEAD,
+                        "attempt": 1,
+                    }
+                )
+            finally:
+                del os.environ["OPENAI_API_KEY"]
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertIn("PASS rejected", outcome["findings"])
+            self.assertNotEqual(ctl.show("awc-poc")["state"], "PASSED")
+
 
 class CompletionInboxTests(unittest.TestCase):
     def test_enqueue_and_drain_pass_path(self):
