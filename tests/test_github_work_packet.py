@@ -259,6 +259,37 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             else:
                 self.assertIn("://<redacted>@", redacted)
 
+    def test_basic_prose_is_not_a_credential(self):
+        from atlas.work_controller import (
+            _contains_unsafe_secret,
+            _looks_like_secret,
+        )
+
+        prose = (
+            "Basic authentication is supported",
+            "basic principles matter",
+            "The guide explains basic principles of review.",
+        )
+        for sample in prose:
+            self.assertFalse(_looks_like_secret(sample), sample)
+            self.assertFalse(_contains_unsafe_secret(sample), sample)
+            self.assertEqual(sanitize_rework_findings(sample), sample)
+            self.assertEqual(redact_sensitive_audit_text(sample), sample)
+
+        header = "Proxy-Authorization: Basic dGVzdDp0ZXN0"
+        self.assertTrue(_looks_like_secret(header), header)
+        self.assertTrue(_contains_unsafe_secret(header), header)
+        redacted = redact_sensitive_audit_text(header)
+        self.assertIn("Basic <redacted>", redacted)
+        self.assertNotIn("dGVzdDp0ZXN0", redacted)
+        self.assertFalse(_contains_unsafe_secret(redacted), redacted)
+        self.assertFalse(
+            _contains_unsafe_secret("Authorization: Basic <redacted>")
+        )
+        self.assertTrue(
+            _contains_unsafe_secret("Authorization: Basic <redacted>hunter2")
+        )
+
     def test_type_annotation_colon_values_are_not_secrets(self):
         from atlas.work_controller import (
             _contains_unsafe_secret,

@@ -13,6 +13,7 @@ from atlas.work_controller import (
     CompletionEvent,
     DispatchResult,
     DispatchSpawnedButUnobservedError,
+    DispatchSpawnCleanupUncertainError,
     FixedAuditAdapter,
     RecordingCursorDispatcher,
     RecordingObserver,
@@ -615,6 +616,52 @@ class WorkControllerTests(unittest.TestCase):
             # Packet mutation then compensating blocked update.
             self.assertEqual(len(packets.updates), 2)
             self.assertNotEqual(ctl.show("awc-poc")["state"], "REWORK_DISPATCHED")
+
+    def test_cleanup_uncertainty_does_not_compensate_packet(self):
+        """Termination failure must not rewrite the packet as safely blocked."""
+
+        class UncertainDispatcher:
+            def start_resume(self, request):
+                raise DispatchSpawnCleanupUncertainError(
+                    "owned spawn cleanup uncertain: operation not permitted",
+                    session_hint="proc:4242",
+                    command=build_persist_resume_command(request),
+                    cleanup_error="operation not permitted",
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            packets = RecordingWorkPacketAdapter()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=UncertainDispatcher(),
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "spawn_cleanup_uncertain")
+            self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
+            self.assertEqual(
+                [item["kind"] for item in packets.updates], ["rework"]
+            )
+            shown = ctl.show("awc-poc")
+            self.assertIn("not compensated", shown["last_findings"])
+            self.assertIn("proc:4242", shown["last_findings"])
 
     def test_retry_exhaustion(self):
         with tempfile.TemporaryDirectory() as tmp:

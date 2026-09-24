@@ -51,7 +51,9 @@ named by the owned spawn's process tree. Another new session in the same
 worktree is not this launch. A target process is diagnostic only and must not
 be reported as success. Do not stop/attach unrelated sessions. If no owned
 session appears before the bounded timeout, terminate only the owned spawned
-process group and fail closed.
+process group and fail closed. If that cleanup cannot be verified, the
+controller records `HUMAN_REQUIRED` with `reason=spawn_cleanup_uncertain` and
+does not rewrite the canonical packet into a dispatch-blocked state.
 
 Before spawn, the dispatcher runs the Engineering System resource preflight.
 The canonical explicit script path is

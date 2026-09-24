@@ -14,6 +14,7 @@ from atlas.provenance import ValidationError
 from atlas.work_controller import (
     DispatchRequest,
     DispatchSpawnedButUnobservedError,
+    DispatchSpawnCleanupUncertainError,
     PersistSession,
     PtyPersistCursorDispatcher,
     _is_agent_persist_trust_cmdline,
@@ -522,6 +523,63 @@ class CursorLauncherTests(unittest.TestCase):
                 dispatcher.start_resume(self._dispatch_request(str(target)))
             self.assertEqual(ctx.exception.session_hint, "proc:4242")
             self.assertEqual(state["terminated"], [4242])
+
+    def test_cleanup_permission_failure_stays_uncertain(self):
+        """A failed owned-group termination is not a confirmed unobserved stop."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+
+            def terminate(pid: int) -> None:
+                raise PermissionError("operation not permitted")
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=lambda: [],
+                list_target_procs=lambda _wt: [],
+                spawn=lambda _cmd, _wt: 4242,
+                terminate_process_group=terminate,
+                git_runner=self._clean_git(),
+                resource_preflight=_pass_resource_preflight,
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(DispatchSpawnCleanupUncertainError) as ctx:
+                dispatcher.start_resume(self._dispatch_request(str(target)))
+            self.assertNotIsInstance(
+                ctx.exception, DispatchSpawnedButUnobservedError
+            )
+            self.assertEqual(ctx.exception.session_hint, "proc:4242")
+            self.assertIn("cleanup uncertain", str(ctx.exception))
+            self.assertIn("operation not permitted", ctx.exception.cleanup_error)
+
+    def test_terminate_permission_failure_does_not_claim_exit(self):
+        from unittest.mock import patch
+
+        from atlas.work_controller import (
+            SpawnCleanupUncertainError,
+            terminate_spawned_process_group,
+        )
+
+        with patch(
+            "atlas.work_controller.os.killpg", side_effect=PermissionError("denied")
+        ), patch(
+            "atlas.work_controller.os.kill", side_effect=PermissionError("denied")
+        ):
+            with self.assertRaises(SpawnCleanupUncertainError):
+                terminate_spawned_process_group(4242, wait_sec=0.01)
+
+    def test_terminate_returns_when_owned_pid_is_already_gone(self):
+        from unittest.mock import patch
+
+        from atlas.work_controller import terminate_spawned_process_group
+
+        with patch(
+            "atlas.work_controller.os.killpg", side_effect=ProcessLookupError()
+        ), patch(
+            "atlas.work_controller.os.kill", side_effect=ProcessLookupError()
+        ):
+            terminate_spawned_process_group(4242, wait_sec=0.01)
 
     def test_script_wrapper_cmdline_is_not_confirmed_agent(self):
         script_cmdline = (

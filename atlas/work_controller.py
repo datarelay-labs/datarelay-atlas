@@ -646,7 +646,7 @@ def _looks_like_secret(text: str) -> bool:
         return True
     if re.search(r"(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*", scan):
         return True
-    if re.search(r"(?i)\bBasic\s+[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_-])", scan):
+    if _has_live_basic_credential(scan):
         return True
     if _has_unsafe_url_userinfo(scan):
         return True
@@ -715,9 +715,36 @@ _SECRET_TOKEN_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.IGNORECASE)
 _BASIC_AUTH_RE = re.compile(
-    r"\bBasic\s+[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_-])",
-    re.IGNORECASE,
+    r"(?i)\bBasic\s+(?P<token>[A-Za-z0-9+/_-]{4,}={0,2})(?![A-Za-z0-9+/_-])"
 )
+
+
+def _basic_auth_token_is_credential(token: str) -> bool:
+    """True for an HTTP Basic token, not an ordinary English word.
+
+    Prose such as ``Basic authentication`` and ``basic principles`` is only
+    letters in one case or Title Case. A credential token carries a base64
+    signal (digit, ``+``, ``/``, ``=``, ``_``) or mixed case that is not a
+    single capitalized word.
+    """
+    if re.search(r"[0-9+/=_]", token):
+        return True
+    if re.fullmatch(r"[A-Z][a-z]+|[a-z]+|[A-Z]+", token):
+        return False
+    return bool(re.search(r"[A-Z]", token) and re.search(r"[a-z]", token))
+
+
+def _has_live_basic_credential(text: str) -> bool:
+    for match in _BASIC_AUTH_RE.finditer(text or ""):
+        if _basic_auth_token_is_credential(match.group("token")):
+            return True
+    return False
+
+
+def _redact_basic_auth(match: re.Match[str]) -> str:
+    if not _basic_auth_token_is_credential(match.group("token")):
+        return match.group(0)
+    return "Basic <redacted>"
 
 
 def redact_absolute_paths(text: str) -> str:
@@ -788,7 +815,7 @@ def redact_sensitive_audit_text(text: str, *, max_chars: int = 300) -> str:
     cleaned = _SECRET_KV_BARE_RE.sub(_redact_secret_kv, cleaned)
     cleaned = _SECRET_TOKEN_RE.sub("<redacted>", cleaned)
     cleaned = _BEARER_RE.sub("Bearer <redacted>", cleaned)
-    cleaned = _BASIC_AUTH_RE.sub("Basic <redacted>", cleaned)
+    cleaned = _BASIC_AUTH_RE.sub(_redact_basic_auth, cleaned)
     cleaned = _URL_USERINFO_RE.sub(r"\g<scheme><redacted>@", cleaned)
     cleaned = cleaned.strip()
     if len(cleaned) <= max_chars:
@@ -1807,7 +1834,7 @@ class DispatchSpawnedButUnobservedError(ValidationError):
 
     Distinct from pre-spawn boundary ValidationError for diagnostics. The
     controller treats this as ``HUMAN_REQUIRED`` with Work Packet compensation
-    because an unobserved wrapper is not a proven resumable dispatch.
+    only after the owned spawn group was confirmed gone.
     """
 
     def __init__(
@@ -1820,6 +1847,31 @@ class DispatchSpawnedButUnobservedError(ValidationError):
         super().__init__(message)
         self.session_hint = session_hint
         self.command = list(command)
+
+
+class DispatchSpawnCleanupUncertainError(ValidationError):
+    """Owned spawn cleanup failed or the process group was not confirmed gone.
+
+    Not a subclass of the unobserved error: the controller must not compensate
+    the canonical packet as if no late session can appear.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        session_hint: str,
+        command: list[str],
+        cleanup_error: str,
+    ) -> None:
+        super().__init__(message)
+        self.session_hint = session_hint
+        self.command = list(command)
+        self.cleanup_error = cleanup_error
+
+
+class SpawnCleanupUncertainError(OSError):
+    """Signal or exit check could not prove the owned process group is gone."""
 
 
 @dataclass(frozen=True)
@@ -2092,12 +2144,22 @@ class PtyPersistCursorDispatcher:
         command: list[str],
         cause: BaseException | None = None,
     ) -> None:
-        """Terminate the owned spawn group, then raise unobserved."""
+        """Stop the owned spawn group, then raise unobserved or uncertain.
+
+        Compensation is allowed only when termination returns, which means the
+        owned group was confirmed gone. A signal or verification failure stays
+        uncertain so a live process cannot be treated as a finished dispatch.
+        """
         try:
             self._terminate_process_group(pid)
-        except Exception:
-            # Best-effort cleanup; still surface the unobserved boundary.
-            pass
+        except Exception as exc:
+            detail = redact_absolute_paths(str(exc))[:300]
+            raise DispatchSpawnCleanupUncertainError(
+                f"{message}; owned spawn cleanup uncertain: {detail}",
+                session_hint=f"proc:{pid}",
+                command=command,
+                cleanup_error=detail,
+            ) from exc
         if cause is None:
             raise DispatchSpawnedButUnobservedError(
                 message,
@@ -2239,43 +2301,89 @@ class PtyPersistCursorDispatcher:
         raise AssertionError("unreachable")  # pragma: no cover
 
 
-def terminate_spawned_process_group(pid: int, *, wait_sec: float = 2.0) -> None:
-    """Best-effort SIGTERM/SIGKILL of an owned ``start_new_session`` spawn group.
+def _owned_pid_is_alive(pid: int) -> bool:
+    """True when the owned pid can still run. A zombie is already gone."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError as exc:
+        raise SpawnCleanupUncertainError(
+            f"cannot verify owned pid {pid}: {exc}"
+        ) from exc
+    try:
+        stat = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    marker = stat.rfind(")")
+    if marker == -1 or marker + 2 >= len(stat):
+        raise SpawnCleanupUncertainError(
+            f"cannot verify owned pid {pid}: unreadable status"
+        )
+    if stat[marker + 2] == "Z":
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        return False
+    return True
 
-    Spawns use a new session so the returned pid is the process-group leader.
-    Unobserved timeouts must stop that group before compensating the packet so a
-    late-starting Cursor session cannot race a HUMAN_REQUIRED rewrite.
+
+def terminate_spawned_process_group(pid: int, *, wait_sec: float = 2.0) -> None:
+    """SIGTERM/SIGKILL an owned ``start_new_session`` spawn group.
+
+    Returns only after the owned pid is confirmed gone. A permission error or
+    a pid that is still alive raises ``SpawnCleanupUncertainError`` so the
+    caller does not compensate the packet. Unrelated sessions are not signaled.
     """
     if pid <= 0:
         return
 
     def _signal_group(sig: signal.Signals) -> None:
+        delivered = False
+        last_error: OSError | None = None
         try:
             os.killpg(pid, sig)
+            delivered = True
         except ProcessLookupError:
-            raise
-        except (PermissionError, OSError):
+            last_error = None
+        except OSError as exc:
+            last_error = exc
+        try:
             os.kill(pid, sig)
+            delivered = True
+        except ProcessLookupError:
+            return
+        except OSError as exc:
+            last_error = exc
+        if delivered or not _owned_pid_is_alive(pid):
+            return
+        raise SpawnCleanupUncertainError(
+            f"cannot signal owned pid {pid}: {last_error}"
+        ) from last_error
 
     try:
         _signal_group(signal.SIGTERM)
     except ProcessLookupError:
         return
-    except OSError:
-        return
     deadline = time.monotonic() + max(0.0, wait_sec)
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return
-        except OSError:
+        if not _owned_pid_is_alive(pid):
             return
         time.sleep(0.05)
     try:
         _signal_group(signal.SIGKILL)
-    except (ProcessLookupError, OSError):
+    except ProcessLookupError:
         return
+    verify_deadline = time.monotonic() + 0.2
+    while time.monotonic() < verify_deadline:
+        if not _owned_pid_is_alive(pid):
+            return
+        time.sleep(0.05)
+    if _owned_pid_is_alive(pid):
+        raise SpawnCleanupUncertainError(
+            f"owned pid {pid} still alive after SIGKILL"
+        )
 
 
 def _cmdline_has_ordered_tokens(parts: list[str], tokens: tuple[str, ...]) -> bool:
@@ -2834,6 +2942,31 @@ class WorkController:
                                     expected_head=event.head,
                                     resume_prompt=RESUME_PROMPT,
                                 )
+                            )
+                        except DispatchSpawnCleanupUncertainError as exc:
+                            # The owned process may still be alive. Do not
+                            # rewrite the packet into a dispatch-blocked state.
+                            boundary_reason = redact_absolute_paths(str(exc))
+                            record.last_findings = (
+                                f"{audit_result.findings}\n"
+                                "rework spawn cleanup uncertain; canonical packet "
+                                "was not compensated because the owned process may "
+                                "still become a session: "
+                                f"{boundary_reason} "
+                                f"(session_hint={exc.session_hint})"
+                            ).strip()
+                            outcome = self._finalize(
+                                record,
+                                event,
+                                state="HUMAN_REQUIRED",
+                                action="stop",
+                                verdict="HUMAN_REQUIRED",
+                                extra={
+                                    "reason": "spawn_cleanup_uncertain",
+                                    "dispatch_session_hint": exc.session_hint,
+                                    "dispatch_command": exc.command,
+                                    "cleanup_error": exc.cleanup_error,
+                                },
                             )
                         except DispatchSpawnedButUnobservedError as exc:
                             # Wrapper may exist, but no Cursor session/process was
