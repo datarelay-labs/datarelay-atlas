@@ -27,6 +27,7 @@ Use minimum sufficient context and reasoning. Do not request maximum reasoning b
 
 4. Validate the packet before execution:
    - statuses are only ACTIVE, PAUSED, BLOCKED, COMPLETE
+   - `QUEUE_STATE` is not a status. `STATUS=PAUSED` with `QUEUE_STATE=QUEUED` is not executable and must not be selected. Only `STATUS=ACTIVE` is executable.
    - packet v2 requires TASK_KIND and OWNER_INTENT
    - Next Action must directly advance Goal and OWNER_INTENT and fit TASK_KIND
    - otherwise stop with `WORK_PACKET_SCOPE_MISMATCH`

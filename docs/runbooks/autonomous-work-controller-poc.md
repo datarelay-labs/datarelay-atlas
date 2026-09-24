@@ -255,6 +255,28 @@ AWC_AUDIT_VERDICT=PASS \
 ./scripts/awc-completion-hook.sh
 ```
 
+## Queued Work Packet cycle
+
+A successor waiting on this packet uses the Engineering System status vocabulary
+plus an Atlas queue marker:
+
+```text
+STATUS=PAUSED
+QUEUE_STATE=QUEUED
+AFTER_ISSUE=<predecessor issue number>
+```
+
+`/work-resume` does not execute that packet. After a verified PASS, the
+controller completes the predecessor (`STATUS=COMPLETE`, issue left open) and
+only then activates exactly one successor on the same branch and the same
+`WORKSTREAM` (`STATUS=ACTIVE`, `QUEUE_STATE=NONE`) before one
+`agent persist --force --trust /work-resume` dispatch. Zero queued successors
+stop as local `PASSED` without a GitHub write. Two eligible successors, a
+malformed or untrusted queued packet, a branch or `WORKSTREAM` mismatch, a
+stale compare-and-set, or another trusted ACTIVE packet for that same
+`WORKSTREAM` (any branch) stops `HUMAN_REQUIRED` without guessing. REWORK does
+not chain.
+
 ## Telegram / notify
 
 Observational only. Workflow progress must not require Telegram delivery.

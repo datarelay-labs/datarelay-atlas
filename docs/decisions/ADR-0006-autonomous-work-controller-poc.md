@@ -117,6 +117,22 @@ sessions are not stopped.
     transitions.
 13. **ChatGPT Work** is optional and outside this PoC's completion criteria;
     general ChatGPT remains the human escalation path.
+14. **Queued PASS cycle chaining** (Issue #18) extends the PASS path without a
+    new Work Packet status. A successor is `STATUS=PAUSED`, `QUEUE_STATE=QUEUED`,
+    and `AFTER_ISSUE=<predecessor>`. `QUEUE_STATE` is an Atlas marker;
+    `STATUS=QUEUED` is rejected. After the existing clean PASS gate, zero
+    queued successors keep today's local `PASSED` stop with no GitHub write
+    and no Cursor dispatch. Exactly one trusted successor on the same branch
+    and the same `WORKSTREAM` is
+    completed in order: predecessor `ACTIVE -> COMPLETE`, then successor
+    `PAUSED + QUEUE_STATE=QUEUED -> ACTIVE` with `QUEUE_STATE=NONE` in that
+    same write, then one persistent `/work-resume`. The GitHub issue stays
+    open. Multiple, malformed, untrusted, mismatched, or stale candidates
+    stop `HUMAN_REQUIRED` with no guessed successor. Another trusted ACTIVE
+    packet for that same `WORKSTREAM` blocks activation even when its branch
+    differs; an ACTIVE packet for a different workstream does not. A crash after predecessor
+    `COMPLETE` resumes only that transition. A dispatch already claimed is not
+    started again. No auto-merge and no new launcher.
 
 ## Consequences
 
