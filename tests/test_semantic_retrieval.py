@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import http.client
 import io
 import json
 import math
@@ -466,6 +467,13 @@ class HttpEmbeddingClientTests(unittest.TestCase):
         with self.assertRaises(ValidationError) as timed:
             client.embed(["q"])
         self.assertEqual(str(timed.exception), "embedding endpoint request failed")
+
+        def truncated(request, timeout=None):  # noqa: ARG001
+            raise http.client.IncompleteRead(partial=b"", expected=32)
+
+        with self.assertRaises(ValidationError) as incomplete:
+            HttpEmbeddingClient(_config(), opener=truncated).embed(["q"])
+        self.assertEqual(str(incomplete.exception), "embedding endpoint request failed")
 
         def http_error(request, timeout=None):  # noqa: ARG001
             raise urllib.error.HTTPError(

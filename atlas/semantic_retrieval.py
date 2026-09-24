@@ -16,6 +16,7 @@ Design gate for this slice:
 
 from __future__ import annotations
 
+import http.client
 import json
 import math
 import urllib.error
@@ -349,7 +350,7 @@ class HttpEmbeddingClient:
             raise
         except urllib.error.HTTPError as exc:
             raise ValidationError(f"embedding endpoint returned HTTP {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
             raise ValidationError(_REQUEST_FAILED) from exc
         if len(raw) > self.max_response_bytes:
             raise ValidationError("embedding endpoint returned an oversized response")
