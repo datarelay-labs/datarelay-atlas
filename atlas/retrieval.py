@@ -232,7 +232,7 @@ class Retriever:
             out.append(
                 RetrievalHit(
                     project_id=project_id,
-                    path=hit.path,
+                    path=normalize_path(prov.source_path),
                     title=hit.title,
                     content=snippet(hit.content),
                     match=hit.match,

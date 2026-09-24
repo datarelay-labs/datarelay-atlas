@@ -265,6 +265,57 @@ class ProjectionRetrievalTests(unittest.TestCase):
             self.assertIn("docs/product/PRODUCT-CHARTER.md", body)
             self.assertNotIn("docs/forged.md", body)
 
+    def test_shared_source_path_projections_stay_independently_searchable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = AtlasService(Path(tmp))
+            svc.register_project(
+                project_id="datarelay-atlas",
+                repository="datarelay-labs/datarelay-atlas",
+            )
+            svc.add_source(
+                "datarelay-atlas",
+                source_id="from-main",
+                source_path="docs/shared.md",
+                ref="main",
+            )
+            svc.add_source(
+                "datarelay-atlas",
+                source_id="from-release",
+                source_path="docs/shared.md",
+                ref="v1",
+            )
+
+            def fetch(source, token):  # noqa: ARG001
+                if source.source_id == "from-main":
+                    return FetchedSource(
+                        content="shared-path-token main-only-quill",
+                        source_revision="rev-main",
+                    )
+                return FetchedSource(
+                    content="shared-path-token release-only-quill",
+                    source_revision="rev-release",
+                )
+
+            svc.sync_project("datarelay-atlas", fetch=fetch)
+            both = svc.search("datarelay-atlas", "shared-path-token")
+            self.assertEqual(len(both), 2)
+            self.assertEqual({hit.path for hit in both}, {"docs/shared.md"})
+            by_ref = {hit.provenance["ref"]: hit for hit in both}
+            self.assertEqual(set(by_ref), {"main", "v1"})
+            self.assertEqual(by_ref["main"].provenance["source_revision"], "rev-main")
+            self.assertEqual(by_ref["main"].provenance["source_path"], "docs/shared.md")
+            self.assertEqual(by_ref["v1"].provenance["source_revision"], "rev-release")
+            self.assertEqual(by_ref["v1"].provenance["source_path"], "docs/shared.md")
+
+            main_hits = svc.search("datarelay-atlas", "main-only-quill")
+            self.assertEqual(len(main_hits), 1)
+            self.assertEqual(main_hits[0].provenance["ref"], "main")
+            self.assertEqual(main_hits[0].provenance["source_revision"], "rev-main")
+            release_hits = svc.search("datarelay-atlas", "release-only-quill")
+            self.assertEqual(len(release_hits), 1)
+            self.assertEqual(release_hits[0].provenance["ref"], "v1")
+            self.assertEqual(release_hits[0].provenance["source_revision"], "rev-release")
+
     def test_cli_search_returns_attributable_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._seed(tmp)

@@ -10,6 +10,7 @@ import hashlib
 import json
 
 from atlas.projection import ProjectionStore
+from atlas.registry import REF_RE, SOURCE_ID_RE
 from atlas.provenance import (
     PROJECT_ID_RE,
     REPO_RE,
@@ -38,7 +39,7 @@ def build_keyword_retriever(store: ProjectionStore, project_id: str) -> Retrieve
     records = _load_records(store, project_id)
     index = KeywordIndex()
     provenance_by_path: dict[tuple[str, str], Provenance] = {}
-    seen_paths: set[str] = set()
+    seen_identities: set[str] = set()
 
     for meta in records:
         if meta.get("sync_state") not in INDEXABLE_SYNC_STATES:
@@ -46,9 +47,10 @@ def build_keyword_retriever(store: ProjectionStore, project_id: str) -> Retrieve
         label = _record_label(meta, project_id)
         provenance = _provenance_from_record(meta, project_id=project_id, label=label)
         path = normalize_path(provenance.source_path)
-        if path in seen_paths:
-            raise ValidationError(f"duplicate projection source_path: {path}")
-        seen_paths.add(path)
+        identity = _projection_identity(meta, provenance, label)
+        if identity in seen_identities:
+            raise ValidationError(f"duplicate projection identity: {identity}")
+        seen_identities.add(identity)
         text = _read_projection_text(
             store,
             meta.get("projection_path"),
@@ -59,13 +61,13 @@ def build_keyword_retriever(store: ProjectionStore, project_id: str) -> Retrieve
         index.add(
             IndexedDocument(
                 project_id=project_id,
-                path=path,
+                path=identity,
                 title=path,
                 text=text,
                 provenance=provenance,
             )
         )
-        provenance_by_path[(project_id, path)] = provenance
+        provenance_by_path[(project_id, identity)] = provenance
 
     return Retriever(index, provenance_by_path=provenance_by_path)
 
@@ -75,6 +77,22 @@ def _load_records(store: ProjectionStore, project_id: str) -> list[dict]:
         return store.list_records(project_id=project_id)
     except json.JSONDecodeError as exc:
         raise ValidationError("corrupt projection metadata") from exc
+
+
+def _projection_identity(meta: dict, provenance: Provenance, label: str) -> str:
+    """Index key from the canonical projection source_id and configured ref.
+
+    ``source_path`` is not unique. Distinct registry sources may share it.
+    """
+    source_id = meta.get("source_id")
+    if not isinstance(source_id, str) or not SOURCE_ID_RE.match(source_id):
+        raise ValidationError(f"malformed projection provenance: {label}")
+    if not REF_RE.match(provenance.ref):
+        raise ValidationError(f"malformed projection provenance: {label}")
+    expected_rel = f"{provenance.project_id}/{source_id}.md"
+    if meta.get("projection_path") != expected_rel:
+        raise ValidationError(f"projection provenance mismatch: {label}")
+    return f"{source_id}@{provenance.ref}"
 
 
 def _record_label(meta: dict, project_id: str) -> str:
