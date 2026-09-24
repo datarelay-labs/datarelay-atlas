@@ -74,9 +74,12 @@ def validate_embedding_config(config: EmbeddingConfig) -> EmbeddingConfig:
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.hostname
-        or parsed.username
-        or parsed.password
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
         or parsed.fragment
+        or "?" in endpoint
+        or "#" in endpoint
     ):
         raise ValidationError("embedding endpoint must be an http(s) URL")
     if not model or len(model) > MAX_MODEL_CHARS or any(ch.isspace() for ch in model):
@@ -132,9 +135,12 @@ def embedding_config_from_cli(
 
 
 def embeddings_url(endpoint: str) -> str:
+    """Resolve a root, ``/v1``, or explicit embeddings URL to ``POST /v1/embeddings``."""
     base = endpoint.rstrip("/")
     if base.endswith("/v1/embeddings"):
         return base
+    if base.endswith("/v1"):
+        return base + "/embeddings"
     return base + "/v1/embeddings"
 
 

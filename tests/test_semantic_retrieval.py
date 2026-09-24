@@ -23,7 +23,9 @@ from atlas.semantic_retrieval import (
     HttpEmbeddingClient,
     SemanticDocument,
     cosine_similarity,
+    embeddings_url,
     parse_embedding_vectors,
+    validate_embedding_config,
 )
 from atlas.service import AtlasService
 
@@ -346,6 +348,30 @@ class ProjectionSemanticTests(unittest.TestCase):
 
 
 class HttpEmbeddingClientTests(unittest.TestCase):
+    def test_embeddings_url_accepts_root_v1_and_explicit_path(self):
+        explicit = "http://127.0.0.1:8080/v1/embeddings"
+        self.assertEqual(embeddings_url("http://127.0.0.1:8080"), explicit)
+        self.assertEqual(embeddings_url("http://127.0.0.1:8080/"), explicit)
+        self.assertEqual(embeddings_url("http://127.0.0.1:8080/v1"), explicit)
+        self.assertEqual(embeddings_url("http://127.0.0.1:8080/v1/"), explicit)
+        self.assertEqual(embeddings_url(explicit), explicit)
+        self.assertEqual(embeddings_url(explicit + "/"), explicit)
+        self.assertNotIn("/v1/v1/embeddings", embeddings_url("https://embeddings.internal/v1"))
+
+    def test_endpoint_rejects_query_fragment_and_userinfo(self):
+        for endpoint in (
+            "http://127.0.0.1:8080?model=bge",
+            "http://127.0.0.1:8080/v1?",
+            "http://127.0.0.1:8080/v1/embeddings#section",
+            "http://127.0.0.1:8080#",
+            "http://user:pass@127.0.0.1:8080/v1",
+            "http://user@127.0.0.1:8080",
+            "http://@127.0.0.1:8080/v1",
+        ):
+            with self.assertRaises(ValidationError) as caught:
+                validate_embedding_config(_config(endpoint=endpoint))
+            self.assertEqual(str(caught.exception), "embedding endpoint must be an http(s) URL")
+
     def test_posts_openai_compatible_request_and_sorts_indexes(self):
         captured: dict[str, object] = {}
 
@@ -382,6 +408,14 @@ class HttpEmbeddingClientTests(unittest.TestCase):
         )
         self.assertEqual(full.embed(["q"]), [[1.0]])
         self.assertEqual(captured["full"], "http://127.0.0.1:8080/v1/embeddings")
+
+        def v1_base(request, timeout=None):  # noqa: ARG001
+            captured["v1"] = request.full_url
+            return _Response(json.dumps({"data": [{"index": 0, "embedding": [1.0]}]}).encode("utf-8"))
+
+        v1 = HttpEmbeddingClient(_config(endpoint="http://127.0.0.1:8080/v1"), opener=v1_base)
+        self.assertEqual(v1.embed(["q"]), [[1.0]])
+        self.assertEqual(captured["v1"], "http://127.0.0.1:8080/v1/embeddings")
 
     def test_transport_and_payload_failures(self):
         def fail(request, timeout=None):  # noqa: ARG001
