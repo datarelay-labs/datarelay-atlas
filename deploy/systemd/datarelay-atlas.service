@@ -1,0 +1,26 @@
+[Unit]
+Description=DataRelay Atlas MCP resource server
+Documentation=file:/opt/datarelay-atlas/docs/runbooks/phase2-production-service.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atlas
+Group=atlas
+UMask=0077
+Environment=PYTHONPATH=/opt/datarelay-atlas
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/datarelay-atlas/service.env
+WorkingDirectory=/opt/datarelay-atlas
+ExecStart=/opt/datarelay-atlas/.venv/bin/python -m atlas mcp serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/datarelay-atlas
+
+[Install]
+WantedBy=multi-user.target

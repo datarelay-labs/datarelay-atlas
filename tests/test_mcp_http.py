@@ -213,6 +213,32 @@ class McpConfigTests(unittest.TestCase):
                 environ={INTROSPECTION_CLIENT_SECRET_ENV: "env-secret-not-used"},
             )
             self.assertEqual(config.introspection_client_secret, SECRET)
+            from_env = resolve_mcp_serve_config(
+                data_root=root,
+                bind_host=None,
+                port=None,
+                resource_url=None,
+                issuer_url=None,
+                introspection_url=None,
+                introspection_client_id=None,
+                introspection_client_secret_file=None,
+                tls_cert=None,
+                tls_key=None,
+                environ={
+                    "ATLAS_MCP_RESOURCE_URL": "https://127.0.0.1:9443/mcp",
+                    "ATLAS_MCP_ISSUER_URL": ISSUER,
+                    "ATLAS_MCP_INTROSPECTION_URL": "https://issuer.example/introspect",
+                    "ATLAS_MCP_INTROSPECTION_CLIENT_ID": "atlas-resource",
+                    "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET_FILE": str(secret_path),
+                    "ATLAS_MCP_TLS_CERT": str(cert_path),
+                    "ATLAS_MCP_TLS_KEY": str(key_path),
+                    "ATLAS_MCP_BIND_HOST": "127.0.0.1",
+                    "ATLAS_MCP_BIND_PORT": "9443",
+                },
+            )
+            self.assertEqual(from_env.bind_host, "127.0.0.1")
+            self.assertEqual(from_env.port, 9443)
+            self.assertEqual(from_env.introspection_client_secret, SECRET)
             secret_path.write_text("\n", encoding="utf-8")
             with self.assertRaises(ValidationError) as invalid:
                 resolve_mcp_serve_config(
@@ -520,6 +546,38 @@ class McpHttpTests(unittest.TestCase):
                     json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
                 )
                 self.assertEqual(wrong_resource.status_code, 401)
+
+    def test_healthz_reports_readiness_without_canonical_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            resource = "https://127.0.0.1:8443/mcp"
+            app, data = self._app(root, resource)
+            with TestClient(app, base_url="http://127.0.0.1:8443") as client:
+                ready = client.get("/healthz")
+                self.assertEqual(ready.status_code, 200)
+                self.assertEqual(ready.json(), {"status": "ready"})
+                body = ready.text
+                self.assertNotIn("alpha", body)
+                self.assertNotIn("quill", body)
+                self.assertNotIn("rev-alpha", body)
+                self.assertNotIn(SECRET, body)
+
+                registry = data / "registry.json"
+                registry.write_text('{"schema_version": 99, "projects": {}}\n', encoding="utf-8")
+                unsupported = client.get("/healthz")
+                self.assertEqual(unsupported.status_code, 503)
+                self.assertEqual(unsupported.json(), {"status": "not_ready"})
+                self.assertNotIn("99", unsupported.text)
+
+                registry.write_text(
+                    '{"schema_version": 1, "projects": {}}\n',
+                    encoding="utf-8",
+                )
+                meta = data / "projections" / "projections.json"
+                meta.write_text("{", encoding="utf-8")
+                corrupt = client.get("/healthz")
+                self.assertEqual(corrupt.status_code, 503)
+                self.assertEqual(corrupt.json(), {"status": "not_ready"})
 
     def test_https_client_round_trip_is_project_scoped(self):
         with tempfile.TemporaryDirectory() as tmp:

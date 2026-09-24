@@ -23,10 +23,13 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from atlas.mcp_auth import HttpxIntrospectionTransport, Rfc7662TokenVerifier
 from atlas.mcp_config import McpServeConfig
 from atlas.mcp_context import AtlasContextTools
+from atlas.ops import data_root_runtime_ready
 from atlas.provenance import ValidationError
 from atlas.security import READ_SCOPE
 from atlas.service import AtlasService
@@ -56,6 +59,13 @@ def build_mcp_application(
         ),
     )
     _register_tools(server, tools)
+
+    @server.custom_route("/healthz", methods=["GET"], include_in_schema=False)
+    async def healthz(_request: Request) -> JSONResponse:
+        if data_root_runtime_ready(config.data_root):
+            return JSONResponse({"status": "ready"})
+        return JSONResponse({"status": "not_ready"}, status_code=503)
+
     return server.streamable_http_app(
         streamable_http_path="/mcp",
         transport_security=_transport_security(config),
