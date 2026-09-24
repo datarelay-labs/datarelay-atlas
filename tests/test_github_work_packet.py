@@ -2277,6 +2277,26 @@ class QueuedCycleAdapterTests(unittest.TestCase):
         self.assertNotEqual(result.kind, "advanced")
         self.assertNotEqual(result.kind, "already_activated")
 
+    def test_malformed_other_workstream_same_branch_does_not_dispatch(self):
+        other = SAMPLE_BODY.replace(
+            f"WORKSTREAM={WORKSTREAM}\n",
+            "WORKSTREAM=unrelated-stream\nWORKSTREAM=unrelated-stream\n",
+            1,
+        )
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(18, _queued_successor_body()),
+            40: _ai_issue(40, other),
+        }
+        result, edits = self._run(issues)
+        self.assertEqual(result.kind, "human_required")
+        self.assertIn("malformed ACTIVE packet", result.reason)
+        self.assertIn("#40", result.reason)
+        self.assertEqual(edits, [])
+        self.assertNotIn(result.kind, {"advanced", "already_activated"})
+        self.assertIn("QUEUE_STATE=QUEUED", issues[18]["body"].split("\n\n", 1)[0])
+        self.assertIn("STATUS=ACTIVE", issues[40]["body"].split("\n\n", 1)[0])
+
     def test_unusual_event_ids_keep_zero_successor_pass(self):
         safe = cycle_transition_id(
             issue_number=12,

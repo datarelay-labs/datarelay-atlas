@@ -1445,6 +1445,47 @@ def _active_workstream_disposition(
     return "match"
 
 
+def _resume_branch_disposition(
+    body: str,
+    *,
+    repository: str,
+    branch: str,
+) -> str:
+    """Classify whether `/work-resume` could select this packet on `branch`.
+
+    Returns ``match``, ``other``, or ``unclassifiable``. Selection is
+    ``TARGET_REPO`` + ``STATUS=ACTIVE`` + ``BRANCH`` and does not consult
+    ``WORKSTREAM``. A malformed packet that still looks ACTIVE for this
+    repository and branch cannot be proved unique, so it is unclassifiable.
+    """
+    expected_branch = branch.strip()
+    try:
+        meta = _parse_leading_packet_metadata(body)
+    except ValidationError:
+        grouped = _leading_metadata_groups(body)
+        if "ACTIVE" not in grouped.get("STATUS", []):
+            return "other"
+        targets = grouped.get("TARGET_REPO", [])
+        if not targets or not any(
+            _target_repo_matches(target, repository) for target in targets
+        ):
+            return "other"
+        branches = grouped.get("BRANCH", [])
+        if branches and all(
+            item not in ("", expected_branch) for item in branches
+        ):
+            return "other"
+        return "unclassifiable"
+    if meta.get("STATUS") != "ACTIVE":
+        return "other"
+    if not _target_repo_matches(meta.get("TARGET_REPO") or "", repository):
+        return "other"
+    packet_branch = meta.get("BRANCH")
+    if packet_branch not in (None, "") and packet_branch != expected_branch:
+        return "other"
+    return "match"
+
+
 def _after_issue_number(raw: str | None) -> int | None:
     text = (raw or "").strip()
     if not re.fullmatch(r"[0-9]+", text):
@@ -2705,9 +2746,49 @@ class GitHubWorkPacketAdapter:
         *,
         allowed: set[int],
     ) -> list[int]:
-        """Other trusted ACTIVE packets `/work-resume` could select on this branch."""
-        _saw, trusted = self._scan_trusted_active_packets(repository, branch=branch)
-        return sorted(number for number in trusted if number not in allowed)
+        """Other trusted ACTIVE packets `/work-resume` could select on this branch.
+
+        A trusted same-repo/same-branch packet that looks ACTIVE but cannot be
+        parsed is a launcher ambiguity even when its ``WORKSTREAM`` differs.
+        ``_active_packet_matches`` is not used here because it treats parse
+        errors as non-matches.
+        """
+        conflicts: list[int] = []
+        for issue in self._list_open_ai_work_issues(repository):
+            try:
+                number = int(issue.get("number"))
+            except (TypeError, ValueError):
+                number = None
+            body = str(issue.get("body") or "")
+            disposition = _resume_branch_disposition(
+                body,
+                repository=repository,
+                branch=branch,
+            )
+            if disposition == "other":
+                continue
+            if number is None:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: candidate issue number missing"
+                )
+            if number in allowed:
+                continue
+            try:
+                trust = self._lookup_author_trust(repository, issue)
+            except ValidationError as exc:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                    f"candidate #{number} unverifiable ({exc})"
+                ) from exc
+            if trust != "trusted":
+                continue
+            if disposition == "unclassifiable":
+                raise ValidationError(
+                    "malformed ACTIVE packet cannot be classified for "
+                    f"/work-resume on {branch.strip()}: #{number}"
+                )
+            conflicts.append(number)
+        return sorted(conflicts)
 
     def _conflicting_active_workstream_issues(
         self,

@@ -276,7 +276,9 @@ malformed or untrusted queued packet, a branch or `WORKSTREAM` mismatch, a
 stale compare-and-set, or another trusted ACTIVE packet for that same
 `WORKSTREAM` (any branch) stops `HUMAN_REQUIRED` without guessing. Another workstream's ACTIVE packet does not block a zero-successor PASS.
 The same-branch case still stops `HUMAN_REQUIRED` before successor activation
-when `/work-resume` could not uniquely select the successor. A trusted
+when `/work-resume` could not uniquely select the successor, including a
+trusted ACTIVE-looking packet on that branch whose metadata cannot be
+classified. A trusted
 ACTIVE packet whose metadata is malformed but still shows that `WORKSTREAM`
 and repository also stops `HUMAN_REQUIRED` before successor activation.
 REWORK does not chain.

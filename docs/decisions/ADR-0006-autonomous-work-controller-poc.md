@@ -133,7 +133,9 @@ sessions are not stopped.
     differs. A different workstream may coexist, including on the same branch,
     and must not turn a zero-successor PASS into `HUMAN_REQUIRED`. If that
     other packet is on the same branch, successor activation stays fail-closed
-    because `/work-resume` cannot select one ACTIVE packet. A malformed
+    because `/work-resume` cannot select one ACTIVE packet. That includes a
+    trusted ACTIVE-looking packet on the branch whose metadata cannot be
+    classified, whatever its `WORKSTREAM` is. A malformed
     trusted ACTIVE packet that still shows that `WORKSTREAM` and repository
     fails closed instead of being ignored. Completion event ids that do not fit
     the transition alphabet are hashed so an already accepted PASS can still
