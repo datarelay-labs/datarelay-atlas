@@ -59,6 +59,7 @@ class ProjectionRetrievalTests(unittest.TestCase):
             hit = hits[0]
             self.assertEqual(hit.project_id, "datarelay-atlas")
             self.assertEqual(hit.path, "docs/product/PRODUCT-CHARTER.md")
+            self.assertEqual(hit.identity, "charter@main")
             self.assertEqual(hit.match, "classic")
             body = (svc.projections.root / charter["projection_path"]).read_text(encoding="utf-8")
             self.assertIn(UNIQUE_PHRASE, body)
@@ -300,6 +301,7 @@ class ProjectionRetrievalTests(unittest.TestCase):
             both = svc.search("datarelay-atlas", "shared-path-token")
             self.assertEqual(len(both), 2)
             self.assertEqual({hit.path for hit in both}, {"docs/shared.md"})
+            self.assertEqual({hit.identity for hit in both}, {"from-main@main", "from-release@v1"})
             by_ref = {hit.provenance["ref"]: hit for hit in both}
             self.assertEqual(set(by_ref), {"main", "v1"})
             self.assertEqual(by_ref["main"].provenance["source_revision"], "rev-main")
@@ -329,6 +331,7 @@ class ProjectionRetrievalTests(unittest.TestCase):
             self.assertEqual(len(payload), 1)
             self.assertEqual(payload[0]["provenance"]["source_revision"], "rev-charter")
             self.assertEqual(payload[0]["path"], "docs/product/PRODUCT-CHARTER.md")
+            self.assertEqual(payload[0]["identity"], "charter@main")
 
             empty = io.StringIO()
             with contextlib.redirect_stdout(empty):

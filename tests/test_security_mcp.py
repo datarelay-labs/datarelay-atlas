@@ -79,6 +79,104 @@ class McpContextTests(unittest.TestCase):
         self.assertIn("search_project", names)
         self.assertNotIn("create_note", names)
 
+    def test_provenance_round_trip_uses_search_path_when_unique(self):
+        result = self.tools.call(
+            "search_project",
+            {"project_id": "demo", "query": "engineering"},
+            scopes=default_read_scopes(),
+        )
+        hit = result.data[0]
+        fetched = self.tools.call(
+            "get_provenance",
+            {"project_id": "demo", "path": hit["path"]},
+            scopes=default_read_scopes(),
+        )
+        self.assertTrue(fetched.ok)
+        self.assertEqual(fetched.data["source_revision"], "abc")
+
+    def test_shared_source_path_requires_identity(self):
+        index = KeywordIndex()
+        main = Provenance(
+            project_id="demo",
+            provider="github",
+            repository="datarelay-labs/datarelay-atlas",
+            ref="main",
+            source_path="docs/shared.md",
+            source_revision="rev-main",
+        )
+        release = Provenance(
+            project_id="demo",
+            provider="github",
+            repository="datarelay-labs/datarelay-atlas",
+            ref="v1",
+            source_path="docs/shared.md",
+            source_revision="rev-release",
+        )
+        index.add(
+            IndexedDocument(
+                project_id="demo",
+                path="from-main@main",
+                title="docs/shared.md",
+                text="shared-token main",
+                provenance=main,
+            )
+        )
+        index.add(
+            IndexedDocument(
+                project_id="demo",
+                path="from-release@v1",
+                title="docs/shared.md",
+                text="shared-token release",
+                provenance=release,
+            )
+        )
+        tools = AtlasContextTools(
+            Retriever(
+                index,
+                provenance_by_path={
+                    ("demo", "from-main@main"): main,
+                    ("demo", "from-release@v1"): release,
+                },
+            )
+        )
+        result = tools.call(
+            "search_project",
+            {"project_id": "demo", "query": "shared-token"},
+            scopes=default_read_scopes(),
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual({hit["path"] for hit in result.data}, {"docs/shared.md"})
+        self.assertEqual(
+            {hit["identity"] for hit in result.data},
+            {"from-main@main", "from-release@v1"},
+        )
+        ambiguous = tools.call(
+            "get_provenance",
+            {"project_id": "demo", "path": "docs/shared.md"},
+            scopes=default_read_scopes(),
+        )
+        self.assertFalse(ambiguous.ok)
+        self.assertEqual(ambiguous.error, "ambiguous")
+        by_identity = {
+            hit["identity"]: tools.call(
+                "get_provenance",
+                {"project_id": "demo", "identity": hit["identity"]},
+                scopes=default_read_scopes(),
+            )
+            for hit in result.data
+        }
+        self.assertEqual(by_identity["from-main@main"].data["source_revision"], "rev-main")
+        self.assertEqual(by_identity["from-release@v1"].data["source_revision"], "rev-release")
+
+    def test_read_tools_reject_write_only_scope(self):
+        result = self.tools.call(
+            "search_project",
+            {"project_id": "demo", "query": "engineering"},
+            scopes=[WRITE_SCOPE],
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "unauthorized")
+
 
 if __name__ == "__main__":
     unittest.main()

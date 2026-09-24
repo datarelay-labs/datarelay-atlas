@@ -159,6 +159,26 @@ def cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mcp_serve(args: argparse.Namespace) -> int:
+    from atlas.mcp_config import resolve_mcp_serve_config
+    from atlas.mcp_http import serve_mcp
+
+    config = resolve_mcp_serve_config(
+        data_root=Path(args.data_root),
+        bind_host=args.host,
+        port=args.port,
+        resource_url=args.resource_url,
+        issuer_url=args.issuer_url,
+        introspection_url=args.introspection_url,
+        introspection_client_id=args.introspection_client_id,
+        introspection_client_secret=args.introspection_client_secret,
+        tls_cert=args.tls_cert,
+        tls_key=args.tls_key,
+    )
+    serve_mcp(config)
+    return 0
+
+
 def _controller_from_args(args: argparse.Namespace) -> WorkController:
     """Build a controller with operator-selected adapters.
 
@@ -605,6 +625,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Embeddings HTTP timeout in seconds.",
     )
     search.set_defaults(func=cmd_search)
+
+    mcp = sub.add_parser("mcp", help="Authenticated MCP resource server")
+    mcp_sub = mcp.add_subparsers(dest="mcp_command", required=True)
+    mcp_serve = mcp_sub.add_parser(
+        "serve",
+        help="Serve Streamable HTTP MCP over HTTPS",
+    )
+    mcp_serve.add_argument("--host", default="127.0.0.1")
+    mcp_serve.add_argument("--port", type=int, default=8443)
+    mcp_serve.add_argument("--resource-url", default=None)
+    mcp_serve.add_argument("--issuer-url", default=None)
+    mcp_serve.add_argument("--introspection-url", default=None)
+    mcp_serve.add_argument("--introspection-client-id", default=None)
+    mcp_serve.add_argument("--introspection-client-secret", default=None)
+    mcp_serve.add_argument("--tls-cert", default=None)
+    mcp_serve.add_argument("--tls-key", default=None)
+    mcp_serve.set_defaults(func=cmd_mcp_serve)
 
     wc = sub.add_parser(
         "work-controller",

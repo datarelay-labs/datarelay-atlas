@@ -95,6 +95,12 @@ PYTHONPATH=. python3 -m atlas search datarelay-atlas "product charter" \
 
 No matches print `[]` and exit 0. Missing projection bytes, malformed provenance, or embedding transport/payload failures exit non-zero.
 
+Search JSON includes `path` (the source path) and `identity` (`source_id@ref`). Use `identity` when two projections share a source path.
+
+## Authenticated MCP
+
+`python -m atlas mcp serve` exposes `search_project` and `get_provenance` on Streamable HTTP `/mcp` over TLS. Atlas checks bearer tokens as an OAuth resource server; it does not issue them. See ADR-0008 and `docs/runbooks/phase2-authenticated-https-mcp.md`.
+
 ## Autonomous Work Controller PoC
 
 Persist one local workstream, accept an idempotent Cursor completion event, run a
