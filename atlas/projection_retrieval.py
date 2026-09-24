@@ -6,6 +6,7 @@ No separate search index is persisted.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from atlas.projection import ProjectionStore
@@ -47,7 +48,12 @@ def build_keyword_retriever(store: ProjectionStore, project_id: str) -> Retrieve
         if path in seen_paths:
             raise ValidationError(f"duplicate projection source_path: {path}")
         seen_paths.add(path)
-        text = _read_projection_text(store, meta.get("projection_path"), label)
+        text = _read_projection_text(
+            store,
+            meta.get("projection_path"),
+            label,
+            meta.get("content_digest"),
+        )
         index.add(
             IndexedDocument(
                 project_id=project_id,
@@ -115,7 +121,12 @@ def _provenance_from_record(meta: dict, *, project_id: str, label: str) -> Prove
     )
 
 
-def _read_projection_text(store: ProjectionStore, rel: object, label: str) -> str:
+def _read_projection_text(
+    store: ProjectionStore,
+    rel: object,
+    label: str,
+    content_digest: object,
+) -> str:
     if not isinstance(rel, str) or not rel.strip():
         raise ValidationError(f"projection bytes missing: {label}")
     if rel.startswith("/") or "\\" in rel or any(part in {"", ".", ".."} for part in rel.split("/")):
@@ -130,6 +141,13 @@ def _read_projection_text(store: ProjectionStore, rel: object, label: str) -> st
     if not candidate.is_file():
         raise ValidationError(f"projection bytes missing: {label}")
     try:
-        return candidate.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
+        raw = candidate.read_bytes()
+    except OSError as exc:
+        raise ValidationError(f"projection bytes unreadable: {label}") from exc
+    digest = hashlib.sha256(raw).hexdigest()
+    if not isinstance(content_digest, str) or digest != content_digest:
+        raise ValidationError(f"projection bytes digest mismatch: {label}")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeError as exc:
         raise ValidationError(f"projection bytes unreadable: {label}") from exc

@@ -198,6 +198,26 @@ class ProjectionRetrievalTests(unittest.TestCase):
                 svc.search("datarelay-atlas", UNIQUE_PHRASE)
             self.assertEqual(str(corrupt.exception), "corrupt projection metadata")
 
+    def test_tampered_projection_bytes_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = self._seed(tmp)
+            rel = svc.projection_records("datarelay-atlas")
+            charter = next(row for row in rel if row["source_id"] == "charter")
+            path = svc.projections.root / charter["projection_path"]
+            path.write_bytes(b"TAMPERED_TOKEN")
+            with self.assertRaises(ValidationError) as mismatch:
+                svc.search("datarelay-atlas", "TAMPERED_TOKEN")
+            self.assertEqual(
+                str(mismatch.exception),
+                "projection bytes digest mismatch: datarelay-atlas/charter",
+            )
+            with self.assertRaises(ValidationError) as original:
+                svc.search("datarelay-atlas", UNIQUE_PHRASE)
+            self.assertEqual(
+                str(original.exception),
+                "projection bytes digest mismatch: datarelay-atlas/charter",
+            )
+
     def test_cli_search_returns_attributable_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._seed(tmp)
