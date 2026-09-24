@@ -642,6 +642,41 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertEqual(classify_unittest_result(1, assertion), "FAIL")
         self.assertEqual(classify_unittest_result(0, "Ran 1 test\nOK\n"), "PASS")
 
+        executed = (
+            "ERROR: test_gap (tests.test_x.X)\n"
+            "Traceback (most recent call last):\n"
+            "ModuleNotFoundError: No module named 'runtime_dep'\n"
+            "\n"
+            "Ran 1 test in 0.001s\n"
+            "\n"
+            "FAILED (errors=1)\n"
+        )
+        syntax = executed.replace(
+            "ModuleNotFoundError: No module named 'runtime_dep'",
+            "SyntaxError: invalid syntax",
+        )
+        permission = executed.replace(
+            "ModuleNotFoundError: No module named 'runtime_dep'",
+            "PermissionError: [errno 13] permission denied",
+        )
+        assertion_mentions_error = (
+            "FAIL: test_gap (tests.test_x.X)\n"
+            "AssertionError: ModuleNotFoundError: should stay FAIL\n"
+            "\n"
+            "Ran 1 test in 0.001s\n"
+            "\n"
+            "FAILED (failures=1)\n"
+        )
+        self.assertEqual(classify_unittest_result(1, executed), "FAIL")
+        self.assertEqual(classify_unittest_result(1, syntax), "FAIL")
+        self.assertEqual(classify_unittest_result(1, permission), "FAIL")
+        self.assertEqual(
+            classify_unittest_result(1, assertion_mentions_error), "FAIL"
+        )
+        self.assertEqual(
+            classify_unittest_result(1, "SyntaxError: invalid syntax\n"), "ERROR"
+        )
+
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(argv, 1, stdout=infra, stderr="")
 

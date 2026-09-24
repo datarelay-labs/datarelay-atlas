@@ -268,43 +268,59 @@ class CursorLauncherTests(unittest.TestCase):
 
         source = inspect.getsource(resolve_cursor_resource_preflight_script)
         self.assertNotIn("/home/aella/engineering-system", source)
-        previous_root = os.environ.pop("ENGINEERING_SYSTEM_ROOT", None)
-        previous_file = os.environ.pop(
-            "ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT", None
-        )
+        saved = {
+            name: os.environ.pop(name, None)
+            for name in (
+                "ENGINEERING_SYSTEM_ROOT",
+                "ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD",
+                "ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT",
+            )
+        }
         try:
             self.assertIsNone(resolve_cursor_resource_preflight_script())
             with tempfile.TemporaryDirectory() as tmp:
-                script = Path(tmp) / "tools" / "cursor-resource-preflight.py"
+                root = Path(tmp)
+                script = root / "tools" / "cursor-resource-preflight.py"
+                alias = root / "alias-preflight.py"
                 script.parent.mkdir()
                 script.write_text("# preflight\n", encoding="utf-8")
+                alias.write_text("# alias\n", encoding="utf-8")
                 os.environ["ENGINEERING_SYSTEM_ROOT"] = tmp
                 self.assertEqual(
                     resolve_cursor_resource_preflight_script(), script
                 )
-                os.environ.pop("ENGINEERING_SYSTEM_ROOT")
-                missing = Path(tmp) / "missing.py"
+                os.environ["ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT"] = str(
+                    alias
+                )
+                self.assertEqual(
+                    resolve_cursor_resource_preflight_script(), alias
+                )
+                missing = root / "missing.py"
                 os.environ["ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT"] = str(
                     missing
                 )
                 self.assertIsNone(resolve_cursor_resource_preflight_script())
-                os.environ["ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT"] = str(
-                    script
-                )
+                os.environ.pop("ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT")
+                os.environ.pop("ENGINEERING_SYSTEM_ROOT")
+                os.environ["ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD"] = str(script)
                 self.assertEqual(
                     resolve_cursor_resource_preflight_script(), script
                 )
-        finally:
-            if previous_root is None:
-                os.environ.pop("ENGINEERING_SYSTEM_ROOT", None)
-            else:
-                os.environ["ENGINEERING_SYSTEM_ROOT"] = previous_root
-            if previous_file is None:
-                os.environ.pop("ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT", None)
-            else:
-                os.environ["ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT"] = (
-                    previous_file
+                os.environ["ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT"] = str(
+                    alias
                 )
+                os.environ["ENGINEERING_SYSTEM_ROOT"] = tmp
+                self.assertEqual(
+                    resolve_cursor_resource_preflight_script(), script
+                )
+                os.environ["ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD"] = str(missing)
+                self.assertIsNone(resolve_cursor_resource_preflight_script())
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
     def test_parse_persist_list_and_worktree_filter(self):
         sessions = parse_persist_list(SAMPLE_PERSIST_LIST)
@@ -360,6 +376,9 @@ class CursorLauncherTests(unittest.TestCase):
                 spawn=spawn,
                 git_runner=self._clean_git(),
                 resource_preflight=_pass_resource_preflight,
+                owned_session_ids=lambda pid, candidates: (
+                    {"target-new-1"} if pid == 4242 and "target-new-1" in candidates else set()
+                ),
                 poll_interval_sec=0.01,
                 poll_timeout_sec=1.0,
                 sleeper=lambda _s: None,
@@ -374,6 +393,77 @@ class CursorLauncherTests(unittest.TestCase):
             self.assertIn("unrelated-1", remaining_ids)
             self.assertEqual(state["stopped"], [])
             self.assertEqual(dispatcher.spawned_pids, [4242])
+
+    def test_unattributed_same_worktree_session_is_not_dispatch_success(self):
+        """A new same-worktree session that is not the owned spawn is not success."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target-wt"
+            target.mkdir()
+            state = {
+                "sessions": [
+                    PersistSession(
+                        session_id="already-there",
+                        workspace=str(target.resolve()),
+                        status="Attached",
+                        task="Keep Me",
+                    )
+                ],
+                "terminated": [],
+            }
+
+            def list_sessions() -> list[PersistSession]:
+                return list(state["sessions"])
+
+            def spawn(command: list[str], worktree_path: str) -> int:
+                state["sessions"].append(
+                    PersistSession(
+                        session_id="intruder-1",
+                        workspace=str(target.resolve()),
+                        status="Detached",
+                        task="Someone Else",
+                    )
+                )
+                return 5150
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=list_sessions,
+                list_target_procs=lambda _wt: [],
+                spawn=spawn,
+                git_runner=self._clean_git(),
+                resource_preflight=_pass_resource_preflight,
+                owned_session_ids=lambda _pid, _candidates: set(),
+                terminate_process_group=lambda pid: state["terminated"].append(pid),
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            with self.assertRaises(DispatchSpawnedButUnobservedError) as ctx:
+                dispatcher.start_resume(self._dispatch_request(str(target)))
+            self.assertIn("not the owned spawn", str(ctx.exception))
+            self.assertIn("intruder-1", str(ctx.exception))
+            self.assertEqual(state["terminated"], [5150])
+            self.assertEqual(
+                [item.session_id for item in state["sessions"]],
+                ["already-there", "intruder-1"],
+            )
+
+    def test_spawn_tree_names_only_descendant_session_ids(self):
+        import subprocess
+        import sys
+
+        from atlas.work_controller import persist_session_ids_in_spawn_tree
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)", "owned-session-1"]
+        )
+        try:
+            found = persist_session_ids_in_spawn_tree(
+                proc.pid, {"owned-session-1", "other-session"}
+            )
+            self.assertEqual(found, {"owned-session-1"})
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
 
     def test_post_spawn_list_failure_raises_spawned_but_unobserved(self):
         """agent persist list failure after spawn ⇒ recoverable specialized error."""
@@ -838,7 +928,7 @@ class CursorLauncherTests(unittest.TestCase):
                 textwrap.dedent(
                     f"""\
                     #!/usr/bin/env python3
-                    import json, sys
+                    import json, os, sys
                     from pathlib import Path
                     state_path = Path({str(state_file)!r})
                     argv = sys.argv[1:]
@@ -867,7 +957,10 @@ class CursorLauncherTests(unittest.TestCase):
                         tmp_path = state_path.with_name(state_path.name + ".tmp")
                         tmp_path.write_text(json.dumps(sessions))
                         tmp_path.replace(state_path)
-                        raise SystemExit(0)
+                        os.execv(
+                            sys.executable,
+                            [sys.executable, "-c", "import time; time.sleep(60)", "fake-target-1"],
+                        )
                     print("unexpected argv", argv, file=sys.stderr)
                     raise SystemExit(2)
                     """
@@ -878,6 +971,7 @@ class CursorLauncherTests(unittest.TestCase):
 
             original_path = os.environ.get("PATH", "")
             os.environ["PATH"] = f"{bin_dir}:{original_path}"
+            dispatcher = None
             try:
                 before = json.loads(state_file.read_text(encoding="utf-8"))
                 dispatcher = PtyPersistCursorDispatcher(
@@ -891,6 +985,11 @@ class CursorLauncherTests(unittest.TestCase):
                 after = json.loads(state_file.read_text(encoding="utf-8"))
             finally:
                 os.environ["PATH"] = original_path
+                if dispatcher is not None:
+                    from atlas.work_controller import terminate_spawned_process_group
+
+                    for pid in dispatcher.spawned_pids:
+                        terminate_spawned_process_group(pid, wait_sec=0.2)
 
             self.assertEqual(result.session_id, "fake-target-1")
             self.assertEqual(

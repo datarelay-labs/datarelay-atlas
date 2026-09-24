@@ -1864,18 +1864,40 @@ class ResourcePreflightBlocked(ValidationError):
         self.exit_code = exit_code
 
 
+def _explicit_preflight_script(env_name: str) -> Path | None:
+    """Return a configured script path, or None when that path is not a file.
+
+    An explicit variable that is set but missing fails closed. Callers must
+    not fall through to another location after this returns None for a
+    non-empty value; the caller distinguishes unset from missing.
+    """
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        return None
+    path = Path(raw.strip())
+    return path if path.is_file() else None
+
+
 def resolve_cursor_resource_preflight_script() -> Path | None:
     """Locate the Engineering System preflight without a hardcoded checkout.
 
-    ``ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT`` is the script file.
-    ``ENGINEERING_SYSTEM_ROOT`` is the canonical checkout, and the script is
-    ``tools/cursor-resource-preflight.py`` under that root. A missing or unset
-    location is unavailable and must fail closed.
+    Precedence:
+    1. ``ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD`` — canonical explicit script
+       path named by ``/work-resume``.
+    2. ``ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT`` — compatibility alias,
+       used only when the canonical variable is unset.
+    3. ``ENGINEERING_SYSTEM_ROOT``/``tools/cursor-resource-preflight.py`` when
+       neither explicit path is set.
+
+    A set explicit path that is not an existing file is unavailable. A missing
+    or unset location must fail closed.
     """
-    explicit = os.environ.get("ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT", "").strip()
-    if explicit:
-        path = Path(explicit)
-        return path if path.is_file() else None
+    if os.environ.get("ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD", "").strip():
+        return _explicit_preflight_script("ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD")
+    if os.environ.get("ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT", "").strip():
+        return _explicit_preflight_script(
+            "ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT"
+        )
     root = os.environ.get("ENGINEERING_SYSTEM_ROOT", "").strip()
     if not root:
         return None
@@ -2019,9 +2041,11 @@ class PtyPersistCursorDispatcher:
     """Create a fresh observable `agent persist` session that runs /work-resume.
 
     Transport only: PTY/`script` spawn. Durable success requires a new
-    ``agent persist list`` session for the target worktree. A target process
-    is diagnostic only and never a successful dispatch. Does not attach to,
-    stop, or otherwise mutate sessions outside the owned spawn group.
+    ``agent persist list`` session for the target worktree that is named by
+    the owned spawn's process tree. Another new session in the same worktree
+    is not this launch. A target process is diagnostic only and never a
+    successful dispatch. Does not attach to, stop, or otherwise mutate
+    sessions outside the owned spawn group.
 
     Immediately before spawn, revalidates exact repository/branch/HEAD and
     requires clean porcelain so a stale or dirty tree cannot launch Cursor.
@@ -2036,6 +2060,7 @@ class PtyPersistCursorDispatcher:
         git_runner: GitRunner | None = None,
         resource_preflight: Callable[[], tuple[int, str]] | None = None,
         terminate_process_group: Callable[[int], None] | None = None,
+        owned_session_ids: Callable[[int, set[str]], set[str]] | None = None,
         poll_interval_sec: float = 0.5,
         poll_timeout_sec: float = 45.0,
         sleeper: Callable[[float], None] | None = None,
@@ -2049,6 +2074,9 @@ class PtyPersistCursorDispatcher:
         self.last_process_observation = ""
         self._terminate_process_group = (
             terminate_process_group or terminate_spawned_process_group
+        )
+        self._owned_session_ids = (
+            owned_session_ids or persist_session_ids_in_spawn_tree
         )
         self._poll_interval_sec = poll_interval_sec
         self._poll_timeout_sec = poll_timeout_sec
@@ -2144,6 +2172,7 @@ class PtyPersistCursorDispatcher:
             raise ValidationError(f"cursor spawn failed before start: {exc}") from exc
         self.spawned_pids.append(pid)
         seen_process = ""
+        unattributed: list[str] = []
         deadline = time.monotonic() + self._poll_timeout_sec
         while time.monotonic() < deadline:
             try:
@@ -2152,17 +2181,27 @@ class PtyPersistCursorDispatcher:
                     item for item in current if item.session_id not in before_ids
                 ]
                 if new_sessions:
-                    chosen = new_sessions[-1]
-                    return DispatchResult(
-                        session_id=chosen.session_id,
-                        command=command,
-                        resource_preflight_result=self.last_resource_preflight.get(
-                            "result", ""
-                        ),
-                        resource_preflight_reason=self.last_resource_preflight.get(
-                            "reason", ""
-                        ),
+                    owned = self._owned_session_ids(
+                        pid, {item.session_id for item in new_sessions}
                     )
+                    attributed = [
+                        item for item in new_sessions if item.session_id in owned
+                    ]
+                    if attributed:
+                        chosen = attributed[-1]
+                        return DispatchResult(
+                            session_id=chosen.session_id,
+                            command=command,
+                            resource_preflight_result=self.last_resource_preflight.get(
+                                "result", ""
+                            ),
+                            resource_preflight_reason=self.last_resource_preflight.get(
+                                "reason", ""
+                            ),
+                        )
+                    for item in new_sessions:
+                        if item.session_id not in unattributed:
+                            unattributed.append(item.session_id)
                 for proc_pid, cmd in self._list_target_procs(worktree):
                     if proc_pid not in before_pids:
                         seen_process = f"proc:{proc_pid} {cmd}".strip()
@@ -2182,12 +2221,18 @@ class PtyPersistCursorDispatcher:
         diagnostic = ""
         if seen_process:
             diagnostic = f"; process observation {seen_process} is diagnostic only"
+        if unattributed:
+            diagnostic += (
+                "; unattributed same-worktree session(s) "
+                + ",".join(unattributed)
+                + " are not the owned spawn"
+            )
         self._fail_unobserved(
             pid,
             message=(
-                "agent persist list did not show a new session for the target "
-                f"worktree within {self._poll_timeout_sec}s{diagnostic} "
-                f"(cwd={worktree}, argv={command!r}, pid={pid})"
+                "agent persist list did not show a session owned by the spawned "
+                f"process for the target worktree within {self._poll_timeout_sec}s"
+                f"{diagnostic} (cwd={worktree}, argv={command!r}, pid={pid})"
             ),
             command=command,
         )
@@ -2261,6 +2306,76 @@ def _is_agent_persist_trust_cmdline(cmdline: str) -> bool:
     return _cmdline_has_ordered_tokens(
         parts, ("persist", "--force", "--trust", prompt)
     )
+
+
+def _descendant_pids(root_pid: int) -> set[int]:
+    """Return root_pid and every process whose parent chain reaches it."""
+    if root_pid <= 0:
+        return set()
+    parents: dict[int, int] = {}
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return {root_pid}
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            status = (entry / "status").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        ppid = None
+        for line in status.splitlines():
+            if line.startswith("PPid:"):
+                ppid = int(line.split()[1])
+                break
+        if ppid is not None:
+            parents[int(entry.name)] = ppid
+    children: dict[int, list[int]] = {}
+    for pid, ppid in parents.items():
+        children.setdefault(ppid, []).append(pid)
+    found = {root_pid}
+    stack = [root_pid]
+    while stack:
+        current = stack.pop()
+        for child in children.get(current, []):
+            if child not in found:
+                found.add(child)
+                stack.append(child)
+    return found
+
+
+def _cmdline_tokens(pid: int) -> set[str]:
+    try:
+        raw = (Path("/proc") / str(pid) / "cmdline").read_bytes()
+    except OSError:
+        return set()
+    tokens = {part.decode("utf-8", "replace") for part in raw.split(b"\x00") if part}
+    flattened: set[str] = set()
+    for token in tokens:
+        flattened.add(token)
+        flattened.update(part for part in token.split() if part)
+    return flattened
+
+
+def persist_session_ids_in_spawn_tree(
+    spawn_pid: int, candidate_ids: set[str]
+) -> set[str]:
+    """Session ids named by the owned spawn or its descendants.
+
+    Host Cursor persist processes record the session id as their own argv
+    token (``--cursor-persist-restore <id>`` or tmux ``-t <id>``). A new
+    persist-list row is this launch only when that id appears there. No
+    matching process evidence means the session is unattributed.
+    """
+    wanted = {item for item in candidate_ids if item}
+    if spawn_pid <= 0 or not wanted:
+        return set()
+    found: set[str] = set()
+    for pid in _descendant_pids(spawn_pid):
+        found.update(wanted.intersection(_cmdline_tokens(pid)))
+        if found == wanted:
+            break
+    return found
 
 
 def list_persist_trust_processes(worktree_path: str) -> list[tuple[int, str]]:

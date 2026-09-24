@@ -27,10 +27,12 @@ substitute for persistent/observable rework sessions. Built-in Cursor `/resume`
 is not the Engineering System resume workflow; the canonical slash command is
 `/work-resume` (`.cursor/commands/work-resume.md`). Before that spawn, the
 dispatcher runs `tools/cursor-resource-preflight.py` from the checkout named by
-`ENGINEERING_SYSTEM_ROOT`, or the file named by
-`ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT`. Exit 0 `PASS` or `WARN` may
-spawn. Any other result is `BLOCK`: no new session, and existing sessions are
-not stopped.
+`ENGINEERING_SYSTEM_ROOT`, or the explicit script path named by
+`ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD` (the override in
+`/work-resume`). `ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT` is a
+compatibility alias used only when `..._GUARD` is unset. Exit 0 `PASS` or
+`WARN` may spawn. Any other result is `BLOCK`: no new session, and existing
+sessions are not stopped.
 
 ## Minimal design gate
 
@@ -100,8 +102,10 @@ not stopped.
      `--force` follows `persist` and is Run Everything. A resource-preflight
      `BLOCK` or an unavailable preflight refuses the spawn.
    - Durable success requires a new `agent persist list` session for the target
-     worktree. A target process is diagnostic only and is not dispatch success.
-     Do not stop/attach/modify unrelated sessions.
+     worktree that is named by the owned spawn's process tree. Another new
+     session in the same worktree is not this launch. A target process is
+     diagnostic only and is not dispatch success. Do not stop/attach/modify
+     unrelated sessions.
    - PTY/tmux usage is transport only, not controller business state.
    - Do not fall back to `agent -p`.
 10. **Retry bound**: configurable `max_attempts` (default 3). Exhaustion →

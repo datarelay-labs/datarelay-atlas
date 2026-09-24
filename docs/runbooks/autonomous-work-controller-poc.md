@@ -46,20 +46,25 @@ agent persist --force --trust /work-resume
 
 with `cwd=<validated-worktree>`. `--force` follows `persist`. `--trust` trusts
 the workspace and the prompt remains `/work-resume`. Durable dispatch success
-requires a new `agent persist list` session for that worktree. A target
-process is diagnostic only and must not be reported as success. Do not
-stop/attach unrelated sessions. If no new session appears before the bounded
-timeout, terminate only the owned spawned process group and fail closed.
+requires a new `agent persist list` session for that worktree whose id is
+named by the owned spawn's process tree. Another new session in the same
+worktree is not this launch. A target process is diagnostic only and must not
+be reported as success. Do not stop/attach unrelated sessions. If no owned
+session appears before the bounded timeout, terminate only the owned spawned
+process group and fail closed.
 
 Before spawn, the dispatcher runs the Engineering System resource preflight.
-Set `ENGINEERING_SYSTEM_ROOT` to the canonical checkout, or set
-`ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT` to
-`tools/cursor-resource-preflight.py` in that checkout. Exit 0 (`PASS` or
-`WARN`) may spawn. A nonzero, unknown, or unavailable result is `BLOCK`: the
-controller finalizes `HUMAN_REQUIRED` with `reason=resource_preflight_blocked`,
-creates no session, and does not stop existing sessions. The final
-repo/branch/HEAD and clean-porcelain check still runs immediately before a
-permitted spawn.
+The canonical explicit script path is
+`ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD` (the override named by
+`/work-resume`). `ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT` is a
+compatibility alias used only when `..._GUARD` is unset. When neither is set,
+the script is `tools/cursor-resource-preflight.py` under
+`ENGINEERING_SYSTEM_ROOT`. A set explicit path that is not an existing file
+is unavailable. Exit 0 (`PASS` or `WARN`) may spawn. A nonzero, unknown, or
+unavailable result is `BLOCK`: the controller finalizes `HUMAN_REQUIRED` with
+`reason=resource_preflight_blocked`, creates no session, and does not stop
+existing sessions. The final repo/branch/HEAD and clean-porcelain check still
+runs immediately before a permitted spawn.
 
 ## Offline deterministic dogfood (no network)
 
@@ -206,8 +211,9 @@ and enqueues/drains the local inbox without Telegram. Default audit adapter is
 Production default is **unattended**: when draining, the hook passes
 `--spawn-dispatch` so a `REWORK` verdict can launch a fresh Cursor session with
 exact argv `agent persist --force --trust /work-resume`. The hook inherits
-`ENGINEERING_SYSTEM_ROOT` or `ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT`;
-without a usable preflight the spawn fails closed. Set
+`ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD`, the
+`ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT` alias, or
+`ENGINEERING_SYSTEM_ROOT`; without a usable preflight the spawn fails closed. Set
 `AWC_SPAWN_DISPATCH=0` only for audit-only / operator opt-out (drain without
 auto-dispatch).
 

@@ -405,30 +405,29 @@ def collect_test_evidence(
     return result
 
 
-_UNITTEST_INFRA_RE = re.compile(
+_UNITTEST_COLLECTION_RE = re.compile(
     r"(?is)"
-    r"failed to import test module|"
     r"unittest\.loader\._FailedTest|"
-    r"ModuleNotFoundError:|"
+    r"failed to import test module|"
     r"ImportError:\s+Failed to import|"
-    r"No module named\s|"
-    r"SyntaxError:|"
-    r"PermissionError:|"
-    r"ERROR:\s+Discovery failure"
+    r"ERROR:\s+Discovery failure|"
+    r"Start directory is not importable"
 )
 
 
 def classify_unittest_result(returncode: int, transcript: str) -> str:
     """Map unittest exit + transcript to PASS|FAIL|ERROR.
 
-    Assertion/test failures remain FAIL → autonomous REWORK. Collection and
-    environment/import failures are ERROR → HUMAN_REQUIRED so setup problems
-    are never dispatched as product rework.
+    Assertion and executed-test failures remain FAIL → autonomous REWORK.
+    Infrastructure ERROR is only collection/discovery structure, or a nonzero
+    run with no ``Ran N tests`` summary. ``SyntaxError``,
+    ``ModuleNotFoundError``, and ``PermissionError`` raised by an executed
+    test, and assertion text that mentions those names, stay FAIL.
     """
     if returncode == 0:
         return "PASS"
     text = transcript or ""
-    if _UNITTEST_INFRA_RE.search(text):
+    if _UNITTEST_COLLECTION_RE.search(text):
         return "ERROR"
     # Nonzero exit with no runnable summary is also infrastructure, not FAIL.
     if not re.search(r"(?m)^Ran \d+ tests?", text):
