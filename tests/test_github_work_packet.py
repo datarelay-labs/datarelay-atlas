@@ -1964,6 +1964,7 @@ class QueuedCycleAdapterTests(unittest.TestCase):
         }
 
     def _run(self, issues: dict[int, dict], **hooks):
+        event_id = hooks.pop("event_id", "evt-pass")
         edits: list[tuple[int, str]] = []
         pred_views = {"n": 0}
 
@@ -2016,7 +2017,9 @@ class QueuedCycleAdapterTests(unittest.TestCase):
             self.fail(f"unexpected argv: {argv}")
 
         adapter = GitHubWorkPacketAdapter(command_runner=runner)
-        result = adapter.advance_pass_cycle(**self._kwargs())
+        kwargs = self._kwargs()
+        kwargs["event_id"] = event_id
+        result = adapter.advance_pass_cycle(**kwargs)
         return result, edits
 
     def test_disposition_ignores_evidence_and_other_predecessors(self):
@@ -2234,6 +2237,80 @@ class QueuedCycleAdapterTests(unittest.TestCase):
         self.assertEqual(again.kind, "human_required")
         self.assertIn("WORKSTREAM", again.reason)
         self.assertEqual(more_edits, [])
+
+    def test_same_branch_other_workstream_keeps_zero_successor_pass(self):
+        other = SAMPLE_BODY.replace(
+            f"WORKSTREAM={WORKSTREAM}",
+            "WORKSTREAM=unrelated-stream",
+        )
+        malformed_other = other.replace(
+            "WORKSTREAM=unrelated-stream\n",
+            "WORKSTREAM=unrelated-stream\nWORKSTREAM=unrelated-stream\n",
+            1,
+        )
+        result, edits = self._run(
+            {
+                12: _ai_issue(12, SAMPLE_BODY),
+                40: _ai_issue(40, other),
+                41: _ai_issue(41, malformed_other),
+            }
+        )
+        self.assertEqual(result.kind, "no_successor")
+        self.assertEqual(edits, [])
+
+    def test_same_branch_other_workstream_does_not_claim_dispatch(self):
+        other = SAMPLE_BODY.replace(
+            f"WORKSTREAM={WORKSTREAM}",
+            "WORKSTREAM=unrelated-stream",
+        )
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(18, _queued_successor_body()),
+            40: _ai_issue(40, other),
+        }
+        result, edits = self._run(issues)
+        self.assertEqual(result.kind, "human_required")
+        self.assertIn("cannot uniquely", result.reason)
+        self.assertIn("#40", result.reason)
+        self.assertEqual(edits, [])
+        self.assertIn("QUEUE_STATE=QUEUED", issues[18]["body"].split("\n\n", 1)[0])
+        self.assertNotEqual(result.kind, "advanced")
+        self.assertNotEqual(result.kind, "already_activated")
+
+    def test_unusual_event_ids_keep_zero_successor_pass(self):
+        safe = cycle_transition_id(
+            issue_number=12,
+            head=HEAD_B,
+            event_id="evt-pass",
+        )
+        self.assertTrue(safe.endswith(":evt-pass"))
+        for event_id in ("evt with spaces", "e" * 300):
+            result, edits = self._run(
+                {12: _ai_issue(12, SAMPLE_BODY)},
+                event_id=event_id,
+            )
+            self.assertEqual(result.kind, "no_successor", event_id)
+            self.assertEqual(edits, [])
+            self.assertNotIn(" ", result.transition_id)
+            self.assertIn(":h", result.transition_id)
+
+    def test_malformed_same_workstream_active_does_not_activate(self):
+        malformed = SAMPLE_BODY.replace(
+            f"WORKSTREAM={WORKSTREAM}\n",
+            f"WORKSTREAM={WORKSTREAM}\nWORKSTREAM={WORKSTREAM}\n",
+            1,
+        ).replace(f"BRANCH={BRANCH}", "BRANCH=feature/other-active")
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(18, _queued_successor_body()),
+            99: _ai_issue(99, malformed),
+        }
+        result, edits = self._run(issues)
+        self.assertEqual(result.kind, "human_required")
+        self.assertIn("malformed ACTIVE packet", result.reason)
+        self.assertIn("#99", result.reason)
+        self.assertEqual(edits, [])
+        self.assertIn("QUEUE_STATE=QUEUED", issues[18]["body"].split("\n\n", 1)[0])
 
     def test_list_failure_is_human_required_without_edits(self):
         result, edits = self._run({12: _ai_issue(12, SAMPLE_BODY)}, list_fails=True)

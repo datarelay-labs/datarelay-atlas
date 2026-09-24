@@ -130,7 +130,14 @@ sessions are not stopped.
     open. Multiple, malformed, untrusted, mismatched, or stale candidates
     stop `HUMAN_REQUIRED` with no guessed successor. Another trusted ACTIVE
     packet for that same `WORKSTREAM` blocks activation even when its branch
-    differs; an ACTIVE packet for a different workstream does not. A crash after predecessor
+    differs. A different workstream may coexist, including on the same branch,
+    and must not turn a zero-successor PASS into `HUMAN_REQUIRED`. If that
+    other packet is on the same branch, successor activation stays fail-closed
+    because `/work-resume` cannot select one ACTIVE packet. A malformed
+    trusted ACTIVE packet that still shows that `WORKSTREAM` and repository
+    fails closed instead of being ignored. Completion event ids that do not fit
+    the transition alphabet are hashed so an already accepted PASS can still
+    stop. A crash after predecessor
     `COMPLETE` resumes only that transition. A dispatch already claimed is not
     started again. No auto-merge and no new launcher.
 

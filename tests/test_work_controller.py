@@ -943,6 +943,16 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(ctl.show("awc-poc")["expected_head"], HEAD_B)
             self.assertEqual(len(dispatcher.requests), 1)
 
+    def test_unusual_event_id_pass_does_not_dispatch(self):
+        for event_id in ("evt with spaces", "e" * 300):
+            with tempfile.TemporaryDirectory() as tmp:
+                ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
+                outcome = ctl.handle_completion(self._event(event_id=event_id))
+                self.assertEqual(outcome["state"], "PASSED", event_id)
+                self.assertEqual(outcome["cycle"], "no_successor")
+                self.assertEqual(dispatcher.requests, [])
+                self.assertEqual(packets.updates, [])
+
 
 if __name__ == "__main__":
     unittest.main()

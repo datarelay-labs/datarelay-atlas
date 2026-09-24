@@ -7,6 +7,7 @@ runs an independent audit, and either stops or dispatches a fresh /work-resume.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import pty
@@ -1361,6 +1362,21 @@ class CycleAdvanceResult:
             raise ValidationError(f"invalid cycle advance kind: {self.kind}")
 
 
+def _cycle_event_token(event_id: str) -> str:
+    """Return a transition-safe token for an already accepted completion id.
+
+    Ids that already fit the transition alphabet are preserved so existing
+    ``CYCLE_TRANSITION`` values still match. Any other nonempty id accepted by
+    ``CompletionEvent`` is hashed so a PASS is not rejected at cycle time.
+    """
+    event = (event_id or "").strip()
+    if not event:
+        raise ValidationError(f"invalid cycle event_id: {event_id!r}")
+    if _CYCLE_EVENT_RE.fullmatch(event):
+        return event
+    return "h" + hashlib.sha256(event.encode("utf-8")).hexdigest()
+
+
 def cycle_transition_id(*, issue_number: int, head: str, event_id: str) -> str:
     """Deterministic identity for one predecessor completion event and HEAD."""
     if int(issue_number) < 1:
@@ -1368,10 +1384,65 @@ def cycle_transition_id(*, issue_number: int, head: str, event_id: str) -> str:
     normalized_head = head.strip().lower()
     if not HEAD_RE.match(normalized_head):
         raise ValidationError(f"invalid head sha: {head}")
-    event = event_id.strip()
-    if not _CYCLE_EVENT_RE.fullmatch(event):
-        raise ValidationError(f"invalid cycle event_id: {event_id!r}")
-    return f"{int(issue_number)}:{normalized_head}:{event}"
+    return f"{int(issue_number)}:{normalized_head}:{_cycle_event_token(event_id)}"
+
+
+def _leading_metadata_groups(body: str) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for line in _leading_packet_metadata_text(body).splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+            continue
+        grouped.setdefault(key, []).append(value.strip())
+    return grouped
+
+
+def _target_repo_matches(target: str, repository: str) -> bool:
+    try:
+        require_canonical_target_repo(target, repository)
+    except ValidationError:
+        return False
+    return True
+
+
+def _active_workstream_disposition(
+    body: str,
+    *,
+    repository: str,
+    workstream: str,
+) -> str:
+    """Classify an open packet against one repository WORKSTREAM.
+
+    Returns ``match``, ``other``, or ``unclassifiable``. A malformed packet
+    that still visibly carries ``STATUS=ACTIVE``, the same ``TARGET_REPO``,
+    and the same ``WORKSTREAM`` is unclassifiable and must fail closed.
+    A clearly different workstream stays ``other`` even when its metadata
+    cannot be parsed.
+    """
+    expected = workstream.strip()
+    try:
+        meta = _parse_leading_packet_metadata(body)
+    except ValidationError:
+        grouped = _leading_metadata_groups(body)
+        if "ACTIVE" not in grouped.get("STATUS", []):
+            return "other"
+        if expected not in grouped.get("WORKSTREAM", []):
+            return "other"
+        if not any(
+            _target_repo_matches(target, repository)
+            for target in grouped.get("TARGET_REPO", [])
+        ):
+            return "other"
+        return "unclassifiable"
+    if meta.get("STATUS") != "ACTIVE":
+        return "other"
+    if (meta.get("WORKSTREAM") or "").strip() != expected:
+        return "other"
+    if not _target_repo_matches(meta.get("TARGET_REPO") or "", repository):
+        return "other"
+    return "match"
 
 
 def _after_issue_number(raw: str | None) -> int | None:
@@ -1645,6 +1716,11 @@ class RecordingWorkPacketAdapter:
         head: str,
         event_id: str,
     ) -> CycleAdvanceResult:
+        cycle_transition_id(
+            issue_number=int(issue_number),
+            head=head,
+            event_id=event_id,
+        )
         self.cycle_calls.append(
             {
                 "repository": repository,
@@ -2158,11 +2234,6 @@ class GitHubWorkPacketAdapter:
                 transition_id,
             )
         self._assert_cycle_predecessor(predecessor_body, repo, expected_branch, expected_workstream)
-        self._require_unique_active_packet(
-            repo,
-            issue_number=issue_number,
-            branch=expected_branch,
-        )
         eligible, rejections = self._queued_successors(
             repo,
             predecessor_issue=issue_number,
@@ -2192,6 +2263,18 @@ class GitHubWorkPacketAdapter:
             return self._cycle_human(
                 "refusing successor activation while other ACTIVE packets share "
                 f"WORKSTREAM {expected_workstream}: {listed}",
+                transition_id,
+            )
+        ambiguous = self._other_branch_resume_issues(
+            repo,
+            expected_branch,
+            allowed={issue_number},
+        )
+        if ambiguous:
+            listed = ", ".join(f"#{number}" for number in ambiguous)
+            return self._cycle_human(
+                "refusing successor dispatch because /work-resume cannot uniquely "
+                f"select an ACTIVE packet on {expected_branch}: {listed}",
                 transition_id,
             )
         return self._activate_successor(
@@ -2274,6 +2357,18 @@ class GitHubWorkPacketAdapter:
                     f"WORKSTREAM {workstream}",
                     transition_id,
                 )
+            ambiguous = self._other_branch_resume_issues(
+                repository,
+                branch,
+                allowed={successor_issue},
+            )
+            if ambiguous:
+                listed = ", ".join(f"#{number}" for number in ambiguous)
+                return self._cycle_human(
+                    "refusing successor dispatch because /work-resume cannot uniquely "
+                    f"select an ACTIVE packet on {branch}: {listed}",
+                    transition_id,
+                )
             return CycleAdvanceResult(
                 kind="already_activated",
                 successor_issue=successor_issue,
@@ -2303,6 +2398,18 @@ class GitHubWorkPacketAdapter:
             return self._cycle_human(
                 "refusing successor activation while other ACTIVE packets share "
                 f"WORKSTREAM {workstream}: {listed}",
+                transition_id,
+            )
+        ambiguous = self._other_branch_resume_issues(
+            repository,
+            branch,
+            allowed={predecessor_issue},
+        )
+        if ambiguous:
+            listed = ", ".join(f"#{number}" for number in ambiguous)
+            return self._cycle_human(
+                "refusing successor dispatch because /work-resume cannot uniquely "
+                f"select an ACTIVE packet on {branch}: {listed}",
                 transition_id,
             )
         return self._activate_successor(
@@ -2413,6 +2520,18 @@ class GitHubWorkPacketAdapter:
                 return self._cycle_human(
                     "refusing successor activation while other ACTIVE packets share "
                     f"WORKSTREAM {predecessor_workstream}: {listed}",
+                    transition_id,
+                )
+            ambiguous = self._other_branch_resume_issues(
+                repository,
+                branch,
+                allowed={predecessor_issue},
+            )
+            if ambiguous:
+                listed = ", ".join(f"#{number}" for number in ambiguous)
+                return self._cycle_human(
+                    "refusing successor dispatch because /work-resume cannot uniquely "
+                    f"select an ACTIVE packet on {branch}: {listed}",
                     transition_id,
                 )
         activated = render_cycle_successor_active_body(
@@ -2549,11 +2668,12 @@ class GitHubWorkPacketAdapter:
             except (TypeError, ValueError):
                 number = None
             body = str(issue.get("body") or "")
-            if not self._active_workstream_matches(
+            disposition = _active_workstream_disposition(
                 body,
                 repository=repository,
                 workstream=expected,
-            ):
+            )
+            if disposition == "other":
                 continue
             if number is None:
                 raise ValidationError(
@@ -2566,9 +2686,28 @@ class GitHubWorkPacketAdapter:
                     "WORK_PACKET_AUTHOR_UNTRUSTED: "
                     f"candidate #{number} unverifiable ({exc})"
                 ) from exc
-            if trust == "trusted":
-                trusted.append(number)
+            if trust != "trusted":
+                continue
+            if disposition == "unclassifiable":
+                raise ValidationError(
+                    "malformed ACTIVE packet cannot be classified for "
+                    f"WORKSTREAM {expected}: #{number}"
+                )
+            if disposition != "match":
+                continue
+            trusted.append(number)
         return sorted(trusted)
+
+    def _other_branch_resume_issues(
+        self,
+        repository: str,
+        branch: str,
+        *,
+        allowed: set[int],
+    ) -> list[int]:
+        """Other trusted ACTIVE packets `/work-resume` could select on this branch."""
+        _saw, trusted = self._scan_trusted_active_packets(repository, branch=branch)
+        return sorted(number for number in trusted if number not in allowed)
 
     def _conflicting_active_workstream_issues(
         self,
@@ -2582,34 +2721,6 @@ class GitHubWorkPacketAdapter:
             for number in self._trusted_active_workstream_issues(repository, workstream)
             if number not in allowed
         ]
-
-    @staticmethod
-    def _active_workstream_matches(
-        body: str,
-        *,
-        repository: str,
-        workstream: str,
-    ) -> bool:
-        """Match trusted ACTIVE packets for one repository WORKSTREAM.
-
-        Branch is intentionally ignored. Unrelated workstreams do not match.
-        """
-        try:
-            meta = _parse_leading_packet_metadata(body)
-        except ValidationError:
-            return False
-        if meta.get("STATUS") != "ACTIVE":
-            return False
-        if (meta.get("WORKSTREAM") or "").strip() != workstream:
-            return False
-        target = meta.get("TARGET_REPO")
-        if not target:
-            return False
-        try:
-            require_canonical_target_repo(target, repository)
-        except ValidationError:
-            return False
-        return True
 
     def _cas_replace_issue_body(
         self,

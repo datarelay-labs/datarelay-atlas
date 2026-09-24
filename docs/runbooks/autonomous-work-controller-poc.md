@@ -274,8 +274,12 @@ only then activates exactly one successor on the same branch and the same
 stop as local `PASSED` without a GitHub write. Two eligible successors, a
 malformed or untrusted queued packet, a branch or `WORKSTREAM` mismatch, a
 stale compare-and-set, or another trusted ACTIVE packet for that same
-`WORKSTREAM` (any branch) stops `HUMAN_REQUIRED` without guessing. REWORK does
-not chain.
+`WORKSTREAM` (any branch) stops `HUMAN_REQUIRED` without guessing. Another workstream's ACTIVE packet does not block a zero-successor PASS.
+The same-branch case still stops `HUMAN_REQUIRED` before successor activation
+when `/work-resume` could not uniquely select the successor. A trusted
+ACTIVE packet whose metadata is malformed but still shows that `WORKSTREAM`
+and repository also stops `HUMAN_REQUIRED` before successor activation.
+REWORK does not chain.
 
 ## Telegram / notify
 
