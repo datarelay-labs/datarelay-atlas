@@ -37,6 +37,52 @@ HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 HEAD2 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 
+def _empty_review_threads_stdout() -> str:
+    return json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {
+                                "hasNextPage": False,
+                                "endCursor": None,
+                            },
+                            "nodes": [],
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+
+def _graphql_threads_result(
+    argv: list[str], nodes: list[dict] | None = None
+) -> subprocess.CompletedProcess[str] | None:
+    if "graphql" not in argv:
+        return None
+    if nodes is None:
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=_empty_review_threads_stdout(), stderr=""
+        )
+    payload = {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": nodes,
+                    }
+                }
+            }
+        }
+    }
+    return subprocess.CompletedProcess(
+        argv, 0, stdout=json.dumps(payload), stderr=""
+    )
+
+
 class WorktreeIdentityTests(unittest.TestCase):
     def test_normalize_github_repository_variants(self):
         self.assertEqual(
@@ -1669,6 +1715,9 @@ class CodexAuditProviderTests(unittest.TestCase):
                     stderr="no checks reported on the 'feature/x' branch",
                 )
             if argv[:2] == ["gh", "api"]:
+                graphql = _graphql_threads_result(argv)
+                if graphql is not None:
+                    return graphql
                 return subprocess.CompletedProcess(
                     argv, 0, stdout=json.dumps([[]]), stderr=""
                 )
@@ -2030,6 +2079,373 @@ class CodexAuditProviderTests(unittest.TestCase):
         )
         self.assertEqual(err["status"], "ERROR")
 
+    def test_remapped_historical_inline_threads_do_not_exhaust_current_budget(self):
+        """Old threads remapped onto the current diff must not force INCOMPLETE.
+
+        GitHub sets commit_id to the current HEAD while original_commit_id
+        stays the creation SHA. A resolved historical thread is not a current
+        finding. An unresolved thread created on, or still open against, the
+        current HEAD still remains in the bounded set.
+        """
+        from atlas.codex_audit import _bounded_review_items
+
+        old = "cccccccccccccccccccccccccccccccccccccccc"
+        historical: list[dict] = []
+        for index in range(40):
+            root_id = 1000 + index
+            historical.append(
+                {
+                    "id": root_id,
+                    "user": {"login": "reviewer"},
+                    "body": "P1 historical finding " + ("y" * 400),
+                    "commit_id": HEAD,
+                    "original_commit_id": old,
+                    "path": "atlas/chat_audit.py",
+                    "line": index + 1,
+                }
+            )
+            historical.append(
+                {
+                    "id": 2000 + index,
+                    "in_reply_to_id": root_id,
+                    "user": {"login": "author"},
+                    "body": "RESOLUTION=RESOLVED",
+                    "isResolved": True,
+                    "commit_id": HEAD,
+                    "original_commit_id": old,
+                }
+            )
+        _raw, truncated = _bounded_review_items(historical, max_chars=800)
+        self.assertTrue(truncated)
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            graphql = _graphql_threads_result(argv)
+            if graphql is not None:
+                return graphql
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [
+                    [
+                        {
+                            "id": 1,
+                            "user": {"login": "reviewer"},
+                            "state": "COMMENTED",
+                            "body": "exact-head review, no finding",
+                            "commit_id": HEAD,
+                            "submitted_at": "2026-09-23T05:00:00Z",
+                        }
+                    ]
+                ]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [historical]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        result = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner,
+            max_chars=2400,
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(result["status"], "OK")
+        self.assertNotIn("truncated_sections", result)
+        self.assertEqual(result["inline_comments"], [])
+        self.assertEqual(len(result["reviews"]), 1)
+
+        unresolved = {
+            "id": 9,
+            "user": {"login": "reviewer"},
+            "body": "P1 still open on this head",
+            "commit_id": HEAD,
+            "original_commit_id": old,
+            "path": "atlas/chat_audit.py",
+            "line": 3,
+        }
+
+        def runner_open(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            graphql = _graphql_threads_result(argv)
+            if graphql is not None:
+                return graphql
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [[]]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [[unresolved, *historical]]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        open_result = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner_open,
+            max_chars=2400,
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(open_result["status"], "OK")
+        self.assertEqual(
+            [item["id"] for item in open_result["inline_comments"]], [9]
+        )
+
+        ack_thread = [
+            {
+                "id": 50,
+                "user": {"login": "reviewer"},
+                "body": "P1 still needs a fix",
+                "commit_id": HEAD,
+                "original_commit_id": old,
+            },
+            {
+                "id": 51,
+                "in_reply_to_id": 50,
+                "user": {"login": "author"},
+                "body": "I'll investigate",
+                "commit_id": HEAD,
+                "original_commit_id": old,
+            },
+        ]
+
+        def runner_ack(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            graphql = _graphql_threads_result(argv)
+            if graphql is not None:
+                return graphql
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [
+                    [
+                        {
+                            "id": 1,
+                            "user": {"login": "reviewer"},
+                            "state": "COMMENTED",
+                            "body": "exact-head review, no finding",
+                            "commit_id": HEAD,
+                        }
+                    ]
+                ]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [ack_thread]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        ack_result = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner_ack,
+            max_chars=2400,
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(ack_result["status"], "OK")
+        self.assertEqual(
+            [item["id"] for item in ack_result["inline_comments"]], [50, 51]
+        )
+        from atlas.chat_audit_github import _reviews_actionable_for_head
+
+        actionable, _count = _reviews_actionable_for_head(
+            ack_result, target_sha=HEAD
+        )
+        self.assertTrue(actionable)
+
+    def test_graphql_thread_resolution_excludes_historical_root_without_rest_flag(self):
+        """REST comments omit isResolved; GraphQL reviewThreads supplies it."""
+        old = "cccccccccccccccccccccccccccccccccccccccc"
+        root_id = 4077518821
+        rest_root = {
+            "id": root_id,
+            "user": {"login": "reviewer"},
+            "body": "P1 historical finding still listed",
+            "commit_id": HEAD,
+            "original_commit_id": old,
+            "path": "atlas/chat_audit.py",
+            "line": 12,
+        }
+        resolved_thread = {
+            "id": "PRRT_kwDOUjCU4M6k9Nkq",
+            "isResolved": True,
+            "isOutdated": False,
+            "comments": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{"databaseId": root_id}],
+            },
+        }
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            graphql = _graphql_threads_result(argv, nodes=[resolved_thread])
+            if graphql is not None:
+                return graphql
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [
+                    [
+                        {
+                            "id": 1,
+                            "user": {"login": "reviewer"},
+                            "state": "COMMENTED",
+                            "body": "exact-head review, no finding",
+                            "commit_id": HEAD,
+                        }
+                    ]
+                ]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [[rest_root]]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        resolved = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner,
+            max_chars=2400,
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(resolved["status"], "OK")
+        self.assertEqual(resolved["inline_comments"], [])
+
+        open_thread = {
+            **resolved_thread,
+            "isResolved": False,
+        }
+
+        def runner_open(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            graphql = _graphql_threads_result(argv, nodes=[open_thread])
+            if graphql is not None:
+                return graphql
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [[]]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [[rest_root]]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        still_open = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner_open,
+            max_chars=2400,
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(still_open["status"], "OK")
+        self.assertEqual(
+            [item["id"] for item in still_open["inline_comments"]], [root_id]
+        )
+
+        def runner_down(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if "graphql" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="graphql unavailable"
+                )
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps([[]]), stderr=""
+            )
+
+        failed = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=runner_down,
+            target_sha=HEAD,
+        )
+        self.assertEqual(failed["status"], "ERROR")
+        self.assertEqual(failed["failed_section"], "review_threads")
+
+    def test_same_head_native_resolution_omits_resolved_thread(self):
+        from atlas.chat_audit_github import _reviews_actionable_for_head
+        from atlas.codex_audit import _filter_inline_for_current_head
+
+        resolved_comment = {
+            "id": 11,
+            "user": {"login": "reviewer"},
+            "body": "P1 still listed on this head",
+            "commit_id": HEAD,
+            "original_commit_id": HEAD,
+            "path": "atlas/chat_audit.py",
+            "isResolved": True,
+        }
+        self.assertEqual(
+            _filter_inline_for_current_head([resolved_comment], HEAD), []
+        )
+        open_comment = {**resolved_comment, "id": 12, "isResolved": False}
+        kept = _filter_inline_for_current_head([open_comment], HEAD)
+        self.assertEqual([item["id"] for item in kept], [12])
+
+        def runner(argv: list[str], cwd: str, *, resolved: bool):
+            thread = {
+                "id": "PRRT_same_head",
+                "isResolved": resolved,
+                "isOutdated": False,
+                "comments": {
+                    "pageInfo": {"hasNextPage": False},
+                    "nodes": [{"databaseId": 11}],
+                },
+            }
+            graphql = _graphql_threads_result(argv, nodes=[thread])
+            if graphql is not None:
+                return graphql
+            path = argv[-1]
+            if path.endswith("/reviews"):
+                payload = [[]]
+            elif path.endswith("/comments") and "/pulls/" in path:
+                payload = [
+                    [
+                        {
+                            "id": 11,
+                            "user": {"login": "reviewer"},
+                            "body": "P1 still listed on this head",
+                            "commit_id": HEAD,
+                            "original_commit_id": HEAD,
+                        }
+                    ]
+                ]
+            else:
+                payload = [[]]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps(payload), stderr=""
+            )
+
+        hidden = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=lambda argv, cwd: runner(argv, cwd, resolved=True),
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(hidden["status"], "OK")
+        self.assertEqual(hidden["inline_comments"], [])
+        actionable, _count = _reviews_actionable_for_head(hidden, target_sha=HEAD)
+        self.assertFalse(actionable)
+
+        visible = collect_pr_review_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            pr_number=21,
+            command_runner=lambda argv, cwd: runner(argv, cwd, resolved=False),
+            target_sha=HEAD,
+            exclude_control_comments=True,
+        )
+        self.assertEqual(
+            [item["id"] for item in visible["inline_comments"]], [11]
+        )
+        actionable, _count = _reviews_actionable_for_head(visible, target_sha=HEAD)
+        self.assertTrue(actionable)
+
     def test_bundle_includes_pr_reviews_when_ci_finds_pr(self):
         def fake_git(argv: list[str], cwd: str) -> str:
             mapping = {
@@ -2081,6 +2497,9 @@ class CodexAuditProviderTests(unittest.TestCase):
                     argv, 0, stdout="check\tpass\n", stderr=""
                 )
             if argv[:2] == ["gh", "api"]:
+                graphql = _graphql_threads_result(argv)
+                if graphql is not None:
+                    return graphql
                 self.assertEqual(argv[2:4], ["--paginate", "--slurp"])
                 path = argv[4]
                 if path.endswith("/reviews"):
@@ -2211,6 +2630,137 @@ class CodexAuditProviderTests(unittest.TestCase):
             )
         self.assertEqual(bundle["ci"]["status"], "OK")
         self.assertEqual(bundle["pr_reviews"]["status"], "ERROR")
+
+    def test_bundle_review_evidence_ignores_historical_and_control_noise(self):
+        """Exact-HEAD Codex evidence must not be truncated by old review cycles."""
+        old = "cccccccccccccccccccccccccccccccccccccccc"
+        historical = []
+        for index in range(30):
+            historical.append(
+                {
+                    "id": 3000 + index,
+                    "user": {"login": "reviewer"},
+                    "body": "P1 historical finding " + ("y" * 500),
+                    "commit_id": old,
+                    "original_commit_id": old,
+                    "path": "atlas/chat_audit.py",
+                    "line": index + 1,
+                }
+            )
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            mapping = {
+                ("git", "status", "--short", "--branch"): "## feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "remote", "get-url", "origin"): "datarelay-labs/datarelay-atlas",
+                ("git", "diff", "--stat", "origin/main...HEAD"): "",
+                ("git", "diff", "--find-renames", "origin/main...HEAD"): "",
+                ("git", "diff", "--stat", "HEAD"): "",
+                ("git", "diff", "--find-renames", "HEAD"): "",
+                ("git", "diff", "--cached", "--stat"): "",
+                ("git", "diff", "--cached", "--find-renames"): "",
+            }
+            return mapping[tuple(argv)]
+
+        def fake_cmd(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "issue", "view"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "number": 12,
+                            "title": "[AI Work] x",
+                            "state": "OPEN",
+                            "updatedAt": "2026-09-21T00:00:00Z",
+                            "body": "STATUS=ACTIVE\n",
+                        }
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "pr", "list"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps(
+                        [
+                            {
+                                "number": 21,
+                                "url": "https://example.invalid/pr/21",
+                                "state": "OPEN",
+                                "title": "x",
+                                "headRefOid": HEAD,
+                            }
+                        ]
+                    ),
+                    stderr="",
+                )
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
+            graphql = _graphql_threads_result(argv)
+            if graphql is not None:
+                self.assertIn(f"number=21", argv)
+                return graphql
+            if argv[:2] == ["gh", "api"]:
+                path = argv[-1]
+                if path.endswith("/reviews"):
+                    payload = [
+                        [
+                            {
+                                "id": 1,
+                                "user": {"login": "reviewer"},
+                                "state": "COMMENTED",
+                                "body": "P1 old review",
+                                "commit_id": old,
+                            },
+                            {
+                                "id": 2,
+                                "user": {"login": "reviewer"},
+                                "state": "COMMENTED",
+                                "body": "exact-head review, no finding",
+                                "commit_id": HEAD,
+                            },
+                        ]
+                    ]
+                elif "/pulls/" in path and path.endswith("/comments"):
+                    payload = [historical]
+                elif "/issues/" in path and path.endswith("/comments"):
+                    payload = [
+                        [
+                            {
+                                "id": 9,
+                                "user": {"login": "owner"},
+                                "body": (
+                                    "@codex review this exact HEAD. "
+                                    "P1 control request. Do not merge."
+                                ),
+                            }
+                        ]
+                    ]
+                else:
+                    raise AssertionError(argv)
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["python3", "-m", "unittest"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="OK\n", stderr="")
+            raise AssertionError(argv)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = collect_audit_evidence_bundle(
+                self._event(),
+                self._record(tmp),
+                identity=self._identity(tmp),
+                git_runner=fake_git,
+                command_runner=fake_cmd,
+            )
+        reviews = bundle["pr_reviews"]
+        self.assertEqual(reviews["status"], "OK")
+        self.assertEqual(reviews["target_sha"], HEAD)
+        self.assertEqual([item["id"] for item in reviews["reviews"]], [2])
+        self.assertEqual(reviews["inline_comments"], [])
+        self.assertEqual(reviews["conversation_comments"], [])
 
     def test_provider_skips_codex_when_pr_reviews_error(self):
         with tempfile.TemporaryDirectory() as tmp:

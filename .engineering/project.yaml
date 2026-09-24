@@ -28,6 +28,7 @@ operations:
   runbook_paths:
   - docs/runbooks/phase1-project-registry-canonical-sync.md
   - docs/runbooks/autonomous-work-controller-poc.md
+  - docs/runbooks/continuous-chat-audit-supervisor-poc.md
   health_command: ''
   backup_command: cp -a "${ATLAS_DATA_ROOT:-.atlas-data}" "${ATLAS_DATA_ROOT:-.atlas-data}.bak"
   restore_test_command: test -f "${ATLAS_DATA_ROOT:-.atlas-data}/registry.json" -o

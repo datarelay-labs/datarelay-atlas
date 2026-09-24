@@ -659,6 +659,8 @@ def _bounded_review_items(
             "original_line": entry.get("original_line"),
             "body": bounded_body,
         }
+        if isinstance(entry.get("isResolved"), bool):
+            item["isResolved"] = entry.get("isResolved")
         encoded = json.dumps(item, sort_keys=True)
         if len(encoded) > remaining and items:
             truncated = True
@@ -693,20 +695,220 @@ def _flatten_slurped_gh_pages(
     return flat, None
 
 
+_REVIEW_THREADS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          comments(first: 100) {
+            pageInfo { hasNextPage }
+            nodes { databaseId }
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+_MAX_REVIEW_THREAD_PAGES = 10
+
+
+def _comment_database_id(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _parse_review_thread_page(
+    payload: object,
+) -> tuple[set[int], str | None, bool, str | None]:
+    """Parse one GraphQL reviewThreads page.
+
+    Returns ``(resolved_comment_ids, next_cursor, truncated, error)``.
+    ``truncated`` is set when a later page or nested comment page exists
+    beyond what this response contains. ``next_cursor`` is set only when
+    another thread page must be fetched.
+    """
+    if not isinstance(payload, dict):
+        return set(), None, False, "review thread GraphQL response is not an object"
+    if payload.get("errors"):
+        return set(), None, False, "review thread GraphQL response contains errors"
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return set(), None, False, "review thread GraphQL response missing data"
+    repository = data.get("repository")
+    if not isinstance(repository, dict):
+        return set(), None, False, "review thread GraphQL response missing repository"
+    pull_request = repository.get("pullRequest")
+    if not isinstance(pull_request, dict):
+        return set(), None, False, "review thread GraphQL response missing pullRequest"
+    connection = pull_request.get("reviewThreads")
+    if not isinstance(connection, dict):
+        return set(), None, False, "review thread GraphQL response missing reviewThreads"
+    page_info = connection.get("pageInfo")
+    nodes = connection.get("nodes")
+    if not isinstance(page_info, dict) or not isinstance(nodes, list):
+        return set(), None, False, "review thread page is malformed"
+    resolved: set[int] = set()
+    truncated = False
+    for thread in nodes:
+        if not isinstance(thread, dict):
+            return set(), None, False, "review thread node is malformed"
+        is_resolved = thread.get("isResolved")
+        if not isinstance(is_resolved, bool):
+            return set(), None, False, "review thread isResolved must be a boolean"
+        comments = thread.get("comments")
+        if not isinstance(comments, dict):
+            return set(), None, False, "review thread comments are malformed"
+        comment_page = comments.get("pageInfo")
+        comment_nodes = comments.get("nodes")
+        if not isinstance(comment_page, dict) or not isinstance(comment_nodes, list):
+            return set(), None, False, "review thread comments page is malformed"
+        if comment_page.get("hasNextPage") is True:
+            truncated = True
+        for node in comment_nodes:
+            if not isinstance(node, dict):
+                return set(), None, False, "review thread comment node is malformed"
+            database_id = _comment_database_id(node.get("databaseId"))
+            if database_id is None:
+                return (
+                    set(),
+                    None,
+                    False,
+                    "review thread comment databaseId is required",
+                )
+            if is_resolved:
+                resolved.add(database_id)
+    has_next = page_info.get("hasNextPage")
+    if not isinstance(has_next, bool):
+        return set(), None, False, "review thread pageInfo.hasNextPage must be a boolean"
+    next_cursor = None
+    if has_next:
+        cursor = page_info.get("endCursor")
+        if not isinstance(cursor, str) or not cursor.strip():
+            return set(), None, False, "review thread page missing endCursor"
+        next_cursor = cursor
+    return resolved, next_cursor, truncated, None
+
+
+def _load_review_thread_resolution(
+    *,
+    repository: str,
+    pr_number: int,
+    command_runner: CommandRunner | None,
+) -> tuple[set[int], str | None, bool]:
+    """Load native GitHub review-thread resolution keyed by comment database id.
+
+    Returns ``(resolved_comment_ids, error, truncated)``. Callers must fail
+    closed on error or truncation instead of treating missing resolution as
+    unresolved.
+    """
+    parts = repository.split("/")
+    if len(parts) != 2 or not all(parts):
+        return set(), "repository must be owner/name for review thread resolution", False
+    owner, name = parts
+    resolved: set[int] = set()
+    cursor: str | None = None
+    truncated = False
+    cwd = str(Path.cwd())
+    for _page in range(_MAX_REVIEW_THREAD_PAGES):
+        argv = [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={_REVIEW_THREADS_QUERY}",
+            "-F",
+            f"owner={owner}",
+            "-F",
+            f"name={name}",
+            "-F",
+            f"number={pr_number}",
+            "-F",
+            "cursor=null" if cursor is None else f"cursor={cursor}",
+        ]
+        try:
+            completed = _run_capture(
+                argv, cwd, timeout_sec=60, runner=command_runner
+            )
+        except subprocess.TimeoutExpired:
+            return set(), "gh api graphql reviewThreads timed out", False
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            return set(), detail[:500] or f"exit {completed.returncode}", False
+        try:
+            payload = json.loads(completed.stdout or "")
+        except json.JSONDecodeError:
+            return set(), "gh api graphql reviewThreads returned non-JSON", False
+        page_ids, next_cursor, page_truncated, error = _parse_review_thread_page(
+            payload
+        )
+        if error:
+            return set(), error, False
+        resolved.update(page_ids)
+        truncated = truncated or page_truncated
+        if next_cursor is None:
+            return resolved, None, truncated
+        cursor = next_cursor
+    return resolved, None, True
+
+
+def _stamp_resolved_inline_comments(
+    payload: list[object], resolved_comment_ids: set[int]
+) -> list[object]:
+    """Copy native thread resolution onto REST comments that lack it."""
+    if not resolved_comment_ids:
+        return payload
+    stamped: list[object] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            stamped.append(entry)
+            continue
+        database_id = _comment_database_id(entry.get("id"))
+        if database_id is not None and database_id in resolved_comment_ids:
+            copied = dict(entry)
+            copied["isResolved"] = True
+            stamped.append(copied)
+            continue
+        stamped.append(entry)
+    return stamped
+
+
 def collect_pr_review_evidence(
     *,
     repository: str,
     pr_number: int,
     command_runner: CommandRunner | None = None,
     max_chars: int = DEFAULT_MAX_REVIEW_CHARS,
+    target_sha: str | None = None,
+    exclude_control_comments: bool = False,
 ) -> dict:
     """Collect machine-observable PR review feedback (fail closed).
 
     Surfaces: submitted reviews, inline review comments, and top-level PR
     conversation comments. Each GitHub list endpoint is fetched with
-    ``gh api --paginate --slurp``, pages are flattened, then bounded. When a
-    section budget truncates uninspected entries, status is INCOMPLETE so the
-    auditor fails closed instead of terminal PASS.
+    ``gh api --paginate --slurp``, pages are flattened, then bounded.
+
+    When ``target_sha`` is set (cheap-path / current-HEAD mode), commit-
+    addressable items are filtered to that HEAD **before** applying the
+    persistence budget so historical review cycles cannot force INCOMPLETE.
+    When ``exclude_control_comments`` is set, owner ``@codex review`` request
+    comments are dropped before keyword scanning.
+
+    When ``target_sha`` is set, native GitHub review-thread resolution is
+    loaded from GraphQL ``reviewThreads`` and joined onto REST inline
+    comments by database id before current-HEAD filtering. REST comment
+    payloads do not carry ``isResolved``.
     """
     cwd = str(Path.cwd())
     pull_base = f"repos/{repository}/pulls/{pr_number}"
@@ -716,8 +918,31 @@ def collect_pr_review_evidence(
         "repository": repository,
         "pr_number": pr_number,
     }
+    if target_sha:
+        sections["target_sha"] = target_sha
+    resolved_comment_ids: set[int] | None = None
+    thread_truncated = False
+    if target_sha:
+        resolved_comment_ids, thread_error, thread_truncated = (
+            _load_review_thread_resolution(
+                repository=repository,
+                pr_number=pr_number,
+                command_runner=command_runner,
+            )
+        )
+        if thread_error:
+            return {
+                "collector": "atlas.codex_audit.collect_pr_review_evidence",
+                "status": "ERROR",
+                "detail": thread_error,
+                "repository": repository,
+                "pr_number": pr_number,
+                "failed_section": "review_threads",
+            }
     section_budget = max(1, max_chars // 3)
     truncated_sections: list[str] = []
+    if thread_truncated:
+        truncated_sections.append("review_threads")
     for label, path in (
         ("reviews", f"{pull_base}/reviews"),
         ("inline_comments", f"{pull_base}/comments"),
@@ -767,6 +992,17 @@ def collect_pr_review_evidence(
                 "pr_number": pr_number,
                 "failed_section": label,
             }
+        if label == "inline_comments" and resolved_comment_ids is not None:
+            payload = _stamp_resolved_inline_comments(
+                payload, resolved_comment_ids
+            )
+        if target_sha or exclude_control_comments:
+            payload = _filter_review_items_for_current_head(
+                payload,
+                label=label,
+                target_sha=target_sha,
+                exclude_control_comments=exclude_control_comments,
+            )
         items, truncated = _bounded_review_items(
             payload, max_chars=section_budget
         )
@@ -783,6 +1019,171 @@ def collect_pr_review_evidence(
     else:
         sections["status"] = "OK"
     return sections
+
+
+def _commit_matches_target(commit_id: object, target_sha: str) -> bool:
+    if commit_id is None:
+        return False
+    value = str(commit_id).strip().lower()
+    head = target_sha.strip().lower()
+    if not value or not head:
+        return False
+    return value == head or value.startswith(head[:12]) or head.startswith(value[:12])
+
+
+def _is_control_request_comment(entry: dict) -> bool:
+    """Owner/control-plane review-request comments are not findings."""
+    body = str(entry.get("body") or "").strip()
+    if re.search(r"(?i)^@codex\b", body):
+        return True
+    if re.search(r"(?i)@codex\s+review\b", body):
+        return True
+    if re.search(r"(?i)\breview this exact HEAD\b", body) and re.search(
+        r"(?i)\bdo not merge\b", body
+    ):
+        return True
+    return False
+
+
+def _inline_body_actionable(text: str) -> bool:
+    if re.search(r"\bP[012]\b", text or "") or "REWORK" in (text or "").upper():
+        if re.search(r"(?i)\bRESOLUTION\s*=\s*RESOLVED\b", text or ""):
+            return False
+        if re.search(r"(?i)\bresolved:\s*true\b", text or ""):
+            return False
+        return True
+    return False
+
+
+def _explicit_thread_resolution(entry: dict) -> bool:
+    """True only for a verified resolution signal, not an acknowledgement."""
+    for key in ("resolved", "is_resolved", "isResolved", "thread_resolved"):
+        if entry.get(key) is True:
+            return True
+    body = str(entry.get("body") or "")
+    if re.search(r"(?i)\bRESOLUTION\s*=\s*RESOLVED\b", body):
+        return True
+    if re.search(r"(?i)\bresolved:\s*true\b", body):
+        return True
+    return False
+
+
+def _inline_thread_members(
+    entry: dict,
+    replies: dict[object, list[dict]],
+    by_id: dict[object, dict],
+) -> list[dict]:
+    parent = entry.get("in_reply_to_id")
+    root_id = parent if parent is not None else entry.get("id")
+    root = by_id.get(root_id)
+    members: list[dict] = []
+    if isinstance(root, dict):
+        members.append(root)
+    elif isinstance(entry, dict):
+        members.append(entry)
+    members.extend(replies.get(root_id, []))
+    return members
+
+
+def _historical_inline_thread_resolved(
+    entry: dict,
+    replies: dict[object, list[dict]],
+    by_id: dict[object, dict],
+) -> bool:
+    """Drop a remapped historical thread only when resolution is explicit.
+
+    A reply such as ``I'll investigate`` does not resolve an actionable
+    finding. GitHub thread-resolution fields and an exact ``RESOLUTION=RESOLVED``
+    or ``resolved: true`` marker do. Non-actionable historical noise is omitted
+    so it cannot exhaust the current-HEAD budget.
+    """
+    members = _inline_thread_members(entry, replies, by_id)
+    if any(_explicit_thread_resolution(item) for item in members):
+        return True
+    if any(
+        _inline_body_actionable(str(item.get("body") or "")) for item in members
+    ):
+        return False
+    return True
+
+
+def _filter_inline_for_current_head(
+    payload: list[object], target_sha: str
+) -> list[object]:
+    """Select current-HEAD inline threads before the evidence budget.
+
+    GitHub may remap ``commit_id`` onto the current diff while
+    ``original_commit_id`` stays the creation commit. Creation provenance
+    wins. A historical actionable thread stays in the current set until an
+    explicit resolution signal is present.
+    """
+    replies: dict[object, list[dict]] = {}
+    by_id: dict[object, dict] = {}
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("id") is not None:
+            by_id[entry.get("id")] = entry
+        parent = entry.get("in_reply_to_id")
+        if parent is not None:
+            replies.setdefault(parent, []).append(entry)
+    kept: list[object] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        original = entry.get("original_commit_id")
+        mapped = entry.get("commit_id")
+        provenance = original or mapped
+        # Native resolution drops the thread for the current HEAD and for
+        # remapped historical threads. Same-HEAD provenance is not an early keep.
+        if any(
+            _explicit_thread_resolution(item)
+            for item in _inline_thread_members(entry, replies, by_id)
+        ):
+            continue
+        if provenance is None or _commit_matches_target(provenance, target_sha):
+            kept.append(entry)
+            continue
+        remapped = (
+            original is not None
+            and mapped is not None
+            and _commit_matches_target(mapped, target_sha)
+        )
+        if remapped and not _historical_inline_thread_resolved(
+            entry, replies, by_id
+        ):
+            kept.append(entry)
+    return kept
+
+
+def _filter_review_items_for_current_head(
+    payload: list[object],
+    *,
+    label: str,
+    target_sha: str | None,
+    exclude_control_comments: bool,
+) -> list[object]:
+    """Keep only current-HEAD / non-control items before budget bounding."""
+    if label == "inline_comments" and target_sha:
+        return _filter_inline_for_current_head(payload, target_sha)
+    kept: list[object] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        if label == "conversation_comments":
+            if exclude_control_comments and _is_control_request_comment(entry):
+                continue
+            kept.append(entry)
+            continue
+        if target_sha:
+            commit = entry.get("original_commit_id") or entry.get("commit_id")
+            # Drop historical commit-addressable items for other HEADs.
+            if commit is not None and not _commit_matches_target(commit, target_sha):
+                continue
+            # Reviews without commit provenance are kept for fail-closed
+            # inspection when they carry finding keywords (handled by caller).
+        kept.append(entry)
+    return kept
 
 
 def collect_audit_evidence_bundle(
@@ -864,6 +1265,8 @@ def collect_audit_evidence_bundle(
                 repository=identity.repository,
                 pr_number=int(pr_number),
                 command_runner=command_runner,
+                target_sha=identity.head,
+                exclude_control_comments=True,
             )
         elif ci.get("status") == "ABSENT":
             bundle["pr_reviews"] = {
