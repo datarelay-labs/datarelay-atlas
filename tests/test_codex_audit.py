@@ -28,6 +28,7 @@ from atlas.work_controller import (
     WorktreeIdentity,
     heads_match,
     normalize_github_repository,
+    require_clean_porcelain,
     validate_worktree_identity,
 )
 
@@ -101,6 +102,23 @@ class WorktreeIdentityTests(unittest.TestCase):
             "datarelay-labs/datarelay-atlas",
         )
 
+    def test_require_canonical_target_repo_rejects_clone_urls(self):
+        from atlas.work_controller import require_canonical_target_repo
+
+        self.assertEqual(
+            require_canonical_target_repo(
+                "datarelay-labs/datarelay-atlas",
+                "datarelay-labs/datarelay-atlas",
+            ),
+            "datarelay-labs/datarelay-atlas",
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            require_canonical_target_repo(
+                "https://github.com/datarelay-labs/datarelay-atlas.git",
+                "datarelay-labs/datarelay-atlas",
+            )
+        self.assertIn("canonical owner/repo slug", str(ctx.exception))
+
     def test_heads_match_prefix(self):
         self.assertTrue(heads_match(HEAD, HEAD[:12]))
         self.assertFalse(heads_match(HEAD, HEAD2))
@@ -154,6 +172,77 @@ class WorktreeIdentityTests(unittest.TestCase):
                     expected_head=HEAD,
                     git_runner=detached_git,
                 )
+
+    def test_require_clean_porcelain_forces_untracked_files_all_argv(self):
+        """Fake git must see --untracked-files=all; config cannot suppress ??."""
+        seen: list[list[str]] = []
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            seen.append(list(argv))
+            if argv == ["git", "status", "--porcelain"]:
+                return ""  # would hide untracked under showUntrackedFiles=no
+            if argv == ["git", "status", "--porcelain", "--untracked-files=all"]:
+                return "?? hidden_untracked.py\n"
+            raise ValidationError(f"unexpected git argv: {argv}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValidationError) as ctx:
+                require_clean_porcelain(tmp, git_runner=fake_git)
+        self.assertIn("dirty", str(ctx.exception).lower())
+        self.assertIn(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            seen,
+        )
+        self.assertNotIn(["git", "status", "--porcelain"], seen)
+
+    def test_require_clean_porcelain_detects_untracked_despite_config(self):
+        """Real repo with status.showUntrackedFiles=no still fails on untracked."""
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init"], cwd=tmp, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "awc@example.com"],
+                cwd=tmp,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "awc"],
+                cwd=tmp,
+                check=True,
+                capture_output=True,
+            )
+            Path(tmp, "tracked.txt").write_text("ok\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "tracked.txt"], cwd=tmp, check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "init"],
+                cwd=tmp,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "status.showUntrackedFiles", "no"],
+                cwd=tmp,
+                check=True,
+                capture_output=True,
+            )
+            Path(tmp, "secret_untracked.py").write_text("x=1\n", encoding="utf-8")
+            # Default porcelain (no --untracked-files=all) appears clean.
+            default = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=tmp,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            self.assertEqual(default.strip(), "")
+            with self.assertRaises(ValidationError) as ctx:
+                require_clean_porcelain(tmp)
+            self.assertIn("dirty", str(ctx.exception).lower())
+            self.assertIn("untracked-files=all", str(ctx.exception))
 
 
 class CodexAuditProviderTests(unittest.TestCase):
@@ -240,7 +329,7 @@ class CodexAuditProviderTests(unittest.TestCase):
         self.assertNotIn("sk-", prompt)
 
     def test_secret_detection_allows_env_var_name_mention(self):
-        from atlas.codex_audit import _looks_like_secret
+        from atlas.work_controller import _looks_like_secret
 
         docs_mention = (
             "Optional: set OPENAI_API_KEY when using --audit-adapter openai. "
@@ -253,7 +342,111 @@ class CodexAuditProviderTests(unittest.TestCase):
         sk_shaped = "sk-" + ("a" * 24)
         self.assertTrue(_looks_like_secret(assigned))
         self.assertTrue(_looks_like_secret("token " + sk_shaped))
+        self.assertTrue(
+            _looks_like_secret("GITHUB_TOKEN" + "=" + "ghp_" + ("b" * 20))
+        )
+        self.assertTrue(
+            _looks_like_secret("AWS_SECRET_ACCESS_KEY" + "=" + ("c" * 24))
+        )
+        self.assertTrue(
+            _looks_like_secret("service_token" + "=" + "supersecretvalue123")
+        )
+        self.assertTrue(_looks_like_secret("access_token: bare-secret-value"))
+        self.assertTrue(
+            _looks_like_secret('{"client_secret": "json-secret-value"}')
+        )
+        self.assertTrue(_looks_like_secret('{"password":"correct horse"}'))
 
+    def test_prompt_guard_allows_safe_redacted_placeholders(self):
+        from atlas.work_controller import (
+            _contains_unsafe_secret,
+            _looks_like_secret,
+            redact_sensitive_audit_text,
+        )
+
+        # Exact sanitizer output must not block the Codex prompt guard.
+        safe = "OPENAI_API_KEY=<redacted>\npassword=<redacted>"
+        self.assertTrue(_looks_like_secret(safe), safe)
+        self.assertFalse(_contains_unsafe_secret(safe), safe)
+        quoted_safe = 'PASSWORD="<redacted>"\napiKey=\'<redacted>\''
+        self.assertFalse(_contains_unsafe_secret(quoted_safe), quoted_safe)
+        bearer_safe = "Authorization: Bearer <redacted>"
+        self.assertFalse(_contains_unsafe_secret(bearer_safe), bearer_safe)
+        pem_safe = redact_sensitive_audit_text(
+            "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----"
+        )
+        self.assertIn("<redacted-private-key>", pem_safe)
+        self.assertFalse(_contains_unsafe_secret(pem_safe), pem_safe)
+
+        # Live credentials still fail closed.
+        live = "OPENAI_API_KEY" + "=" + ("x" * 24)
+        self.assertTrue(_contains_unsafe_secret(live), live)
+        mixed = safe + "\n" + live
+        self.assertTrue(_contains_unsafe_secret(mixed), mixed)
+        # Placeholder must terminate the value; prefix spoofing stays unsafe.
+        spoofed = "PASSWORD=<redacted>hunter2"
+        self.assertTrue(_contains_unsafe_secret(spoofed), spoofed)
+        self.assertTrue(_looks_like_secret(spoofed), spoofed)
+        backslash_spoof = "PASSWORD=<redacted>\\hunter2"
+        self.assertTrue(_contains_unsafe_secret(backslash_spoof), backslash_spoof)
+        # Shell juxtaposition after a closed quote must stay unsafe.
+        quoted_spoof = 'PASSWORD="<redacted>"hunter2'
+        self.assertTrue(_contains_unsafe_secret(quoted_spoof), quoted_spoof)
+        single_quoted_spoof = "PASSWORD='<redacted>'hunter2"
+        self.assertTrue(
+            _contains_unsafe_secret(single_quoted_spoof), single_quoted_spoof
+        )
+        # Punctuation is not a terminator when a suffix continues the value.
+        punct_spoof = 'PASSWORD="<redacted>",hunter2'
+        self.assertTrue(_contains_unsafe_secret(punct_spoof), punct_spoof)
+        bare_punct_spoof = "PASSWORD=<redacted>,hunter2"
+        self.assertTrue(_contains_unsafe_secret(bare_punct_spoof), bare_punct_spoof)
+        brace_spoof = 'PASSWORD="<redacted>"}hunter2'
+        self.assertTrue(_contains_unsafe_secret(brace_spoof), brace_spoof)
+        # Comma + another quoted fragment is shell concatenation, not JSON.
+        quoted_suffix = 'PASSWORD="<redacted>","hunter2"'
+        self.assertTrue(_contains_unsafe_secret(quoted_suffix), quoted_suffix)
+        # JSON next-key shape must not exempt shell `=` assignments.
+        shell_json_spoof = 'PASSWORD="<redacted>","hunter2":x'
+        self.assertTrue(_contains_unsafe_secret(shell_json_spoof), shell_json_spoof)
+        # Bearer placeholder must terminate; a glued suffix stays unsafe.
+        bearer_spoof = "Bearer <redacted>hunter2"
+        self.assertTrue(_contains_unsafe_secret(bearer_spoof), bearer_spoof)
+        self.assertTrue(
+            _contains_unsafe_secret("Bearer <redacted>,hunter2"),
+            "Bearer <redacted>,hunter2",
+        )
+        self.assertTrue(
+            _contains_unsafe_secret('Bearer <redacted>"hunter2"'),
+            'Bearer <redacted>"hunter2"',
+        )
+        self.assertFalse(
+            _contains_unsafe_secret("Bearer <redacted>"), "Bearer <redacted>"
+        )
+        # Authorization scheme matching is case-insensitive.
+        lower_bearer = "authorization: bearer hunter2secretvalue"
+        self.assertTrue(_contains_unsafe_secret(lower_bearer), lower_bearer)
+        self.assertIn(
+            "Bearer <redacted>",
+            redact_sensitive_audit_text(lower_bearer),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = build_codex_audit_prompt(
+                self._event(),
+                self._record(tmp),
+                identity=self._identity(tmp),
+                evidence_bundle={
+                    **self._bundle(),
+                    "tests": {
+                        "status": "PASS",
+                        "detail": safe,
+                        "transcript": safe,
+                    },
+                },
+            )
+        self.assertIn("<redacted>", prompt)
+        self.assertFalse(_contains_unsafe_secret(prompt), prompt[:500])
 
     def test_collect_bundle_uses_injected_collectors(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -322,7 +515,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                     ("git", "branch", "--show-current"): "feature/x",
                     ("git", "rev-parse", "HEAD"): HEAD,
                     ("git", "status", "--short", "--branch"): "## feature/x",
-                    ("git", "status", "--porcelain"): "",
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
                 }
                 return mapping[tuple(argv)]
 
@@ -369,7 +562,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                     ("git", "branch", "--show-current"): "feature/x",
                     ("git", "rev-parse", "HEAD"): HEAD,
                     ("git", "status", "--short", "--branch"): "## feature/x",
-                    ("git", "status", "--porcelain"): "",
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
                 }
                 return mapping[tuple(argv)]
 
@@ -397,7 +590,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                     ("git", "branch", "--show-current"): "feature/x",
                     ("git", "rev-parse", "HEAD"): HEAD,
                     ("git", "status", "--short", "--branch"): "## feature/x",
-                    ("git", "status", "--porcelain"): "",
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
                 }
                 return mapping[tuple(argv)]
 
@@ -467,7 +660,75 @@ class CodexAuditProviderTests(unittest.TestCase):
         )
         self.assertEqual(ci["status"], "ERROR")
         tests = collect_test_evidence("/tmp", command_runner=boom)
-        self.assertEqual(tests["status"], "FAIL")
+        # Nonzero exit without a unittest "Ran N tests" summary is infrastructure.
+        self.assertEqual(tests["status"], "ERROR")
+
+    def test_unittest_collection_errors_are_error_not_fail(self):
+        from atlas.codex_audit import classify_unittest_result
+
+        infra = (
+            "ERROR: tests.test_missing (unittest.loader._FailedTest)\n"
+            "ImportError: Failed to import test module: test_missing\n"
+            "ModuleNotFoundError: No module named 'missing_dep'\n"
+            "\n"
+            "Ran 1 test in 0.001s\n"
+            "\n"
+            "FAILED (errors=1)\n"
+        )
+        self.assertEqual(classify_unittest_result(1, infra), "ERROR")
+
+        assertion = (
+            "FAIL: test_gap (tests.test_x.X)\n"
+            "AssertionError: expected 1\n"
+            "\n"
+            "Ran 1 test in 0.001s\n"
+            "\n"
+            "FAILED (failures=1)\n"
+        )
+        self.assertEqual(classify_unittest_result(1, assertion), "FAIL")
+        self.assertEqual(classify_unittest_result(0, "Ran 1 test\nOK\n"), "PASS")
+
+        executed = (
+            "ERROR: test_gap (tests.test_x.X)\n"
+            "Traceback (most recent call last):\n"
+            "ModuleNotFoundError: No module named 'runtime_dep'\n"
+            "\n"
+            "Ran 1 test in 0.001s\n"
+            "\n"
+            "FAILED (errors=1)\n"
+        )
+        syntax = executed.replace(
+            "ModuleNotFoundError: No module named 'runtime_dep'",
+            "SyntaxError: invalid syntax",
+        )
+        permission = executed.replace(
+            "ModuleNotFoundError: No module named 'runtime_dep'",
+            "PermissionError: [errno 13] permission denied",
+        )
+        assertion_mentions_error = (
+            "FAIL: test_gap (tests.test_x.X)\n"
+            "AssertionError: ModuleNotFoundError: should stay FAIL\n"
+            "\n"
+            "Ran 1 test in 0.001s\n"
+            "\n"
+            "FAILED (failures=1)\n"
+        )
+        self.assertEqual(classify_unittest_result(1, executed), "FAIL")
+        self.assertEqual(classify_unittest_result(1, syntax), "FAIL")
+        self.assertEqual(classify_unittest_result(1, permission), "FAIL")
+        self.assertEqual(
+            classify_unittest_result(1, assertion_mentions_error), "FAIL"
+        )
+        self.assertEqual(
+            classify_unittest_result(1, "SyntaxError: invalid syntax\n"), "ERROR"
+        )
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 1, stdout=infra, stderr="")
+
+        tests = collect_test_evidence("/tmp", command_runner=runner)
+        self.assertEqual(tests["status"], "ERROR")
+        self.assertIn("infrastructure", tests.get("detail", ""))
 
     def test_work_packet_fail_closed_when_body_trimmed(self):
         """Acceptance text only in trimmed Work Packet tail ⇒ INCOMPLETE."""
@@ -647,7 +908,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "status", "--short", "--branch"): status,
-                ("git", "status", "--porcelain"): "",
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
             }
             return mapping[tuple(argv)]
 
@@ -672,14 +933,13 @@ class CodexAuditProviderTests(unittest.TestCase):
             )
             result = provider.audit(self._event(), self._record(tmp))
             self.assertEqual(result.verdict, "HUMAN_REQUIRED")
-            self.assertIn("snapshot drift", result.findings)
+            self.assertIn("clean autonomous snapshot", result.findings)
             self.assertIsNone(provider.last_command)
 
     def test_head_change_after_codex_pass_rejects_terminal_pass(self):
         """HEAD mutation after Codex returns PASS ⇒ HUMAN_REQUIRED, never PASS."""
         heads = {"value": HEAD}
         status = "## feature/x"
-        digest = hashlib.sha256(status.encode("utf-8")).hexdigest()
 
         def fake_git(argv: list[str], cwd: str) -> str:
             if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
@@ -692,7 +952,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "status", "--short", "--branch"): status,
-                ("git", "status", "--porcelain"): "",
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
             }
             return mapping[tuple(argv)]
 
@@ -715,7 +975,6 @@ class CodexAuditProviderTests(unittest.TestCase):
                         "head": HEAD,
                         "evidence_status": "OK",
                         "status": status,
-                        "status_digest": digest,
                     },
                 },
             )
@@ -727,7 +986,6 @@ class CodexAuditProviderTests(unittest.TestCase):
         """HEAD mutation after Codex returns REWORK ⇒ HUMAN_REQUIRED, never REWORK."""
         heads = {"value": HEAD}
         status = "## feature/x"
-        digest = hashlib.sha256(status.encode("utf-8")).hexdigest()
 
         def fake_git(argv: list[str], cwd: str) -> str:
             if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
@@ -740,7 +998,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 ),
                 ("git", "branch", "--show-current"): "feature/x",
                 ("git", "status", "--short", "--branch"): status,
-                ("git", "status", "--porcelain"): " M dirty.py\n",
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
             }
             return mapping[tuple(argv)]
 
@@ -763,7 +1021,6 @@ class CodexAuditProviderTests(unittest.TestCase):
                         "head": HEAD,
                         "evidence_status": "OK",
                         "status": status,
-                        "status_digest": digest,
                     },
                 },
             )
@@ -771,6 +1028,524 @@ class CodexAuditProviderTests(unittest.TestCase):
             self.assertEqual(result.verdict, "HUMAN_REQUIRED")
             self.assertIn("REWORK rejected", result.findings)
             self.assertNotEqual(result.verdict, "REWORK")
+
+    def test_dirty_porcelain_before_codex_is_human_required(self):
+        """Dirty tracked/untracked state before Codex ⇒ HUMAN_REQUIRED, no Codex."""
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--short", "--branch"): "## feature/x\n M dirty.py",
+                ("git", "status", "--porcelain", "--untracked-files=all"): " M dirty.py\n",
+            }
+            return mapping[tuple(argv)]
+
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "PASS"},
+                    "ci": {"status": "ABSENT"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("dirty", result.findings.lower())
+            self.assertIsNone(provider.last_command)
+
+    def test_dirty_plus_tests_fail_is_human_required_not_rework(self):
+        """Dirty porcelain + tests FAIL ⇒ HUMAN_REQUIRED; never REWORK; no Codex."""
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): " M dirty.py\n",
+            }
+            return mapping[tuple(argv)]
+
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "FAIL", "transcript": "AssertionError"},
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertNotEqual(result.verdict, "REWORK")
+            self.assertIn("dirty", result.findings.lower())
+            self.assertNotIn("tests FAIL", result.findings)
+            self.assertIsNone(provider.last_command)
+
+    def test_untracked_dirty_skips_codex_even_when_plain_porcelain_empty(self):
+        """Forced --untracked-files=all dirtiness ⇒ HUMAN_REQUIRED; no Codex."""
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            if argv == ["git", "status", "--porcelain"]:
+                return ""
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): (
+                    "?? sneak.py\n"
+                ),
+            }
+            return mapping[tuple(argv)]
+
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "PASS"},
+                    "ci": {"status": "ABSENT"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("dirty", result.findings.lower())
+            self.assertIsNone(provider.last_command)
+
+    def test_dirty_porcelain_after_codex_rework_rejects_autonomous_rework(self):
+        """Dirty tree after Codex REWORK ⇒ HUMAN_REQUIRED, never REWORK."""
+        porcelain = {"value": ""}
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--short", "--branch"): "## feature/x",
+                ("git", "status", "--porcelain", "--untracked-files=all"): porcelain["value"],
+            }
+            return mapping[tuple(argv)]
+
+        def rework_runner(command: list[str], prompt: str, cwd: str) -> str:
+            porcelain["value"] = "?? surprise.py\n"
+            out = Path(command[command.index("-o") + 1])
+            out.write_text(
+                '{"verdict":"REWORK","findings":"fix something"}',
+                encoding="utf-8",
+            )
+            return out.read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=rework_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "PASS"},
+                    "ci": {"status": "ABSENT"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("REWORK rejected", result.findings)
+            self.assertIn("dirty", result.findings.lower())
+
+    def test_deterministic_tests_fail_returns_rework_without_codex(self):
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "FAIL", "transcript": "AssertionError"},
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "REWORK")
+            self.assertIn("tests FAIL", result.findings)
+            self.assertIsNone(provider.last_command)
+
+    def test_deterministic_rework_preserves_verbose_failure_tail(self):
+        """A long unittest transcript must keep the trailing failure identity."""
+        from atlas.codex_audit import _deterministic_gate_before_codex
+        from atlas.work_controller import sanitize_rework_findings
+
+        noise = "test_ok (tests.test_noise.Noise) ... ok\n" * 40
+        secret = "OPENAI_API_KEY" + "=" + "live-tail-secret"
+        host_path = "/tmp/awc-host-path/file.py"
+        transcript = (
+            "HEAD_MARKER_start\n"
+            + noise
+            + "FAIL: test_boundary AssertionError: preserved-failure\n"
+            + f"{secret}\n"
+            + f"{host_path} TAIL_MARKER_9f3a\n"
+        )
+        self.assertGreater(len(transcript), 300)
+
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "FAIL", "transcript": transcript},
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "REWORK")
+            self.assertIn("HEAD_MARKER_start", result.findings)
+            self.assertIn("TAIL_MARKER_9f3a", result.findings)
+            self.assertIn("test_boundary", result.findings)
+            self.assertNotIn("live-tail-secret", result.findings)
+            self.assertNotIn(host_path, result.findings)
+            self.assertIn("<local-path>", result.findings)
+            self.assertLessEqual(len(result.findings), 400)
+            persisted = sanitize_rework_findings(result.findings)
+            self.assertIn("TAIL_MARKER_9f3a", persisted)
+            self.assertNotIn("live-tail-secret", persisted)
+
+        error = _deterministic_gate_before_codex(
+            {
+                "tests": {
+                    "status": "ERROR",
+                    "detail": ("x" * 400) + "\nIMPORT_TAIL_REASON missing_dep",
+                }
+            }
+        )
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertEqual(error.verdict, "HUMAN_REQUIRED")
+        self.assertIn("IMPORT_TAIL_REASON", error.findings)
+        self.assertLessEqual(len(error.findings), 400)
+
+        ci_fail = _deterministic_gate_before_codex(
+            {
+                "ci": {
+                    "status": "FAIL",
+                    "detail": ("c" * 400) + "\nCHECK_TAIL affected-tests",
+                }
+            }
+        )
+        self.assertIsNotNone(ci_fail)
+        assert ci_fail is not None
+        self.assertEqual(ci_fail.verdict, "REWORK")
+        self.assertIn("CHECK_TAIL", ci_fail.findings)
+        self.assertLessEqual(len(ci_fail.findings), 400)
+
+    def test_deterministic_gate_redacts_secrets_in_findings(self):
+        assigned = "OPENAI_API_KEY" + "=" + "live-secret-value"
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {
+                        "status": "FAIL",
+                        "transcript": f"boom\n{assigned}\n",
+                    },
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "REWORK")
+            self.assertIn("OPENAI_API_KEY=<redacted>", result.findings)
+            self.assertNotIn("live-secret-value", result.findings)
+
+    def test_deterministic_gate_redacts_aws_secret_assignments(self):
+        aws_secret = "AWS_SECRET_ACCESS_KEY" + "=" + ("y" * 24)
+        aws_key_id = "AWS_ACCESS_KEY_ID" + "=" + ("Z" * 20)
+
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {
+                        "status": "FAIL",
+                        "transcript": f"boom\n{aws_secret}\n{aws_key_id}\n",
+                    },
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "REWORK")
+            self.assertIn("AWS_SECRET_ACCESS_KEY=<redacted>", result.findings)
+            self.assertIn("AWS_ACCESS_KEY_ID=<redacted>", result.findings)
+            self.assertNotIn("y" * 24, result.findings)
+            self.assertNotIn("Z" * 20, result.findings)
+
+    def test_deterministic_tests_error_returns_human_required_without_codex(self):
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "ERROR", "detail": "unittest timed out"},
+                    "ci": {"status": "OK"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+            self.assertIn("tests ERROR", result.findings)
+            self.assertIsNone(provider.last_command)
+
+    def test_deterministic_tests_fail_with_ci_pending_is_human_required(self):
+        """CI PENDING/ERROR must beat tests FAIL so REWORK is not dispatched."""
+        from atlas.codex_audit import _deterministic_gate_before_codex
+
+        gated = _deterministic_gate_before_codex(
+            {
+                "tests": {"status": "FAIL", "transcript": "AssertionError"},
+                "ci": {"status": "PENDING", "checks": "unit\tpending"},
+            }
+        )
+        self.assertIsNotNone(gated)
+        assert gated is not None
+        self.assertEqual(gated.verdict, "HUMAN_REQUIRED")
+        self.assertIn("CI PENDING", gated.findings)
+        self.assertNotIn("tests FAIL", gated.findings)
+
+        gated_error = _deterministic_gate_before_codex(
+            {
+                "tests": {"status": "FAIL", "transcript": "AssertionError"},
+                "ci": {"status": "ERROR", "detail": "gh auth failed"},
+            }
+        )
+        self.assertIsNotNone(gated_error)
+        assert gated_error is not None
+        self.assertEqual(gated_error.verdict, "HUMAN_REQUIRED")
+        self.assertIn("CI ERROR", gated_error.findings)
+
+    def test_deterministic_ci_fail_returns_rework_without_codex(self):
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=boom_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "PASS"},
+                    "ci": {"status": "FAIL", "checks": "unit\tfail"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "REWORK")
+            self.assertIn("CI FAIL", result.findings)
+            self.assertIsNone(provider.last_command)
+
+    def test_deterministic_ci_pending_and_error_return_human_required_without_codex(
+        self,
+    ):
+        def boom_runner(command: list[str], prompt: str, cwd: str) -> str:
+            raise AssertionError("codex runner must not be called")
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
+            }
+            return mapping[tuple(argv)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for ci_status in ("PENDING", "ERROR"):
+                provider = CodexAuditProvider(
+                    runner=boom_runner,
+                    git_runner=fake_git,
+                    evidence_bundle={
+                        "schema": "awc.codex_evidence_bundle.v1",
+                        "git": {"head": HEAD, "evidence_status": "OK"},
+                        "tests": {"status": "PASS"},
+                        "ci": {"status": ci_status, "detail": "waiting"},
+                    },
+                )
+                result = provider.audit(self._event(), self._record(tmp))
+                self.assertEqual(result.verdict, "HUMAN_REQUIRED")
+                self.assertIn(f"CI {ci_status}", result.findings)
+                self.assertIsNone(provider.last_command)
+
+    def test_deterministic_ci_absent_allows_codex(self):
+        """Local/no-PR cycle: CI ABSENT continues to Codex."""
+
+        def fake_git(argv: list[str], cwd: str) -> str:
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return cwd
+            mapping = {
+                ("git", "remote", "get-url", "origin"): (
+                    "datarelay-labs/datarelay-atlas"
+                ),
+                ("git", "branch", "--show-current"): "feature/x",
+                ("git", "rev-parse", "HEAD"): HEAD,
+                ("git", "status", "--porcelain", "--untracked-files=all"): "",
+            }
+            return mapping[tuple(argv)]
+
+        def pass_runner(command: list[str], prompt: str, cwd: str) -> str:
+            out = Path(command[command.index("-o") + 1])
+            out.write_text(
+                '{"verdict":"PASS","findings":"local cycle ok"}',
+                encoding="utf-8",
+            )
+            return out.read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CodexAuditProvider(
+                runner=pass_runner,
+                git_runner=fake_git,
+                evidence_bundle={
+                    "schema": "awc.codex_evidence_bundle.v1",
+                    "git": {"head": HEAD, "evidence_status": "OK"},
+                    "tests": {"status": "PASS"},
+                    "ci": {"status": "ABSENT"},
+                },
+            )
+            result = provider.audit(self._event(), self._record(tmp))
+            self.assertEqual(result.verdict, "PASS")
+            self.assertIsNotNone(provider.last_command)
 
     def test_run_capture_maps_missing_executable(self):
         from atlas.codex_audit import _run_capture
@@ -816,6 +1591,195 @@ class CodexAuditProviderTests(unittest.TestCase):
         )
         self.assertEqual(ci["status"], "PENDING")
         self.assertEqual(ci["checks_exit_code"], 8)
+
+    def test_ci_collector_maps_auth_and_transport_errors_to_error(self):
+        from atlas.codex_audit import classify_gh_pr_checks_result
+
+        self.assertEqual(
+            classify_gh_pr_checks_result(4, "", "auth failed"),
+            ("ERROR", "gh pr checks authentication failure"),
+        )
+        status, detail = classify_gh_pr_checks_result(
+            1, "", "GraphQL: Resource not accessible"
+        )
+        self.assertEqual(status, "ERROR")
+        self.assertIn("Resource not accessible", detail)
+
+        # Exit 1 with parseable failed check rows remains FAIL.
+        self.assertEqual(
+            classify_gh_pr_checks_result(1, "unit\tfail\t1s\thttps://x\n", ""),
+            ("FAIL", ""),
+        )
+        # Documented gh bucket value `cancel` maps to FAIL → REWORK.
+        self.assertEqual(
+            classify_gh_pr_checks_result(1, "job\tcancel\t1s\thttps://x\n", ""),
+            ("FAIL", ""),
+        )
+        # PR with zero check runs is ABSENT, not a transport ERROR.
+        absent_msg = "no checks reported on the 'feature/x' branch"
+        self.assertEqual(
+            classify_gh_pr_checks_result(1, "", absent_msg),
+            ("ABSENT", absent_msg),
+        )
+
+        calls: list[list[str]] = []
+
+        def fake(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            calls.append(argv)
+            if argv[:3] == ["gh", "pr", "list"]:
+                payload = [
+                    {
+                        "number": 15,
+                        "url": "https://example.invalid/pr/15",
+                        "state": "OPEN",
+                        "headRefOid": HEAD,
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="HTTP 401: Bad credentials"
+                )
+            raise AssertionError(argv)
+
+        ci = collect_ci_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            head=HEAD,
+            command_runner=fake,
+        )
+        self.assertEqual(ci["status"], "ERROR")
+        self.assertEqual(ci["checks_exit_code"], 1)
+
+    def test_ci_collector_maps_no_checks_to_absent(self):
+        def fake(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:3] == ["gh", "pr", "list"]:
+                payload = [
+                    {
+                        "number": 15,
+                        "url": "https://example.invalid/pr/15",
+                        "state": "OPEN",
+                        "headRefOid": HEAD,
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    stdout="",
+                    stderr="no checks reported on the 'feature/x' branch",
+                )
+            raise AssertionError(argv)
+
+        ci = collect_ci_evidence(
+            repository="datarelay-labs/datarelay-atlas",
+            head=HEAD,
+            command_runner=fake,
+        )
+        self.assertEqual(ci["status"], "ABSENT")
+
+    def test_absent_ci_with_pr_still_collects_reviews(self):
+        """CI ABSENT must not skip review evidence when a PR number is known."""
+        from atlas.codex_audit import collect_audit_evidence_bundle
+        from atlas.work_controller import (
+            CompletionEvent,
+            WorkstreamRecord,
+            WorktreeIdentity,
+        )
+
+        calls: list[list[str]] = []
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            calls.append(argv)
+            if argv[:3] == ["gh", "pr", "list"]:
+                payload = [
+                    {
+                        "number": 16,
+                        "url": "https://example.invalid/pr/16",
+                        "state": "OPEN",
+                        "headRefOid": HEAD,
+                    }
+                ]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    stdout="",
+                    stderr="no checks reported on the 'feature/x' branch",
+                )
+            if argv[:2] == ["gh", "api"]:
+                graphql = _graphql_threads_result(argv)
+                if graphql is not None:
+                    return graphql
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps([[]]), stderr=""
+                )
+            raise AssertionError(argv)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            identity = WorktreeIdentity(
+                worktree_path=tmp,
+                repository="datarelay-labs/datarelay-atlas",
+                branch="feature/x",
+                head=HEAD,
+                toplevel=tmp,
+            )
+            record = WorkstreamRecord(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/x",
+                worktree_path=tmp,
+                expected_head=HEAD,
+                state="IDLE",
+                attempt=1,
+                max_attempts=3,
+            )
+            event = CompletionEvent(
+                event_id="evt-1",
+                workstream="awc-poc",
+                issue_number=12,
+                branch="feature/x",
+                head=HEAD,
+                attempt=1,
+            )
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                if tuple(argv) == ("git", "rev-parse", "HEAD"):
+                    return HEAD
+                if tuple(argv) == ("git", "status", "--porcelain", "--untracked-files=all"):
+                    return ""
+                if argv[:2] == ["git", "diff"]:
+                    return ""
+                if argv[:2] == ["git", "log"]:
+                    return ""
+                return ""
+
+            bundle = collect_audit_evidence_bundle(
+                event,
+                record,
+                identity=identity,
+                git_runner=fake_git,
+                command_runner=runner,
+                include_tests=False,
+                include_work_packet=False,
+            )
+            self.assertEqual(bundle["ci"]["status"], "ABSENT")
+            self.assertEqual(bundle["ci"]["pr"]["number"], 16)
+            self.assertEqual(bundle["pr_reviews"]["status"], "OK")
+            self.assertTrue(
+                any(argv[:2] == ["gh", "api"] for argv in calls),
+                msg=f"expected review API calls, got {calls!r}",
+            )
 
     def test_ci_collector_uses_raw_sha_search(self):
         seen: list[list[str]] = []

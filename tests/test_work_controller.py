@@ -11,6 +11,9 @@ from atlas.provenance import ValidationError
 from atlas.work_controller import (
     AuditResult,
     CompletionEvent,
+    DispatchResult,
+    DispatchSpawnedButUnobservedError,
+    DispatchSpawnCleanupUncertainError,
     FixedAuditAdapter,
     RecordingCursorDispatcher,
     RecordingObserver,
@@ -85,6 +88,294 @@ class WorkControllerTests(unittest.TestCase):
             shown = ctl.show("awc-poc")
             self.assertEqual(shown["state"], "PASSED")
 
+    def test_pass_rejected_when_worktree_dirty_at_controller_gate(self):
+        """Adapter PASS on a dirty tree must not finalize PASSED."""
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            git_state = {"dirty": ""}
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "branch", "--show-current"): (
+                        "feature/autonomous-work-controller-poc"
+                    ),
+                    ("git", "rev-parse", "HEAD"): HEAD_A,
+                    ("git", "status", "--porcelain", "--untracked-files=all"): (
+                        git_state["dirty"]
+                    ),
+                }
+                return mapping[tuple(argv)]
+
+            class DirtyAfterAudit:
+                def __init__(self) -> None:
+                    self.calls = []
+
+                def audit(self, event, record):
+                    self.calls.append((event, record))
+                    git_state["dirty"] = " M dirty.py\n"
+                    return AuditResult(verdict="PASS", findings="looks good")
+
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=DirtyAfterAudit(),
+                work_packet=RecordingWorkPacketAdapter(),
+                dispatcher=RecordingCursorDispatcher(),
+                enforce_worktree_identity=True,
+                git_runner=fake_git,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertIn("PASS rejected", outcome["findings"])
+            self.assertIn("dirty", outcome["findings"].lower())
+            self.assertEqual(ctl.show("awc-poc")["state"], "HUMAN_REQUIRED")
+
+    def test_rework_rejected_before_packet_mutation_when_dirty(self):
+        """Fixed/OpenAI-style REWORK must not mutate packet on dirty porcelain."""
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "branch", "--show-current"): (
+                        "feature/autonomous-work-controller-poc"
+                    ),
+                    ("git", "rev-parse", "HEAD"): HEAD_A,
+                    ("git", "status", "--porcelain", "--untracked-files=all"): (
+                        " M dirty-rework.py\n"
+                    ),
+                }
+                return mapping[tuple(argv)]
+
+            packets = RecordingWorkPacketAdapter()
+            dispatcher = RecordingCursorDispatcher()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=dispatcher,
+                enforce_worktree_identity=True,
+                git_runner=fake_git,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "rework_unclean_snapshot")
+            self.assertIn("REWORK rejected", outcome["findings"])
+            self.assertIn("dirty", outcome["findings"].lower())
+            self.assertEqual(packets.updates, [])
+            self.assertEqual(dispatcher.requests, [])
+
+    def test_rework_rejected_when_head_changes_during_clean_check(self):
+        """A commit between identity and porcelain must not mutate or dispatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            git_state = {"head": HEAD_A}
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                if argv == ["git", "status", "--porcelain", "--untracked-files=all"]:
+                    git_state["head"] = HEAD_B
+                    return ""
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "branch", "--show-current"): (
+                        "feature/autonomous-work-controller-poc"
+                    ),
+                    ("git", "rev-parse", "HEAD"): git_state["head"],
+                }
+                return mapping[tuple(argv)]
+
+            packets = RecordingWorkPacketAdapter()
+            dispatcher = RecordingCursorDispatcher()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=dispatcher,
+                enforce_worktree_identity=True,
+                git_runner=fake_git,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "rework_unclean_snapshot")
+            self.assertIn("head mismatch", outcome["findings"])
+            self.assertEqual(packets.updates, [])
+            self.assertEqual(dispatcher.requests, [])
+
+    def test_resource_preflight_block_is_human_required_without_spawn(self):
+        from atlas.work_controller import PersistSession, PtyPersistCursorDispatcher
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            existing = [
+                PersistSession(session_id="keep-me", workspace="/tmp/unrelated")
+            ]
+            state = {"spawn": 0, "stopped": []}
+
+            def _refuse_spawn(_command: list[str], _worktree: str) -> int:
+                state["spawn"] += 1
+                return 1
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "branch", "--show-current"): (
+                        "feature/autonomous-work-controller-poc"
+                    ),
+                    ("git", "rev-parse", "HEAD"): HEAD_A,
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
+                }
+                return mapping[tuple(argv)]
+
+            def preflight() -> tuple[int, str]:
+                return (
+                    2,
+                    "RESULT=BLOCK\nEXIT_CODE=2\nREASON=persistent sessions reached block threshold\n",
+                )
+
+            dispatcher = PtyPersistCursorDispatcher(
+                list_sessions=lambda: list(existing),
+                list_target_procs=lambda _wt: [(111, "keep")],
+                spawn=_refuse_spawn,
+                git_runner=fake_git,
+                resource_preflight=preflight,
+                terminate_process_group=lambda pid: state["stopped"].append(pid),
+                poll_interval_sec=0.01,
+                poll_timeout_sec=0.05,
+                sleeper=lambda _s: None,
+            )
+            packets = RecordingWorkPacketAdapter()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=dispatcher,
+                enforce_worktree_identity=True,
+                git_runner=fake_git,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "resource_preflight_blocked")
+            self.assertEqual(outcome["resource_preflight_result"], "BLOCK")
+            self.assertIn("block threshold", outcome["resource_preflight_reason"])
+            self.assertEqual(state["spawn"], 0)
+            self.assertEqual(state["stopped"], [])
+            self.assertEqual(existing[0].session_id, "keep-me")
+            self.assertTrue(
+                any(item.get("kind") == "dispatch_blocked" for item in packets.updates)
+            )
+
+    def test_pass_rejected_when_worktree_already_dirty_before_finalize(self):
+        """Dirty porcelain present for the whole PASS path still fails closed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+
+            def fake_git(argv: list[str], cwd: str) -> str:
+                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return cwd
+                # Register only checks identity (not porcelain). Keep HEAD/branch
+                # valid while porcelain stays dirty for the PASS gate.
+                mapping = {
+                    ("git", "remote", "get-url", "origin"): (
+                        "datarelay-labs/datarelay-atlas"
+                    ),
+                    ("git", "branch", "--show-current"): (
+                        "feature/autonomous-work-controller-poc"
+                    ),
+                    ("git", "rev-parse", "HEAD"): HEAD_A,
+                    ("git", "status", "--porcelain", "--untracked-files=all"): (
+                        " M already-dirty.py\n"
+                    ),
+                }
+                return mapping[tuple(argv)]
+
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="PASS", findings="adapter pass")
+                ),
+                work_packet=RecordingWorkPacketAdapter(),
+                dispatcher=RecordingCursorDispatcher(),
+                enforce_worktree_identity=True,
+                git_runner=fake_git,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertIn("PASS rejected", outcome["findings"])
+            self.assertNotEqual(ctl.show("awc-poc")["state"], "PASSED")
+
     def test_idempotent_replay(self):
         with tempfile.TemporaryDirectory() as tmp:
             ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
@@ -127,9 +418,11 @@ class WorkControllerTests(unittest.TestCase):
             req = dispatcher.requests[0]
             self.assertEqual(req.resume_prompt, "/work-resume")
             self.assertEqual(req.attempt, 2)
+            self.assertEqual(req.repository, "datarelay-labs/datarelay-atlas")
+            self.assertEqual(req.expected_head, HEAD_A)
             self.assertEqual(
                 build_persist_resume_command(req),
-                ["agent", "persist", "--trust", "/work-resume"],
+                ["agent", "persist", "--force", "--trust", "/work-resume"],
             )
             self.assertEqual(
                 build_persist_resume_command(req),
@@ -138,6 +431,297 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(len(packets.updates), 1)
             self.assertIn("fix gaps", packets.updates[0]["findings"])
             self.assertEqual(ctl.show("awc-poc")["attempt"], 2)
+
+    def test_dispatch_boundary_validation_error_finalizes_human_required(self):
+        """Dispatcher ValidationError after REWORK ⇒ HUMAN_REQUIRED, no dispatch."""
+
+        class FailingDispatcher:
+            def __init__(self) -> None:
+                self.requests = []
+
+            def start_resume(self, request):
+                self.requests.append(request)
+                raise ValidationError("worktree is dirty; git status --porcelain is not empty")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            dispatcher = FailingDispatcher()
+            packets = RecordingWorkPacketAdapter()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=dispatcher,
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["action"], "stop")
+            self.assertEqual(outcome["reason"], "dispatch_boundary_failed")
+            self.assertIn("dispatch blocked at boundary", outcome["findings"])
+            self.assertEqual(len(dispatcher.requests), 1)
+            self.assertEqual(len(packets.updates), 2)
+            self.assertEqual(packets.updates[0]["kind"], "rework")
+            self.assertEqual(packets.updates[1]["kind"], "dispatch_blocked")
+            self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
+            shown = ctl.show("awc-poc")
+            self.assertEqual(shown["state"], "HUMAN_REQUIRED")
+            self.assertEqual(shown["attempt"], 0)
+
+    def test_work_packet_mutation_failure_blocks_dispatch(self):
+        """Work Packet mutation ValidationError ⇒ HUMAN_REQUIRED, no Cursor spawn."""
+
+        class FailingWorkPacket:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def apply_rework_findings(self, **kwargs):
+                self.calls += 1
+                raise ValidationError("gh issue edit failed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            dispatcher = RecordingCursorDispatcher()
+            packets = FailingWorkPacket()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=dispatcher,
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "work_packet_mutation_failed")
+            self.assertIn("work packet mutation failed", outcome["findings"])
+            self.assertEqual(packets.calls, 1)
+            self.assertEqual(dispatcher.requests, [])
+            self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
+
+    def test_work_packet_mutation_happens_before_dispatch(self):
+        """REWORK ordering: mutate canonical packet, then dispatch Cursor."""
+
+        class OrderedProbe:
+            def __init__(self) -> None:
+                self.order: list[str] = []
+
+            def apply_rework_findings(self, **kwargs):
+                self.order.append("packet")
+
+            def start_resume(self, request):
+                self.order.append("dispatch")
+                return DispatchResult(
+                    session_id="sess-ordered",
+                    command=build_persist_resume_command(request),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            probe = OrderedProbe()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=probe,
+                dispatcher=probe,
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
+            self.assertEqual(probe.order, ["packet", "dispatch"])
+
+    def test_spawned_but_unobserved_requires_human(self):
+        """Unobserved spawn is not a proven dispatch; compensate and stop."""
+
+        class ObservingFailDispatcher:
+            def __init__(self) -> None:
+                self.requests = []
+
+            def start_resume(self, request):
+                self.requests.append(request)
+                raise DispatchSpawnedButUnobservedError(
+                    "session did not appear",
+                    session_hint="proc:4242",
+                    command=build_persist_resume_command(request),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            dispatcher = ObservingFailDispatcher()
+            packets = RecordingWorkPacketAdapter()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=dispatcher,
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "spawned_but_unobserved")
+            self.assertEqual(outcome["dispatch_session_hint"], "proc:4242")
+            # Packet mutation then compensating blocked update.
+            self.assertEqual(len(packets.updates), 2)
+            self.assertNotEqual(ctl.show("awc-poc")["state"], "REWORK_DISPATCHED")
+            replay = ctl.handle_completion(self._event())
+            self.assertTrue(replay["idempotent_replay"])
+            self.assertEqual(len(packets.updates), 2)
+            self.assertEqual(len(dispatcher.requests), 1)
+
+    def test_cleanup_uncertainty_does_not_compensate_packet(self):
+        """Termination failure must not rewrite the packet as safely blocked."""
+
+        class UncertainDispatcher:
+            def start_resume(self, request):
+                raise DispatchSpawnCleanupUncertainError(
+                    "owned spawn cleanup uncertain: operation not permitted",
+                    session_hint="proc:4242",
+                    command=build_persist_resume_command(request),
+                    cleanup_error="operation not permitted",
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            packets = RecordingWorkPacketAdapter()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=FixedAuditAdapter(
+                    AuditResult(verdict="REWORK", findings="fix gaps")
+                ),
+                work_packet=packets,
+                dispatcher=UncertainDispatcher(),
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "spawn_cleanup_uncertain")
+            self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
+            self.assertEqual(
+                [item["kind"] for item in packets.updates], ["rework"]
+            )
+            shown = ctl.show("awc-poc")
+            self.assertIn("not compensated", shown["last_findings"])
+            self.assertIn("proc:4242", shown["last_findings"])
+
+    def test_secret_blocked_codex_audit_stops_without_reconcile_loop(self):
+        from atlas.codex_audit import CodexAuditProvider
+
+        secret = "OPENAI_API_KEY=" + ("x" * 24)
+        calls = {"n": 0}
+
+        class CountingAudit(CodexAuditProvider):
+            def audit(self, event, record):
+                calls["n"] += 1
+                return super().audit(event, record)
+
+        def boom(command, prompt, cwd):
+            raise AssertionError("codex runner must not be called")
+
+        provider = CountingAudit(
+            runner=boom,
+            require_identity=False,
+            evidence_bundle={
+                "schema": "awc.codex_evidence_bundle.v1",
+                "git": {"evidence_status": "OK", "status": "clean"},
+                "note": secret,
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=provider,
+                work_packet=RecordingWorkPacketAdapter(),
+                dispatcher=RecordingCursorDispatcher(),
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
+            findings = ctl.show("awc-poc")["last_findings"]
+            self.assertIn("credential-like material", findings)
+            self.assertNotIn(secret, findings)
+            self.assertNotIn("x" * 24, findings)
+            self.assertEqual(ctl.show("awc-poc")["state"], "HUMAN_REQUIRED")
+            reconciled = ctl.reconcile("awc-poc")
+            self.assertEqual(calls["n"], 1)
+            self.assertEqual(reconciled[0]["state"], "HUMAN_REQUIRED")
+            self.assertFalse(reconciled[0].get("reconciled", False))
 
     def test_retry_exhaustion(self):
         with tempfile.TemporaryDirectory() as tmp:

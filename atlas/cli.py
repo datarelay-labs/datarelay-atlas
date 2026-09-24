@@ -28,8 +28,10 @@ from atlas.codex_audit import CodexAuditProvider
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
 from atlas.work_controller import (
+    AuditOnlyCursorDispatcher,
     AuditResult,
     FixedAuditAdapter,
+    GitHubWorkPacketAdapter,
     OpenAIResponsesAuditAdapter,
     PtyPersistCursorDispatcher,
     RecordingCursorDispatcher,
@@ -147,8 +149,25 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
 
     Production default is Codex (ChatGPT-plan, no API key). Use
     `--audit-adapter fixed` explicitly for offline/deterministic verdicts.
-    `--audit-adapter openai` remains optional API fallback only.
+    `--audit-adapter openai` is metadata-only and may be used with a recording
+    packet adapter for audit-only runs. It cannot mutate the canonical GitHub
+    Work Packet or spawn Cursor until it has the Codex evidence bundle.
+
+    Production Work Packet adapter mutates the same GitHub `[AI Work]` Issue
+    before REWORK dispatch. `RecordingWorkPacketAdapter` is offline/test-only.
+
+    Non-runtime commands (`register` / `show` / `list`) do not carry audit or
+    dispatch flags; they always get offline-safe recording adapters.
     """
+    if not hasattr(args, "audit_adapter"):
+        return WorkController(
+            Path(args.data_root),
+            audit=FixedAuditAdapter(AuditResult(verdict="PASS", findings="")),
+            work_packet=RecordingWorkPacketAdapter(),
+            dispatcher=RecordingCursorDispatcher(),
+            enforce_worktree_identity=True,
+        )
+
     adapter = getattr(args, "audit_adapter", "codex")
     if adapter == "codex":
         audit = CodexAuditProvider()
@@ -160,11 +179,43 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
         audit = FixedAuditAdapter(AuditResult(verdict=verdict, findings=findings))
     else:
         raise ValidationError(f"unsupported audit adapter: {adapter}")
-    work_packet = RecordingWorkPacketAdapter()
-    if getattr(args, "spawn_dispatch", False):
+
+    packet_choice = getattr(args, "work_packet_adapter", None)
+    spawn = bool(getattr(args, "spawn_dispatch", False))
+    if adapter == "openai" and (spawn or packet_choice == "github"):
+        raise ValidationError(
+            "OpenAI audit adapter is metadata-only and cannot mutate the "
+            "canonical GitHub Work Packet or spawn Cursor until it has Codex "
+            "evidence parity; use --work-packet-adapter recording without "
+            "--spawn-dispatch"
+        )
+    if packet_choice is None:
+        # Offline/fixed and metadata-only OpenAI default to recording so they
+        # do not mutate GitHub. Codex remains the production GitHub path.
+        packet_choice = "recording" if adapter in {"fixed", "openai"} else "github"
+    if packet_choice == "github" and not spawn:
+        raise ValidationError(
+            "GitHub Work Packet mutation requires --spawn-dispatch "
+            "(audit-only mode must pass --work-packet-adapter recording)"
+        )
+    if spawn and packet_choice != "github":
+        raise ValidationError(
+            "real --spawn-dispatch requires --work-packet-adapter github "
+            "(RecordingWorkPacketAdapter cannot pair with PtyPersistCursorDispatcher)"
+        )
+    if packet_choice == "github":
+        work_packet = GitHubWorkPacketAdapter()
+    elif packet_choice == "recording":
+        work_packet = RecordingWorkPacketAdapter()
+    else:
+        raise ValidationError(f"unsupported work packet adapter: {packet_choice}")
+
+    if spawn:
         dispatcher = PtyPersistCursorDispatcher()
     else:
-        dispatcher = RecordingCursorDispatcher()
+        # Do not pair recording packet adapters with a fake successful dispatcher:
+        # audit-only REWORK must stop without claiming REWORK_DISPATCHED.
+        dispatcher = AuditOnlyCursorDispatcher()
     return WorkController(
         Path(args.data_root),
         audit=audit,
@@ -405,6 +456,37 @@ def cmd_ca_rollover(args: argparse.Namespace) -> int:
     return 0
 
 
+def _add_work_controller_runtime_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--audit-adapter",
+        choices=["codex", "fixed", "openai"],
+        default="codex",
+        help="codex=default production; fixed=explicit offline; openai=optional API fallback",
+    )
+    parser.add_argument(
+        "--audit-verdict",
+        choices=["PASS", "REWORK", "HUMAN_REQUIRED"],
+        default="PASS",
+        help="Offline/fixed audit verdict for PoC CLI (tests use injected adapters)",
+    )
+    parser.add_argument("--audit-findings", default="")
+    parser.add_argument(
+        "--work-packet-adapter",
+        choices=["github", "recording"],
+        default=None,
+        help=(
+            "github=mutate canonical GitHub Work Packet before REWORK dispatch "
+            "(production default for codex); recording=offline/test only "
+            "(default when --audit-adapter fixed or openai)"
+        ),
+    )
+    parser.add_argument(
+        "--spawn-dispatch",
+        action="store_true",
+        help="Use PTY persist dispatcher to create a fresh /work-resume session",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="atlas",
@@ -502,24 +584,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Handle one Cursor completion event JSON file",
     )
     wc_comp.add_argument("event_file")
-    wc_comp.add_argument(
-        "--audit-adapter",
-        choices=["codex", "fixed", "openai"],
-        default="codex",
-        help="codex=default production; fixed=explicit offline; openai=optional API fallback",
-    )
-    wc_comp.add_argument(
-        "--audit-verdict",
-        choices=["PASS", "REWORK", "HUMAN_REQUIRED"],
-        default="PASS",
-        help="Offline/fixed audit verdict for PoC CLI (tests use injected adapters)",
-    )
-    wc_comp.add_argument("--audit-findings", default="")
-    wc_comp.add_argument(
-        "--spawn-dispatch",
-        action="store_true",
-        help="Use PTY persist dispatcher to create a fresh /work-resume session",
-    )
+    _add_work_controller_runtime_flags(wc_comp)
     wc_comp.set_defaults(func=cmd_wc_completion)
 
     wc_enq = wc_sub.add_parser(
@@ -534,18 +599,7 @@ def build_parser() -> argparse.ArgumentParser:
         "drain-inbox",
         help="Drain local completion-inbox events into the controller",
     )
-    wc_drain.add_argument(
-        "--audit-adapter",
-        choices=["codex", "fixed", "openai"],
-        default="codex",
-    )
-    wc_drain.add_argument(
-        "--audit-verdict",
-        choices=["PASS", "REWORK", "HUMAN_REQUIRED"],
-        default="PASS",
-    )
-    wc_drain.add_argument("--audit-findings", default="")
-    wc_drain.add_argument("--spawn-dispatch", action="store_true")
+    _add_work_controller_runtime_flags(wc_drain)
     wc_drain.set_defaults(func=cmd_wc_drain_inbox)
 
     wc_rec = wc_sub.add_parser(
@@ -553,18 +607,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reconcile unfinished audit state after controller restart",
     )
     wc_rec.add_argument("workstream", nargs="?")
-    wc_rec.add_argument(
-        "--audit-adapter",
-        choices=["codex", "fixed", "openai"],
-        default="codex",
-    )
-    wc_rec.add_argument(
-        "--audit-verdict",
-        choices=["PASS", "REWORK", "HUMAN_REQUIRED"],
-        default="PASS",
-    )
-    wc_rec.add_argument("--audit-findings", default="")
-    wc_rec.add_argument("--spawn-dispatch", action="store_true")
+    _add_work_controller_runtime_flags(wc_rec)
     wc_rec.set_defaults(func=cmd_wc_reconcile)
 
     ca = sub.add_parser(

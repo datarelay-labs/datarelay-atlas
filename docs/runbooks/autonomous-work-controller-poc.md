@@ -31,20 +31,43 @@ Slash command: `/work-resume`. Do not redefine built-in `/resume` as canonical.
 
 | Mechanism | Status |
 | --- | --- |
-| `agent persist --trust /work-resume` (cwd = validated worktree, PTY) | Supported create-with-prompt path |
+| `agent persist --force --trust /work-resume` (cwd = validated worktree, PTY) | Supported unattended create path. `--force` follows `persist` and is Run Everything |
+| `agent --force persist --trust /work-resume` | Unknown command; not canonical |
 | `agent persist list\|attach\|stop` | Available for observe/manage |
 | `agent --workspace <path> --trust persist` | Incorrect argv; do not use |
-| `agent -p` print mode | Must **not** be used as a persistence substitute |
+| `agent -p` / `--print` | Must **not** be used as a persistence substitute |
 | PTY spawn | Transport only for unattended create; not business state |
 
 Controller dispatch argv:
 
 ```text
-agent persist --trust /work-resume
+agent persist --force --trust /work-resume
 ```
 
-with `cwd=<validated-worktree>`. The PTY dispatcher observes a newly listed
-session for that worktree only and must not stop/attach unrelated sessions.
+with `cwd=<validated-worktree>`. `--force` follows `persist`. `--trust` trusts
+the workspace and the prompt remains `/work-resume`. Durable dispatch success
+requires a new `agent persist list` session for that worktree whose id is
+named by the owned spawn's process tree. Another new session in the same
+worktree is not this launch. A target process is diagnostic only and must not
+be reported as success. Do not stop/attach unrelated sessions. If no owned
+session appears before the bounded timeout, terminate the entire owned
+process group and fail closed only after every member is gone. A surviving
+child keeps cleanup uncertain. If that cleanup cannot be verified, the
+controller records `HUMAN_REQUIRED` with `reason=spawn_cleanup_uncertain` and
+does not rewrite the canonical packet into a dispatch-blocked state.
+
+Before spawn, the dispatcher runs the Engineering System resource preflight.
+The canonical explicit script path is
+`ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD` (the override named by
+`/work-resume`). `ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT` is a
+compatibility alias used only when `..._GUARD` is unset. When neither is set,
+the script is `tools/cursor-resource-preflight.py` under
+`ENGINEERING_SYSTEM_ROOT`. A set explicit path that is not an existing file
+is unavailable. Exit 0 (`PASS` or `WARN`) may spawn. A nonzero, unknown, or
+unavailable result is `BLOCK`: the controller finalizes `HUMAN_REQUIRED` with
+`reason=resource_preflight_blocked`, creates no session, and does not stop
+existing sessions. The final repo/branch/HEAD and clean-porcelain check still
+runs immediately before a permitted spawn.
 
 ## Offline deterministic dogfood (no network)
 
@@ -82,7 +105,9 @@ python3 -m atlas work-controller enqueue-completion /tmp/awc-completion.json
 python3 -m atlas work-controller drain-inbox \
   --audit-adapter fixed --audit-verdict PASS
 
-# Re-register in a fresh data root to exercise REWORK dispatch argv:
+# Offline fixed REWORK with the default recording adapter and no
+# `--spawn-dispatch`. This records the finding locally and does not launch
+# Cursor. It must not be read as `REWORK_DISPATCHED`.
 rm -rf "$ATLAS_DATA_ROOT"
 python3 -m atlas work-controller register autonomous-work-controller-poc \
   --repository datarelay-labs/datarelay-atlas \
@@ -98,23 +123,55 @@ python3 -m atlas work-controller completion /tmp/awc-completion.json \
 python3 -m atlas work-controller show autonomous-work-controller-poc
 ```
 
-Expected REWORK outcome includes:
-`dispatch_command = ["agent", "persist", "--trust", "/work-resume"]`
-and `resume_prompt = "/work-resume"`.
+Expected outcome of that recording / no-spawn completion:
 
-To exercise the real PTY launcher (creates a live Cursor persist session in
-this worktree only):
+- `state` = `HUMAN_REQUIRED`
+- `verdict` = `HUMAN_REQUIRED`
+- `action` = `stop`
+- `reason` = `dispatch_boundary_failed`
+- findings say audit-only mode cannot claim Cursor dispatch
+- no `dispatch_command` and no `resume_prompt`
+- `show` reports `state` = `HUMAN_REQUIRED`
+
+`--audit-adapter fixed` defaults to `--work-packet-adapter recording`, so this
+example does not mutate GitHub Issue #12 and does not start a Cursor session.
+
+Production Codex paths default to `--work-packet-adapter github`, which
+updates the same canonical `[AI Work]` Issue (findings + next action) via safe
+`gh` argv/`--body-file` **before** Cursor dispatch, after a body/`updatedAt`
+recheck. Dispatch-blocked compensation rewrites that packet only when the
+canonical body is still the controller-owned pending transition (pending
+marker, workstream, head, and attempt). An intervening edit, including
+`PAUSED`/`BLOCKED` or a changed head/attempt, fails closed and is not
+overwritten. GitHub Issues PATCH rejects conditional headers (`If-Match` /
+`If-Unmodified-Since` → HTTP 400), so a residual TOCTOU remains and is accepted
+as a platform limit for the initial mutation. Mutation failure fails closed as
+`HUMAN_REQUIRED` with no spawn / no `REWORK_DISPATCHED`. GitHub mutation is
+paired only with real `--spawn-dispatch`.
+
+OpenAI remains `--work-packet-adapter recording` and audit-only, without
+`--spawn-dispatch`, until it has the same deterministic evidence bundle as
+Codex. It does not mutate canonical GitHub state and does not spawn.
+
+Real dispatch is a later milestone. It is not a substitute for the audit-only
+example above. When that milestone is in scope, pair fixed audit with the
+canonical GitHub Work Packet adapter and an explicit spawn. That command
+mutates Issue #12 and creates a live Cursor persist session in this worktree:
 
 ```bash
 python3 -m atlas work-controller completion /tmp/awc-completion.json \
   --audit-adapter fixed \
   --audit-verdict REWORK \
   --audit-findings "launcher dogfood" \
+  --work-packet-adapter github \
   --spawn-dispatch
 ```
 
-Stop only the newly created target session afterward via
-`agent persist stop <session>` if needed. Do not stop unrelated sessions.
+Only that spawned path includes
+`dispatch_command = ["agent", "persist", "--force", "--trust", "/work-resume"]`
+and `resume_prompt = "/work-resume"`. Stop only the newly created target
+session afterward via `agent persist stop <session>` if needed. Do not stop
+unrelated sessions.
 
 ## Live Codex audit adapter (default production)
 
@@ -123,12 +180,28 @@ Codex CLI must be installed and logged in with the owner's ChatGPT account
 required for the default path.
 
 ```bash
+# Live Codex with real REWORK dispatch (mutates GitHub Work Packet, then spawns)
 python3 -m atlas work-controller completion /tmp/awc-completion.json \
-  --audit-adapter codex
+  --audit-adapter codex \
+  --spawn-dispatch
+
+# Audit-only Codex (no GitHub mutation, no Cursor spawn)
+python3 -m atlas work-controller completion /tmp/awc-completion.json \
+  --audit-adapter codex \
+  --work-packet-adapter recording
 ```
 
 Contract:
 - Controller gathers deterministic evidence (git, Work Packet, tests, CI)
+- Autonomous path requires clean `git status --porcelain --untracked-files=all` after evidence and
+  before deterministic gates or Codex (dirty/drift ⇒ `HUMAN_REQUIRED`; never
+  map dirty + tests/CI FAIL to autonomous `REWORK`)
+- Deterministic gates from a clean snapshot only: tests FAIL / CI FAIL ⇒
+  `REWORK`; tests ERROR / CI PENDING|ERROR ⇒ `HUMAN_REQUIRED`; CI ABSENT allowed
+- Dispatch boundary captures session/proc baselines first, then revalidates
+  exact repo/branch/HEAD + clean porcelain immediately before spawning Cursor
+  (no external observation between validation and spawn); boundary
+  `ValidationError` finalizes `HUMAN_REQUIRED` (no spawn)
 - `codex exec -C <worktree> -s read-only --ephemeral --ignore-user-config
   --ignore-rules` with apps/browser/computer/shell/plugins/hooks/multi-agent
   disabled (`--disable …`, `web_search="disabled"`)
@@ -137,7 +210,10 @@ Contract:
 - exact worktree identity validation (repo/branch/HEAD) before audit
 - no edits/commits/pushes
 
-OpenAI Responses API (`--audit-adapter openai`) is optional fallback only.
+OpenAI Responses API (`--audit-adapter openai`) is metadata-only. It may run
+audit-only with `--work-packet-adapter recording` and without
+`--spawn-dispatch`. It cannot mutate the canonical GitHub Work Packet or spawn
+Cursor until it carries the same deterministic evidence bundle as Codex.
 Offline/deterministic mode requires explicit `--audit-adapter fixed`.
 
 ## Completion hook helper
@@ -146,9 +222,13 @@ Offline/deterministic mode requires explicit `--audit-adapter fixed`.
 and enqueues/drains the local inbox without Telegram. Default audit adapter is
 `codex`. Unknown `AWC_AUDIT_ADAPTER` values fail closed.
 
-Production default is **unattended**: when draining, the hook passes
+Codex production default is **unattended**: when draining, the hook passes
 `--spawn-dispatch` so a `REWORK` verdict can launch a fresh Cursor session with
-exact argv `agent persist --trust /work-resume`. Set
+exact argv `agent persist --force --trust /work-resume`. OpenAI stays
+recording/audit-only (`AWC_SPAWN_DISPATCH=0` is forced) until evidence parity.
+The hook inherits `ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD`, the
+`ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT` alias, or
+`ENGINEERING_SYSTEM_ROOT`; without a usable preflight the spawn fails closed. Set
 `AWC_SPAWN_DISPATCH=0` only for audit-only / operator opt-out (drain without
 auto-dispatch).
 
