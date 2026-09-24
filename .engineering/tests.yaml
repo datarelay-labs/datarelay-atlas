@@ -72,6 +72,7 @@ scenarios:
       - "GitHub sync/provenance projection regressions pass"
       - "Phase 1 project registry/adoption/sync/rebuild regressions pass"
       - "hybrid retrieval fusion regressions pass"
+      - "projection-to-keyword retrieval and operator search CLI regressions pass"
       - "MCP context scope and provenance regressions pass"
       - "Autonomous Work Controller PoC control-loop regressions pass"
       - "Queued Work Packet cycle-chaining regressions pass"

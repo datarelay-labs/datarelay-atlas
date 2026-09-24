@@ -102,6 +102,42 @@ def render_derived_document(source: CanonicalSource, body: str, source_revision:
     )
 
 
+_RENDERED_IDENTITY_LABELS = (
+    ("Project", "project_id"),
+    ("Provider", "provider"),
+    ("Repository", "repository"),
+    ("Ref", "ref"),
+    ("Source path", "source_path"),
+    ("Source revision", "source_revision"),
+)
+
+
+def rendered_projection_identity(text: str) -> dict[str, str]:
+    """Read source identity from the derived document `render_derived_document` writes."""
+    lines = text.splitlines()
+    if not lines or lines[0] != "<!-- atlas-derived: true -->":
+        raise ValidationError("projection bytes identity mismatch")
+    try:
+        separator = lines.index("---")
+    except ValueError as exc:
+        raise ValidationError("projection bytes identity mismatch") from exc
+    header = lines[:separator]
+    found: dict[str, str] = {}
+    for line in header:
+        for label, key in _RENDERED_IDENTITY_LABELS:
+            prefix = f"- {label}: `"
+            if line.startswith(prefix) and line.endswith("`") and len(line) > len(prefix) + 1:
+                found[key] = line[len(prefix):-1]
+    expected = {key for _, key in _RENDERED_IDENTITY_LABELS}
+    if set(found) != expected or any(not value.strip() for value in found.values()):
+        raise ValidationError("projection bytes identity mismatch")
+    if f"<!-- atlas-project-id: {found['project_id']} -->" not in header:
+        raise ValidationError("projection bytes identity mismatch")
+    if "- Canonical: `false`" not in header or "- Derived: `true`" not in header:
+        raise ValidationError("projection bytes identity mismatch")
+    return found
+
+
 def provenance_from_source(source: CanonicalSource, source_revision: str) -> Provenance:
     validate_source(source)
     return Provenance(
