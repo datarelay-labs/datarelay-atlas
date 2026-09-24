@@ -16,9 +16,10 @@ Phase 1 already selected local filesystem JSON under `.atlas-data/` (ADR-0005).
 conflicts with that durable boundary and with this controller's state file.
 
 Installed Cursor CLI supports persistent session create via
-`agent --force persist --trust <prompt>` when run under a PTY with cwd set to
-the validated worktree. `--force` is the installed Run Everything mode so a
-fresh unattended session does not stop at shell approval. `--trust` still
+`agent persist --force --trust <prompt>` when run under a PTY with cwd set to
+the validated worktree. `--force` follows `persist` and is Run Everything, so a
+fresh unattended session does not stop at shell approval. `agent --force persist`
+is an unknown command. `--trust` still
 trusts the workspace, and the prompt remains `/work-resume`. The incorrect argv
 form `agent --workspace <path> --trust persist` does not create a prompted
 session. Non-interactive `agent -p` / `--print` is not an acceptable silent
@@ -94,12 +95,13 @@ not stopped.
    then dispatch a **fresh** Cursor session in the validated worktree using the
    fixed resume surface `/work-resume`. Never attach/reuse unrelated sessions.
 9. **Cursor dispatch adapter (v0)**:
-   - Native create argv: `agent --force persist --trust /work-resume` with
+   - Native create argv: `agent persist --force --trust /work-resume` with
      `cwd=<validated-worktree>`, spawned under a PTY/`script` transport.
-     `--force` is Run Everything. A resource-preflight `BLOCK` or an
-     unavailable preflight refuses the spawn.
-   - Observe the new session via `agent persist list` filtered to the target
-     worktree; do not stop/attach/modify unrelated sessions.
+     `--force` follows `persist` and is Run Everything. A resource-preflight
+     `BLOCK` or an unavailable preflight refuses the spawn.
+   - Durable success requires a new `agent persist list` session for the target
+     worktree. A target process is diagnostic only and is not dispatch success.
+     Do not stop/attach/modify unrelated sessions.
    - PTY/tmux usage is transport only, not controller business state.
    - Do not fall back to `agent -p`.
 10. **Retry bound**: configurable `max_attempts` (default 3). Exhaustion →

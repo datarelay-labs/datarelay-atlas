@@ -421,7 +421,7 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(req.expected_head, HEAD_A)
             self.assertEqual(
                 build_persist_resume_command(req),
-                ["agent", "--force", "persist", "--trust", "/work-resume"],
+                ["agent", "persist", "--force", "--trust", "/work-resume"],
             )
             self.assertEqual(
                 build_persist_resume_command(req),

@@ -31,7 +31,8 @@ Slash command: `/work-resume`. Do not redefine built-in `/resume` as canonical.
 
 | Mechanism | Status |
 | --- | --- |
-| `agent --force persist --trust /work-resume` (cwd = validated worktree, PTY) | Supported unattended create path. `--force` is Run Everything |
+| `agent persist --force --trust /work-resume` (cwd = validated worktree, PTY) | Supported unattended create path. `--force` follows `persist` and is Run Everything |
+| `agent --force persist --trust /work-resume` | Unknown command; not canonical |
 | `agent persist list\|attach\|stop` | Available for observe/manage |
 | `agent --workspace <path> --trust persist` | Incorrect argv; do not use |
 | `agent -p` / `--print` | Must **not** be used as a persistence substitute |
@@ -40,12 +41,15 @@ Slash command: `/work-resume`. Do not redefine built-in `/resume` as canonical.
 Controller dispatch argv:
 
 ```text
-agent --force persist --trust /work-resume
+agent persist --force --trust /work-resume
 ```
 
-with `cwd=<validated-worktree>`. `--trust` trusts the workspace and the prompt
-remains `/work-resume`. The PTY dispatcher observes a newly listed session for
-that worktree only and must not stop/attach unrelated sessions.
+with `cwd=<validated-worktree>`. `--force` follows `persist`. `--trust` trusts
+the workspace and the prompt remains `/work-resume`. Durable dispatch success
+requires a new `agent persist list` session for that worktree. A target
+process is diagnostic only and must not be reported as success. Do not
+stop/attach unrelated sessions. If no new session appears before the bounded
+timeout, terminate only the owned spawned process group and fail closed.
 
 Before spawn, the dispatcher runs the Engineering System resource preflight.
 Set `ENGINEERING_SYSTEM_ROOT` to the canonical checkout, or set
@@ -148,7 +152,7 @@ python3 -m atlas work-controller completion /tmp/awc-completion.json \
 ```
 
 Only that spawned path includes
-`dispatch_command = ["agent", "--force", "persist", "--trust", "/work-resume"]`
+`dispatch_command = ["agent", "persist", "--force", "--trust", "/work-resume"]`
 and `resume_prompt = "/work-resume"`. Stop only the newly created target
 session afterward via `agent persist stop <session>` if needed. Do not stop
 unrelated sessions.
@@ -201,7 +205,7 @@ and enqueues/drains the local inbox without Telegram. Default audit adapter is
 
 Production default is **unattended**: when draining, the hook passes
 `--spawn-dispatch` so a `REWORK` verdict can launch a fresh Cursor session with
-exact argv `agent --force persist --trust /work-resume`. The hook inherits
+exact argv `agent persist --force --trust /work-resume`. The hook inherits
 `ENGINEERING_SYSTEM_ROOT` or `ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT`;
 without a usable preflight the spawn fails closed. Set
 `AWC_SPAWN_DISPATCH=0` only for audit-only / operator opt-out (drain without

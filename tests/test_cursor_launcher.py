@@ -81,6 +81,10 @@ class CursorLauncherTests(unittest.TestCase):
         command = build_persist_resume_command(req)
         self.assertEqual(
             command,
+            ["agent", "persist", "--force", "--trust", "/work-resume"],
+        )
+        self.assertNotEqual(
+            command,
             ["agent", "--force", "persist", "--trust", "/work-resume"],
         )
         self.assertNotIn("--print", command)
@@ -124,7 +128,7 @@ class CursorLauncherTests(unittest.TestCase):
                         state["spawn"] += 1
                         self.assertEqual(
                             command,
-                            ["agent", "--force", "persist", "--trust", "/work-resume"],
+                            ["agent", "persist", "--force", "--trust", "/work-resume"],
                         )
                         return 4242
 
@@ -337,7 +341,7 @@ class CursorLauncherTests(unittest.TestCase):
                     {"command": list(command), "cwd": worktree_path}
                 )
                 self.assertEqual(
-                    command, ["agent", "--force", "persist", "--trust", "/work-resume"]
+                    command, ["agent", "persist", "--force", "--trust", "/work-resume"]
                 )
                 self.assertEqual(worktree_path, str(target.resolve()))
                 state["sessions"].append(
@@ -363,7 +367,7 @@ class CursorLauncherTests(unittest.TestCase):
             result = dispatcher.start_resume(self._dispatch_request(str(target)))
             self.assertEqual(result.session_id, "target-new-1")
             self.assertEqual(
-                result.command, ["agent", "--force", "persist", "--trust", "/work-resume"]
+                result.command, ["agent", "persist", "--force", "--trust", "/work-resume"]
             )
             self.assertEqual(len(state["spawn_calls"]), 1)
             remaining_ids = {item.session_id for item in state["sessions"]}
@@ -431,13 +435,15 @@ class CursorLauncherTests(unittest.TestCase):
 
     def test_script_wrapper_cmdline_is_not_confirmed_agent(self):
         script_cmdline = (
-            "script\x00-qec\x00agent --force persist --trust /work-resume\x00/dev/null\x00"
+            "script\x00-qec\x00agent persist --force --trust /work-resume\x00/dev/null\x00"
         )
-        agent_cmdline = "agent\x00--force\x00persist\x00--trust\x00/work-resume\x00"
+        agent_cmdline = "agent\x00persist\x00--force\x00--trust\x00/work-resume\x00"
+        wrong_order = "agent\x00--force\x00persist\x00--trust\x00/work-resume\x00"
         approval_mode = "agent\x00persist\x00--trust\x00/work-resume\x00"
-        print_mode = "agent\x00--force\x00-p\x00--trust\x00/work-resume\x00"
+        print_mode = "agent\x00persist\x00--force\x00-p\x00--trust\x00/work-resume\x00"
         self.assertFalse(_is_agent_persist_trust_cmdline(script_cmdline))
         self.assertTrue(_is_agent_persist_trust_cmdline(agent_cmdline))
+        self.assertFalse(_is_agent_persist_trust_cmdline(wrong_order))
         self.assertFalse(_is_agent_persist_trust_cmdline(approval_mode))
         self.assertFalse(_is_agent_persist_trust_cmdline(print_mode))
 
@@ -497,7 +503,8 @@ class CursorLauncherTests(unittest.TestCase):
             self.assertEqual(state["spawn_calls"], 0)
             self.assertEqual(dispatcher.spawned_pids, [])
 
-    def test_pty_dispatcher_falls_back_to_target_process_observation(self):
+    def test_process_only_observation_is_not_dispatch_success(self):
+        """A transient target process without a persist-list session is not success."""
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "target-wt"
             unrelated = Path(tmp) / "unrelated-wt"
@@ -512,9 +519,8 @@ class CursorLauncherTests(unittest.TestCase):
                         task="Keep Me",
                     )
                 ],
-                "procs": [
-                    (111, f"agent --force persist --trust /work-resume cwd={unrelated}")
-                ],
+                "procs": [],
+                "terminated": [],
             }
 
             def list_sessions() -> list[PersistSession]:
@@ -523,16 +529,16 @@ class CursorLauncherTests(unittest.TestCase):
             def list_procs(worktree_path: str) -> list[tuple[int, str]]:
                 if Path(worktree_path).resolve() != target.resolve():
                     return []
-                return list(state["procs"]) if state.get("target_ready") else []
+                observed = list(state["procs"])
+                state["procs"] = []
+                return observed
 
             def spawn(command: list[str], worktree_path: str) -> int:
                 self.assertEqual(
-                    command, ["agent", "--force", "persist", "--trust", "/work-resume"]
+                    command, ["agent", "persist", "--force", "--trust", "/work-resume"]
                 )
-                state["target_ready"] = True
                 state["procs"] = [
-                    (111, "unrelated keep"),
-                    (222, "agent --force persist --trust /work-resume"),
+                    (222, "agent persist --force --trust /work-resume"),
                 ]
                 return 222
 
@@ -542,12 +548,17 @@ class CursorLauncherTests(unittest.TestCase):
                 spawn=spawn,
                 git_runner=self._clean_git(),
                 resource_preflight=_pass_resource_preflight,
+                terminate_process_group=lambda pid: state["terminated"].append(pid),
                 poll_interval_sec=0.01,
-                poll_timeout_sec=1.0,
+                poll_timeout_sec=0.05,
                 sleeper=lambda _s: None,
             )
-            result = dispatcher.start_resume(self._dispatch_request(str(target)))
-            self.assertEqual(result.session_id, "proc:222")
+            with self.assertRaises(DispatchSpawnedButUnobservedError) as ctx:
+                dispatcher.start_resume(self._dispatch_request(str(target)))
+            self.assertIn("persist list", str(ctx.exception))
+            self.assertIn("diagnostic only", str(ctx.exception))
+            self.assertEqual(state["terminated"], [222])
+            self.assertIn("proc:222", dispatcher.last_process_observation)
             self.assertEqual(
                 [item.session_id for item in state["sessions"]], ["unrelated-1"]
             )
@@ -843,7 +854,7 @@ class CursorLauncherTests(unittest.TestCase):
                             print(f"  Attach: agent persist attach {{item['session_id']}}")
                             print()
                         raise SystemExit(0)
-                    if argv[:4] == ["--force", "persist", "--trust", "/work-resume"]:
+                    if argv[:4] == ["persist", "--force", "--trust", "/work-resume"]:
                         cwd = str(Path.cwd().resolve())
                         sessions.append(
                             {{

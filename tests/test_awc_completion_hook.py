@@ -114,7 +114,7 @@ exec "{real_python}" "$@"
         )
         self.assertIn('RESUME_PROMPT = "/work-resume"', work_controller)
         self.assertIn(
-            '["agent", "--force", "persist", "--trust", RESUME_PROMPT]',
+            '["agent", "persist", "--force", "--trust", RESUME_PROMPT]',
             work_controller,
         )
 

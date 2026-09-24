@@ -1833,18 +1833,19 @@ class PersistSession:
 def build_persist_resume_command(request: DispatchRequest) -> list[str]:
     """Fixed argv for a fresh unattended /work-resume in a validated worktree.
 
-    Installed Cursor CLI global ``--force`` is Run Everything (no shell approval
-    prompts). ``--trust`` still trusts the workspace, and the prompt stays
-    ``/work-resume``. ``--force`` is a global option and must precede ``persist``.
-    ``agent --trust persist`` remains incorrect. Non-interactive ``agent -p`` /
-    ``--print`` is not an acceptable persistence substitute.
+    Installed Cursor CLI ``--force`` is Run Everything and follows ``persist``.
+    Host-proven argv is ``agent persist --force --trust /work-resume``.
+    Placing ``--force`` before ``persist`` is an unknown command. ``--trust``
+    still trusts the workspace, and the prompt stays ``/work-resume``.
+    Non-interactive ``agent -p`` / ``--print`` is not an acceptable persistence
+    substitute.
     """
     prompt = request.resume_prompt or RESUME_PROMPT
     if prompt != RESUME_PROMPT:
         raise ValidationError(
             f"resume_prompt must be {RESUME_PROMPT!r}, got {prompt!r}"
         )
-    command = ["agent", "--force", "persist", "--trust", RESUME_PROMPT]
+    command = ["agent", "persist", "--force", "--trust", RESUME_PROMPT]
     if "--print" in command or "-p" in command:
         raise ValidationError("non-persistent print mode is prohibited")
     return command
@@ -2017,9 +2018,10 @@ class SubprocessCursorDispatcher:
 class PtyPersistCursorDispatcher:
     """Create a fresh observable `agent persist` session that runs /work-resume.
 
-    Transport only: PTY/`script` spawn + observation via `agent persist list`
-    (preferred) or a target-worktree process scan (fallback). Does not attach
-    to, stop, or otherwise mutate sessions outside the target worktree.
+    Transport only: PTY/`script` spawn. Durable success requires a new
+    ``agent persist list`` session for the target worktree. A target process
+    is diagnostic only and never a successful dispatch. Does not attach to,
+    stop, or otherwise mutate sessions outside the owned spawn group.
 
     Immediately before spawn, revalidates exact repository/branch/HEAD and
     requires clean porcelain so a stale or dirty tree cannot launch Cursor.
@@ -2044,6 +2046,7 @@ class PtyPersistCursorDispatcher:
         self._git_runner = git_runner
         self._resource_preflight = resource_preflight or default_cursor_resource_preflight
         self.last_resource_preflight: dict[str, str] = {}
+        self.last_process_observation = ""
         self._terminate_process_group = (
             terminate_process_group or terminate_spawned_process_group
         )
@@ -2140,6 +2143,7 @@ class PtyPersistCursorDispatcher:
             # Work Packet away from PENDING_DISPATCH.
             raise ValidationError(f"cursor spawn failed before start: {exc}") from exc
         self.spawned_pids.append(pid)
+        seen_process = ""
         deadline = time.monotonic() + self._poll_timeout_sec
         while time.monotonic() < deadline:
             try:
@@ -2159,11 +2163,10 @@ class PtyPersistCursorDispatcher:
                             "reason", ""
                         ),
                     )
-                new_procs = [
-                    (proc_pid, cmd)
-                    for proc_pid, cmd in self._list_target_procs(worktree)
-                    if proc_pid not in before_pids
-                ]
+                for proc_pid, cmd in self._list_target_procs(worktree):
+                    if proc_pid not in before_pids:
+                        seen_process = f"proc:{proc_pid} {cmd}".strip()
+                        self.last_process_observation = seen_process
             except DispatchSpawnedButUnobservedError:
                 raise
             except Exception as exc:
@@ -2175,24 +2178,15 @@ class PtyPersistCursorDispatcher:
                     command=command,
                     cause=exc,
                 )
-            if new_procs:
-                proc_pid, _cmd = new_procs[-1]
-                return DispatchResult(
-                    session_id=f"proc:{proc_pid}",
-                    command=command,
-                    resource_preflight_result=self.last_resource_preflight.get(
-                        "result", ""
-                    ),
-                    resource_preflight_reason=self.last_resource_preflight.get(
-                        "reason", ""
-                    ),
-                )
             self._sleep(self._poll_interval_sec)
+        diagnostic = ""
+        if seen_process:
+            diagnostic = f"; process observation {seen_process} is diagnostic only"
         self._fail_unobserved(
             pid,
             message=(
-                "cursor persist session/process for target worktree did not appear "
-                f"within {self._poll_timeout_sec}s "
+                "agent persist list did not show a new session for the target "
+                f"worktree within {self._poll_timeout_sec}s{diagnostic} "
                 f"(cwd={worktree}, argv={command!r}, pid={pid})"
             ),
             command=command,
@@ -2239,27 +2233,38 @@ def terminate_spawned_process_group(pid: int, *, wait_sec: float = 2.0) -> None:
         return
 
 
+def _cmdline_has_ordered_tokens(parts: list[str], tokens: tuple[str, ...]) -> bool:
+    start = 0
+    for token in tokens:
+        try:
+            start = parts.index(token, start) + 1
+        except ValueError:
+            return False
+    return True
+
+
 def _is_agent_persist_trust_cmdline(cmdline: str) -> bool:
     """True when cmdline is the real Run Everything ``agent`` child.
 
-    The ``script(1)`` wrapper is not a confirmation. ``--force`` is required so
-    an approval-mode persist process is not treated as the unattended session.
+    The ``script(1)`` wrapper is not a confirmation. ``persist`` must precede
+    ``--force`` so the unknown ``agent --force persist`` form is ignored.
     """
     argv0 = cmdline.split("\x00", 1)[0]
     if Path(argv0).name != "agent":
         return False
     parts = [part for part in cmdline.split("\x00") if part]
-    if "--force" not in parts or "persist" not in parts or "--trust" not in parts:
-        return False
     if "--print" in parts or "-p" in parts:
         return False
-    if RESUME_PROMPT not in parts and "/work-resume" not in parts:
+    prompt = RESUME_PROMPT if RESUME_PROMPT in parts else "/work-resume"
+    if prompt not in parts:
         return False
-    return True
+    return _cmdline_has_ordered_tokens(
+        parts, ("persist", "--force", "--trust", prompt)
+    )
 
 
 def list_persist_trust_processes(worktree_path: str) -> list[tuple[int, str]]:
-    """List `agent --force persist --trust /work-resume` processes for one worktree.
+    """List `agent persist --force --trust /work-resume` processes for one worktree.
 
     Excludes the ``script(1)`` PTY wrapper whose command line only embeds the
     agent argv as a string — confirmation requires the real ``agent`` executable.
@@ -2308,7 +2313,7 @@ def script_pty_spawn_persist(command: list[str], worktree_path: str) -> int:
     """Spawn argv under `script(1)` PTY in the target worktree (host-proven).
 
     Live Cursor CLI sessions are started as:
-    `script -qec 'agent --force persist --trust <prompt>' /dev/null` with
+    `script -qec 'agent persist --force --trust <prompt>' /dev/null` with
     cwd=worktree. ``--force`` is Run Everything.
     """
     if not command or command[0] != "agent":
