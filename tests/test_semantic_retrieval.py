@@ -417,6 +417,47 @@ class HttpEmbeddingClientTests(unittest.TestCase):
         self.assertEqual(v1.embed(["q"]), [[1.0]])
         self.assertEqual(captured["v1"], "http://127.0.0.1:8080/v1/embeddings")
 
+    def test_default_batch_size_splits_thirty_three_inputs_in_order(self):
+        captured: list[list[str]] = []
+
+        def opener(request, timeout=None):  # noqa: ARG001
+            body = json.loads(request.data.decode("utf-8"))
+            inputs = body["input"]
+            self.assertLessEqual(len(inputs), 32)
+            captured.append(list(inputs))
+            data = [
+                {"index": len(inputs) - 1 - offset, "embedding": [float(inputs[len(inputs) - 1 - offset]), 1.0]}
+                for offset in range(len(inputs))
+            ]
+            return _Response(json.dumps({"data": data}).encode("utf-8"))
+
+        texts = [str(index) for index in range(33)]
+        client = HttpEmbeddingClient(_config(), opener=opener)
+        self.assertEqual(client.max_batch_size, 32)
+        self.assertEqual(client.embed(texts), [[float(index), 1.0] for index in range(33)])
+        self.assertEqual(captured, [texts[:32], texts[32:]])
+
+        calls = {"count": 0}
+
+        def mismatch(request, timeout=None):  # noqa: ARG001
+            body = json.loads(request.data.decode("utf-8"))
+            calls["count"] += 1
+            width = 2 if calls["count"] == 1 else 1
+            data = [{"index": index, "embedding": [1.0] * width} for index in range(len(body["input"]))]
+            return _Response(json.dumps({"data": data}).encode("utf-8"))
+
+        with self.assertRaises(ValidationError) as cross_batch:
+            HttpEmbeddingClient(_config(), opener=mismatch).embed(texts)
+        self.assertEqual(str(cross_batch.exception), "embedding dimension mismatch")
+
+        for batch_size in (0, -1, 33, True, 1.5):
+            with self.assertRaises(ValidationError) as invalid:
+                HttpEmbeddingClient(_config(), opener=opener, max_batch_size=batch_size)  # type: ignore[arg-type]
+            self.assertEqual(
+                str(invalid.exception),
+                "embedding client batch size must be a positive integer at most 32",
+            )
+
     def test_transport_and_payload_failures(self):
         def fail(request, timeout=None):  # noqa: ARG001
             raise urllib.error.URLError(TimeoutError("timed out"))

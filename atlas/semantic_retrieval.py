@@ -6,7 +6,8 @@ Design gate for this slice:
 - Non-goals: pgvector, a persistent vector store, cloud embedding APIs,
   cross-project search, and model-specific prefix rules.
 - Contract: optional search CLI endpoint/model/prefix/timeout. Unconfigured
-  search stays keyword-only.
+  search stays keyword-only. The HTTP client posts at most 32 inputs per
+  request so a default TEI ``max-client-batch-size`` accepts the call.
 - State: embeddings are request-scoped and are not stored.
 - Security: operator-supplied http(s) endpoint, no secrets in Git, fail closed
   on transport and payload errors.
@@ -32,6 +33,10 @@ MAX_MODEL_CHARS = 256
 MAX_TIMEOUT_SECONDS = 600.0
 MAX_RESPONSE_BYTES = 8_000_000
 DEFAULT_TIMEOUT_SECONDS = 30.0
+# TEI's default ``max-client-batch-size``. Stay at or below it so operators
+# do not have to raise the server limit for Atlas search.
+DEFAULT_CLIENT_BATCH_SIZE = 32
+MAX_CLIENT_BATCH_SIZE = 32
 
 _NO_EMBEDDINGS = "embedding endpoint returned no embeddings"
 _NON_NUMERIC = "embedding endpoint returned a non-numeric embedding value"
@@ -40,6 +45,9 @@ _ZERO_NORM = "embedding endpoint returned a zero-norm embedding vector"
 _DIMENSION_MISMATCH = "embedding dimension mismatch"
 _MALFORMED_JSON = "embedding endpoint returned malformed JSON"
 _REQUEST_FAILED = "embedding endpoint request failed"
+_BATCH_SIZE = (
+    f"embedding client batch size must be a positive integer at most {MAX_CLIENT_BATCH_SIZE}"
+)
 
 
 @dataclass(frozen=True)
@@ -132,6 +140,18 @@ def embedding_config_from_cli(
             timeout_seconds=timeout_seconds,
         )
     )
+
+
+def validate_client_batch_size(batch_size: object) -> int:
+    """Reject a client batch size that would exceed TEI's default limit."""
+    if (
+        isinstance(batch_size, bool)
+        or not isinstance(batch_size, int)
+        or batch_size < 1
+        or batch_size > MAX_CLIENT_BATCH_SIZE
+    ):
+        raise ValidationError(_BATCH_SIZE)
+    return batch_size
 
 
 def embeddings_url(endpoint: str) -> str:
@@ -268,9 +288,11 @@ class HttpEmbeddingClient:
         *,
         opener: Callable[..., object] | None = None,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
+        max_batch_size: int = DEFAULT_CLIENT_BATCH_SIZE,
     ) -> None:
         self.config = validate_embedding_config(config)
         self.max_response_bytes = max_response_bytes
+        self.max_batch_size = validate_client_batch_size(max_batch_size)
         if opener is not None:
             self._open = opener
         else:
@@ -286,6 +308,19 @@ class HttpEmbeddingClient:
             raise ValidationError(_NO_EMBEDDINGS)
         if not texts:
             return []
+        vectors: list[list[float]] = []
+        width: int | None = None
+        for start in range(0, len(texts), self.max_batch_size):
+            batch = self._embed_batch(texts[start : start + self.max_batch_size])
+            for vector in batch:
+                if width is None:
+                    width = len(vector)
+                elif len(vector) != width:
+                    raise ValidationError(_DIMENSION_MISMATCH)
+                vectors.append(vector)
+        return vectors
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         body = json.dumps(
             {"model": self.config.model, "input": texts},
             ensure_ascii=False,
