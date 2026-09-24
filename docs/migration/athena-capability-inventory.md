@@ -23,7 +23,7 @@ Machine-readable record: [`athena-capability-inventory.json`](athena-capability-
 
 | Capability | Disposition | Atlas target |
 |---|---|---|
-| MCP transport/auth/tool framework | ATLAS-NATIVE (tool semantics + scope gating); transport deferred | `atlas/mcp_context.py`, `atlas/security.py` |
+| MCP transport/auth/tool framework | ATLAS-NATIVE (tool semantics, scope gating, Streamable HTTP resource server) | `atlas/mcp_context.py`, `atlas/mcp_http.py`, `atlas/security.py` |
 | Wiki.js coupling | DROP | — |
 | PostgreSQL/pgvector | EXTERNAL-DEPENDENCY (interface only now) | `atlas/retrieval.py` SemanticProvider |
 | Embedding provider/client | EXTERNAL-DEPENDENCY | `atlas/retrieval.py` |

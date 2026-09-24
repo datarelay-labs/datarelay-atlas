@@ -62,6 +62,8 @@ class RetrievalHit:
     match: str
     score: float
     provenance: dict[str, object]
+    # Projection identity (`source_id@ref`). `path` stays the user-visible source path.
+    identity: str = ""
 
 
 class SemanticProvider(Protocol):
@@ -238,6 +240,7 @@ class Retriever:
                     match=hit.match,
                     score=hit.score,
                     provenance=dict(provenance_dict(prov)),
+                    identity=hit.path,
                 )
             )
         return out

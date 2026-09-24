@@ -1,5 +1,5 @@
 version: 1
-setup_command: "python3 -m pip install --quiet 'jsonschema>=4.0'"
+setup_command: "python3 -m pip install --quiet -r requirements.txt"
 
 paths:
   "AGENTS.md":
@@ -75,6 +75,7 @@ scenarios:
       - "projection-to-keyword retrieval and operator search CLI regressions pass"
       - "external embedding semantic retrieval and hybrid RRF regressions pass"
       - "MCP context scope and provenance regressions pass"
+      - "authenticated MCP resource-server and HTTPS smoke regressions pass"
       - "Autonomous Work Controller PoC control-loop regressions pass"
       - "Queued Work Packet cycle-chaining regressions pass"
       - "Continuous Chat Audit Supervisor PoC checkpoint/slice regressions pass"

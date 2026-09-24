@@ -15,7 +15,7 @@ from atlas.projection import PROJECTOR_ID, ProjectionRecord, ProjectionStore
 from atlas.projection_retrieval import build_keyword_retriever
 from atlas.provenance import CanonicalSource, ValidationError
 from atlas.registry import ProjectRecord, ProjectRegistry, RegisteredSource
-from atlas.retrieval import RetrievalHit
+from atlas.retrieval import RetrievalHit, Retriever
 from atlas.semantic_retrieval import EmbeddingClient, EmbeddingConfig
 
 
@@ -155,3 +155,12 @@ class AtlasService:
             embedder=embedder,
         )
         return retriever.search(project_id, query, limit=limit)
+
+    def project_retriever(self, project_id: str) -> Retriever:
+        """Build a project-scoped retriever from current projections.
+
+        Callers must not cache the result across requests. A later sync or
+        rebuild has to be visible on the next call.
+        """
+        self.registry.get(project_id)
+        return build_keyword_retriever(self.projections, project_id)

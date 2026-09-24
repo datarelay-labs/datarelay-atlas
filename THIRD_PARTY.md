@@ -37,6 +37,14 @@ Summary of factual findings at PoC HEAD:
 | pgvector/PostgreSQL image | PostgreSQL-style license text present |
 | Hugging Face TEI image | Declared Apache-2.0 |
 
+## MCP Python SDK
+
+Atlas MCP transport uses the official SDK as a resource-server library. Atlas does not vendor the SDK source.
+
+- Package: `mcp==2.2.0` (pinned in `requirements.txt`)
+- Project: [Model Context Protocol](https://modelcontextprotocol.io)
+- Declared license: **MIT**
+
 ## Status
 
 Top-level Athena license: reviewed (historical).
