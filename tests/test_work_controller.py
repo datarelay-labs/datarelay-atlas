@@ -11,6 +11,7 @@ from atlas.provenance import ValidationError
 from atlas.work_controller import (
     AuditResult,
     CompletionEvent,
+    CycleAdvanceResult,
     DispatchResult,
     DispatchSpawnedButUnobservedError,
     DispatchSpawnCleanupUncertainError,
@@ -807,6 +808,150 @@ class WorkControllerTests(unittest.TestCase):
     def test_completion_event_requires_fields(self):
         with self.assertRaises(ValidationError):
             CompletionEvent.from_dict({"event_id": "x"})
+
+    def _advanced(self) -> CycleAdvanceResult:
+        return CycleAdvanceResult(
+            kind="advanced",
+            successor_issue=18,
+            successor_branch="feature/autonomous-work-controller-poc",
+            successor_workstream="next-cycle",
+            transition_id=f"12:{HEAD_A}:evt-1",
+        )
+
+    def test_pass_without_successor_stops_without_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "PASSED")
+            self.assertEqual(outcome["cycle"], "no_successor")
+            self.assertEqual(dispatcher.requests, [])
+            self.assertEqual(packets.updates, [])
+            self.assertEqual(len(packets.cycle_calls), 1)
+
+    def test_rework_and_human_required_do_not_advance_cycle(self):
+        for verdict in ("REWORK", "HUMAN_REQUIRED"):
+            with tempfile.TemporaryDirectory() as tmp:
+                ctl, dispatcher, packets = self._ctl(tmp, verdict=verdict)
+                outcome = ctl.handle_completion(self._event())
+                self.assertEqual(packets.cycle_calls, [])
+                if verdict == "REWORK":
+                    self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
+                else:
+                    self.assertEqual(dispatcher.requests, [])
+                    self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+
+    def test_pass_activates_successor_and_dispatches_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
+            packets.cycle_script = [self._advanced()]
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["action"], "successor_dispatched")
+            self.assertEqual(outcome["state"], "SUCCESSOR_DISPATCHED")
+            self.assertEqual(len(dispatcher.requests), 1)
+            request = dispatcher.requests[0]
+            self.assertEqual(request.issue_number, 18)
+            self.assertEqual(request.attempt, 1)
+            self.assertEqual(request.resume_prompt, "/work-resume")
+            self.assertIn("/work-resume", outcome["dispatch_command"])
+            shown = ctl.show("awc-poc")
+            self.assertEqual(shown["issue_number"], 18)
+            self.assertEqual(shown["attempt"], 0)
+            self.assertEqual(shown["expected_head"], HEAD_A)
+            self.assertIn("evt-1", shown["processed_event_ids"])
+            replay = ctl.handle_completion(self._event())
+            self.assertTrue(replay["idempotent_replay"])
+            self.assertEqual(len(dispatcher.requests), 1)
+            self.assertEqual(len(packets.cycle_calls), 1)
+
+    def test_ambiguous_cycle_does_not_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
+            packets.cycle_result = CycleAdvanceResult(
+                kind="human_required",
+                reason="ambiguous queued successors: #18, #19",
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "cycle_human_required")
+            self.assertEqual(dispatcher.requests, [])
+            self.assertEqual(ctl.show("awc-poc")["issue_number"], 12)
+
+    def test_dispatch_failure_leaves_one_active_successor_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl, _dispatcher, packets = self._ctl(tmp, verdict="PASS")
+            packets.cycle_script = [self._advanced()]
+
+            class RefusingDispatcher:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+                def start_resume(self, request):
+                    self.calls += 1
+                    raise ValidationError("spawn refused")
+
+            refusing = RefusingDispatcher()
+            ctl.dispatcher = refusing
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "cycle_dispatch_blocked")
+            self.assertEqual(outcome["successor_issue"], 18)
+            self.assertEqual(refusing.calls, 1)
+            self.assertEqual(len(packets.cycle_calls), 1)
+            self.assertEqual(ctl.show("awc-poc")["issue_number"], 18)
+
+    def test_reconcile_pending_dispatch_once_and_claimed_dispatch_stops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
+            record = ctl.store.get("awc-poc")
+            record.state = "CYCLE_DISPATCH_PENDING"
+            record.issue_number = 18
+            record.attempt = 0
+            record.pending_event = self._event()
+            ctl.store.put(record)
+            outcome = ctl.reconcile("awc-poc")[0]
+            self.assertEqual(outcome["state"], "SUCCESSOR_DISPATCHED")
+            self.assertEqual(len(dispatcher.requests), 1)
+            self.assertEqual(dispatcher.requests[0].issue_number, 18)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl, dispatcher, _packets = self._ctl(tmp, verdict="PASS")
+            record = ctl.store.get("awc-poc")
+            record.state = "CYCLE_DISPATCHING"
+            record.pending_event = self._event()
+            ctl.store.put(record)
+            outcome = ctl.reconcile("awc-poc")[0]
+            self.assertEqual(outcome["reason"], "cycle_dispatch_uncertain")
+            self.assertEqual(dispatcher.requests, [])
+            self.assertEqual(ctl.show("awc-poc")["state"], "HUMAN_REQUIRED")
+
+    def test_successor_completion_accepts_new_head(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
+            packets.cycle_script = [self._advanced()]
+            ctl.handle_completion(self._event())
+            self.assertEqual(len(dispatcher.requests), 1)
+            outcome = ctl.handle_completion(
+                self._event(
+                    event_id="evt-2",
+                    issue_number=18,
+                    head=HEAD_B,
+                    attempt=1,
+                )
+            )
+            self.assertEqual(outcome["state"], "PASSED")
+            self.assertEqual(outcome["cycle"], "no_successor")
+            self.assertEqual(ctl.show("awc-poc")["expected_head"], HEAD_B)
+            self.assertEqual(len(dispatcher.requests), 1)
+
+    def test_unusual_event_id_pass_does_not_dispatch(self):
+        for event_id in ("evt with spaces", "e" * 300):
+            with tempfile.TemporaryDirectory() as tmp:
+                ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
+                outcome = ctl.handle_completion(self._event(event_id=event_id))
+                self.assertEqual(outcome["state"], "PASSED", event_id)
+                self.assertEqual(outcome["cycle"], "no_successor")
+                self.assertEqual(dispatcher.requests, [])
+                self.assertEqual(packets.updates, [])
 
 
 if __name__ == "__main__":

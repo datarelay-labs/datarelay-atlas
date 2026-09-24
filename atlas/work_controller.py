@@ -7,6 +7,7 @@ runs an independent audit, and either stops or dispatches a fresh /work-resume.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import pty
@@ -50,6 +51,10 @@ ALLOWED_STATES = frozenset(
         "IDLE",
         "AWAITING_AUDIT",
         "AUDITING",
+        "CYCLE_ACTIVATING",
+        "CYCLE_DISPATCH_PENDING",
+        "CYCLE_DISPATCHING",
+        "SUCCESSOR_DISPATCHED",
         "REWORK_DISPATCHED",
         "PASSED",
         "HUMAN_REQUIRED",
@@ -367,6 +372,18 @@ class WorkPacketPort(Protocol):
         attempt: int,
         head: str,
     ) -> None:
+        ...
+
+    def advance_pass_cycle(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        workstream: str,
+        head: str,
+        event_id: str,
+    ) -> "CycleAdvanceResult":
         ...
 
     def apply_dispatch_blocked(
@@ -1318,11 +1335,453 @@ def render_dispatch_blocked_work_packet_body(
     return updated.rstrip() + "\n"
 
 
+_CYCLE_EVENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,120}$")
+_CYCLE_KINDS = frozenset(
+    {"no_successor", "advanced", "already_activated", "human_required"}
+)
+
+
+@dataclass(frozen=True)
+class CycleAdvanceResult:
+    """Result of a verified PASS queued-successor transition.
+
+    ``no_successor`` preserves the existing PASS stop: no GitHub write and no
+    Cursor dispatch. Eligible successors use Engineering System statuses only
+    (``PAUSED`` then ``ACTIVE``); ``QUEUE_STATE=QUEUED`` is an Atlas marker.
+    """
+
+    kind: str
+    successor_issue: int | None = None
+    successor_branch: str | None = None
+    successor_workstream: str | None = None
+    reason: str = ""
+    transition_id: str = ""
+
+    def __post_init__(self) -> None:
+        if self.kind not in _CYCLE_KINDS:
+            raise ValidationError(f"invalid cycle advance kind: {self.kind}")
+
+
+def _cycle_event_token(event_id: str) -> str:
+    """Return a transition-safe token for an already accepted completion id.
+
+    Ids that already fit the transition alphabet are preserved so existing
+    ``CYCLE_TRANSITION`` values still match. Any other nonempty id accepted by
+    ``CompletionEvent`` is hashed so a PASS is not rejected at cycle time.
+    """
+    event = (event_id or "").strip()
+    if not event:
+        raise ValidationError(f"invalid cycle event_id: {event_id!r}")
+    if _CYCLE_EVENT_RE.fullmatch(event):
+        return event
+    return "h" + hashlib.sha256(event.encode("utf-8")).hexdigest()
+
+
+def cycle_transition_id(*, issue_number: int, head: str, event_id: str) -> str:
+    """Deterministic identity for one predecessor completion event and HEAD."""
+    if int(issue_number) < 1:
+        raise ValidationError(f"invalid issue_number: {issue_number}")
+    normalized_head = head.strip().lower()
+    if not HEAD_RE.match(normalized_head):
+        raise ValidationError(f"invalid head sha: {head}")
+    return f"{int(issue_number)}:{normalized_head}:{_cycle_event_token(event_id)}"
+
+
+def _leading_metadata_groups(body: str) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for line in _leading_packet_metadata_text(body).splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+            continue
+        grouped.setdefault(key, []).append(value.strip())
+    return grouped
+
+
+def _target_repo_matches(target: str, repository: str) -> bool:
+    try:
+        require_canonical_target_repo(target, repository)
+    except ValidationError:
+        return False
+    return True
+
+
+def _active_workstream_disposition(
+    body: str,
+    *,
+    repository: str,
+    workstream: str,
+) -> str:
+    """Classify an open packet against one repository WORKSTREAM.
+
+    Returns ``match``, ``other``, or ``unclassifiable``. A malformed packet
+    that still visibly carries ``STATUS=ACTIVE``, the same ``TARGET_REPO``,
+    and the same ``WORKSTREAM`` is unclassifiable and must fail closed.
+    A clearly different workstream stays ``other`` even when its metadata
+    cannot be parsed.
+    """
+    expected = workstream.strip()
+    try:
+        meta = _parse_leading_packet_metadata(body)
+    except ValidationError:
+        grouped = _leading_metadata_groups(body)
+        if "ACTIVE" not in grouped.get("STATUS", []):
+            return "other"
+        if expected not in grouped.get("WORKSTREAM", []):
+            return "other"
+        if not any(
+            _target_repo_matches(target, repository)
+            for target in grouped.get("TARGET_REPO", [])
+        ):
+            return "other"
+        return "unclassifiable"
+    if meta.get("STATUS") != "ACTIVE":
+        return "other"
+    if (meta.get("WORKSTREAM") or "").strip() != expected:
+        return "other"
+    if not _target_repo_matches(meta.get("TARGET_REPO") or "", repository):
+        return "other"
+    return "match"
+
+
+def _resume_branch_disposition(
+    body: str,
+    *,
+    repository: str,
+    branch: str,
+) -> str:
+    """Classify whether `/work-resume` could select this packet on `branch`.
+
+    Returns ``match``, ``other``, or ``unclassifiable``. Selection is
+    ``TARGET_REPO`` + ``STATUS=ACTIVE`` + ``BRANCH`` and does not consult
+    ``WORKSTREAM``. A malformed packet that still looks ACTIVE for this
+    repository and branch cannot be proved unique, so it is unclassifiable.
+    """
+    expected_branch = branch.strip()
+    try:
+        meta = _parse_leading_packet_metadata(body)
+    except ValidationError:
+        grouped = _leading_metadata_groups(body)
+        if "ACTIVE" not in grouped.get("STATUS", []):
+            return "other"
+        targets = grouped.get("TARGET_REPO", [])
+        if not targets or not any(
+            _target_repo_matches(target, repository) for target in targets
+        ):
+            return "other"
+        branches = grouped.get("BRANCH", [])
+        if branches and all(
+            item not in ("", expected_branch) for item in branches
+        ):
+            return "other"
+        return "unclassifiable"
+    if meta.get("STATUS") != "ACTIVE":
+        return "other"
+    if not _target_repo_matches(meta.get("TARGET_REPO") or "", repository):
+        return "other"
+    packet_branch = meta.get("BRANCH")
+    if packet_branch not in (None, "") and packet_branch != expected_branch:
+        return "other"
+    return "match"
+
+
+def _after_issue_number(raw: str | None) -> int | None:
+    text = (raw or "").strip()
+    if not re.fullmatch(r"[0-9]+", text):
+        return None
+    value = int(text)
+    return value if value >= 1 else None
+
+
+def queued_successor_disposition(
+    body: str,
+    *,
+    repository: str,
+    predecessor_issue: int,
+    required_branch: str,
+    required_workstream: str,
+) -> str:
+    """Classify one packet against a predecessor PASS cycle.
+
+    Returns ``unrelated``, ``eligible``, or ``reject:<reason>``. Only an
+    explicit ``QUEUE_STATE=QUEUED`` or first-class ``STATUS=QUEUED`` attempt
+    is examined. Well-formed queues for a different predecessor are unrelated.
+    A queued successor for this predecessor must use the same branch and the
+    same ``WORKSTREAM`` as the predecessor/controller record.
+    """
+    leading = _leading_packet_metadata_text(body)
+    try:
+        meta = _parse_leading_packet_metadata(body)
+    except ValidationError as exc:
+        if "QUEUE_STATE=QUEUED" in leading or re.search(
+            r"(?m)^STATUS=QUEUED$", leading
+        ):
+            return f"reject:malformed queued packet ({exc})"
+        return "unrelated"
+    status = meta.get("STATUS", "")
+    queue_state = meta.get("QUEUE_STATE", "")
+    if status != "QUEUED" and queue_state != "QUEUED":
+        return "unrelated"
+    if status == "QUEUED":
+        return (
+            "reject:first-class STATUS=QUEUED is prohibited; use "
+            "STATUS=PAUSED and QUEUE_STATE=QUEUED"
+        )
+    reasons: list[str] = []
+    if status != "PAUSED":
+        reasons.append(f"STATUS={status or 'missing'} is not PAUSED")
+    after = _after_issue_number(meta.get("AFTER_ISSUE"))
+    if after is None:
+        reasons.append("AFTER_ISSUE must be a positive integer")
+    try:
+        version_raw = meta.get("PACKET_VERSION", "")
+        version = int(version_raw)
+    except (TypeError, ValueError):
+        version = 0
+    if version < 2:
+        reasons.append("PACKET_VERSION>=2 is required")
+    else:
+        try:
+            _require_v2_packet_metadata(body)
+        except ValidationError as exc:
+            reasons.append(str(exc))
+    try:
+        require_canonical_target_repo(meta.get("TARGET_REPO", ""), repository)
+    except ValidationError as exc:
+        reasons.append(str(exc))
+    branch = (meta.get("BRANCH") or "").strip()
+    if not branch:
+        reasons.append("BRANCH is required")
+    workstream = (meta.get("WORKSTREAM") or "").strip()
+    if not workstream:
+        reasons.append("WORKSTREAM is required")
+    if reasons:
+        return "reject:malformed queued packet (" + "; ".join(reasons) + ")"
+    if after != int(predecessor_issue):
+        return "unrelated"
+    expected_branch = required_branch.strip()
+    if branch != expected_branch:
+        return (
+            "reject:successor branch/worktree mismatch "
+            f"{branch!r} != {expected_branch!r}"
+        )
+    expected_workstream = required_workstream.strip()
+    if not expected_workstream:
+        return "reject:predecessor WORKSTREAM is required"
+    if workstream != expected_workstream:
+        return (
+            "reject:successor WORKSTREAM mismatch "
+            f"{workstream!r} != {expected_workstream!r}"
+        )
+    return "eligible"
+
+
+def render_cycle_predecessor_complete_body(
+    body: str,
+    *,
+    repository: str,
+    branch: str,
+    workstream: str,
+    head: str,
+    predecessor_issue: int,
+    successor_issue: int,
+    transition_id: str,
+) -> str:
+    """Mark the predecessor COMPLETE for one cycle transition. Issue stays open."""
+    raw = (body or "").strip()
+    if not raw:
+        raise ValidationError("work packet body is empty")
+    _require_unique_managed_sections(raw)
+    _require_v2_packet_metadata(raw)
+    if _packet_metadata_value(raw, "STATUS") != "ACTIVE":
+        raise ValidationError(
+            "work packet STATUS must be ACTIVE before predecessor completion"
+        )
+    require_canonical_target_repo(
+        _packet_metadata_value(raw, "TARGET_REPO") or "",
+        repository,
+    )
+    expected_branch = branch.strip()
+    packet_branch = _packet_metadata_value(raw, "BRANCH")
+    if packet_branch != expected_branch:
+        raise ValidationError(
+            f"work packet BRANCH mismatch: {packet_branch!r} != {expected_branch!r}"
+        )
+    packet_workstream = _packet_metadata_value(raw, "WORKSTREAM")
+    if packet_workstream != workstream.strip():
+        raise ValidationError(
+            f"work packet WORKSTREAM mismatch: "
+            f"{packet_workstream!r} != {workstream.strip()!r}"
+        )
+    if int(successor_issue) < 1:
+        raise ValidationError(f"invalid successor issue: {successor_issue}")
+    parsed_issue, parsed_head, _event = _split_cycle_transition(transition_id)
+    if parsed_issue != int(predecessor_issue) or parsed_head != head.strip().lower():
+        raise ValidationError("cycle transition id does not match predecessor/head")
+    normalized_head = head.strip().lower()
+    updated = _set_packet_metadata_line(raw, "STATUS", "COMPLETE")
+    if _packet_metadata_value(updated, "QUEUE_STATE") is not None:
+        updated = _set_packet_metadata_line(updated, "QUEUE_STATE", "NONE")
+    updated = _set_packet_metadata_line(updated, "LAST_VERIFIED_HEAD", normalized_head)
+    updated = _set_packet_metadata_line(updated, "CYCLE_TRANSITION", transition_id)
+    updated = _set_packet_metadata_line(
+        updated, "CYCLE_SUCCESSOR", str(int(successor_issue))
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Current State",
+        (
+            "- Controller cycle: predecessor COMPLETE\n"
+            f"- Successor issue: #{int(successor_issue)}\n"
+            f"- Audited HEAD: `{normalized_head}`\n"
+            f"- Transition: `{transition_id}`"
+        ),
+    )
+    updated = _replace_packet_section(updated, "Next Action", "NONE")
+    updated = _replace_packet_section(
+        updated,
+        "Latest Evidence",
+        (
+            "```text\n"
+            f"HEAD={normalized_head}\n"
+            f"BRANCH={expected_branch}\n"
+            "VERDICT=PASS\n"
+            "WORK_PACKET_MUTATION=PREDECESSOR_COMPLETE\n"
+            f"CYCLE_TRANSITION={transition_id}\n"
+            f"CYCLE_SUCCESSOR={int(successor_issue)}\n"
+            "```"
+        ),
+    )
+    updated = _replace_packet_section(updated, "Blockers", "NONE")
+    return updated.rstrip() + "\n"
+
+
+def _split_cycle_transition(transition_id: str) -> tuple[int, str, str]:
+    issue_text, separator, rest = (transition_id or "").partition(":")
+    head, separator_2, event = rest.partition(":")
+    if not separator or not separator_2:
+        raise ValidationError(f"invalid cycle transition id: {transition_id!r}")
+    rebuilt = cycle_transition_id(
+        issue_number=int(issue_text) if issue_text.isdigit() else 0,
+        head=head,
+        event_id=event,
+    )
+    if rebuilt != transition_id:
+        raise ValidationError(f"invalid cycle transition id: {transition_id!r}")
+    return int(issue_text), head, event
+
+
+def render_cycle_successor_active_body(
+    body: str,
+    *,
+    repository: str,
+    predecessor_issue: int,
+    required_branch: str,
+    required_workstream: str,
+    head: str,
+    transition_id: str,
+) -> str:
+    """Activate one queued successor and clear ``QUEUE_STATE`` in the same body."""
+    raw = (body or "").strip()
+    if not raw:
+        raise ValidationError("work packet body is empty")
+    disposition = queued_successor_disposition(
+        raw,
+        repository=repository,
+        predecessor_issue=int(predecessor_issue),
+        required_branch=required_branch,
+        required_workstream=required_workstream,
+    )
+    if disposition != "eligible":
+        raise ValidationError(
+            f"refusing successor activation: {disposition}"
+        )
+    normalized_head = head.strip().lower()
+    parsed_issue, parsed_head, _event = _split_cycle_transition(transition_id)
+    if parsed_issue != int(predecessor_issue) or parsed_head != normalized_head:
+        raise ValidationError("cycle transition predecessor does not match")
+    updated = _set_packet_metadata_line(raw, "STATUS", "ACTIVE")
+    updated = _set_packet_metadata_line(updated, "QUEUE_STATE", "NONE")
+    updated = _set_packet_metadata_line(updated, "LAST_VERIFIED_HEAD", normalized_head)
+    updated = _set_packet_metadata_line(updated, "CYCLE_TRANSITION", transition_id)
+    updated = _set_packet_metadata_line(
+        updated, "CYCLE_PREDECESSOR", str(int(predecessor_issue))
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Current State",
+        (
+            "- Controller cycle: successor ACTIVE\n"
+            f"- Predecessor issue: #{int(predecessor_issue)}\n"
+            f"- Audited HEAD: `{normalized_head}`\n"
+            f"- Transition: `{transition_id}`\n"
+            "- Queue marker cleared in the same mutation."
+        ),
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Latest Evidence",
+        (
+            "```text\n"
+            f"HEAD={normalized_head}\n"
+            f"BRANCH={required_branch.strip()}\n"
+            "VERDICT=PASS\n"
+            "WORK_PACKET_MUTATION=SUCCESSOR_ACTIVE\n"
+            f"CYCLE_TRANSITION={transition_id}\n"
+            f"CYCLE_PREDECESSOR={int(predecessor_issue)}\n"
+            "QUEUE_STATE=NONE\n"
+            "```"
+        ),
+    )
+    updated = _replace_packet_section(updated, "Blockers", "NONE")
+    return updated.rstrip() + "\n"
+
+
 class RecordingWorkPacketAdapter:
     """Test/offline Work Packet adapter. Do not use on the production path."""
 
     def __init__(self) -> None:
         self.updates: list[dict] = []
+        self.cycle_calls: list[dict] = []
+        self.cycle_result: CycleAdvanceResult | Exception | None = None
+        self.cycle_script: list[CycleAdvanceResult | Exception] = []
+
+    def advance_pass_cycle(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        workstream: str,
+        head: str,
+        event_id: str,
+    ) -> CycleAdvanceResult:
+        cycle_transition_id(
+            issue_number=int(issue_number),
+            head=head,
+            event_id=event_id,
+        )
+        self.cycle_calls.append(
+            {
+                "repository": repository,
+                "issue_number": issue_number,
+                "branch": branch,
+                "workstream": workstream,
+                "head": head,
+                "event_id": event_id,
+            }
+        )
+        if self.cycle_script:
+            item = self.cycle_script.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+        if isinstance(self.cycle_result, Exception):
+            raise self.cycle_result
+        if self.cycle_result is not None:
+            return self.cycle_result
+        return CycleAdvanceResult(kind="no_successor")
 
     def apply_rework_findings(
         self,
@@ -1738,6 +2197,671 @@ class GitHubWorkPacketAdapter:
                 or f"gh issue edit failed with exit {edit.returncode}"
             )
 
+    def advance_pass_cycle(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        workstream: str,
+        head: str,
+        event_id: str,
+    ) -> CycleAdvanceResult:
+        """After a verified PASS, activate exactly one queued successor.
+
+        Predecessor ``ACTIVE -> COMPLETE`` is written before successor
+        ``PAUSED + QUEUE_STATE=QUEUED -> ACTIVE``. Zero queued successors
+        leave GitHub unchanged. Ambiguous, malformed, untrusted, or stale
+        state returns ``human_required`` and does not dispatch from here.
+        """
+        transition_id = cycle_transition_id(
+            issue_number=int(issue_number),
+            head=head,
+            event_id=event_id,
+        )
+        try:
+            return self._advance_pass_cycle(
+                repository=repository,
+                issue_number=int(issue_number),
+                branch=branch,
+                workstream=workstream,
+                head=head.strip().lower(),
+                transition_id=transition_id,
+            )
+        except ValidationError as exc:
+            return CycleAdvanceResult(
+                kind="human_required",
+                reason=redact_absolute_paths(str(exc))[:500],
+                transition_id=transition_id,
+            )
+
+    def _advance_pass_cycle(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        workstream: str,
+        head: str,
+        transition_id: str,
+    ) -> CycleAdvanceResult:
+        repo = normalize_github_repository(repository)
+        expected_branch = branch.strip()
+        expected_workstream = workstream.strip()
+        if issue_number < 1:
+            raise ValidationError(f"invalid issue_number: {issue_number}")
+        if not expected_branch:
+            raise ValidationError("branch is required for Work Packet mutation")
+        if not expected_workstream:
+            raise ValidationError("workstream is required for Work Packet mutation")
+        predecessor = self._view_issue(repo, issue_number)
+        self._assert_ai_work_issue(predecessor, issue_number=issue_number)
+        self._require_trusted_issue_author(repo, predecessor)
+        predecessor_body = str(predecessor.get("body") or "")
+        status = _packet_metadata_value(predecessor_body, "STATUS")
+        if status == "COMPLETE":
+            return self._resume_recorded_cycle(
+                repository=repo,
+                predecessor_issue=issue_number,
+                predecessor_body=predecessor_body,
+                branch=expected_branch,
+                workstream=expected_workstream,
+                head=head,
+                transition_id=transition_id,
+            )
+        if status != "ACTIVE":
+            return self._cycle_human(
+                f"predecessor STATUS={status or 'missing'}; refusing cycle overwrite",
+                transition_id,
+            )
+        self._assert_cycle_predecessor(predecessor_body, repo, expected_branch, expected_workstream)
+        eligible, rejections = self._queued_successors(
+            repo,
+            predecessor_issue=issue_number,
+            required_branch=expected_branch,
+            required_workstream=expected_workstream,
+        )
+        if rejections or len(eligible) != 1:
+            if not eligible and not rejections:
+                return CycleAdvanceResult(
+                    kind="no_successor",
+                    transition_id=transition_id,
+                )
+            if len(eligible) > 1 and not rejections:
+                listed = ", ".join(f"#{number}" for number, _body in eligible)
+                reason = f"ambiguous queued successors: {listed}"
+            else:
+                reason = "; ".join(rejections) or "queued successor set is not exactly one"
+            return self._cycle_human(reason, transition_id)
+        successor_issue, _listed_body = eligible[0]
+        conflicts = self._conflicting_active_workstream_issues(
+            repo,
+            expected_workstream,
+            allowed={issue_number},
+        )
+        if conflicts:
+            listed = ", ".join(f"#{number}" for number in conflicts)
+            return self._cycle_human(
+                "refusing successor activation while other ACTIVE packets share "
+                f"WORKSTREAM {expected_workstream}: {listed}",
+                transition_id,
+            )
+        ambiguous = self._other_branch_resume_issues(
+            repo,
+            expected_branch,
+            allowed={issue_number},
+        )
+        if ambiguous:
+            listed = ", ".join(f"#{number}" for number in ambiguous)
+            return self._cycle_human(
+                "refusing successor dispatch because /work-resume cannot uniquely "
+                f"select an ACTIVE packet on {expected_branch}: {listed}",
+                transition_id,
+            )
+        return self._activate_successor(
+            repository=repo,
+            predecessor_issue=issue_number,
+            predecessor_workstream=expected_workstream,
+            successor_issue=successor_issue,
+            branch=expected_branch,
+            head=head,
+            transition_id=transition_id,
+            complete_predecessor=True,
+        )
+
+    def _resume_recorded_cycle(
+        self,
+        *,
+        repository: str,
+        predecessor_issue: int,
+        predecessor_body: str,
+        branch: str,
+        workstream: str,
+        head: str,
+        transition_id: str,
+    ) -> CycleAdvanceResult:
+        recorded = _packet_metadata_value(predecessor_body, "CYCLE_TRANSITION")
+        if recorded != transition_id:
+            return self._cycle_human(
+                "predecessor COMPLETE does not match this cycle transition",
+                transition_id,
+            )
+        self._assert_cycle_predecessor(
+            predecessor_body,
+            repository,
+            branch,
+            workstream,
+            expect_status="COMPLETE",
+        )
+        successor_issue = _after_issue_number(
+            _packet_metadata_value(predecessor_body, "CYCLE_SUCCESSOR")
+        )
+        if successor_issue is None:
+            return self._cycle_human(
+                "predecessor COMPLETE is missing CYCLE_SUCCESSOR",
+                transition_id,
+            )
+        successor = self._view_issue(repository, successor_issue)
+        self._assert_ai_work_issue(successor, issue_number=successor_issue)
+        self._require_trusted_issue_author(repository, successor)
+        successor_body = str(successor.get("body") or "")
+        successor_status = _packet_metadata_value(successor_body, "STATUS")
+        successor_queue = _packet_metadata_value(successor_body, "QUEUE_STATE")
+        successor_transition = _packet_metadata_value(
+            successor_body, "CYCLE_TRANSITION"
+        )
+        if (
+            successor_status == "ACTIVE"
+            and successor_queue != "QUEUED"
+            and successor_transition == transition_id
+        ):
+            meta = _parse_leading_packet_metadata(successor_body)
+            successor_workstream = (meta.get("WORKSTREAM") or "").strip()
+            if successor_workstream != workstream:
+                return self._cycle_human(
+                    "successor WORKSTREAM mismatch "
+                    f"{successor_workstream!r} != {workstream!r}",
+                    transition_id,
+                )
+            successor_branch = (meta.get("BRANCH") or "").strip()
+            if successor_branch != branch:
+                return self._cycle_human(
+                    "successor branch/worktree mismatch "
+                    f"{successor_branch!r} != {branch!r}",
+                    transition_id,
+                )
+            if self._trusted_active_workstream_issues(repository, workstream) != [
+                successor_issue
+            ]:
+                return self._cycle_human(
+                    "activated successor is not the unique ACTIVE packet for "
+                    f"WORKSTREAM {workstream}",
+                    transition_id,
+                )
+            ambiguous = self._other_branch_resume_issues(
+                repository,
+                branch,
+                allowed={successor_issue},
+            )
+            if ambiguous:
+                listed = ", ".join(f"#{number}" for number in ambiguous)
+                return self._cycle_human(
+                    "refusing successor dispatch because /work-resume cannot uniquely "
+                    f"select an ACTIVE packet on {branch}: {listed}",
+                    transition_id,
+                )
+            return CycleAdvanceResult(
+                kind="already_activated",
+                successor_issue=successor_issue,
+                successor_branch=successor_branch,
+                successor_workstream=successor_workstream,
+                transition_id=transition_id,
+            )
+        disposition = queued_successor_disposition(
+            successor_body,
+            repository=repository,
+            predecessor_issue=predecessor_issue,
+            required_branch=branch,
+            required_workstream=workstream,
+        )
+        if disposition != "eligible":
+            return self._cycle_human(
+                f"cannot resume successor activation: {disposition}",
+                transition_id,
+            )
+        conflicts = self._conflicting_active_workstream_issues(
+            repository,
+            workstream,
+            allowed=set(),
+        )
+        if conflicts:
+            listed = ", ".join(f"#{number}" for number in conflicts)
+            return self._cycle_human(
+                "refusing successor activation while other ACTIVE packets share "
+                f"WORKSTREAM {workstream}: {listed}",
+                transition_id,
+            )
+        ambiguous = self._other_branch_resume_issues(
+            repository,
+            branch,
+            allowed={predecessor_issue},
+        )
+        if ambiguous:
+            listed = ", ".join(f"#{number}" for number in ambiguous)
+            return self._cycle_human(
+                "refusing successor dispatch because /work-resume cannot uniquely "
+                f"select an ACTIVE packet on {branch}: {listed}",
+                transition_id,
+            )
+        return self._activate_successor(
+            repository=repository,
+            predecessor_issue=predecessor_issue,
+            predecessor_workstream=workstream,
+            successor_issue=successor_issue,
+            branch=branch,
+            head=head,
+            transition_id=transition_id,
+            complete_predecessor=False,
+        )
+
+    def _activate_successor(
+        self,
+        *,
+        repository: str,
+        predecessor_issue: int,
+        predecessor_workstream: str,
+        successor_issue: int,
+        branch: str,
+        head: str,
+        transition_id: str,
+        complete_predecessor: bool,
+    ) -> CycleAdvanceResult:
+        successor = self._view_issue(repository, successor_issue)
+        self._assert_ai_work_issue(successor, issue_number=successor_issue)
+        self._require_trusted_issue_author(repository, successor)
+        successor_body = str(successor.get("body") or "")
+        if (
+            queued_successor_disposition(
+                successor_body,
+                repository=repository,
+                predecessor_issue=predecessor_issue,
+                required_branch=branch,
+                required_workstream=predecessor_workstream,
+            )
+            != "eligible"
+        ):
+            return self._cycle_human(
+                "successor changed before activation",
+                transition_id,
+            )
+        successor_updated_at = str(
+            successor.get("updatedAt") or successor.get("updated_at") or ""
+        )
+        if complete_predecessor:
+            predecessor = self._view_issue(repository, predecessor_issue)
+            predecessor_body = str(predecessor.get("body") or "")
+            predecessor_updated_at = str(
+                predecessor.get("updatedAt") or predecessor.get("updated_at") or ""
+            )
+            if _packet_metadata_value(predecessor_body, "STATUS") != "ACTIVE":
+                return self._cycle_human(
+                    "predecessor changed before completion",
+                    transition_id,
+                )
+            completed = render_cycle_predecessor_complete_body(
+                predecessor_body,
+                repository=repository,
+                branch=branch,
+                workstream=predecessor_workstream,
+                head=head,
+                predecessor_issue=predecessor_issue,
+                successor_issue=successor_issue,
+                transition_id=transition_id,
+            )
+            self._cas_replace_issue_body(
+                repository,
+                predecessor_issue,
+                original_body=predecessor_body,
+                original_updated_at=predecessor_updated_at,
+                new_body=completed,
+            )
+            landed = self._view_issue(repository, predecessor_issue)
+            landed_body = str(landed.get("body") or "")
+            if (
+                _packet_metadata_value(landed_body, "STATUS") != "COMPLETE"
+                or _packet_metadata_value(landed_body, "CYCLE_TRANSITION")
+                != transition_id
+            ):
+                return self._cycle_human(
+                    "predecessor completion was not confirmed",
+                    transition_id,
+                )
+            refreshed = self._view_issue(repository, successor_issue)
+            if str(refreshed.get("body") or "") != successor_body or (
+                successor_updated_at
+                and str(refreshed.get("updatedAt") or refreshed.get("updated_at") or "")
+                not in ("", successor_updated_at)
+            ):
+                return self._cycle_human(
+                    "successor changed after predecessor completion; activation stopped",
+                    transition_id,
+                )
+            successor = refreshed
+            successor_body = str(successor.get("body") or "")
+            successor_updated_at = str(
+                successor.get("updatedAt") or successor.get("updated_at") or ""
+            )
+            conflicts = self._conflicting_active_workstream_issues(
+                repository,
+                predecessor_workstream,
+                allowed=set(),
+            )
+            if conflicts:
+                listed = ", ".join(f"#{number}" for number in conflicts)
+                return self._cycle_human(
+                    "refusing successor activation while other ACTIVE packets share "
+                    f"WORKSTREAM {predecessor_workstream}: {listed}",
+                    transition_id,
+                )
+            ambiguous = self._other_branch_resume_issues(
+                repository,
+                branch,
+                allowed={predecessor_issue},
+            )
+            if ambiguous:
+                listed = ", ".join(f"#{number}" for number in ambiguous)
+                return self._cycle_human(
+                    "refusing successor dispatch because /work-resume cannot uniquely "
+                    f"select an ACTIVE packet on {branch}: {listed}",
+                    transition_id,
+                )
+        activated = render_cycle_successor_active_body(
+            successor_body,
+            repository=repository,
+            predecessor_issue=predecessor_issue,
+            required_branch=branch,
+            required_workstream=predecessor_workstream,
+            head=head,
+            transition_id=transition_id,
+        )
+        self._cas_replace_issue_body(
+            repository,
+            successor_issue,
+            original_body=successor_body,
+            original_updated_at=successor_updated_at,
+            new_body=activated,
+        )
+        confirmed = self._view_issue(repository, successor_issue)
+        confirmed_body = str(confirmed.get("body") or "")
+        if (
+            _packet_metadata_value(confirmed_body, "STATUS") != "ACTIVE"
+            or _packet_metadata_value(confirmed_body, "QUEUE_STATE") == "QUEUED"
+            or _packet_metadata_value(confirmed_body, "CYCLE_TRANSITION")
+            != transition_id
+        ):
+            return self._cycle_human(
+                "successor activation was not confirmed",
+                transition_id,
+            )
+        meta = _parse_leading_packet_metadata(confirmed_body)
+        return CycleAdvanceResult(
+            kind="advanced",
+            successor_issue=successor_issue,
+            successor_branch=meta.get("BRANCH", branch),
+            successor_workstream=meta.get("WORKSTREAM", ""),
+            transition_id=transition_id,
+        )
+
+    @staticmethod
+    def _cycle_human(reason: str, transition_id: str) -> CycleAdvanceResult:
+        return CycleAdvanceResult(
+            kind="human_required",
+            reason=redact_absolute_paths(reason)[:500],
+            transition_id=transition_id,
+        )
+
+    @staticmethod
+    def _assert_cycle_predecessor(
+        body: str,
+        repository: str,
+        branch: str,
+        workstream: str,
+        *,
+        expect_status: str = "ACTIVE",
+    ) -> None:
+        _require_v2_packet_metadata(body)
+        if _packet_metadata_value(body, "STATUS") != expect_status:
+            raise ValidationError(
+                f"work packet STATUS must be {expect_status} for cycle mutation"
+            )
+        require_canonical_target_repo(
+            _packet_metadata_value(body, "TARGET_REPO") or "",
+            repository,
+        )
+        packet_branch = _packet_metadata_value(body, "BRANCH")
+        if packet_branch != branch:
+            raise ValidationError(
+                f"work packet BRANCH mismatch: {packet_branch!r} != {branch!r}"
+            )
+        packet_workstream = _packet_metadata_value(body, "WORKSTREAM")
+        if packet_workstream != workstream:
+            raise ValidationError(
+                f"work packet WORKSTREAM mismatch: "
+                f"{packet_workstream!r} != {workstream!r}"
+            )
+
+    def _queued_successors(
+        self,
+        repository: str,
+        *,
+        predecessor_issue: int,
+        required_branch: str,
+        required_workstream: str,
+    ) -> tuple[list[tuple[int, str]], list[str]]:
+        eligible: list[tuple[int, str]] = []
+        rejections: list[str] = []
+        for issue in self._list_open_ai_work_issues(repository):
+            try:
+                number = int(issue.get("number"))
+            except (TypeError, ValueError):
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: candidate issue number missing"
+                ) from None
+            if number == int(predecessor_issue):
+                continue
+            body = str(issue.get("body") or "")
+            disposition = queued_successor_disposition(
+                body,
+                repository=repository,
+                predecessor_issue=predecessor_issue,
+                required_branch=required_branch,
+                required_workstream=required_workstream,
+            )
+            if disposition == "unrelated":
+                continue
+            try:
+                trust = self._lookup_author_trust(repository, issue)
+            except ValidationError as exc:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                    f"candidate #{number} unverifiable ({exc})"
+                ) from exc
+            if trust != "trusted":
+                rejections.append(f"untrusted queued successor #{number}")
+                continue
+            if disposition != "eligible":
+                rejections.append(f"#{number} {disposition.removeprefix('reject:')}")
+                continue
+            eligible.append((number, body))
+        return eligible, rejections
+
+    def _trusted_active_workstream_issues(
+        self,
+        repository: str,
+        workstream: str,
+    ) -> list[int]:
+        """Trusted ACTIVE packets for one WORKSTREAM, ignoring branch."""
+        expected = workstream.strip()
+        trusted: list[int] = []
+        for issue in self._list_open_ai_work_issues(repository):
+            try:
+                number = int(issue.get("number"))
+            except (TypeError, ValueError):
+                number = None
+            body = str(issue.get("body") or "")
+            disposition = _active_workstream_disposition(
+                body,
+                repository=repository,
+                workstream=expected,
+            )
+            if disposition == "other":
+                continue
+            if number is None:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: candidate issue number missing"
+                )
+            try:
+                trust = self._lookup_author_trust(repository, issue)
+            except ValidationError as exc:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                    f"candidate #{number} unverifiable ({exc})"
+                ) from exc
+            if trust != "trusted":
+                continue
+            if disposition == "unclassifiable":
+                raise ValidationError(
+                    "malformed ACTIVE packet cannot be classified for "
+                    f"WORKSTREAM {expected}: #{number}"
+                )
+            if disposition != "match":
+                continue
+            trusted.append(number)
+        return sorted(trusted)
+
+    def _other_branch_resume_issues(
+        self,
+        repository: str,
+        branch: str,
+        *,
+        allowed: set[int],
+    ) -> list[int]:
+        """Other trusted ACTIVE packets `/work-resume` could select on this branch.
+
+        A trusted same-repo/same-branch packet that looks ACTIVE but cannot be
+        parsed is a launcher ambiguity even when its ``WORKSTREAM`` differs.
+        ``_active_packet_matches`` is not used here because it treats parse
+        errors as non-matches.
+        """
+        conflicts: list[int] = []
+        for issue in self._list_open_ai_work_issues(repository):
+            try:
+                number = int(issue.get("number"))
+            except (TypeError, ValueError):
+                number = None
+            body = str(issue.get("body") or "")
+            disposition = _resume_branch_disposition(
+                body,
+                repository=repository,
+                branch=branch,
+            )
+            if disposition == "other":
+                continue
+            if number is None:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: candidate issue number missing"
+                )
+            if number in allowed:
+                continue
+            try:
+                trust = self._lookup_author_trust(repository, issue)
+            except ValidationError as exc:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                    f"candidate #{number} unverifiable ({exc})"
+                ) from exc
+            if trust != "trusted":
+                continue
+            if disposition == "unclassifiable":
+                raise ValidationError(
+                    "malformed ACTIVE packet cannot be classified for "
+                    f"/work-resume on {branch.strip()}: #{number}"
+                )
+            conflicts.append(number)
+        return sorted(conflicts)
+
+    def _conflicting_active_workstream_issues(
+        self,
+        repository: str,
+        workstream: str,
+        *,
+        allowed: set[int],
+    ) -> list[int]:
+        return [
+            number
+            for number in self._trusted_active_workstream_issues(repository, workstream)
+            if number not in allowed
+        ]
+
+    def _cas_replace_issue_body(
+        self,
+        repository: str,
+        issue_number: int,
+        *,
+        original_body: str,
+        original_updated_at: str,
+        new_body: str,
+    ) -> None:
+        recheck = self._view_issue(repository, issue_number)
+        recheck_body = str(recheck.get("body") or "")
+        recheck_updated_at = str(
+            recheck.get("updatedAt") or recheck.get("updated_at") or ""
+        )
+        if recheck_body != original_body or (
+            original_updated_at
+            and recheck_updated_at
+            and recheck_updated_at != original_updated_at
+        ):
+            raise ValidationError(
+                "work packet changed during mutation; refusing overwrite"
+            )
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".md",
+            delete=False,
+        ) as handle:
+            handle.write(new_body)
+            body_path = handle.name
+        try:
+            try:
+                edit = self._run(
+                    [
+                        "gh",
+                        "issue",
+                        "edit",
+                        str(int(issue_number)),
+                        "--repo",
+                        repository,
+                        "--body-file",
+                        body_path,
+                    ]
+                )
+            except ValidationError as exc:
+                if "timed out" in str(exc).lower():
+                    landed = self._view_issue(repository, int(issue_number))
+                    if str(landed.get("body") or "") == new_body:
+                        return
+                raise
+        finally:
+            Path(body_path).unlink(missing_ok=True)
+        if edit.returncode != 0:
+            detail = (edit.stderr or edit.stdout or "").strip()
+            raise ValidationError(
+                detail[:500]
+                or f"gh issue edit failed with exit {edit.returncode}"
+            )
+
     def _lookup_author_trust(self, repository: str, payload: dict) -> str:
         """Return ``trusted`` or ``untrusted`` for one issue author.
 
@@ -1854,22 +2978,12 @@ class GitHubWorkPacketAdapter:
             return False
         return True
 
-    def _require_unique_active_packet(
+    def _scan_trusted_active_packets(
         self,
         repository: str,
         *,
-        issue_number: int,
         branch: str,
-    ) -> None:
-        """Fail closed unless exactly one trusted ACTIVE packet matches.
-
-        Metadata matches ``.cursor/commands/work-resume.md`` (TARGET_REPO,
-        STATUS=ACTIVE, BRANCH). Only authors with effective ``write``,
-        ``maintain``, or ``admin`` count toward uniqueness. A known weaker
-        permission cannot create ambiguity. An unverifiable author fails
-        closed instead of being ignored. WORKSTREAM is validated separately
-        on the configured issue before mutation.
-        """
+    ) -> tuple[bool, list[int]]:
         trusted: list[int] = []
         saw_metadata_match = False
         for issue in self._list_open_ai_work_issues(repository):
@@ -1899,6 +3013,28 @@ class GitHubWorkPacketAdapter:
                 ) from exc
             if trust == "trusted":
                 trusted.append(number_i)
+        return saw_metadata_match, trusted
+
+    def _require_unique_active_packet(
+        self,
+        repository: str,
+        *,
+        issue_number: int,
+        branch: str,
+    ) -> None:
+        """Fail closed unless exactly one trusted ACTIVE packet matches.
+
+        Metadata matches ``.cursor/commands/work-resume.md`` (TARGET_REPO,
+        STATUS=ACTIVE, BRANCH). Only authors with effective ``write``,
+        ``maintain``, or ``admin`` count toward uniqueness. A known weaker
+        permission cannot create ambiguity. An unverifiable author fails
+        closed instead of being ignored. WORKSTREAM is validated separately
+        on the configured issue before mutation.
+        """
+        saw_metadata_match, trusted = self._scan_trusted_active_packets(
+            repository,
+            branch=branch,
+        )
         if not saw_metadata_match:
             raise ValidationError(
                 "no ACTIVE Work Packet matches repository/branch"
@@ -2977,7 +4113,9 @@ class WorkController:
     def reconcile(self, workstream: str | None = None) -> list[dict]:
         """Recover after controller restart.
 
-        Unfinished audit states re-run the pending event once. Terminal and
+        Unfinished audit and cycle-activation states re-run the pending event
+        once. A pending successor dispatch starts Cursor once. A dispatch that
+        was already claimed is not started again. Terminal and
         REWORK_DISPATCHED states are left unchanged.
         """
         targets = (
@@ -2987,8 +4125,30 @@ class WorkController:
         )
         outcomes: list[dict] = []
         for record in targets:
-            if record.state in {"AWAITING_AUDIT", "AUDITING"} and record.pending_event:
+            if (
+                record.state in {"AWAITING_AUDIT", "AUDITING", "CYCLE_ACTIVATING"}
+                and record.pending_event
+            ):
                 outcomes.append(self._run_audit_and_advance(record.workstream))
+            elif record.state == "CYCLE_DISPATCH_PENDING" and record.pending_event:
+                outcomes.append(self._dispatch_activated_successor(record.workstream))
+            elif record.state == "CYCLE_DISPATCHING" and record.pending_event:
+                event = CompletionEvent.from_dict(record.pending_event)
+                record.last_findings = (
+                    f"{record.last_findings}\n"
+                    "cycle dispatch uncertain after restart; refusing a second "
+                    "Cursor spawn"
+                ).strip()
+                outcomes.append(
+                    self._finalize(
+                        record,
+                        event,
+                        state="HUMAN_REQUIRED",
+                        action="stop",
+                        verdict="HUMAN_REQUIRED",
+                        extra={"reason": "cycle_dispatch_uncertain"},
+                    )
+                )
             else:
                 outcomes.append(
                     {
@@ -3031,12 +4191,10 @@ class WorkController:
                 record.last_audit_verdict = audit_result.verdict
                 record.last_findings = audit_result.findings
         if audit_result.verdict == "PASS":
-            outcome = self._finalize(
-                record,
+            outcome = self._complete_verified_pass(
+                workstream,
                 event,
-                state="PASSED",
-                action="stop",
-                verdict="PASS",
+                audit_result.findings,
             )
         elif audit_result.verdict == "HUMAN_REQUIRED":
             outcome = self._finalize(
@@ -3252,6 +4410,208 @@ class WorkController:
         self.observer.observe("completion_handled", outcome)
         return outcome
 
+    def _complete_verified_pass(
+        self,
+        workstream: str,
+        event: CompletionEvent,
+        findings: str,
+    ) -> dict:
+        """Stop on PASS, or chain exactly one queued successor then dispatch."""
+        record = self.store.get(workstream)
+        record.last_audit_verdict = "PASS"
+        record.last_findings = findings
+        advance = getattr(self.work_packet, "advance_pass_cycle", None)
+        if not callable(advance):
+            return self._finalize(
+                record,
+                event,
+                state="PASSED",
+                action="stop",
+                verdict="PASS",
+            )
+        record.state = "CYCLE_ACTIVATING"
+        self.store.put(record)
+        try:
+            result = advance(
+                repository=record.repository,
+                issue_number=record.issue_number,
+                branch=record.branch,
+                workstream=record.workstream,
+                head=event.head,
+                event_id=event.event_id,
+            )
+        except ValidationError as exc:
+            record = self.store.get(workstream)
+            detail = redact_absolute_paths(str(exc))[:500]
+            record.last_findings = (
+                f"{findings}\ncycle advance failed: {detail}"
+            ).strip()
+            return self._finalize(
+                record,
+                event,
+                state="HUMAN_REQUIRED",
+                action="stop",
+                verdict="HUMAN_REQUIRED",
+                extra={"reason": "cycle_advance_failed"},
+            )
+        record = self.store.get(workstream)
+        if not isinstance(result, CycleAdvanceResult):
+            record.last_findings = (
+                f"{findings}\ncycle advance returned an invalid result"
+            ).strip()
+            return self._finalize(
+                record,
+                event,
+                state="HUMAN_REQUIRED",
+                action="stop",
+                verdict="HUMAN_REQUIRED",
+                extra={"reason": "cycle_advance_failed"},
+            )
+        if result.kind == "no_successor":
+            record.last_findings = findings
+            return self._finalize(
+                record,
+                event,
+                state="PASSED",
+                action="stop",
+                verdict="PASS",
+                extra={"cycle": "no_successor"},
+            )
+        if result.kind == "human_required":
+            record.last_findings = f"{findings}\n{result.reason}".strip()
+            return self._finalize(
+                record,
+                event,
+                state="HUMAN_REQUIRED",
+                action="stop",
+                verdict="HUMAN_REQUIRED",
+                extra={
+                    "reason": "cycle_human_required",
+                    "cycle_reason": result.reason,
+                },
+            )
+        if result.kind not in {"advanced", "already_activated"}:
+            record.last_findings = (
+                f"{findings}\nunsupported cycle result: {result.kind}"
+            ).strip()
+            return self._finalize(
+                record,
+                event,
+                state="HUMAN_REQUIRED",
+                action="stop",
+                verdict="HUMAN_REQUIRED",
+                extra={"reason": "cycle_advance_failed"},
+            )
+        if (
+            result.successor_issue is None
+            or int(result.successor_issue) < 1
+            or not (result.successor_branch or "").strip()
+        ):
+            record.last_findings = (
+                f"{findings}\nactivated successor is missing issue or branch"
+            ).strip()
+            return self._finalize(
+                record,
+                event,
+                state="HUMAN_REQUIRED",
+                action="stop",
+                verdict="HUMAN_REQUIRED",
+                extra={"reason": "cycle_advance_failed"},
+            )
+        record.issue_number = int(result.successor_issue)
+        record.branch = result.successor_branch.strip()
+        record.attempt = 0
+        record.expected_head = event.head
+        record.last_findings = findings
+        record.state = "CYCLE_DISPATCH_PENDING"
+        record.last_outcome = {
+            "cycle": result.kind,
+            "transition_id": result.transition_id,
+            "successor_issue": record.issue_number,
+            "successor_branch": record.branch,
+        }
+        self.store.put(record)
+        return self._dispatch_activated_successor(workstream)
+
+    def _dispatch_activated_successor(self, workstream: str) -> dict:
+        """Start one `/work-resume` after successor activation is already durable."""
+        record = self.store.get(workstream)
+        if record.state != "CYCLE_DISPATCH_PENDING" or not record.pending_event:
+            raise ValidationError(
+                f"workstream {workstream} has no pending successor dispatch"
+            )
+        event = CompletionEvent.from_dict(record.pending_event)
+        record.state = "CYCLE_DISPATCHING"
+        self.store.put(record)
+        try:
+            dispatch = self.dispatcher.start_resume(
+                DispatchRequest(
+                    workstream=record.workstream,
+                    worktree_path=record.worktree_path,
+                    branch=record.branch,
+                    issue_number=record.issue_number,
+                    attempt=1,
+                    repository=record.repository,
+                    expected_head=record.expected_head,
+                    resume_prompt=RESUME_PROMPT,
+                )
+            )
+        except ValidationError as exc:
+            record = self.store.get(workstream)
+            boundary_reason = redact_absolute_paths(str(exc))[:500]
+            record.last_findings = (
+                f"{record.last_findings}\n"
+                f"successor dispatch blocked: {boundary_reason}"
+            ).strip()
+            extra: dict = {
+                "reason": "cycle_dispatch_blocked",
+                "successor_issue": record.issue_number,
+            }
+            if isinstance(exc, ResourcePreflightBlocked):
+                extra = {
+                    "reason": "resource_preflight_blocked",
+                    "resource_preflight_result": exc.preflight_result,
+                    "resource_preflight_reason": _bounded_preflight_reason(
+                        exc.preflight_reason
+                    ),
+                    "successor_issue": record.issue_number,
+                }
+            elif isinstance(exc, DispatchSpawnCleanupUncertainError):
+                extra["reason"] = "spawn_cleanup_uncertain"
+                extra["dispatch_session_hint"] = exc.session_hint
+            elif isinstance(exc, DispatchSpawnedButUnobservedError):
+                extra["reason"] = "spawned_but_unobserved"
+                extra["dispatch_session_hint"] = exc.session_hint
+            return self._finalize(
+                record,
+                event,
+                state="HUMAN_REQUIRED",
+                action="stop",
+                verdict="HUMAN_REQUIRED",
+                extra=extra,
+            )
+        record = self.store.get(workstream)
+        record.attempt = 0
+        record.last_session_id = dispatch.session_id
+        extra = {
+            "cycle": "successor_dispatched",
+            "dispatch_session_id": dispatch.session_id,
+            "dispatch_command": dispatch.command,
+            "successor_issue": record.issue_number,
+            "resume_prompt": RESUME_PROMPT,
+        }
+        if dispatch.resource_preflight_result:
+            extra["resource_preflight_result"] = dispatch.resource_preflight_result
+            extra["resource_preflight_reason"] = dispatch.resource_preflight_reason
+        return self._finalize(
+            record,
+            event,
+            state="SUCCESSOR_DISPATCHED",
+            action="successor_dispatched",
+            verdict="PASS",
+            extra=extra,
+        )
+
     def _reject_if_unclean_snapshot(
         self,
         event: CompletionEvent,
@@ -3342,10 +4702,16 @@ class WorkController:
                 expected_head=event.head,
                 git_runner=self._git_runner,
             )
-        if record.state == "REWORK_DISPATCHED":
-            # Rework may produce a new HEAD; accept any well-formed sha and
-            # lock it as expected_head once this event is accepted.
-            if event.attempt != record.attempt:
+        if record.state in {"REWORK_DISPATCHED", "SUCCESSOR_DISPATCHED"}:
+            # Rework and a newly activated successor may produce a new HEAD.
+            # Lock it as expected_head once this event is accepted.
+            if record.state == "SUCCESSOR_DISPATCHED":
+                if event.attempt != 1:
+                    raise ValidationError(
+                        "successor first completion attempt must be 1, "
+                        f"got {event.attempt}"
+                    )
+            elif event.attempt != record.attempt:
                 raise ValidationError(
                     f"attempt mismatch after rework: event={event.attempt} "
                     f"expected={record.attempt}"

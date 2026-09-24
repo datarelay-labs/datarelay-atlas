@@ -74,6 +74,7 @@ scenarios:
       - "hybrid retrieval fusion regressions pass"
       - "MCP context scope and provenance regressions pass"
       - "Autonomous Work Controller PoC control-loop regressions pass"
+      - "Queued Work Packet cycle-chaining regressions pass"
       - "Continuous Chat Audit Supervisor PoC checkpoint/slice regressions pass"
     release_gate: true
 

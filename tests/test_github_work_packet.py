@@ -14,8 +14,12 @@ from atlas.cli import build_parser
 from atlas.provenance import ValidationError
 from atlas.work_controller import (
     GitHubWorkPacketAdapter,
+    cycle_transition_id,
+    queued_successor_disposition,
     redact_absolute_paths,
     redact_sensitive_audit_text,
+    render_cycle_predecessor_complete_body,
+    render_cycle_successor_active_body,
     render_rework_work_packet_body,
     sanitize_rework_findings,
 )
@@ -1876,6 +1880,462 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
                 ctl = atlas_cli._controller_from_args(args)
                 self.assertIsInstance(ctl.work_packet, RecordingWorkPacketAdapter)
                 self.assertFalse(hasattr(args, "audit_adapter"))
+
+
+def _queued_successor_body(
+    *,
+    after: int = 12,
+    branch: str = BRANCH,
+    status: str = "PAUSED",
+    queue_state: str = "QUEUED",
+    workstream: str = WORKSTREAM,
+    task_kind: str = "DEVELOPMENT",
+    owner_intent: str = "Advance the next cycle safely.",
+) -> str:
+    return f"""PACKET_VERSION=2
+TARGET_REPO=datarelay-labs/datarelay-atlas
+WORKSTREAM={workstream}
+STATUS={status}
+QUEUE_STATE={queue_state}
+AFTER_ISSUE={after}
+BRANCH={branch}
+TASK_KIND={task_kind}
+OWNER_INTENT={owner_intent}
+LAST_VERIFIED_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+## Goal
+
+Next cycle.
+
+## Current State
+
+Queued.
+
+## Next Action
+
+Implement the successor.
+
+## Constraints
+
+- Stay on the same branch.
+
+## Canonical References
+
+- Issue #18
+
+## Latest Evidence
+
+NONE
+
+## Blockers
+
+NONE
+"""
+
+
+def _ai_issue(number: int, body: str, login: str = "packet-author") -> dict:
+    return {
+        "number": number,
+        "title": f"[AI Work] packet {number}",
+        "state": "OPEN",
+        "body": body,
+        "updatedAt": "2026-09-24T00:00:00Z",
+        "author": {"login": login},
+        "user": {"login": login},
+    }
+
+
+class QueuedCycleAdapterTests(unittest.TestCase):
+    def _transition(self) -> str:
+        return cycle_transition_id(
+            issue_number=12,
+            head=HEAD_B,
+            event_id="evt-pass",
+        )
+
+    def _kwargs(self) -> dict:
+        return {
+            "repository": "datarelay-labs/datarelay-atlas",
+            "issue_number": 12,
+            "branch": BRANCH,
+            "workstream": WORKSTREAM,
+            "head": HEAD_B,
+            "event_id": "evt-pass",
+        }
+
+    def _run(self, issues: dict[int, dict], **hooks):
+        event_id = hooks.pop("event_id", "evt-pass")
+        edits: list[tuple[int, str]] = []
+        pred_views = {"n": 0}
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            if (
+                len(argv) == 3
+                and argv[:2] == ["gh", "api"]
+                and argv[2].endswith("/permission")
+            ):
+                login = argv[2].split("/collaborators/", 1)[1].split("/permission", 1)[0]
+                mode = hooks.get("permissions", {}).get(login, "write")
+                if mode == "api_failure":
+                    return subprocess.CompletedProcess(argv, 1, stdout="", stderr="HTTP 500")
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"permission": mode}), stderr=""
+                )
+            if (
+                len(argv) >= 5
+                and argv[:4] == ["gh", "api", "--paginate", "--slurp"]
+                and "/issues?" in argv[4]
+            ):
+                if hooks.get("list_fails"):
+                    return subprocess.CompletedProcess(argv, 1, stdout="", stderr="HTTP 500")
+                pages = [list(issues.values())]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(pages), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "view"]:
+                number = int(argv[3])
+                if number == 12:
+                    pred_views["n"] += 1
+                    if hooks.get("bump_predecessor_on_view") == pred_views["n"]:
+                        issues[12]["updatedAt"] = "2026-09-24T00:00:01Z"
+                payload = issues[number]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                number = int(argv[3])
+                path = argv[argv.index("--body-file") + 1]
+                body = Path(path).read_text(encoding="utf-8")
+                edits.append((number, body))
+                issues[number]["body"] = body
+                issues[number]["updatedAt"] = f"2026-09-24T00:00:{len(edits):02d}Z"
+                if number == 12 and hooks.get("bump_successor_on_predecessor_edit"):
+                    issues[18]["updatedAt"] = "2026-09-24T01:00:00Z"
+                if number == 12 and hooks.get("add_active_on_predecessor_edit"):
+                    issues[99] = _ai_issue(99, SAMPLE_BODY)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            self.fail(f"unexpected argv: {argv}")
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        kwargs = self._kwargs()
+        kwargs["event_id"] = event_id
+        result = adapter.advance_pass_cycle(**kwargs)
+        return result, edits
+
+    def test_disposition_ignores_evidence_and_other_predecessors(self):
+        unrelated = queued_successor_disposition(
+            SAMPLE_BODY,
+            repository="datarelay-labs/datarelay-atlas",
+            predecessor_issue=12,
+            required_branch=BRANCH,
+            required_workstream=WORKSTREAM,
+        )
+        self.assertEqual(unrelated, "unrelated")
+        other = queued_successor_disposition(
+            _queued_successor_body(after=99),
+            repository="datarelay-labs/datarelay-atlas",
+            predecessor_issue=12,
+            required_branch=BRANCH,
+            required_workstream=WORKSTREAM,
+        )
+        self.assertEqual(other, "unrelated")
+        prohibited = queued_successor_disposition(
+            _queued_successor_body(status="QUEUED"),
+            repository="datarelay-labs/datarelay-atlas",
+            predecessor_issue=12,
+            required_branch=BRANCH,
+            required_workstream=WORKSTREAM,
+        )
+        self.assertIn("STATUS=QUEUED", prohibited)
+        mismatch = queued_successor_disposition(
+            _queued_successor_body(workstream="other-cycle"),
+            repository="datarelay-labs/datarelay-atlas",
+            predecessor_issue=12,
+            required_branch=BRANCH,
+            required_workstream=WORKSTREAM,
+        )
+        self.assertIn("WORKSTREAM mismatch", mismatch)
+
+    def test_one_successor_completes_predecessor_before_activation(self):
+        noise = _queued_successor_body(after=99, workstream="other-queue")
+        unrelated_active = SAMPLE_BODY.replace(
+            f"WORKSTREAM={WORKSTREAM}",
+            "WORKSTREAM=unrelated-stream",
+        ).replace(f"BRANCH={BRANCH}", "BRANCH=feature/unrelated")
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(18, _queued_successor_body()),
+            19: _ai_issue(19, noise),
+            31: _ai_issue(31, unrelated_active),
+        }
+        result, edits = self._run(issues)
+        self.assertEqual(result.kind, "advanced")
+        self.assertEqual(result.successor_issue, 18)
+        self.assertEqual([number for number, _body in edits], [12, 18])
+        predecessor = edits[0][1]
+        successor = edits[1][1]
+        self.assertIn("STATUS=COMPLETE", predecessor.split("\n\n", 1)[0])
+        self.assertIn(f"CYCLE_TRANSITION={self._transition()}", predecessor)
+        self.assertIn("CYCLE_SUCCESSOR=18", predecessor)
+        leading = successor.split("\n\n", 1)[0]
+        self.assertIn("STATUS=ACTIVE", leading)
+        self.assertIn("QUEUE_STATE=NONE", leading)
+        self.assertNotIn("QUEUE_STATE=QUEUED", leading)
+        self.assertIn("Implement the successor.", successor)
+        self.assertIn(f"CYCLE_PREDECESSOR=12", leading)
+
+    def test_zero_successors_do_not_write(self):
+        result, edits = self._run({12: _ai_issue(12, SAMPLE_BODY)})
+        self.assertEqual(result.kind, "no_successor")
+        self.assertEqual(edits, [])
+
+    def test_two_successors_fail_closed_without_writes(self):
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(18, _queued_successor_body()),
+            19: _ai_issue(19, _queued_successor_body()),
+        }
+        result, edits = self._run(issues)
+        self.assertEqual(result.kind, "human_required")
+        self.assertIn("ambiguous", result.reason)
+        self.assertEqual(edits, [])
+
+    def test_malformed_untrusted_and_branch_mismatch_do_not_write(self):
+        malformed, edits = self._run(
+            {
+                12: _ai_issue(12, SAMPLE_BODY),
+                18: _ai_issue(18, _queued_successor_body(status="QUEUED")),
+            }
+        )
+        self.assertEqual(malformed.kind, "human_required")
+        self.assertEqual(edits, [])
+        untrusted, edits = self._run(
+            {
+                12: _ai_issue(12, SAMPLE_BODY),
+                18: _ai_issue(18, _queued_successor_body(), login="outsider"),
+            },
+            permissions={"outsider": "read"},
+        )
+        self.assertEqual(untrusted.kind, "human_required")
+        self.assertIn("untrusted", untrusted.reason)
+        self.assertEqual(edits, [])
+        mismatch, edits = self._run(
+            {
+                12: _ai_issue(12, SAMPLE_BODY),
+                18: _ai_issue(18, _queued_successor_body(branch="feature/other")),
+            }
+        )
+        self.assertEqual(mismatch.kind, "human_required")
+        self.assertIn("mismatch", mismatch.reason)
+        self.assertEqual(edits, [])
+
+    def test_owner_pause_and_stale_predecessor_do_not_write(self):
+        paused, edits = self._run(
+            {12: _ai_issue(12, SAMPLE_BODY.replace("STATUS=ACTIVE", "STATUS=PAUSED"))}
+        )
+        self.assertEqual(paused.kind, "human_required")
+        self.assertIn("PAUSED", paused.reason)
+        self.assertEqual(edits, [])
+        stale, edits = self._run(
+            {
+                12: _ai_issue(12, SAMPLE_BODY),
+                18: _ai_issue(18, _queued_successor_body()),
+            },
+            bump_predecessor_on_view=3,
+        )
+        self.assertEqual(stale.kind, "human_required")
+        self.assertIn("changed during mutation", stale.reason)
+        self.assertEqual(edits, [])
+
+    def test_successor_cas_failure_leaves_predecessor_complete(self):
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(18, _queued_successor_body()),
+        }
+        result, edits = self._run(issues, bump_successor_on_predecessor_edit=True)
+        self.assertEqual(result.kind, "human_required")
+        self.assertEqual([number for number, _body in edits], [12])
+        self.assertIn("STATUS=COMPLETE", issues[12]["body"])
+        self.assertIn("QUEUE_STATE=QUEUED", issues[18]["body"].split("\n\n", 1)[0])
+
+    def test_other_active_packet_blocks_successor_activation(self):
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(18, _queued_successor_body()),
+        }
+        result, edits = self._run(issues, add_active_on_predecessor_edit=True)
+        self.assertEqual(result.kind, "human_required")
+        self.assertIn("other ACTIVE", result.reason)
+        self.assertEqual([number for number, _body in edits], [12])
+        self.assertIn("QUEUE_STATE=QUEUED", issues[18]["body"].split("\n\n", 1)[0])
+
+    def test_replay_resumes_activation_then_does_not_repeat(self):
+        transition = self._transition()
+        completed = render_cycle_predecessor_complete_body(
+            SAMPLE_BODY,
+            repository="datarelay-labs/datarelay-atlas",
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD_B,
+            predecessor_issue=12,
+            successor_issue=18,
+            transition_id=transition,
+        )
+        issues = {
+            12: _ai_issue(12, completed),
+            18: _ai_issue(18, _queued_successor_body()),
+        }
+        result, edits = self._run(issues)
+        self.assertEqual(result.kind, "advanced")
+        self.assertEqual([number for number, _body in edits], [18])
+        again, more_edits = self._run(issues)
+        self.assertEqual(again.kind, "already_activated")
+        self.assertEqual(more_edits, [])
+
+    def test_workstream_mismatch_does_not_write(self):
+        result, edits = self._run(
+            {
+                12: _ai_issue(12, SAMPLE_BODY),
+                18: _ai_issue(18, _queued_successor_body(workstream="other-cycle")),
+            }
+        )
+        self.assertEqual(result.kind, "human_required")
+        self.assertIn("WORKSTREAM mismatch", result.reason)
+        self.assertEqual(edits, [])
+
+    def test_other_branch_same_workstream_blocks_activation(self):
+        other_branch = SAMPLE_BODY.replace(
+            f"BRANCH={BRANCH}",
+            "BRANCH=feature/other-active",
+        )
+        result, edits = self._run(
+            {
+                12: _ai_issue(12, SAMPLE_BODY),
+                18: _ai_issue(18, _queued_successor_body()),
+                30: _ai_issue(30, other_branch),
+            }
+        )
+        self.assertEqual(result.kind, "human_required")
+        self.assertIn("WORKSTREAM", result.reason)
+        self.assertIn("#30", result.reason)
+        self.assertEqual(edits, [])
+
+    def test_replay_blocks_other_branch_same_workstream_active(self):
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(18, _queued_successor_body()),
+        }
+        result, edits = self._run(issues)
+        self.assertEqual(result.kind, "advanced")
+        self.assertEqual([number for number, _body in edits], [12, 18])
+        other_branch = SAMPLE_BODY.replace(
+            f"BRANCH={BRANCH}",
+            "BRANCH=feature/other-active",
+        )
+        issues[30] = _ai_issue(30, other_branch)
+        again, more_edits = self._run(issues)
+        self.assertEqual(again.kind, "human_required")
+        self.assertIn("WORKSTREAM", again.reason)
+        self.assertEqual(more_edits, [])
+
+    def test_same_branch_other_workstream_keeps_zero_successor_pass(self):
+        other = SAMPLE_BODY.replace(
+            f"WORKSTREAM={WORKSTREAM}",
+            "WORKSTREAM=unrelated-stream",
+        )
+        malformed_other = other.replace(
+            "WORKSTREAM=unrelated-stream\n",
+            "WORKSTREAM=unrelated-stream\nWORKSTREAM=unrelated-stream\n",
+            1,
+        )
+        result, edits = self._run(
+            {
+                12: _ai_issue(12, SAMPLE_BODY),
+                40: _ai_issue(40, other),
+                41: _ai_issue(41, malformed_other),
+            }
+        )
+        self.assertEqual(result.kind, "no_successor")
+        self.assertEqual(edits, [])
+
+    def test_same_branch_other_workstream_does_not_claim_dispatch(self):
+        other = SAMPLE_BODY.replace(
+            f"WORKSTREAM={WORKSTREAM}",
+            "WORKSTREAM=unrelated-stream",
+        )
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(18, _queued_successor_body()),
+            40: _ai_issue(40, other),
+        }
+        result, edits = self._run(issues)
+        self.assertEqual(result.kind, "human_required")
+        self.assertIn("cannot uniquely", result.reason)
+        self.assertIn("#40", result.reason)
+        self.assertEqual(edits, [])
+        self.assertIn("QUEUE_STATE=QUEUED", issues[18]["body"].split("\n\n", 1)[0])
+        self.assertNotEqual(result.kind, "advanced")
+        self.assertNotEqual(result.kind, "already_activated")
+
+    def test_malformed_other_workstream_same_branch_does_not_dispatch(self):
+        other = SAMPLE_BODY.replace(
+            f"WORKSTREAM={WORKSTREAM}\n",
+            "WORKSTREAM=unrelated-stream\nWORKSTREAM=unrelated-stream\n",
+            1,
+        )
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(18, _queued_successor_body()),
+            40: _ai_issue(40, other),
+        }
+        result, edits = self._run(issues)
+        self.assertEqual(result.kind, "human_required")
+        self.assertIn("malformed ACTIVE packet", result.reason)
+        self.assertIn("#40", result.reason)
+        self.assertEqual(edits, [])
+        self.assertNotIn(result.kind, {"advanced", "already_activated"})
+        self.assertIn("QUEUE_STATE=QUEUED", issues[18]["body"].split("\n\n", 1)[0])
+        self.assertIn("STATUS=ACTIVE", issues[40]["body"].split("\n\n", 1)[0])
+
+    def test_unusual_event_ids_keep_zero_successor_pass(self):
+        safe = cycle_transition_id(
+            issue_number=12,
+            head=HEAD_B,
+            event_id="evt-pass",
+        )
+        self.assertTrue(safe.endswith(":evt-pass"))
+        for event_id in ("evt with spaces", "e" * 300):
+            result, edits = self._run(
+                {12: _ai_issue(12, SAMPLE_BODY)},
+                event_id=event_id,
+            )
+            self.assertEqual(result.kind, "no_successor", event_id)
+            self.assertEqual(edits, [])
+            self.assertNotIn(" ", result.transition_id)
+            self.assertIn(":h", result.transition_id)
+
+    def test_malformed_same_workstream_active_does_not_activate(self):
+        malformed = SAMPLE_BODY.replace(
+            f"WORKSTREAM={WORKSTREAM}\n",
+            f"WORKSTREAM={WORKSTREAM}\nWORKSTREAM={WORKSTREAM}\n",
+            1,
+        ).replace(f"BRANCH={BRANCH}", "BRANCH=feature/other-active")
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(18, _queued_successor_body()),
+            99: _ai_issue(99, malformed),
+        }
+        result, edits = self._run(issues)
+        self.assertEqual(result.kind, "human_required")
+        self.assertIn("malformed ACTIVE packet", result.reason)
+        self.assertIn("#99", result.reason)
+        self.assertEqual(edits, [])
+        self.assertIn("QUEUE_STATE=QUEUED", issues[18]["body"].split("\n\n", 1)[0])
+
+    def test_list_failure_is_human_required_without_edits(self):
+        result, edits = self._run({12: _ai_issue(12, SAMPLE_BODY)}, list_fails=True)
+        self.assertEqual(result.kind, "human_required")
+        self.assertEqual(edits, [])
 
 
 if __name__ == "__main__":
