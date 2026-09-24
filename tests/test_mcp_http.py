@@ -305,6 +305,34 @@ class IntrospectionVerifierTests(unittest.TestCase):
                     "scope": "atlas.read",
                     "aud": resource,
                 },
+                "blank-issuer": {
+                    "active": True,
+                    "client_id": "chatgpt",
+                    "scope": "atlas.read",
+                    "aud": resource,
+                    "iss": "   ",
+                },
+                "empty-issuer": {
+                    "active": True,
+                    "client_id": "chatgpt",
+                    "scope": "atlas.read",
+                    "aud": resource,
+                    "iss": "",
+                },
+                "non-string-issuer": {
+                    "active": True,
+                    "client_id": "chatgpt",
+                    "scope": "atlas.read",
+                    "aud": resource,
+                    "iss": 1,
+                },
+                "correct-issuer": {
+                    "active": True,
+                    "client_id": "chatgpt",
+                    "scope": "atlas.read",
+                    "aud": resource,
+                    "iss": ISSUER,
+                },
                 "conflict": {
                     "active": True,
                     "client_id": "chatgpt",
@@ -343,14 +371,34 @@ class IntrospectionVerifierTests(unittest.TestCase):
             return (
                 await verifier.verify_token("wrong-issuer"),
                 await verifier.verify_token("omitted-issuer"),
+                await verifier.verify_token("blank-issuer"),
+                await verifier.verify_token("empty-issuer"),
+                await verifier.verify_token("non-string-issuer"),
+                await verifier.verify_token("correct-issuer"),
                 await verifier.verify_token("conflict"),
                 await verifier.verify_token("aud-list"),
                 await verifier.verify_token("aud-list-conflict"),
             )
 
-        wrong, omitted, conflict, aud_list, aud_list_conflict = asyncio.run(check())
+        (
+            wrong,
+            omitted,
+            blank,
+            empty,
+            non_string,
+            correct,
+            conflict,
+            aud_list,
+            aud_list_conflict,
+        ) = asyncio.run(check())
         self.assertIsNone(wrong)
         self.assertIsNotNone(omitted)
+        self.assertIsNone(blank)
+        self.assertIsNone(empty)
+        self.assertIsNone(non_string)
+        self.assertIsNotNone(correct)
+        assert correct is not None
+        self.assertEqual(correct.claims, {"iss": ISSUER})
         self.assertIsNone(conflict)
         self.assertIsNotNone(aud_list)
         assert aud_list is not None

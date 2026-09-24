@@ -175,7 +175,11 @@ def _optional_epoch(value: object, *, now: int, reject_past: bool) -> int | None
 
 
 def _issuer_matches(payload: dict[str, Any], expected_issuer: str) -> bool:
-    """Accept an omitted ``iss``. Reject an explicit issuer that differs."""
+    """Accept only an omitted ``iss``. A present issuer must match exactly.
+
+    ``None`` means the claim was omitted. A present non-string, blank, or
+    whitespace value is malformed and fails closed.
+    """
     issuer = payload.get("iss")
     if issuer is None:
         return True
@@ -183,7 +187,7 @@ def _issuer_matches(payload: dict[str, Any], expected_issuer: str) -> bool:
         return False
     text = issuer.strip().rstrip("/")
     if not text:
-        return True
+        return False
     return text == expected_issuer.strip().rstrip("/")
 
 

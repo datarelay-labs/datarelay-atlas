@@ -35,7 +35,8 @@ setting is missing, when the resource URL is not HTTPS `/mcp`, or when the
 certificate, key, or secret file is missing.
 
 An introspection response that includes `iss` must match the configured issuer.
-A response that omits `iss` remains acceptable. When both `aud` and `resource`
+A blank, whitespace, or non-string `iss` is rejected. A response that omits
+`iss` remains acceptable. When both `aud` and `resource`
 are present, each must identify this MCP resource URL. An `aud` list is valid
 when it includes that URL.
 

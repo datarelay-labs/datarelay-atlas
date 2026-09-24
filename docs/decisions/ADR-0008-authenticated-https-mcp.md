@@ -34,9 +34,9 @@ The official MCP Python SDK stable line for this slice is `mcp==2.2.0`
    resource metadata and enforce bearer authentication. Read tools require
    `atlas.read`. Tokens whose audience/resource is not the configured MCP
    resource URL are rejected. When both audience and resource claims are
-   present, each must name that URL. An explicit introspection `iss` that
-   differs from the configured issuer is rejected; an omitted `iss` stays
-   acceptable. Introspection credentials and private keys stay in the
+   present, each must name that URL. An explicit introspection `iss` must
+   equal the configured issuer. A present blank, whitespace, or non-string
+   `iss` is rejected; an omitted `iss` stays acceptable. Introspection credentials and private keys stay in the
    environment or operator files, never in Git. The introspection client
    secret is not a command-line argument. Missing auth or TLS configuration
    refuses to bind.
