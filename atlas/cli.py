@@ -144,6 +144,13 @@ def cmd_projections(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_search(args: argparse.Namespace) -> int:
+    svc = _service(args)
+    hits = svc.search(args.project_id, args.query, limit=args.limit)
+    _print_json([asdict(hit) for hit in hits])
+    return 0
+
+
 def _controller_from_args(args: argparse.Namespace) -> WorkController:
     """Build a controller with operator-selected adapters.
 
@@ -490,7 +497,7 @@ def _add_work_controller_runtime_flags(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="atlas",
-        description="DataRelay Atlas Phase 1 operator surface",
+        description="DataRelay Atlas operator surface",
     )
     parser.add_argument(
         "--data-root",
@@ -555,6 +562,15 @@ def build_parser() -> argparse.ArgumentParser:
     projections = sub.add_parser("projections", help="Show projection/provenance records")
     projections.add_argument("project_id")
     projections.set_defaults(func=cmd_projections)
+
+    search = sub.add_parser(
+        "search",
+        help="Search one project's successful projections",
+    )
+    search.add_argument("project_id")
+    search.add_argument("query")
+    search.add_argument("--limit", type=int, default=8)
+    search.set_defaults(func=cmd_search)
 
     wc = sub.add_parser(
         "work-controller",

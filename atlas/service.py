@@ -12,8 +12,10 @@ from atlas.adoption import (
 )
 from atlas.github_sync import FetchFn, fetch_github_file
 from atlas.projection import PROJECTOR_ID, ProjectionRecord, ProjectionStore
+from atlas.projection_retrieval import build_keyword_retriever
 from atlas.provenance import CanonicalSource, ValidationError
 from atlas.registry import ProjectRecord, ProjectRegistry, RegisteredSource
+from atlas.retrieval import RetrievalHit
 
 
 class AtlasService:
@@ -126,3 +128,13 @@ class AtlasService:
 
     def projection_records(self, project_id: str) -> list[dict[str, Any]]:
         return self.projections.list_records(project_id=project_id)
+
+    def search(self, project_id: str, query: str, *, limit: int = 8) -> list[RetrievalHit]:
+        """Search successful projections for one registered project."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValidationError("limit must be a positive integer")
+        if not isinstance(query, str):
+            raise ValidationError("query is required")
+        self.registry.get(project_id)
+        retriever = build_keyword_retriever(self.projections, project_id)
+        return retriever.search(project_id, query, limit=limit)

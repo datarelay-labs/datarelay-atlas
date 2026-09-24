@@ -79,6 +79,14 @@ PYTHONPATH=. python3 -m atlas rebuild datarelay-atlas
 
 Durable local state defaults to `.atlas-data/` (gitignored). Credentials use `GITHUB_TOKEN` / runtime env only. See `docs/runbooks/phase1-project-registry-canonical-sync.md`.
 
+Search one registered project's successful projections. The keyword index is rebuilt in memory and each hit keeps projection provenance:
+
+```bash
+PYTHONPATH=. python3 -m atlas search datarelay-atlas "product charter"
+```
+
+No matches print `[]` and exit 0. Missing projection bytes or malformed provenance exit non-zero.
+
 ## Autonomous Work Controller PoC
 
 Persist one local workstream, accept an idempotent Cursor completion event, run a
