@@ -616,6 +616,10 @@ class WorkControllerTests(unittest.TestCase):
             # Packet mutation then compensating blocked update.
             self.assertEqual(len(packets.updates), 2)
             self.assertNotEqual(ctl.show("awc-poc")["state"], "REWORK_DISPATCHED")
+            replay = ctl.handle_completion(self._event())
+            self.assertTrue(replay["idempotent_replay"])
+            self.assertEqual(len(packets.updates), 2)
+            self.assertEqual(len(dispatcher.requests), 1)
 
     def test_cleanup_uncertainty_does_not_compensate_packet(self):
         """Termination failure must not rewrite the packet as safely blocked."""

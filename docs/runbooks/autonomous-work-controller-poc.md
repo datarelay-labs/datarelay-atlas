@@ -136,14 +136,22 @@ Expected outcome of that recording / no-spawn completion:
 `--audit-adapter fixed` defaults to `--work-packet-adapter recording`, so this
 example does not mutate GitHub Issue #12 and does not start a Cursor session.
 
-Production Codex/OpenAI paths default to `--work-packet-adapter github`, which
+Production Codex paths default to `--work-packet-adapter github`, which
 updates the same canonical `[AI Work]` Issue (findings + next action) via safe
 `gh` argv/`--body-file` **before** Cursor dispatch, after a body/`updatedAt`
-recheck. GitHub Issues PATCH rejects conditional headers (`If-Match` /
+recheck. Dispatch-blocked compensation rewrites that packet only when the
+canonical body is still the controller-owned pending transition (pending
+marker, workstream, head, and attempt). An intervening edit, including
+`PAUSED`/`BLOCKED` or a changed head/attempt, fails closed and is not
+overwritten. GitHub Issues PATCH rejects conditional headers (`If-Match` /
 `If-Unmodified-Since` → HTTP 400), so a residual TOCTOU remains and is accepted
-as a platform limit for this PoC. Mutation failure fails closed as
+as a platform limit for the initial mutation. Mutation failure fails closed as
 `HUMAN_REQUIRED` with no spawn / no `REWORK_DISPATCHED`. GitHub mutation is
 paired only with real `--spawn-dispatch`.
+
+OpenAI remains `--work-packet-adapter recording` and audit-only, without
+`--spawn-dispatch`, until it has the same deterministic evidence bundle as
+Codex. It does not mutate canonical GitHub state and does not spawn.
 
 Real dispatch is a later milestone. It is not a substitute for the audit-only
 example above. When that milestone is in scope, pair fixed audit with the
@@ -214,10 +222,11 @@ Offline/deterministic mode requires explicit `--audit-adapter fixed`.
 and enqueues/drains the local inbox without Telegram. Default audit adapter is
 `codex`. Unknown `AWC_AUDIT_ADAPTER` values fail closed.
 
-Production default is **unattended**: when draining, the hook passes
+Codex production default is **unattended**: when draining, the hook passes
 `--spawn-dispatch` so a `REWORK` verdict can launch a fresh Cursor session with
-exact argv `agent persist --force --trust /work-resume`. The hook inherits
-`ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD`, the
+exact argv `agent persist --force --trust /work-resume`. OpenAI stays
+recording/audit-only (`AWC_SPAWN_DISPATCH=0` is forced) until evidence parity.
+The hook inherits `ENGINEERING_SYSTEM_CURSOR_RESOURCE_GUARD`, the
 `ENGINEERING_SYSTEM_CURSOR_RESOURCE_PREFLIGHT` alias, or
 `ENGINEERING_SYSTEM_ROOT`; without a usable preflight the spawn fails closed. Set
 `AWC_SPAWN_DISPATCH=0` only for audit-only / operator opt-out (drain without

@@ -1097,6 +1097,104 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
             adapter.apply_rework_findings(**self._rework_kwargs(findings="x"))
         self.assertIn("edit denied", str(ctx.exception))
 
+    def _stateful_issue(self) -> tuple[dict, list[str], GitHubWorkPacketAdapter]:
+        issue = self._payload()
+        edits: list[str] = []
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            allowed = self._author_permission_response(argv)
+            if allowed is not None:
+                return allowed
+            if self._is_issue_scan(argv):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=self._scan_pages(), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "view"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(issue), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "edit"]:
+                path = argv[argv.index("--body-file") + 1]
+                issue["body"] = Path(path).read_text(encoding="utf-8")
+                edits.append(issue["body"])
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            self.fail(f"unexpected argv: {argv}")
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        adapter.apply_rework_findings(**self._rework_kwargs(findings="fix gaps"))
+        return issue, edits, adapter
+
+    def _blocked_kwargs(self):
+        return {
+            **self._rework_kwargs(findings="fix gaps"),
+            "reason": "spawned_but_unobserved",
+        }
+
+    def test_dispatch_blocked_compensates_unchanged_pending_packet(self):
+        issue, edits, adapter = self._stateful_issue()
+        self.assertIn("WORK_PACKET_MUTATION=PENDING_DISPATCH", issue["body"])
+        adapter.apply_dispatch_blocked(**self._blocked_kwargs())
+        self.assertEqual(len(edits), 2)
+        self.assertIn("WORK_PACKET_MUTATION=DISPATCH_BLOCKED", issue["body"])
+        self.assertNotIn("WORK_PACKET_MUTATION=PENDING_DISPATCH", issue["body"])
+
+    def test_dispatch_blocked_refuses_intervening_edit(self):
+        issue, edits, adapter = self._stateful_issue()
+        issue["body"] = issue["body"].replace(
+            "Canonical Work Packet mutated before `/work-resume` dispatch.",
+            "Owner note added before compensation.",
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            adapter.apply_dispatch_blocked(**self._blocked_kwargs())
+        self.assertIn("no longer matches", str(ctx.exception))
+        self.assertEqual(len(edits), 1)
+        self.assertIn("Owner note added before compensation.", issue["body"])
+        self.assertNotIn("WORK_PACKET_MUTATION=DISPATCH_BLOCKED", issue["body"])
+
+    def test_dispatch_blocked_refuses_pause_or_blocked_status(self):
+        for status in ("PAUSED", "BLOCKED"):
+            with self.subTest(status=status):
+                issue, edits, adapter = self._stateful_issue()
+                issue["body"] = issue["body"].replace(
+                    "STATUS=ACTIVE", f"STATUS={status}", 1
+                )
+                with self.assertRaises(ValidationError) as ctx:
+                    adapter.apply_dispatch_blocked(**self._blocked_kwargs())
+                self.assertIn(f"STATUS={status}", str(ctx.exception))
+                self.assertEqual(len(edits), 1)
+                self.assertIn(f"STATUS={status}", issue["body"])
+                self.assertNotIn(
+                    "WORK_PACKET_MUTATION=DISPATCH_BLOCKED", issue["body"]
+                )
+
+    def test_dispatch_blocked_refuses_head_or_attempt_drift(self):
+        drifted_head = "c" * 40
+        issue, edits, adapter = self._stateful_issue()
+        issue["body"] = issue["body"].replace(HEAD_B, drifted_head)
+        with self.assertRaises(ValidationError) as ctx:
+            adapter.apply_dispatch_blocked(**self._blocked_kwargs())
+        self.assertIn("HEAD", str(ctx.exception))
+        self.assertEqual(len(edits), 1)
+        self.assertIn(drifted_head, issue["body"])
+
+        issue, edits, adapter = self._stateful_issue()
+        issue["body"] = issue["body"].replace("ATTEMPT=2", "ATTEMPT=9")
+        with self.assertRaises(ValidationError) as ctx:
+            adapter.apply_dispatch_blocked(**self._blocked_kwargs())
+        self.assertIn("ATTEMPT", str(ctx.exception))
+        self.assertEqual(len(edits), 1)
+        self.assertIn("ATTEMPT=9", issue["body"])
+        self.assertNotIn("WORK_PACKET_MUTATION=DISPATCH_BLOCKED", issue["body"])
+
+    def test_dispatch_blocked_replay_is_idempotent(self):
+        issue, edits, adapter = self._stateful_issue()
+        adapter.apply_dispatch_blocked(**self._blocked_kwargs())
+        adapter.apply_dispatch_blocked(**self._blocked_kwargs())
+        self.assertEqual(len(edits), 2)
+        self.assertEqual(
+            issue["body"].count("WORK_PACKET_MUTATION=DISPATCH_BLOCKED"), 1
+        )
+
     def test_run_permission_error_is_validation_error(self):
         adapter = GitHubWorkPacketAdapter()
         with mock.patch(

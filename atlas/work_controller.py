@@ -1393,6 +1393,7 @@ class GitHubWorkPacketAdapter:
         self._cwd = cwd or str(Path.cwd())
         self._timeout_sec = timeout_sec
         self._max_findings_chars = max_findings_chars
+        self._owned_pending_dispatch: dict[str, object] | None = None
 
     def apply_rework_findings(
         self,
@@ -1484,6 +1485,15 @@ class GitHubWorkPacketAdapter:
                 if "timed out" in str(exc).lower():
                     landed = self._view_issue(repo, int(issue_number))
                     if str(landed.get("body") or "") == new_body:
+                        self._remember_owned_pending_dispatch(
+                            repository=repo,
+                            issue_number=int(issue_number),
+                            branch=expected_branch,
+                            workstream=expected_workstream,
+                            attempt=int(attempt),
+                            head=head,
+                            body=new_body,
+                        )
                         return
                 raise
         finally:
@@ -1494,6 +1504,129 @@ class GitHubWorkPacketAdapter:
                 detail[:500]
                 or f"gh issue edit failed with exit {edit.returncode}"
             )
+        self._remember_owned_pending_dispatch(
+            repository=repo,
+            issue_number=int(issue_number),
+            branch=expected_branch,
+            workstream=expected_workstream,
+            attempt=int(attempt),
+            head=head,
+            body=new_body,
+        )
+
+    def _remember_owned_pending_dispatch(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        workstream: str,
+        attempt: int,
+        head: str,
+        body: str,
+    ) -> None:
+        self._owned_pending_dispatch = {
+            "repository": repository,
+            "issue_number": int(issue_number),
+            "branch": branch.strip(),
+            "workstream": workstream.strip(),
+            "attempt": int(attempt),
+            "head": head.strip().lower(),
+            "body": body,
+        }
+
+    def _require_owned_pending_before_compensation(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        workstream: str,
+        findings: str,
+        attempt: int,
+        head: str,
+        reason: str,
+        current_body: str,
+    ) -> str:
+        """Return the pending body to rewrite, or raise before any edit.
+
+        Compensation may rewrite only the body this adapter wrote for the
+        same workstream, head, and attempt. An already-compensated copy of
+        that transition is an idempotent replay. Any other canonical body
+        is an intervening edit and must not be overwritten.
+        """
+        owned = self._owned_pending_dispatch
+        if not isinstance(owned, dict):
+            raise ValidationError(
+                "refusing compensation without a controller-owned pending dispatch"
+            )
+        expected_head = head.strip().lower()
+        if (
+            owned.get("repository") != repository
+            or owned.get("issue_number") != int(issue_number)
+            or owned.get("branch") != branch.strip()
+            or owned.get("workstream") != workstream.strip()
+            or owned.get("attempt") != int(attempt)
+            or owned.get("head") != expected_head
+        ):
+            raise ValidationError(
+                "compensation identity does not match the controller-owned "
+                "pending dispatch"
+            )
+        pending_body = str(owned.get("body") or "")
+        if current_body.rstrip("\n") == pending_body.rstrip("\n"):
+            status = _packet_metadata_value(current_body, "STATUS")
+            if status != "ACTIVE":
+                raise ValidationError(
+                    f"work packet STATUS={status or 'missing'}; "
+                    "refusing compensation overwrite"
+                )
+            if "WORK_PACKET_MUTATION=PENDING_DISPATCH" not in current_body:
+                raise ValidationError(
+                    "work packet missing controller-owned PENDING_DISPATCH marker"
+                )
+            if f"HEAD={expected_head}" not in current_body:
+                raise ValidationError(
+                    "work packet HEAD does not match the pending dispatch; "
+                    "refusing compensation"
+                )
+            if f"ATTEMPT={int(attempt)}" not in current_body:
+                raise ValidationError(
+                    "work packet ATTEMPT does not match the pending dispatch; "
+                    "refusing compensation"
+                )
+            return pending_body
+        already = render_dispatch_blocked_work_packet_body(
+            pending_body,
+            repository=repository,
+            branch=branch,
+            workstream=workstream,
+            findings=findings,
+            attempt=int(attempt),
+            head=head,
+            reason=reason,
+        )
+        if current_body.rstrip("\n") == already.rstrip("\n"):
+            return ""
+        status = _packet_metadata_value(current_body, "STATUS") or ""
+        if status in {"PAUSED", "BLOCKED"}:
+            raise ValidationError(
+                f"work packet STATUS={status}; refusing compensation overwrite"
+            )
+        if f"HEAD={expected_head}" not in current_body:
+            raise ValidationError(
+                "work packet HEAD does not match the pending dispatch; "
+                "refusing compensation"
+            )
+        if f"ATTEMPT={int(attempt)}" not in current_body:
+            raise ValidationError(
+                "work packet ATTEMPT does not match the pending dispatch; "
+                "refusing compensation"
+            )
+        raise ValidationError(
+            "work packet no longer matches controller-owned pending dispatch; "
+            "refusing compensation"
+        )
 
     def apply_dispatch_blocked(
         self,
@@ -1528,8 +1661,23 @@ class GitHubWorkPacketAdapter:
         )
         self._assert_ai_work_issue(payload, issue_number=int(issue_number))
         self._require_trusted_issue_author(repo, payload)
+        pending_body = self._require_owned_pending_before_compensation(
+            repository=repo,
+            issue_number=int(issue_number),
+            branch=expected_branch,
+            workstream=expected_workstream,
+            findings=sanitize_rework_findings(
+                findings, max_chars=self._max_findings_chars
+            ),
+            attempt=int(attempt),
+            head=head,
+            reason=reason,
+            current_body=original_body,
+        )
+        if not pending_body:
+            return
         new_body = render_dispatch_blocked_work_packet_body(
-            original_body,
+            pending_body,
             repository=repo,
             branch=expected_branch,
             workstream=expected_workstream,
