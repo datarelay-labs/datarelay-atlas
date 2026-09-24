@@ -80,12 +80,14 @@ class Rfc7662TokenVerifier:
         client_id: str,
         client_secret: str,
         resource_url: str,
+        issuer_url: str,
         transport: IntrospectionTransport,
     ) -> None:
         self._introspection_url = introspection_url
         self._client_id = client_id
         self._client_secret = client_secret
         self._resource_url = _canonical_resource(resource_url)
+        self._issuer_url = issuer_url.strip().rstrip("/")
         self._transport = transport
 
     async def verify_token(self, token: str) -> AccessToken | None:
@@ -105,6 +107,7 @@ class Rfc7662TokenVerifier:
             token,
             payload,
             expected_resource=self._resource_url,
+            expected_issuer=self._issuer_url,
         )
 
 
@@ -113,6 +116,7 @@ def _access_token_from_introspection(
     payload: dict[str, Any],
     *,
     expected_resource: str,
+    expected_issuer: str,
 ) -> AccessToken | None:
     if payload.get("active") is not True:
         return None
@@ -128,6 +132,8 @@ def _access_token_from_introspection(
         return None
     not_before = _optional_epoch(payload.get("nbf"), now=now, reject_past=False)
     if not_before is _REJECT or (isinstance(not_before, int) and not_before > now):
+        return None
+    if not _issuer_matches(payload, expected_issuer):
         return None
     if not _audience_matches(payload, expected_resource):
         return None
@@ -168,32 +174,60 @@ def _optional_epoch(value: object, *, now: int, reject_past: bool) -> int | None
     return value
 
 
+def _issuer_matches(payload: dict[str, Any], expected_issuer: str) -> bool:
+    """Accept an omitted ``iss``. Reject an explicit issuer that differs."""
+    issuer = payload.get("iss")
+    if issuer is None:
+        return True
+    if not isinstance(issuer, str):
+        return False
+    text = issuer.strip().rstrip("/")
+    if not text:
+        return True
+    return text == expected_issuer.strip().rstrip("/")
+
+
 def _audience_matches(payload: dict[str, Any], expected_resource: str) -> bool:
-    values: list[str] = []
-    audience = payload.get("aud")
-    if isinstance(audience, str):
-        values.append(audience)
-    elif isinstance(audience, list):
-        if not all(isinstance(item, str) for item in audience):
-            return False
-        values.extend(audience)
-    elif audience is not None:
+    """Each present resource-identifying claim must name the expected resource.
+
+    An ``aud`` list is valid when it includes the expected resource. A
+    conflicting ``resource`` claim is not ignored just because ``aud`` matched.
+    """
+    try:
+        expected = _canonical_resource(expected_resource)
+    except ValueError:
         return False
-    resource = payload.get("resource")
-    if isinstance(resource, str):
-        values.append(resource)
-    elif resource is not None:
+    audience = _claim_matches(payload.get("aud"), expected, allow_list=True)
+    resource = _claim_matches(payload.get("resource"), expected, allow_list=False)
+    if audience is _REJECT or resource is _REJECT:
         return False
-    if not values:
-        return False
-    expected = _canonical_resource(expected_resource)
-    for value in values:
+    present = [item for item in (audience, resource) if item is not None]
+    return bool(present) and all(item is True for item in present)
+
+
+def _claim_matches(value: object, expected: str, *, allow_list: bool) -> bool | None | object:
+    """Return True/False for a present claim, None when absent, or ``_REJECT``."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        values = [value]
+    elif (
+        allow_list
+        and isinstance(value, list)
+        and value
+        and all(isinstance(item, str) for item in value)
+    ):
+        values = value
+    else:
+        return _REJECT
+    matched = False
+    for item in values:
         try:
-            if _canonical_resource(value) == expected:
-                return True
+            if _canonical_resource(item) == expected:
+                matched = True
         except ValueError:
-            continue
-    return False
+            return _REJECT
+    return matched
 
 
 def _canonical_resource(url: str) -> str:

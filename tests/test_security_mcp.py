@@ -168,6 +168,68 @@ class McpContextTests(unittest.TestCase):
         self.assertEqual(by_identity["from-main@main"].data["source_revision"], "rev-main")
         self.assertEqual(by_identity["from-release@v1"].data["source_revision"], "rev-release")
 
+    def test_path_lookup_ignores_identity_key_collision(self):
+        index = KeywordIndex()
+        keyed = Provenance(
+            project_id="demo",
+            provider="github",
+            repository="datarelay-labs/datarelay-atlas",
+            ref="main",
+            source_path="docs/real.md",
+            source_revision="rev-keyed",
+        )
+        pathed = Provenance(
+            project_id="demo",
+            provider="github",
+            repository="datarelay-labs/datarelay-atlas",
+            ref="main",
+            source_path="foo@main",
+            source_revision="rev-path",
+        )
+        index.add(
+            IndexedDocument(
+                project_id="demo",
+                path="foo@main",
+                title="docs/real.md",
+                text="collision-token keyed",
+                provenance=keyed,
+            )
+        )
+        index.add(
+            IndexedDocument(
+                project_id="demo",
+                path="other@main",
+                title="foo@main",
+                text="collision-token path",
+                provenance=pathed,
+            )
+        )
+        tools = AtlasContextTools(
+            Retriever(
+                index,
+                provenance_by_path={
+                    ("demo", "foo@main"): keyed,
+                    ("demo", "other@main"): pathed,
+                },
+            )
+        )
+        by_path = tools.call(
+            "get_provenance",
+            {"project_id": "demo", "path": "foo@main"},
+            scopes=default_read_scopes(),
+        )
+        self.assertTrue(by_path.ok)
+        self.assertEqual(by_path.data["source_revision"], "rev-path")
+        self.assertEqual(by_path.data["source_path"], "foo@main")
+        by_identity = tools.call(
+            "get_provenance",
+            {"project_id": "demo", "identity": "foo@main"},
+            scopes=default_read_scopes(),
+        )
+        self.assertTrue(by_identity.ok)
+        self.assertEqual(by_identity.data["source_revision"], "rev-keyed")
+        self.assertEqual(by_identity.data["source_path"], "docs/real.md")
+
     def test_read_tools_reject_write_only_scope(self):
         result = self.tools.call(
             "search_project",

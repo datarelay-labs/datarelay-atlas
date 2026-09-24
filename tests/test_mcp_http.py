@@ -38,7 +38,12 @@ from atlas.mcp_auth import (
     IntrospectionRequest,
     Rfc7662TokenVerifier,
 )
-from atlas.mcp_config import McpServeConfig, resolve_mcp_serve_config
+from atlas.cli import build_parser
+from atlas.mcp_config import (
+    INTROSPECTION_CLIENT_SECRET_ENV,
+    McpServeConfig,
+    resolve_mcp_serve_config,
+)
 from atlas.mcp_context import AtlasContextTools, default_read_scopes
 from atlas.mcp_http import build_mcp_application
 from atlas.provenance import ValidationError
@@ -156,10 +161,10 @@ class McpConfigTests(unittest.TestCase):
                 issuer_url=None,
                 introspection_url=None,
                 introspection_client_id=None,
-                introspection_client_secret=SECRET,
+                introspection_client_secret_file=None,
                 tls_cert=None,
                 tls_key=None,
-                environ={},
+                environ={INTROSPECTION_CLIENT_SECRET_ENV: SECRET},
             )
         message = str(caught.exception)
         self.assertNotIn(SECRET, message)
@@ -178,11 +183,53 @@ class McpConfigTests(unittest.TestCase):
                     issuer_url=ISSUER,
                     introspection_url="https://issuer.example/introspect",
                     introspection_client_id="atlas-resource",
-                    introspection_client_secret=SECRET,
+                    introspection_client_secret_file=None,
+                    tls_cert=str(cert_path),
+                    tls_key=str(key_path),
+                    environ={INTROSPECTION_CLIENT_SECRET_ENV: SECRET},
+                )
+
+    def test_secret_file_overrides_env_and_argv_secret_is_rejected(self):
+        parser = build_parser()
+        with self.assertRaises(SystemExit) as caught:
+            parser.parse_args(["mcp", "serve", "--introspection-client-secret", SECRET])
+        self.assertEqual(caught.exception.code, 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            secret_path = root / "introspection-secret"
+            secret_path.write_text(SECRET + "\n", encoding="utf-8")
+            cert_path, key_path = _cert(root)
+            config = resolve_mcp_serve_config(
+                data_root=root,
+                bind_host="127.0.0.1",
+                port=8443,
+                resource_url="https://127.0.0.1:8443/mcp",
+                issuer_url=ISSUER,
+                introspection_url="https://issuer.example/introspect",
+                introspection_client_id="atlas-resource",
+                introspection_client_secret_file=str(secret_path),
+                tls_cert=str(cert_path),
+                tls_key=str(key_path),
+                environ={INTROSPECTION_CLIENT_SECRET_ENV: "env-secret-not-used"},
+            )
+            self.assertEqual(config.introspection_client_secret, SECRET)
+            secret_path.write_text("\n", encoding="utf-8")
+            with self.assertRaises(ValidationError) as invalid:
+                resolve_mcp_serve_config(
+                    data_root=root,
+                    bind_host="127.0.0.1",
+                    port=8443,
+                    resource_url="https://127.0.0.1:8443/mcp",
+                    issuer_url=ISSUER,
+                    introspection_url="https://issuer.example/introspect",
+                    introspection_client_id="atlas-resource",
+                    introspection_client_secret_file=str(secret_path),
                     tls_cert=str(cert_path),
                     tls_key=str(key_path),
                     environ={},
                 )
+            self.assertNotIn(SECRET, str(invalid.exception))
+            self.assertIn("invalid", str(invalid.exception))
 
 
 class IntrospectionVerifierTests(unittest.TestCase):
@@ -219,6 +266,7 @@ class IntrospectionVerifierTests(unittest.TestCase):
             client_id="atlas-resource",
             client_secret=SECRET,
             resource_url=resource,
+            issuer_url=ISSUER,
             transport=scripted,
         )
 
@@ -239,6 +287,75 @@ class IntrospectionVerifierTests(unittest.TestCase):
         self.assertIsNone(inactive)
         self.assertIsNone(expired)
         self.assertEqual(scripted.requests[0].client_secret, SECRET)
+
+    def test_explicit_issuer_and_conflicting_resource_fail_closed(self):
+        resource = "https://atlas.example/mcp"
+        scripted = ScriptedIntrospection(
+            {
+                "wrong-issuer": {
+                    "active": True,
+                    "client_id": "chatgpt",
+                    "scope": "atlas.read",
+                    "aud": resource,
+                    "iss": "https://evil.example",
+                },
+                "omitted-issuer": {
+                    "active": True,
+                    "client_id": "chatgpt",
+                    "scope": "atlas.read",
+                    "aud": resource,
+                },
+                "conflict": {
+                    "active": True,
+                    "client_id": "chatgpt",
+                    "scope": "atlas.read",
+                    "aud": resource,
+                    "resource": OTHER_RESOURCE,
+                    "iss": ISSUER,
+                },
+                "aud-list": {
+                    "active": True,
+                    "client_id": "chatgpt",
+                    "scope": "atlas.read",
+                    "aud": [resource, OTHER_RESOURCE],
+                    "iss": ISSUER,
+                },
+                "aud-list-conflict": {
+                    "active": True,
+                    "client_id": "chatgpt",
+                    "scope": "atlas.read",
+                    "aud": [OTHER_RESOURCE],
+                    "resource": resource,
+                    "iss": ISSUER,
+                },
+            }
+        )
+        verifier = Rfc7662TokenVerifier(
+            introspection_url="https://issuer.example/introspect",
+            client_id="atlas-resource",
+            client_secret=SECRET,
+            resource_url=resource,
+            issuer_url=ISSUER,
+            transport=scripted,
+        )
+
+        async def check():
+            return (
+                await verifier.verify_token("wrong-issuer"),
+                await verifier.verify_token("omitted-issuer"),
+                await verifier.verify_token("conflict"),
+                await verifier.verify_token("aud-list"),
+                await verifier.verify_token("aud-list-conflict"),
+            )
+
+        wrong, omitted, conflict, aud_list, aud_list_conflict = asyncio.run(check())
+        self.assertIsNone(wrong)
+        self.assertIsNotNone(omitted)
+        self.assertIsNone(conflict)
+        self.assertIsNotNone(aud_list)
+        assert aud_list is not None
+        self.assertEqual(aud_list.resource, resource)
+        self.assertIsNone(aud_list_conflict)
 
     def test_http_transport_posts_form_and_does_not_follow_redirects(self):
         hits = {"introspect": 0, "collected": 0}

@@ -27,9 +27,17 @@ export ATLAS_MCP_TLS_KEY=/path/outside/git/key.pem
 PYTHONPATH=. python3 -m atlas mcp serve --host 127.0.0.1 --port 8443
 ```
 
-Flags of the same names override those variables. The process refuses to bind
-when any of them is missing, when the resource URL is not HTTPS `/mcp`, or
-when the certificate or key file is missing.
+Flags of the same names override those variables, except the introspection
+client secret. That secret is read from `ATLAS_MCP_INTROSPECTION_CLIENT_SECRET`
+or from `--introspection-client-secret-file` when the flag is set. It is not
+accepted as a command-line value. The process refuses to bind when any required
+setting is missing, when the resource URL is not HTTPS `/mcp`, or when the
+certificate, key, or secret file is missing.
+
+An introspection response that includes `iss` must match the configured issuer.
+A response that omits `iss` remains acceptable. When both `aud` and `resource`
+are present, each must identify this MCP resource URL. An `aud` list is valid
+when it includes that URL.
 
 Protected resource metadata is published at
 `/.well-known/oauth-protected-resource/mcp`. Read tools require scope
@@ -37,7 +45,8 @@ Protected resource metadata is published at
 
 `search_project` returns `path` and `identity`. Pass `identity` to
 `get_provenance`. A source path alone is accepted only when one projection
-uses it.
+uses it. Path lookup compares `source_path` and does not treat another
+projection's identity key as a path.
 
 The MCP process uses keyword retrieval. Semantic ranking stays on
 `python -m atlas search --embedding-endpoint ...`.

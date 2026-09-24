@@ -33,9 +33,13 @@ The official MCP Python SDK stable line for this slice is `mcp==2.2.0`
    only. The SDK `TokenVerifier` and `AuthSettings` publish RFC 9728 protected
    resource metadata and enforce bearer authentication. Read tools require
    `atlas.read`. Tokens whose audience/resource is not the configured MCP
-   resource URL are rejected. Introspection credentials and private keys stay
-   in the environment or operator files, never in Git. Missing auth or TLS
-   configuration refuses to bind.
+   resource URL are rejected. When both audience and resource claims are
+   present, each must name that URL. An explicit introspection `iss` that
+   differs from the configured issuer is rejected; an omitted `iss` stays
+   acceptable. Introspection credentials and private keys stay in the
+   environment or operator files, never in Git. The introspection client
+   secret is not a command-line argument. Missing auth or TLS configuration
+   refuses to bind.
 6. **Architecture boundary** — `AtlasService` / `atlas.mcp_context` remain the
    retrieval and tool-semantics owners. `atlas.mcp_http` owns Streamable HTTP
    and resource-server wiring. The SDK owns protocol negotiation. No
@@ -55,8 +59,9 @@ The official MCP Python SDK stable line for this slice is `mcp==2.2.0`
 4. Keep keyword retrieval for this slice. Semantic ranking remains the
    operator `search` command, not the MCP process.
 5. Return projection `identity` on search hits and resolve `get_provenance`
-   by that identity first. A source path resolves only when it matches one
-   projection; several matches fail closed as `ambiguous`.
+   by that identity when `identity` is supplied. A source path resolves only
+   by `source_path`, and only when it matches one projection; several matches
+   fail closed as `ambiguous`. Path lookup does not consult identity keys.
 
 ## Consequences
 

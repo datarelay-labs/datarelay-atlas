@@ -171,7 +171,7 @@ def cmd_mcp_serve(args: argparse.Namespace) -> int:
         issuer_url=args.issuer_url,
         introspection_url=args.introspection_url,
         introspection_client_id=args.introspection_client_id,
-        introspection_client_secret=args.introspection_client_secret,
+        introspection_client_secret_file=args.introspection_client_secret_file,
         tls_cert=args.tls_cert,
         tls_key=args.tls_key,
     )
@@ -631,6 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_serve = mcp_sub.add_parser(
         "serve",
         help="Serve Streamable HTTP MCP over HTTPS",
+        allow_abbrev=False,
     )
     mcp_serve.add_argument("--host", default="127.0.0.1")
     mcp_serve.add_argument("--port", type=int, default=8443)
@@ -638,7 +639,14 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_serve.add_argument("--issuer-url", default=None)
     mcp_serve.add_argument("--introspection-url", default=None)
     mcp_serve.add_argument("--introspection-client-id", default=None)
-    mcp_serve.add_argument("--introspection-client-secret", default=None)
+    mcp_serve.add_argument(
+        "--introspection-client-secret-file",
+        default=None,
+        help=(
+            "Operator file containing the introspection client secret. "
+            "When omitted, ATLAS_MCP_INTROSPECTION_CLIENT_SECRET is used."
+        ),
+    )
     mcp_serve.add_argument("--tls-cert", default=None)
     mcp_serve.add_argument("--tls-key", default=None)
     mcp_serve.set_defaults(func=cmd_mcp_serve)

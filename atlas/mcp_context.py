@@ -182,9 +182,8 @@ def _lookup_provenance(
     if identity:
         found = table.get((project_id, identity))
         return found if found is not None else "not_found"
-    direct = table.get((project_id, path))
-    if direct is not None:
-        return direct
+    # Path lookup compares source_path only. The table key is source_id@ref and
+    # must not satisfy a path that happens to equal another projection's identity.
     wanted = normalize_path(path)
     matches = [
         prov

@@ -47,12 +47,16 @@ def resolve_mcp_serve_config(
     issuer_url: str | None,
     introspection_url: str | None,
     introspection_client_id: str | None,
-    introspection_client_secret: str | None,
+    introspection_client_secret_file: str | None,
     tls_cert: str | None,
     tls_key: str | None,
     environ: dict[str, str] | None = None,
 ) -> McpServeConfig:
-    """Fill missing flags from the environment and fail closed before bind."""
+    """Fill missing flags from the environment and fail closed before bind.
+
+    The introspection client secret comes from the environment or from
+    ``introspection_client_secret_file``. It is never taken from a raw flag.
+    """
     env = os.environ if environ is None else environ
     resolved = {
         "resource_url": _flag_or_env(resource_url, env, RESOURCE_URL_ENV),
@@ -61,8 +65,8 @@ def resolve_mcp_serve_config(
         "introspection_client_id": _flag_or_env(
             introspection_client_id, env, INTROSPECTION_CLIENT_ID_ENV
         ),
-        "introspection_client_secret": _flag_or_env(
-            introspection_client_secret, env, INTROSPECTION_CLIENT_SECRET_ENV
+        "introspection_client_secret": _resolve_introspection_client_secret(
+            introspection_client_secret_file, env
         ),
         "tls_cert": _flag_or_env(tls_cert, env, TLS_CERT_ENV),
         "tls_key": _flag_or_env(tls_key, env, TLS_KEY_ENV),
@@ -102,6 +106,25 @@ def resolve_mcp_serve_config(
         tls_cert=cert,
         tls_key=key,
     )
+
+
+def _resolve_introspection_client_secret(
+    secret_file: str | None,
+    env: dict[str, str],
+) -> str:
+    if secret_file is not None and secret_file.strip():
+        path = Path(secret_file.strip())
+        if not path.is_file():
+            raise ValidationError("introspection client secret file is missing")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValidationError("introspection client secret file is unreadable") from exc
+        secret = text.rstrip("\r\n")
+        if not secret or "\n" in secret or "\r" in secret or "\x00" in secret:
+            raise ValidationError("introspection client secret file is invalid")
+        return secret
+    return env.get(INTROSPECTION_CLIENT_SECRET_ENV, "").strip()
 
 
 def _flag_or_env(flag: str | None, env: dict[str, str], name: str) -> str:

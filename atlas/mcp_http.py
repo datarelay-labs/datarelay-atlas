@@ -73,6 +73,7 @@ def serve_mcp(config: McpServeConfig) -> None:
         client_id=config.introspection_client_id,
         client_secret=config.introspection_client_secret,
         resource_url=config.resource_url,
+        issuer_url=config.issuer_url,
         transport=HttpxIntrospectionTransport(),
     )
     app = build_mcp_application(service, config, verifier)
