@@ -69,7 +69,11 @@ if [[ "${AWC_DRAIN:-1}" == "1" ]]; then
   # defaults to recording and therefore must not pass --spawn-dispatch unless
   # the operator explicitly selects github.
   WANT_SPAWN="${AWC_SPAWN_DISPATCH:-1}"
+  # Metadata-only OpenAI must not spawn or mutate the canonical packet.
   if [[ "$ADAPTER" == "fixed" && "${AWC_WORK_PACKET_ADAPTER:-}" != "github" ]]; then
+    WANT_SPAWN=0
+  fi
+  if [[ "$ADAPTER" == "openai" ]]; then
     WANT_SPAWN=0
   fi
   if [[ "$WANT_SPAWN" == "1" ]]; then

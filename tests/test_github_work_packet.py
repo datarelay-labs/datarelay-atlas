@@ -269,12 +269,28 @@ class RenderReworkWorkPacketBodyTests(unittest.TestCase):
             "Basic authentication is supported",
             "basic principles matter",
             "The guide explains basic principles of review.",
+            "Basic Authentication is a documented scheme name",
         )
         for sample in prose:
             self.assertFalse(_looks_like_secret(sample), sample)
             self.assertFalse(_contains_unsafe_secret(sample), sample)
             self.assertEqual(sanitize_rework_findings(sample), sample)
             self.assertEqual(redact_sensitive_audit_text(sample), sample)
+
+        title_case = (
+            "Authorization: Basic Yjph",
+            "Proxy-Authorization: Basic Yjph",
+            "Basic Yjph",
+        )
+        for sample in title_case:
+            self.assertTrue(_looks_like_secret(sample), sample)
+            self.assertTrue(_contains_unsafe_secret(sample), sample)
+            with self.assertRaises(ValidationError):
+                sanitize_rework_findings(sample)
+            redacted_token = redact_sensitive_audit_text(sample)
+            self.assertIn("Basic <redacted>", redacted_token)
+            self.assertNotIn("Yjph", redacted_token)
+            self.assertFalse(_contains_unsafe_secret(redacted_token), redacted_token)
 
         header = "Proxy-Authorization: Basic dGVzdDp0ZXN0"
         self.assertTrue(_looks_like_secret(header), header)
@@ -1685,6 +1701,52 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
             with self.assertRaises(ValidationError) as ctx:
                 atlas_cli._controller_from_args(args)
             self.assertIn("recording", str(ctx.exception).lower())
+
+    def test_openai_cannot_mutate_github_or_spawn(self):
+        from atlas import cli as atlas_cli
+        from atlas.work_controller import (
+            AuditOnlyCursorDispatcher,
+            RecordingWorkPacketAdapter,
+        )
+
+        parser = build_parser()
+        for extra in (
+            ["--spawn-dispatch"],
+            ["--work-packet-adapter", "github", "--spawn-dispatch"],
+            ["--work-packet-adapter", "github"],
+        ):
+            args = parser.parse_args(
+                [
+                    "work-controller",
+                    "completion",
+                    "/tmp/event.json",
+                    "--audit-adapter",
+                    "openai",
+                    *extra,
+                ]
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                args.data_root = tmp
+                with self.assertRaises(ValidationError) as ctx:
+                    atlas_cli._controller_from_args(args)
+                self.assertIn("metadata-only", str(ctx.exception))
+
+        recording = parser.parse_args(
+            [
+                "work-controller",
+                "completion",
+                "/tmp/event.json",
+                "--audit-adapter",
+                "openai",
+                "--work-packet-adapter",
+                "recording",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            recording.data_root = tmp
+            ctl = atlas_cli._controller_from_args(recording)
+            self.assertIsInstance(ctl.work_packet, RecordingWorkPacketAdapter)
+            self.assertIsInstance(ctl.dispatcher, AuditOnlyCursorDispatcher)
 
     def test_register_show_list_use_offline_safe_adapters(self):
         from atlas import cli as atlas_cli

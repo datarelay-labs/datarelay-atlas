@@ -6,6 +6,7 @@ runs an independent audit, and either stops or dispatches a fresh /work-resume.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import pty
@@ -717,32 +718,50 @@ _BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.IGNORECASE)
 _BASIC_AUTH_RE = re.compile(
     r"(?i)\bBasic\s+(?P<token>[A-Za-z0-9+/_-]{4,}={0,2})(?![A-Za-z0-9+/_-])"
 )
+_BASIC_AUTH_HEADER_PREFIX_RE = re.compile(
+    r"(?i)(?:^|[\s\"'])(?:Proxy-)?Authorization\s*[:=]\s*$"
+)
 
 
-def _basic_auth_token_is_credential(token: str) -> bool:
-    """True for an HTTP Basic token, not an ordinary English word.
-
-    Prose such as ``Basic authentication`` and ``basic principles`` is only
-    letters in one case or Title Case. A credential token carries a base64
-    signal (digit, ``+``, ``/``, ``=``, ``_``) or mixed case that is not a
-    single capitalized word.
-    """
-    if re.search(r"[0-9+/=_]", token):
-        return True
-    if re.fullmatch(r"[A-Z][a-z]+|[a-z]+|[A-Z]+", token):
+def _basic_token_decodes_to_userinfo(token: str) -> bool:
+    """True when the token is valid base64 for ``user:password`` material."""
+    padded = token + ("=" * ((-len(token)) % 4))
+    try:
+        raw = base64.b64decode(padded, validate=True)
+    except (ValueError, TypeError):
         return False
-    return bool(re.search(r"[A-Z]", token) and re.search(r"[a-z]", token))
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    if not text.isprintable() or ":" not in text:
+        return False
+    user, _, password = text.partition(":")
+    return bool(user) and bool(password)
+
+
+def _basic_match_is_credential(match: re.Match[str]) -> bool:
+    """Authorization headers are credentials; bare Basic uses decoded userinfo.
+
+    ``Authorization: Basic Yjph`` is a real credential even though the token
+    is title case. Bare prose such as ``Basic authentication`` does not decode
+    to ``user:password``.
+    """
+    prefix = match.string[max(0, match.start() - 80) : match.start()]
+    if _BASIC_AUTH_HEADER_PREFIX_RE.search(prefix):
+        return True
+    return _basic_token_decodes_to_userinfo(match.group("token"))
 
 
 def _has_live_basic_credential(text: str) -> bool:
-    for match in _BASIC_AUTH_RE.finditer(text or ""):
-        if _basic_auth_token_is_credential(match.group("token")):
-            return True
-    return False
+    return any(
+        _basic_match_is_credential(match)
+        for match in _BASIC_AUTH_RE.finditer(text or "")
+    )
 
 
 def _redact_basic_auth(match: re.Match[str]) -> str:
-    if not _basic_auth_token_is_credential(match.group("token")):
+    if not _basic_match_is_credential(match):
         return match.group(0)
     return "Basic <redacted>"
 
@@ -2301,88 +2320,100 @@ class PtyPersistCursorDispatcher:
         raise AssertionError("unreachable")  # pragma: no cover
 
 
-def _owned_pid_is_alive(pid: int) -> bool:
-    """True when the owned pid can still run. A zombie is already gone."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError as exc:
+def _live_process_group_members(pgid: int) -> list[int]:
+    """Live, non-zombie pids whose process group is ``pgid``.
+
+    ``/proc`` is required to prove the group is empty. A missing procfs is
+    uncertain rather than a successful cleanup.
+    """
+    if pgid <= 0:
+        return []
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
         raise SpawnCleanupUncertainError(
-            f"cannot verify owned pid {pid}: {exc}"
-        ) from exc
-    try:
-        stat = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    marker = stat.rfind(")")
-    if marker == -1 or marker + 2 >= len(stat):
-        raise SpawnCleanupUncertainError(
-            f"cannot verify owned pid {pid}: unreadable status"
+            "cannot verify owned process group: proc unavailable"
         )
-    if stat[marker + 2] == "Z":
+    members: list[int] = []
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
         try:
-            os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            pass
-        return False
-    return True
+            status = (entry / "status").read_text(encoding="utf-8", errors="replace")
+            stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        found_pgid: int | None = None
+        for line in status.splitlines():
+            if line.startswith("NSpgid:"):
+                found_pgid = int(line.split()[1])
+                break
+        if found_pgid != pgid:
+            continue
+        marker = stat.rfind(")")
+        if marker == -1 or marker + 2 >= len(stat):
+            raise SpawnCleanupUncertainError(
+                f"cannot verify owned pid {pid}: unreadable status"
+            )
+        if stat[marker + 2] == "Z":
+            continue
+        members.append(pid)
+    return members
+
+
+def _signal_owned_process_group(pgid: int, sig: signal.Signals) -> None:
+    """Signal one owned group. An empty group is success; a denied signal is not."""
+    try:
+        os.killpg(pgid, sig)
+        return
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        group_error: OSError = exc
+    members = _live_process_group_members(pgid)
+    if not members:
+        return
+    for member in members:
+        try:
+            os.kill(member, sig)
+        except ProcessLookupError:
+            continue
+        except OSError as exc:
+            raise SpawnCleanupUncertainError(
+                f"cannot signal owned process group {pgid}: {exc}"
+            ) from exc
+    if _live_process_group_members(pgid):
+        raise SpawnCleanupUncertainError(
+            f"cannot signal owned process group {pgid}: {group_error}"
+        ) from group_error
 
 
 def terminate_spawned_process_group(pid: int, *, wait_sec: float = 2.0) -> None:
-    """SIGTERM/SIGKILL an owned ``start_new_session`` spawn group.
+    """SIGTERM then SIGKILL an owned ``start_new_session`` process group.
 
-    Returns only after the owned pid is confirmed gone. A permission error or
-    a pid that is still alive raises ``SpawnCleanupUncertainError`` so the
-    caller does not compensate the packet. Unrelated sessions are not signaled.
+    Returns only after every live member of that group is gone. A leader exit
+    with a surviving child is not success. Permission or verification failure
+    raises ``SpawnCleanupUncertainError``. Unrelated sessions are not signaled.
     """
     if pid <= 0:
         return
-
-    def _signal_group(sig: signal.Signals) -> None:
-        delivered = False
-        last_error: OSError | None = None
-        try:
-            os.killpg(pid, sig)
-            delivered = True
-        except ProcessLookupError:
-            last_error = None
-        except OSError as exc:
-            last_error = exc
-        try:
-            os.kill(pid, sig)
-            delivered = True
-        except ProcessLookupError:
-            return
-        except OSError as exc:
-            last_error = exc
-        if delivered or not _owned_pid_is_alive(pid):
-            return
-        raise SpawnCleanupUncertainError(
-            f"cannot signal owned pid {pid}: {last_error}"
-        ) from last_error
-
-    try:
-        _signal_group(signal.SIGTERM)
-    except ProcessLookupError:
-        return
+    pgid = pid
+    _signal_owned_process_group(pgid, signal.SIGTERM)
     deadline = time.monotonic() + max(0.0, wait_sec)
     while time.monotonic() < deadline:
-        if not _owned_pid_is_alive(pid):
+        if not _live_process_group_members(pgid):
             return
         time.sleep(0.05)
-    try:
-        _signal_group(signal.SIGKILL)
-    except ProcessLookupError:
-        return
-    verify_deadline = time.monotonic() + 0.2
+    _signal_owned_process_group(pgid, signal.SIGKILL)
+    verify_deadline = time.monotonic() + 0.5
     while time.monotonic() < verify_deadline:
-        if not _owned_pid_is_alive(pid):
+        if not _live_process_group_members(pgid):
             return
         time.sleep(0.05)
-    if _owned_pid_is_alive(pid):
+    remaining = _live_process_group_members(pgid)
+    if remaining:
         raise SpawnCleanupUncertainError(
-            f"owned pid {pid} still alive after SIGKILL"
+            f"owned process group {pgid} still has members after SIGKILL: {remaining}"
         )
 
 

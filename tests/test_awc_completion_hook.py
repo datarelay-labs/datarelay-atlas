@@ -108,6 +108,12 @@ exec "{real_python}" "$@"
         self.assertNotIn("--spawn-dispatch", argv)
         self.assertIn("--work-packet-adapter recording", argv)
 
+    def test_default_openai_stays_audit_only(self):
+        argv = self._run_hook(spawn_dispatch=None, audit_adapter="openai")
+        self.assertNotIn("--spawn-dispatch", argv)
+        self.assertIn("--work-packet-adapter recording", argv)
+        self.assertIn("--audit-adapter openai", argv)
+
     def test_hook_preserves_work_resume_contract_in_tree(self):
         work_controller = (ROOT / "atlas" / "work_controller.py").read_text(
             encoding="utf-8"

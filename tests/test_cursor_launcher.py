@@ -565,9 +565,54 @@ class CursorLauncherTests(unittest.TestCase):
             "atlas.work_controller.os.killpg", side_effect=PermissionError("denied")
         ), patch(
             "atlas.work_controller.os.kill", side_effect=PermissionError("denied")
+        ), patch(
+            "atlas.work_controller._live_process_group_members",
+            return_value=[4242],
         ):
             with self.assertRaises(SpawnCleanupUncertainError):
                 terminate_spawned_process_group(4242, wait_sec=0.01)
+
+    def test_terminate_waits_until_sigterm_ignoring_child_is_gone(self):
+        import signal
+        import subprocess
+        import sys
+        import time
+
+        from atlas.work_controller import (
+            _live_process_group_members,
+            terminate_spawned_process_group,
+        )
+
+        code = """
+import os, signal, time
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    time.sleep(60)
+    raise SystemExit(0)
+time.sleep(60)
+"""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", code], start_new_session=True
+        )
+        try:
+            deadline = time.monotonic() + 2
+            members: list[int] = []
+            while time.monotonic() < deadline:
+                members = _live_process_group_members(proc.pid)
+                if len(members) >= 2:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"surviving child did not appear: {members}")
+            terminate_spawned_process_group(proc.pid, wait_sec=0.3)
+            self.assertEqual(_live_process_group_members(proc.pid), [])
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait(timeout=2)
 
     def test_terminate_returns_when_owned_pid_is_already_gone(self):
         from unittest.mock import patch

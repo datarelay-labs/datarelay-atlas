@@ -1307,7 +1307,14 @@ class CodexAuditProvider:
         )
         self.last_prompt = prompt
         if _contains_unsafe_secret(prompt):
-            raise ValidationError("refusing to send credential-like material to Codex")
+            self.last_prompt = None
+            return AuditResult(
+                verdict="HUMAN_REQUIRED",
+                findings=(
+                    "codex audit skipped: evidence or prompt contained "
+                    "credential-like material; refusing to send it to Codex"
+                ),
+            )
 
         with tempfile.TemporaryDirectory(prefix="awc-codex-") as tmp:
             last_message_path = str(Path(tmp) / "last-message.txt")

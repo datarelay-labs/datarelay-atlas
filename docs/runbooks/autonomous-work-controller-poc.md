@@ -50,8 +50,9 @@ requires a new `agent persist list` session for that worktree whose id is
 named by the owned spawn's process tree. Another new session in the same
 worktree is not this launch. A target process is diagnostic only and must not
 be reported as success. Do not stop/attach unrelated sessions. If no owned
-session appears before the bounded timeout, terminate only the owned spawned
-process group and fail closed. If that cleanup cannot be verified, the
+session appears before the bounded timeout, terminate the entire owned
+process group and fail closed only after every member is gone. A surviving
+child keeps cleanup uncertain. If that cleanup cannot be verified, the
 controller records `HUMAN_REQUIRED` with `reason=spawn_cleanup_uncertain` and
 does not rewrite the canonical packet into a dispatch-blocked state.
 
@@ -201,7 +202,10 @@ Contract:
 - exact worktree identity validation (repo/branch/HEAD) before audit
 - no edits/commits/pushes
 
-OpenAI Responses API (`--audit-adapter openai`) is optional fallback only.
+OpenAI Responses API (`--audit-adapter openai`) is metadata-only. It may run
+audit-only with `--work-packet-adapter recording` and without
+`--spawn-dispatch`. It cannot mutate the canonical GitHub Work Packet or spawn
+Cursor until it carries the same deterministic evidence bundle as Codex.
 Offline/deterministic mode requires explicit `--audit-adapter fixed`.
 
 ## Completion hook helper

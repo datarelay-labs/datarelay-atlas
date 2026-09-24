@@ -663,6 +663,62 @@ class WorkControllerTests(unittest.TestCase):
             self.assertIn("not compensated", shown["last_findings"])
             self.assertIn("proc:4242", shown["last_findings"])
 
+    def test_secret_blocked_codex_audit_stops_without_reconcile_loop(self):
+        from atlas.codex_audit import CodexAuditProvider
+
+        secret = "OPENAI_API_KEY=" + ("x" * 24)
+        calls = {"n": 0}
+
+        class CountingAudit(CodexAuditProvider):
+            def audit(self, event, record):
+                calls["n"] += 1
+                return super().audit(event, record)
+
+        def boom(command, prompt, cwd):
+            raise AssertionError("codex runner must not be called")
+
+        provider = CountingAudit(
+            runner=boom,
+            require_identity=False,
+            evidence_bundle={
+                "schema": "awc.codex_evidence_bundle.v1",
+                "git": {"evidence_status": "OK", "status": "clean"},
+                "note": secret,
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "wt"
+            worktree.mkdir()
+            ctl = WorkController(
+                Path(tmp) / "data",
+                audit=provider,
+                work_packet=RecordingWorkPacketAdapter(),
+                dispatcher=RecordingCursorDispatcher(),
+                observer=RecordingObserver(),
+                enforce_worktree_identity=False,
+            )
+            ctl.register_workstream(
+                workstream="awc-poc",
+                repository="datarelay-labs/datarelay-atlas",
+                issue_number=12,
+                branch="feature/autonomous-work-controller-poc",
+                worktree_path=str(worktree),
+                expected_head=HEAD_A,
+                max_attempts=3,
+            )
+            outcome = ctl.handle_completion(self._event())
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
+            findings = ctl.show("awc-poc")["last_findings"]
+            self.assertIn("credential-like material", findings)
+            self.assertNotIn(secret, findings)
+            self.assertNotIn("x" * 24, findings)
+            self.assertEqual(ctl.show("awc-poc")["state"], "HUMAN_REQUIRED")
+            reconciled = ctl.reconcile("awc-poc")
+            self.assertEqual(calls["n"], 1)
+            self.assertEqual(reconciled[0]["state"], "HUMAN_REQUIRED")
+            self.assertFalse(reconciled[0].get("reconciled", False))
+
     def test_retry_exhaustion(self):
         with tempfile.TemporaryDirectory() as tmp:
             ctl, dispatcher, packets = self._ctl(

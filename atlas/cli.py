@@ -134,7 +134,9 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
 
     Production default is Codex (ChatGPT-plan, no API key). Use
     `--audit-adapter fixed` explicitly for offline/deterministic verdicts.
-    `--audit-adapter openai` remains optional API fallback only.
+    `--audit-adapter openai` is metadata-only and may be used with a recording
+    packet adapter for audit-only runs. It cannot mutate the canonical GitHub
+    Work Packet or spawn Cursor until it has the Codex evidence bundle.
 
     Production Work Packet adapter mutates the same GitHub `[AI Work]` Issue
     before REWORK dispatch. `RecordingWorkPacketAdapter` is offline/test-only.
@@ -164,10 +166,18 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
         raise ValidationError(f"unsupported audit adapter: {adapter}")
 
     packet_choice = getattr(args, "work_packet_adapter", None)
-    if packet_choice is None:
-        # Offline/fixed defaults to recording so dogfood does not mutate GitHub.
-        packet_choice = "recording" if adapter == "fixed" else "github"
     spawn = bool(getattr(args, "spawn_dispatch", False))
+    if adapter == "openai" and (spawn or packet_choice == "github"):
+        raise ValidationError(
+            "OpenAI audit adapter is metadata-only and cannot mutate the "
+            "canonical GitHub Work Packet or spawn Cursor until it has Codex "
+            "evidence parity; use --work-packet-adapter recording without "
+            "--spawn-dispatch"
+        )
+    if packet_choice is None:
+        # Offline/fixed and metadata-only OpenAI default to recording so they
+        # do not mutate GitHub. Codex remains the production GitHub path.
+        packet_choice = "recording" if adapter in {"fixed", "openai"} else "github"
     if packet_choice == "github" and not spawn:
         raise ValidationError(
             "GitHub Work Packet mutation requires --spawn-dispatch "
@@ -277,8 +287,8 @@ def _add_work_controller_runtime_flags(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             "github=mutate canonical GitHub Work Packet before REWORK dispatch "
-            "(production default for codex/openai); recording=offline/test only "
-            "(default when --audit-adapter fixed)"
+            "(production default for codex); recording=offline/test only "
+            "(default when --audit-adapter fixed or openai)"
         ),
     )
     parser.add_argument(
