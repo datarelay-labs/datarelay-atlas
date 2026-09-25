@@ -2069,6 +2069,83 @@ class GitHubWorkPacketAdapter:
             body=new_body,
         )
 
+    def commit_unchanged_body(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        new_body: str,
+        expected_body: str,
+        expected_updated_at: str,
+    ) -> None:
+        """CAS-write one body with the same view, trust, and recheck as REWORK.
+
+        Callers render the body with ``render_rework_work_packet_body`` or
+        ``render_dispatch_blocked_work_packet_body``. This method does not
+        invent a second mutation policy.
+        """
+        repo = normalize_github_repository(repository)
+        expected_branch = branch.strip()
+        if not expected_branch:
+            raise ValidationError("branch is required for Work Packet mutation")
+        if int(issue_number) < 1:
+            raise ValidationError(f"invalid issue_number: {issue_number}")
+        self._require_unique_active_packet(
+            repo,
+            issue_number=int(issue_number),
+            branch=expected_branch,
+        )
+        payload = self._view_issue(repo, int(issue_number))
+        self._assert_ai_work_issue(payload, issue_number=int(issue_number))
+        self._require_trusted_issue_author(repo, payload)
+        current_body = str(payload.get("body") or "")
+        current_updated = str(
+            payload.get("updatedAt") or payload.get("updated_at") or ""
+        )
+        if current_body != expected_body or current_updated != expected_updated_at:
+            raise ValidationError(
+                "work packet changed during mutation; refusing overwrite"
+            )
+        recheck = self._view_issue(repo, int(issue_number))
+        recheck_body = str(recheck.get("body") or "")
+        recheck_updated = str(
+            recheck.get("updatedAt") or recheck.get("updated_at") or ""
+        )
+        if recheck_body != current_body or recheck_updated != current_updated:
+            raise ValidationError(
+                "work packet changed during mutation; refusing overwrite"
+            )
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".md",
+            delete=False,
+        ) as handle:
+            handle.write(new_body)
+            body_path = handle.name
+        try:
+            edit = self._run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(int(issue_number)),
+                    "--repo",
+                    repo,
+                    "--body-file",
+                    body_path,
+                ]
+            )
+        finally:
+            Path(body_path).unlink(missing_ok=True)
+        if edit.returncode != 0:
+            detail = (edit.stderr or edit.stdout or "").strip()
+            raise ValidationError(
+                detail[:500]
+                or f"gh issue edit failed with exit {edit.returncode}"
+            )
+
     def _remember_owned_pending_dispatch(
         self,
         *,

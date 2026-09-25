@@ -20,15 +20,19 @@ from atlas.audit_claim import (
 )
 from atlas.chat_audit import CheckpointCasConflict, require_exact_commit_sha
 from atlas.host_worker import (
-    HeadlessCursorDispatcher,
+    HostWorkerConfig,
     ProcessList,
     ProjectDescriptor,
     SessionList,
+    _select_descriptor,
+    normalize_host_id,
     persistent_cursor_active,
+    run_once,
 )
 from atlas.provenance import ValidationError
 from atlas.secrets import redact_sensitive_audit_text
 from atlas.work_controller import (
+    GitHubWorkPacketAdapter,
     GitRunner,
     _packet_metadata_value,
     normalize_github_repository,
@@ -175,6 +179,7 @@ def apply_exact_head_disposition(
     attempt: int = 1,
     gates: DeterministicGateSnapshot | None = None,
     bugbot_advisory: str | None = None,
+    state_root: str | None = None,
 ) -> dict[str, Any]:
     """Apply one completed exact-HEAD claim. Idle callers make no mutation."""
     repo = normalize_github_repository(repository)
@@ -337,25 +342,9 @@ def apply_exact_head_disposition(
             packet_mutations=packet_store.mutations,
         )
 
-    if _packet_marker(body, target, "WORK_PACKET_MUTATION=PENDING_DISPATCH") or _packet_marker(
-        body, target, "WORK_PACKET_MUTATION=DISPATCH_BLOCKED"
-    ):
+    if _packet_marker(body, target, "WORK_PACKET_MUTATION=DISPATCH_BLOCKED"):
         return _result("duplicate", verdict="REWORK", findings=findings)
-    rendered = render_rework_work_packet_body(
-        body,
-        repository=repo,
-        branch=branch_name,
-        workstream=workstream_name,
-        findings=findings,
-        attempt=int(attempt),
-        head=target,
-    )
-    if chat_id in rendered:
-        raise ValidationError("refusing to project Cursor chat id to GitHub")
-    again, token2 = packet_store.load()
-    if again != body or token2 != token:
-        return _result("packet_conflict", verdict="REWORK", findings=findings)
-    packet_store.cas_save(rendered, expected_body=body, expected_token=token)
+
     collapsed = " ".join(findings.split())
     prompt = (
         "Address the exact-HEAD REWORK findings on this worktree. "
@@ -363,17 +352,11 @@ def apply_exact_head_disposition(
         "Do not merge, release, or deploy. "
         f"Findings: {collapsed}"
     )
-    dispatcher = HeadlessCursorDispatcher(spawn=spawn)
-    try:
-        dispatcher.resume(
-            descriptor,
-            branch=branch_name,
-            expected_head=target,
-            prompt=prompt,
-            git_runner=git_runner,
-        )
-    except ValidationError as exc:
-        reason = redact_absolute_paths(redact_sensitive_audit_text(str(exc)))
+
+    def _compensate(reason: str) -> dict[str, Any]:
+        safe_reason = redact_absolute_paths(redact_sensitive_audit_text(reason or "dispatch blocked"))
+        if chat_id:
+            safe_reason = safe_reason.replace(chat_id, "[redacted-chat]")
         current, current_token = packet_store.load()
         try:
             blocked = render_dispatch_blocked_work_packet_body(
@@ -384,7 +367,7 @@ def apply_exact_head_disposition(
                 findings=findings,
                 attempt=int(attempt),
                 head=target,
-                reason=reason or "dispatch blocked",
+                reason=safe_reason or "dispatch blocked",
             )
         except ValidationError:
             _remember(
@@ -408,7 +391,20 @@ def apply_exact_head_disposition(
             packet_store.cas_save(
                 blocked, expected_body=current, expected_token=current_token
             )
-        except CheckpointCasConflict:
+        except (CheckpointCasConflict, ValidationError):
+            _remember(
+                ledger,
+                claim_key=expected_key,
+                action="dispatch_blocked",
+                verdict="HUMAN_REQUIRED",
+                target_sha=target,
+                findings=findings,
+                attempt=attempt,
+            )
+            try:
+                claim_store.save(ledger, expected_sha=ledger_sha)
+            except CheckpointCasConflict:
+                pass
             return _result(
                 "compensation_failed",
                 verdict="HUMAN_REQUIRED",
@@ -431,20 +427,183 @@ def apply_exact_head_disposition(
             findings=findings,
             packet_mutations=packet_store.mutations,
         )
-    _remember(
-        ledger,
-        claim_key=expected_key,
-        action="redispatched",
-        verdict="REWORK",
-        target_sha=target,
+
+    def _dispatch_and_record() -> dict[str, Any]:
+        root = state_root or worktree_path
+        config = HostWorkerConfig(
+            state_root=root,
+            host_id=normalize_host_id(expected_host),
+            projects=(descriptor,),
+        )
+        try:
+            outcome = run_once(
+                config=config,
+                resume_requested=True,
+                repository=repo,
+                canonical_branch=branch_name,
+                expected_head=target,
+                prompt=prompt,
+                git_runner=git_runner,
+                spawn=spawn,
+                host_probe=lambda: expected_host,
+                list_sessions=list_sessions,
+                list_processes=list_processes,
+            )
+        except ValidationError as exc:
+            return _compensate(str(exc))
+        if (
+            outcome.get("action") == "resumed"
+            and int(outcome.get("cursor_calls") or 0) > 0
+        ):
+            _remember(
+                ledger,
+                claim_key=expected_key,
+                action="redispatched",
+                verdict="REWORK",
+                target_sha=target,
+                findings=findings,
+                attempt=attempt,
+            )
+            claim_store.save(ledger, expected_sha=ledger_sha)
+            return _result(
+                "redispatched",
+                cursor_calls=int(outcome["cursor_calls"]),
+                packet_mutations=packet_store.mutations,
+                verdict="REWORK",
+                findings=findings,
+            )
+        return _compensate(str(outcome.get("action") or "dispatch blocked"))
+
+    if _packet_marker(body, target, "WORK_PACKET_MUTATION=PENDING_DISPATCH"):
+        return _dispatch_and_record()
+
+    rendered = render_rework_work_packet_body(
+        body,
+        repository=repo,
+        branch=branch_name,
+        workstream=workstream_name,
         findings=findings,
-        attempt=attempt,
+        attempt=int(attempt),
+        head=target,
     )
-    claim_store.save(ledger, expected_sha=ledger_sha)
-    return _result(
-        "redispatched",
-        cursor_calls=len(dispatcher.invocations),
-        packet_mutations=packet_store.mutations,
-        verdict="REWORK",
-        findings=findings,
+    if chat_id in rendered:
+        raise ValidationError("refusing to project Cursor chat id to GitHub")
+    again, token2 = packet_store.load()
+    if again != body or token2 != token:
+        return _result("packet_conflict", verdict="REWORK", findings=findings)
+    packet_store.cas_save(rendered, expected_body=body, expected_token=token)
+    return _dispatch_and_record()
+
+
+class GitHubIssuePacketStore:
+    """Canonical Work Packet CAS through ``GitHubWorkPacketAdapter``.
+
+    Body rendering stays in the shared render functions. This store only
+    loads and commits through the adapter's view, author trust, uniqueness,
+    and recheck.
+    """
+
+    def __init__(
+        self,
+        adapter: GitHubWorkPacketAdapter,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+    ) -> None:
+        self._adapter = adapter
+        self._repository = normalize_github_repository(repository)
+        self._issue_number = int(issue_number)
+        self._branch = branch.strip()
+        self.mutations = 0
+
+    def load(self) -> tuple[str, str]:
+        payload = self._adapter._view_issue(self._repository, self._issue_number)
+        self._adapter._assert_ai_work_issue(
+            payload, issue_number=self._issue_number
+        )
+        self._adapter._require_trusted_issue_author(self._repository, payload)
+        body = str(payload.get("body") or "")
+        token = str(payload.get("updatedAt") or payload.get("updated_at") or "")
+        return body, token
+
+    def cas_save(self, body: str, *, expected_body: str, expected_token: str) -> None:
+        try:
+            self._adapter.commit_unchanged_body(
+                repository=self._repository,
+                issue_number=self._issue_number,
+                branch=self._branch,
+                new_body=body,
+                expected_body=expected_body,
+                expected_updated_at=expected_token,
+            )
+        except ValidationError as exc:
+            if "changed during mutation" in str(exc):
+                raise CheckpointCasConflict(str(exc)) from exc
+            raise
+        self.mutations += 1
+
+
+def run_completed_audit_disposition(
+    *,
+    host_config: HostWorkerConfig,
+    claim_store: Any,
+    packet_adapter: GitHubWorkPacketAdapter,
+    issue_number: int,
+    branch: str,
+    workstream: str,
+    head: str,
+    packets: list[WorkPacketSnapshot],
+    git_runner: GitRunner,
+    spawn: Spawn,
+    list_sessions: SessionList | None = None,
+    list_processes: ProcessList | None = None,
+    host_probe: Callable[[], str] | None = None,
+    attempt: int = 1,
+    gates: DeterministicGateSnapshot | None = None,
+    bugbot_advisory: str | None = None,
+) -> dict[str, Any]:
+    """Product entry: completed claim, canonical packet, locked host resume."""
+    observed = normalize_host_id((host_probe or (lambda: host_config.host_id))())
+    if len(host_config.projects) != 1 and not packets:
+        return _result("ambiguous_packet")
+    repository = packets[0].repository if packets else host_config.projects[0].repository
+    descriptor = _select_descriptor(host_config.projects, repository=repository)
+    ledger, ledger_sha = claim_store.load(int(issue_number))
+    if ledger is None:
+        return _result("stale_checkpoint")
+    key = make_audit_claim_key(repository, int(issue_number), head)
+    claim = ledger.claims.get(key)
+    if claim is None:
+        return _result("stale_checkpoint")
+    packet_store = GitHubIssuePacketStore(
+        packet_adapter,
+        repository=repository,
+        issue_number=int(issue_number),
+        branch=branch,
+    )
+    return apply_exact_head_disposition(
+        claim=claim,
+        ledger=ledger,
+        ledger_sha=ledger_sha,
+        claim_store=claim_store,
+        packet_store=packet_store,
+        repository=repository,
+        issue_number=int(issue_number),
+        branch=branch,
+        workstream=workstream,
+        head=head,
+        packets=packets,
+        descriptor=descriptor,
+        observed_host=observed,
+        expected_host=host_config.host_id,
+        worktree_path=descriptor.worktree,
+        git_runner=git_runner,
+        spawn=spawn,
+        list_sessions=list_sessions,
+        list_processes=list_processes,
+        attempt=attempt,
+        gates=gates,
+        bugbot_advisory=bugbot_advisory,
+        state_root=host_config.state_root,
     )

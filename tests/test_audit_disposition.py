@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 from atlas.audit_claim import (
     AuditClaim,
@@ -16,11 +19,13 @@ from atlas.audit_disposition import (
     DeterministicGateSnapshot,
     MemoryPacketStore,
     apply_exact_head_disposition,
+    run_completed_audit_disposition,
 )
 from atlas.chat_audit import CheckpointCasConflict
-from atlas.host_worker import ProjectDescriptor
+from atlas.cli import build_parser
+from atlas.host_worker import HostWorkerConfig, ProjectDescriptor
 from atlas.provenance import ValidationError
-from atlas.work_controller import PersistSession
+from atlas.work_controller import GitHubWorkPacketAdapter, PersistSession, render_rework_work_packet_body
 
 
 HEAD = "a" * 40
@@ -415,3 +420,265 @@ class BugbotPresentTests(unittest.TestCase):
         self.assertEqual(len(spawned), 1)
         self.assertIn("nit: bound the retry", packet.body)
         self.assertNotIn(CHAT, packet.body)
+
+
+class SliceDBoundaryTests(unittest.TestCase):
+    def test_pending_dispatch_restart_resumes_once(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MemoryClaimStore()
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        ledger = IssueAuditLedger(
+            repository=REPO,
+            issue_number=47,
+            month_id="2023-11",
+            claims={key: _claim("REWORK")},
+        )
+        store.save(ledger, expected_sha=None)
+        pending = render_rework_work_packet_body(
+            _packet_body(),
+            repository=REPO,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            findings="bounded gap",
+            attempt=2,
+            head=HEAD,
+        )
+        packet = MemoryPacketStore(pending)
+        spawned: list[list[str]] = []
+
+        def spawn(argv: list[str], _cwd: str) -> int:
+            spawned.append(argv)
+            return 0
+
+        loaded, sha = store.load(47)
+        assert loaded is not None
+        self.assertIsNone(loaded.dispositions.get(key))
+        outcome = apply_exact_head_disposition(
+            claim=loaded.claims[key],
+            ledger=loaded,
+            ledger_sha=sha,
+            claim_store=store,
+            packet_store=packet,
+            repository=REPO,
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            descriptor=ProjectDescriptor(
+                repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
+            ),
+            observed_host=HOST,
+            expected_host=HOST,
+            worktree_path=tmp.name,
+            git_runner=_git(HEAD),
+            spawn=spawn,
+            list_sessions=lambda: [],
+            list_processes=lambda _path: [],
+            attempt=2,
+            state_root=tmp.name,
+        )
+        self.assertEqual(outcome["action"], "redispatched")
+        self.assertEqual(outcome["cursor_calls"], 1)
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(spawned[0][:4], ["agent", "--print", "--resume", CHAT])
+        self.assertEqual(packet.mutations, 0)
+        loaded, _sha = store.load(47)
+        assert loaded is not None
+        self.assertEqual(loaded.dispositions[key]["action"], "redispatched")
+        replay = apply_exact_head_disposition(
+            claim=loaded.claims[key],
+            ledger=loaded,
+            ledger_sha=_sha,
+            claim_store=store,
+            packet_store=packet,
+            repository=REPO,
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            descriptor=ProjectDescriptor(
+                repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
+            ),
+            observed_host=HOST,
+            expected_host=HOST,
+            worktree_path=tmp.name,
+            git_runner=_git(HEAD),
+            spawn=spawn,
+            list_sessions=lambda: [],
+            list_processes=lambda _path: [],
+            attempt=2,
+            state_root=tmp.name,
+        )
+        self.assertEqual(replay["action"], "duplicate")
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(packet.mutations, 0)
+
+    def test_cursor_appearing_before_spawn_fails_closed(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MemoryClaimStore()
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        store.save(
+            IssueAuditLedger(
+                repository=REPO,
+                issue_number=47,
+                month_id="2023-11",
+                claims={key: _claim("REWORK")},
+            ),
+            expected_sha=None,
+        )
+        packet = MemoryPacketStore(_packet_body())
+        spawned: list[list[str]] = []
+        seen = {"n": 0}
+
+        def sessions():
+            seen["n"] += 1
+            if seen["n"] == 1:
+                return []
+            return [
+                PersistSession(session_id="s", workspace=tmp.name, status="Attached")
+            ]
+
+        def spawn(argv: list[str], _cwd: str) -> int:
+            spawned.append(argv)
+            return 0
+
+        loaded, sha = store.load(47)
+        assert loaded is not None
+        outcome = apply_exact_head_disposition(
+            claim=loaded.claims[key],
+            ledger=loaded,
+            ledger_sha=sha,
+            claim_store=store,
+            packet_store=packet,
+            repository=REPO,
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            descriptor=ProjectDescriptor(
+                repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
+            ),
+            observed_host=HOST,
+            expected_host=HOST,
+            worktree_path=tmp.name,
+            git_runner=_git(HEAD),
+            spawn=spawn,
+            list_sessions=sessions,
+            list_processes=lambda _path: [],
+            attempt=2,
+            state_root=tmp.name,
+        )
+        self.assertEqual(outcome["action"], "dispatch_blocked")
+        self.assertNotEqual(outcome["action"], "redispatched")
+        self.assertEqual(spawned, [])
+        self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertIn("bounded gap", packet.body)
+        self.assertIn("WORK_PACKET_MUTATION=DISPATCH_BLOCKED", packet.body)
+        self.assertNotIn(CHAT, packet.body)
+
+    def test_product_path_uses_github_adapter_and_one_resume(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        body = {"text": _packet_body(), "updated": "t0"}
+        edits: list[str] = []
+
+        def runner(argv: list[str], _cwd: str) -> subprocess.CompletedProcess[str]:
+            if argv[:4] == ["gh", "api", "--paginate", "--slurp"]:
+                page = [
+                    {
+                        "number": 47,
+                        "title": "[AI Work] disposition",
+                        "body": body["text"],
+                        "user": {"login": "packet-author"},
+                    }
+                ]
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps([page]), stderr="")
+            if argv[:2] == ["gh", "api"] and argv[2].endswith("/permission"):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps({"permission": "admin"}), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "view"]:
+                payload = {
+                    "number": 47,
+                    "title": "[AI Work] disposition",
+                    "state": "OPEN",
+                    "body": body["text"],
+                    "updatedAt": body["updated"],
+                    "author": {"login": "packet-author"},
+                }
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(payload), stderr="")
+            if argv[:3] == ["gh", "issue", "edit"]:
+                written = Path(argv[argv.index("--body-file") + 1]).read_text()
+                edits.append(written)
+                body["text"] = written
+                body["updated"] = "t1"
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            raise AssertionError(argv)
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        store = MemoryClaimStore()
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        store.save(
+            IssueAuditLedger(
+                repository=REPO,
+                issue_number=47,
+                month_id="2023-11",
+                claims={key: _claim("REWORK")},
+            ),
+            expected_sha=None,
+        )
+        spawned: list[list[str]] = []
+        config = HostWorkerConfig(
+            state_root=tmp.name,
+            host_id=HOST,
+            projects=(
+                ProjectDescriptor(
+                    repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
+                ),
+            ),
+        )
+        outcome = run_completed_audit_disposition(
+            host_config=config,
+            claim_store=store,
+            packet_adapter=adapter,
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            git_runner=_git(HEAD),
+            spawn=lambda argv, _cwd: spawned.append(argv) or 0,
+            list_sessions=lambda: [],
+            list_processes=lambda _path: [],
+            host_probe=lambda: HOST,
+            attempt=2,
+        )
+        self.assertEqual(outcome["action"], "redispatched")
+        self.assertEqual(outcome["cursor_calls"], 1)
+        self.assertEqual(outcome["packet_mutations"], 1)
+        self.assertEqual(len(edits), 1)
+        self.assertIn("VERDICT=REWORK", edits[0])
+        self.assertNotIn(CHAT, edits[0])
+        self.assertEqual(spawned[0][:4], ["agent", "--print", "--resume", CHAT])
+        parsed = build_parser().parse_args(
+            [
+                "host-worker",
+                "dispose-once",
+                "--descriptors",
+                "descriptors.json",
+                "--issue",
+                "47",
+                "--branch",
+                BRANCH,
+                "--workstream",
+                WORKSTREAM,
+                "--head",
+                HEAD,
+            ]
+        )
+        self.assertIs(parsed.func.__name__, "cmd_host_worker_dispose_once")
