@@ -239,7 +239,7 @@ class SliceCClaimTests(unittest.TestCase):
             self.assertEqual(outcome["action"], "audited")
             self.assertEqual(outcome["verdict"], verdict)
             self.assertEqual(auditor.calls, 1)
-            self.assertEqual(store.writes, 2)
+            self.assertEqual(store.writes, 3)
             self.assertNotIn(SECRET, json.dumps(outcome))
             self.assertNotIn("diff --git", json.dumps(outcome["telemetry"]))
             self.assertGreater(outcome["telemetry"]["duration_sec"], 0)
@@ -248,7 +248,7 @@ class SliceCClaimTests(unittest.TestCase):
             self.assertEqual(duplicate["action"], "duplicate_completed")
             self.assertEqual(duplicate["verdict"], verdict)
             self.assertEqual(again.calls, 0)
-            self.assertEqual(store.writes, 2)
+            self.assertEqual(store.writes, 3)
 
     def test_live_claim_and_expired_restart_do_not_call_again(self) -> None:
         key = make_audit_claim_key(REPO, 47, HEAD)
@@ -297,14 +297,18 @@ class SliceCClaimTests(unittest.TestCase):
             },
         )
         expired_store.save(old, expected_sha=None)
+        expired_store.save_month_spend(
+            "2023-11", 0.2, repository=REPO, expected_sha=None
+        )
         reconciled = self._run(auditor=auditor, store=expired_store)
         self.assertEqual(reconciled["action"], "reconciled")
         self.assertEqual(reconciled["verdict"], "HUMAN_REQUIRED")
         self.assertEqual(auditor.calls, 0)
         loaded, _sha = expired_store.load(47)
         assert loaded is not None
-        self.assertEqual(loaded.month_spent_usd, 0.2)
         self.assertEqual(loaded.claims[key].state, "completed")
+        spent, _budget_sha = expired_store.load_month_spend("2023-11")
+        self.assertAlmostEqual(spent, 0.2)
         second = self._run(auditor=ScriptAuditor("PASS"), store=expired_store)
         self.assertEqual(second["action"], "duplicate_completed")
         self.assertEqual(second["auditor_calls"], 0)
@@ -321,9 +325,8 @@ class SliceCClaimTests(unittest.TestCase):
         )
         self.assertEqual(done["action"], "audited")
         self.assertEqual(first.calls, 1)
-        loaded, _sha = self.store.load(47)
-        assert loaded is not None
-        self.assertAlmostEqual(loaded.month_spent_usd, 0.20)
+        spent, _sha = self.store.load_month_spend("2023-11")
+        self.assertAlmostEqual(spent, 0.20)
         fresh = AuditBudget(
             per_run_hard_usd=10.0,
             monthly_hard_usd=0.22,
@@ -410,6 +413,86 @@ class SliceCClaimTests(unittest.TestCase):
         self.assertNotIn("diff --git", raw)
         self.assertGreater(outcome["telemetry"]["duration_sec"], 0)
 
+    def test_provider_charges_usage_once(self) -> None:
+        class Transport:
+            def request_json(self, method, path, *, api_key, body=None):
+                return {
+                    "id": "resp_once",
+                    "status": "completed",
+                    "output_text": json.dumps(
+                        {"verdict": "PASS", "findings": "ok", "target_sha": HEAD}
+                    ),
+                    "usage": {"input_tokens": 10, "output_tokens": 2000},
+                }
+
+        provider = BoundedResponsesAuditProvider(
+            transport=Transport(),  # type: ignore[arg-type]
+            sleeper=lambda _s: None,
+            git_runner=_git(HEAD),
+            budget=AuditBudget(
+                per_run_hard_usd=10.0,
+                monthly_hard_usd=0.07,
+                preflight_usd=0.0,
+            ),
+        )
+        outcome = self._run(
+            auditor=provider,
+            budget=AuditBudget(
+                per_run_hard_usd=10.0,
+                monthly_hard_usd=0.07,
+                preflight_usd=0.0,
+            ),
+        )
+        self.assertEqual(outcome["action"], "audited")
+        self.assertEqual(outcome["verdict"], "PASS")
+        self.assertAlmostEqual(outcome["telemetry"]["estimated_cost_usd"], 0.04004)
+        spent, _sha = self.store.load_month_spend("2023-11")
+        self.assertAlmostEqual(spent, 0.04004)
+
+    def test_monthly_budget_is_shared_across_work_packets(self) -> None:
+        first = ScriptAuditor("PASS", cost=0.04)
+        done = self._run(
+            auditor=first,
+            budget=AuditBudget(
+                per_run_hard_usd=10.0,
+                monthly_hard_usd=0.07,
+                preflight_usd=0.0,
+            ),
+        )
+        self.assertEqual(done["verdict"], "PASS")
+        self.assertEqual(first.calls, 1)
+        second = ScriptAuditor("PASS", cost=0.04)
+        blocked = self._run(
+            auditor=second,
+            issue_number=48,
+            packets=[_packet(issue=48)],
+            record=_record(self.worktree),
+            budget=AuditBudget(
+                per_run_hard_usd=10.0,
+                monthly_hard_usd=0.07,
+                month_spent_usd=0.0,
+                preflight_usd=0.0,
+            ),
+        )
+        self.assertEqual(blocked["action"], "budget_blocked")
+        self.assertEqual(second.calls, 0)
+        spent, _sha = self.store.load_month_spend("2023-11")
+        self.assertAlmostEqual(spent, 0.04)
+
+    def test_month_spend_cas_rejects_a_stale_writer(self) -> None:
+        sha = self.store.save_month_spend(
+            "2023-11", 0.04, repository=REPO, expected_sha=None
+        )
+        with self.assertRaises(CheckpointCasConflict):
+            self.store.save_month_spend(
+                "2023-11", 0.08, repository=REPO, expected_sha="stale"
+            )
+        self.store.save_month_spend(
+            "2023-11", 0.08, repository=REPO, expected_sha=sha
+        )
+        spent, _sha = self.store.load_month_spend("2023-11")
+        self.assertAlmostEqual(spent, 0.08)
+
 
 class GitHubClaimStoreTests(unittest.TestCase):
     def test_contents_put_is_cas_bound_and_redacts_findings(self) -> None:
@@ -447,28 +530,56 @@ class GitHubClaimStoreTests(unittest.TestCase):
         )
         seen: list[dict] = []
         endpoints: list[str] = []
+        posts: list[dict] = []
+        base_sha = "c" * 40
+        branch_ready = {"ok": False}
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-            endpoints.append(argv[-1] if "--input" not in argv else argv[argv.index("--input") - 1])
+            endpoint = (
+                argv[argv.index("--input") - 1] if "--input" in argv else argv[-1]
+            )
+            endpoints.append(endpoint)
+            method = "GET"
             if "--method" in argv:
-                path = argv[argv.index("--input") + 1]
-                body = json.loads(Path(path).read_text(encoding="utf-8"))
+                method = argv[argv.index("--method") + 1]
+            if endpoint == f"repos/{REPO}":
+                return _completed(argv, 0, {"default_branch": "main"})
+            if endpoint.endswith("/git/ref/heads/main"):
+                return _completed(argv, 0, {"object": {"sha": base_sha}})
+            if endpoint.endswith(f"/git/ref/heads/{FINAL_AUDIT_CLAIM_BRANCH}"):
+                if branch_ready["ok"]:
+                    return _completed(
+                        argv,
+                        0,
+                        {"object": {"sha": base_sha}, "ref": f"refs/heads/{FINAL_AUDIT_CLAIM_BRANCH}"},
+                    )
+                return _completed(argv, 1, stderr="404 Not Found")
+            if method == "POST" and endpoint.endswith("/git/refs"):
+                body = json.loads(Path(argv[argv.index("--input") + 1]).read_text(encoding="utf-8"))
+                posts.append(body)
+                branch_ready["ok"] = True
+                return _completed(argv, 0, {"ref": body["ref"], "object": {"sha": base_sha}})
+            if method == "PUT":
+                body = json.loads(Path(argv[argv.index("--input") + 1]).read_text(encoding="utf-8"))
                 seen.append(body)
                 if body.get("sha") == "stale":
-                    return subprocess.CompletedProcess(
-                        argv, 1, stdout="", stderr="HTTP 409 conflict"
-                    )
-                return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps({"sha": "blob1", "content": {"sha": "blob1"}})
-                )
-            return subprocess.CompletedProcess(
-                argv, 1, stdout="", stderr="404 Not Found"
-            )
+                    return _completed(argv, 1, stderr="HTTP 409 conflict")
+                return _completed(argv, 0, {"sha": "blob1", "content": {"sha": "blob1"}})
+            return _completed(argv, 1, stderr="404 Not Found")
 
         store = GitHubContentsClaimStore(REPO, command_runner=runner)
+        created = store.ensure_claim_branch()
+        self.assertEqual(created["action"], "created")
+        self.assertEqual(created["branch"], FINAL_AUDIT_CLAIM_BRANCH)
+        self.assertEqual(posts[0]["ref"], f"refs/heads/{FINAL_AUDIT_CLAIM_BRANCH}")
+        self.assertEqual(posts[0]["sha"], base_sha)
+        again = store.ensure_claim_branch()
+        self.assertEqual(again["action"], "exists")
+        self.assertEqual(len(posts), 1)
         sha = store.save(ledger, expected_sha=None)
         self.assertEqual(sha, "blob1")
         self.assertEqual(seen[0]["branch"], FINAL_AUDIT_CLAIM_BRANCH)
+        self.assertNotEqual(seen[0]["branch"], "main")
         self.assertNotIn("sha", seen[0])
         decoded = base64.b64decode(seen[0]["content"]).decode("utf-8")
         self.assertNotIn("sk-fake-secret", decoded)
@@ -478,6 +589,59 @@ class GitHubClaimStoreTests(unittest.TestCase):
         )
         with self.assertRaises(CheckpointCasConflict):
             store.save(ledger, expected_sha="stale")
+
+    def test_concurrent_branch_create_is_idempotent(self) -> None:
+        base_sha = "d" * 40
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            endpoint = (
+                argv[argv.index("--input") - 1] if "--input" in argv else argv[-1]
+            )
+            if endpoint == f"repos/{REPO}":
+                return _completed(argv, 0, {"default_branch": "main"})
+            if endpoint.endswith("/git/ref/heads/main"):
+                return _completed(argv, 0, {"object": {"sha": base_sha}})
+            if endpoint.endswith(f"/git/ref/heads/{FINAL_AUDIT_CLAIM_BRANCH}"):
+                if "--method" not in argv:
+                    # First probe misses; the post-conflict verify hits.
+                    if getattr(runner, "posted", False):
+                        return _completed(argv, 0, {"object": {"sha": base_sha}})
+                    return _completed(argv, 1, stderr="404 Branch not found")
+            if "--method" in argv and argv[argv.index("--method") + 1] == "POST":
+                runner.posted = True  # type: ignore[attr-defined]
+                return _completed(
+                    argv,
+                    1,
+                    stderr='422 {"message":"Reference already exists"}',
+                )
+            return _completed(argv, 1, stderr="404 Not Found")
+
+        store = GitHubContentsClaimStore(REPO, command_runner=runner)
+        outcome = store.ensure_claim_branch()
+        self.assertEqual(outcome["action"], "exists_race")
+        self.assertEqual(outcome["branch"], FINAL_AUDIT_CLAIM_BRANCH)
+
+    def test_claim_branch_refuses_the_default_branch(self) -> None:
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            return _completed(argv, 0, {"default_branch": "main"})
+
+        store = GitHubContentsClaimStore(
+            REPO, command_runner=runner, branch="main"
+        )
+        with self.assertRaises(ValidationError) as caught:
+            store.ensure_claim_branch()
+        self.assertIn("default branch", str(caught.exception))
+
+
+def _completed(
+    argv: list[str],
+    code: int,
+    payload: dict | None = None,
+    *,
+    stderr: str = "",
+) -> subprocess.CompletedProcess[str]:
+    stdout = json.dumps(payload) if payload is not None else ""
+    return subprocess.CompletedProcess(argv, code, stdout=stdout, stderr=stderr)
 
 
 if __name__ == "__main__":

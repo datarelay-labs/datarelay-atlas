@@ -12,7 +12,10 @@ import base64
 import hashlib
 import json
 import os
+import re
+import tempfile
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -64,6 +67,12 @@ TELEMETRY_KEYS = (
 
 def claim_contents_path(issue_number: int) -> str:
     return f".atlas/final-audit/claims/issue-{int(issue_number)}.json"
+
+
+def budget_contents_path(month_id: str) -> str:
+    if not re.fullmatch(r"\d{4}-\d{2}", month_id or ""):
+        raise ValidationError("budget month_id must be YYYY-MM")
+    return f".atlas/final-audit/budgets/month-{month_id}.json"
 
 
 def make_audit_claim_key(repository: str, issue_number: int, target_sha: str) -> str:
@@ -230,12 +239,24 @@ class ClaimStore(Protocol):
         expected_sha: str | None,
     ) -> str: ...
 
+    def load_month_spend(self, month_id: str) -> tuple[float, str | None]: ...
+
+    def save_month_spend(
+        self,
+        month_id: str,
+        spent_usd: float,
+        *,
+        repository: str,
+        expected_sha: str | None,
+    ) -> str: ...
+
 
 class MemoryClaimStore:
     """CAS stand-in for the GitHub Contents ledger. Tests never touch the network."""
 
     def __init__(self) -> None:
         self._docs: dict[int, tuple[str, str]] = {}
+        self._budgets: dict[str, tuple[str, str]] = {}
         self.writes = 0
 
     def load(self, issue_number: int) -> tuple[IssueAuditLedger | None, str | None]:
@@ -258,6 +279,64 @@ class MemoryClaimStore:
         self.writes += 1
         return sha
 
+    def load_month_spend(self, month_id: str) -> tuple[float, str | None]:
+        found = self._budgets.get(month_id)
+        if found is None:
+            return 0.0, None
+        raw, sha = found
+        payload = json.loads(raw)
+        return float(payload["month_spent_usd"]), sha
+
+    def save_month_spend(
+        self,
+        month_id: str,
+        spent_usd: float,
+        *,
+        repository: str,
+        expected_sha: str | None,
+    ) -> str:
+        current = self._budgets.get(month_id)
+        current_sha = current[1] if current else None
+        if current_sha != expected_sha:
+            raise CheckpointCasConflict(
+                "final-audit budget compare-and-set failed: stale budget sha"
+            )
+        raw = _budget_json(
+            repository=repository, month_id=month_id, spent_usd=spent_usd
+        )
+        sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        self._budgets[month_id] = (raw, sha)
+        self.writes += 1
+        return sha
+
+
+def _budget_json(*, repository: str, month_id: str, spent_usd: float) -> str:
+    payload = {
+        "schema_version": CLAIM_SCHEMA_VERSION,
+        "repository": normalize_github_repository(repository),
+        "month_id": month_id,
+        "month_spent_usd": float(spent_usd),
+    }
+    raw = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if _contains_unsafe_secret(raw):
+        raise ValidationError("audit budget contained credential-like material")
+    assert_checkpoint_inline_size(raw)
+    return raw
+
+
+def _decode_contents(payload: dict[str, Any]) -> dict[str, Any]:
+    encoded = str(payload.get("content") or "")
+    if not encoded:
+        raise ValidationError("contents payload missing content")
+    try:
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        raw = json.loads(decoded)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ValidationError("contents JSON is invalid") from exc
+    if not isinstance(raw, dict):
+        raise ValidationError("contents JSON must be an object")
+    return raw
+
 
 class GitHubContentsClaimStore:
     """Contents API ledger. Canonical bytes live on FINAL_AUDIT_CLAIM_BRANCH."""
@@ -276,6 +355,9 @@ class GitHubContentsClaimStore:
         self._cwd = cwd
         self.writes = 0
 
+    def _run(self, argv: list[str]) -> Any:
+        return self._runner(argv, self._cwd)
+
     def load(self, issue_number: int) -> tuple[IssueAuditLedger | None, str | None]:
         payload = self._get(issue_number)
         if payload is None:
@@ -293,7 +375,107 @@ class GitHubContentsClaimStore:
             raise ValidationError("final-audit claim contents JSON must be an object")
         return IssueAuditLedger.from_dict(raw), blob
 
+    def ensure_claim_branch(self) -> dict[str, Any]:
+        """Create the claim-state branch once. Never write the default branch.
+
+        Absent, existing, and concurrent-create results are explicit. A failed
+        create stays failed; contents are not redirected onto another branch.
+        """
+        meta = self._gh_json(["repos/" + self.repository], "repo metadata")
+        default_branch = str(meta.get("default_branch") or "").strip()
+        if not default_branch:
+            raise ValidationError("repository default_branch is required")
+        if self.branch == default_branch:
+            raise ValidationError(
+                "final-audit claim branch must not be the repository default branch"
+            )
+        ref_payload = self._gh_json(
+            [f"repos/{self.repository}/git/ref/heads/{default_branch}"],
+            "default branch ref",
+        )
+        obj = ref_payload.get("object") if isinstance(ref_payload, dict) else None
+        base_sha = str((obj or {}).get("sha") or "").strip()
+        if not base_sha:
+            raise ValidationError("default branch SHA missing")
+        probe = self._run(
+            [
+                "gh",
+                "api",
+                "-H",
+                "Accept: application/vnd.github+json",
+                f"repos/{self.repository}/git/ref/heads/{self.branch}",
+            ]
+        )
+        if probe.returncode == 0:
+            return {"action": "exists", "branch": self.branch, "base_sha": base_sha}
+        created = self._post_json(
+            f"repos/{self.repository}/git/refs",
+            {"ref": f"refs/heads/{self.branch}", "sha": base_sha},
+        )
+        if created.returncode != 0:
+            detail = f"{created.stderr or ''}\n{created.stdout or ''}"
+            already_exists = (
+                "Reference already exists" in detail
+                or '"message":"Reference already exists"' in detail
+                or ("already exists" in detail.lower() and "422" in detail)
+            )
+            if already_exists:
+                verify = self._run(
+                    [
+                        "gh",
+                        "api",
+                        "-H",
+                        "Accept: application/vnd.github+json",
+                        f"repos/{self.repository}/git/ref/heads/{self.branch}",
+                    ]
+                )
+                if verify.returncode == 0:
+                    return {
+                        "action": "exists_race",
+                        "branch": self.branch,
+                        "base_sha": base_sha,
+                    }
+            raise ValidationError(
+                (created.stderr or created.stdout or "").strip()[:500]
+                or "failed to bootstrap final-audit claim branch"
+            )
+        return {"action": "created", "branch": self.branch, "base_sha": base_sha}
+
+    def load_month_spend(self, month_id: str) -> tuple[float, str | None]:
+        payload = self._get_path(budget_contents_path(month_id))
+        if payload is None:
+            return 0.0, None
+        decoded = _decode_contents(payload)
+        if str(decoded.get("month_id") or "") != month_id:
+            raise ValidationError("budget document month_id mismatch")
+        blob = str(payload.get("sha") or "").strip()
+        if not blob:
+            raise ValidationError("budget contents response missing blob sha")
+        return float(decoded.get("month_spent_usd") or 0.0), blob
+
+    def save_month_spend(
+        self,
+        month_id: str,
+        spent_usd: float,
+        *,
+        repository: str,
+        expected_sha: str | None,
+    ) -> str:
+        self.ensure_claim_branch()
+        raw = _budget_json(
+            repository=repository, month_id=month_id, spent_usd=spent_usd
+        )
+        sha = self._put_raw(
+            budget_contents_path(month_id),
+            raw,
+            message=f"atlas final-audit budget {month_id}",
+            expected_sha=expected_sha,
+        )
+        self.writes += 1
+        return sha
+
     def save(self, ledger: IssueAuditLedger, *, expected_sha: str | None) -> str:
+        self.ensure_claim_branch()
         raw = ledger.to_json()
         body: dict[str, Any] = {
             "message": (
@@ -304,6 +486,8 @@ class GitHubContentsClaimStore:
         }
         if expected_sha:
             body["sha"] = expected_sha
+        if body["branch"] != self.branch or body["branch"] == "":
+            raise ValidationError("refusing to write claim contents off the claim branch")
         completed = self._put(ledger.issue_number, body)
         sha = _sha_from_contents_put(
             completed=completed,
@@ -319,6 +503,124 @@ class GitHubContentsClaimStore:
 
     def _endpoint(self, issue_number: int) -> str:
         return f"repos/{self.repository}/contents/{claim_contents_path(issue_number)}"
+
+    def _gh_json(self, endpoint: list[str], label: str) -> dict[str, Any]:
+        completed = self._run(
+            ["gh", "api", "-H", "Accept: application/vnd.github+json", *endpoint],
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise ValidationError(detail[:500] or f"gh api failed for {label}")
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(f"{label} returned non-JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValidationError(f"{label} returned non-object JSON")
+        return payload
+
+    def _post_json(self, endpoint: str, body: dict[str, Any]) -> Any:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".json", delete=False
+        ) as handle:
+            json.dump(body, handle)
+            path = handle.name
+        try:
+            return self._run(
+                [
+                    "gh",
+                    "api",
+                    "--method",
+                    "POST",
+                    "-H",
+                    "Accept: application/vnd.github+json",
+                    endpoint,
+                    "--input",
+                    path,
+                ]
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def _get_path(self, contents_path: str) -> dict[str, Any] | None:
+        completed = self._run(
+            [
+                "gh",
+                "api",
+                "-H",
+                "Accept: application/vnd.github+json",
+                f"repos/{self.repository}/contents/{contents_path}?ref={self.branch}",
+            ],
+        )
+        detail = f"{completed.stderr or ''}\n{completed.stdout or ''}"
+        if completed.returncode != 0:
+            if "404" in detail or "Not Found" in detail:
+                return None
+            raise ValidationError((detail or "contents GET failed").strip()[:500])
+        payload = json.loads(completed.stdout)
+        if not isinstance(payload, dict):
+            raise ValidationError("contents GET returned non-object JSON")
+        return payload
+
+    def _put_raw(
+        self,
+        contents_path: str,
+        raw: str,
+        *,
+        message: str,
+        expected_sha: str | None,
+    ) -> str:
+        body: dict[str, Any] = {
+            "message": message,
+            "content": base64.b64encode(raw.encode("utf-8")).decode("ascii"),
+            "branch": self.branch,
+        }
+        if expected_sha:
+            body["sha"] = expected_sha
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".json", delete=False
+        ) as handle:
+            json.dump(body, handle)
+            path = handle.name
+        try:
+            completed = self._run(
+                [
+                    "gh",
+                    "api",
+                    "--method",
+                    "PUT",
+                    "-H",
+                    "Accept: application/vnd.github+json",
+                    f"repos/{self.repository}/contents/{contents_path}",
+                    "--input",
+                    path,
+                ]
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
+        return _sha_from_contents_put(
+            completed=completed,
+            intended_raw=raw,
+            observe=lambda: self._observe_path(contents_path, raw),
+            conflict_message=(
+                "final-audit budget compare-and-set failed: stale contents sha"
+            ),
+            failure_label="gh api contents PUT failed for final-audit budget",
+        )
+
+    def _observe_path(self, contents_path: str, intended_raw: str) -> tuple[str, str | None]:
+        payload = self._get_path(contents_path)
+        if payload is None:
+            return "absent", None
+        try:
+            decoded = json.dumps(_decode_contents(payload), sort_keys=True)
+        except ValidationError:
+            return "unknown", None
+        blob = str(payload.get("sha") or "").strip()
+        intended = json.dumps(json.loads(intended_raw), sort_keys=True)
+        if decoded == intended and blob:
+            return "match", blob
+        return "differ", None
 
     def _get(self, issue_number: int) -> dict[str, Any] | None:
         completed = self._runner(
@@ -392,12 +694,6 @@ class WorkPacketSnapshot:
     branch: str
     head: str
     status: str
-
-
-def _spent_this_month(ledger: IssueAuditLedger | None, now: float) -> float:
-    if ledger is None or ledger.month_id != month_id_for(now):
-        return 0.0
-    return float(ledger.month_spent_usd)
 
 
 def _claim_is_live(claim: AuditClaim, now: float) -> bool:
@@ -550,7 +846,8 @@ def run_exact_head_audit(
             findings=_redact_findings(blocked_evidence.findings),
         )
 
-    spent = _spent_this_month(ledger, clock())
+    current_month = month_id_for(clock())
+    spent, budget_sha = store.load_month_spend(current_month)
     active_budget = budget or AuditBudget(per_run_hard_usd=1.0, monthly_hard_usd=25.0)
     active_budget = AuditBudget(
         per_run_hard_usd=active_budget.per_run_hard_usd,
@@ -572,7 +869,6 @@ def run_exact_head_audit(
             findings="OPENAI_API_KEY absent; Gate B real audit is HUMAN_REQUIRED",
         )
 
-    current_month = month_id_for(clock())
     if ledger is None:
         ledger = IssueAuditLedger(
             repository=repo,
@@ -596,7 +892,8 @@ def run_exact_head_audit(
         lease_seconds=lease_seconds,
     )
     blob_sha = store.save(ledger, expected_sha=blob_sha)
-    if hasattr(auditor, "budget"):
+    provider_owns_budget = hasattr(auditor, "budget")
+    if provider_owns_budget:
         auditor.budget = active_budget
     started = clock()
     result = auditor.audit_bundle(evidence_bundle, event=event, record=record)
@@ -612,12 +909,13 @@ def run_exact_head_audit(
         telemetry_raw["duration_sec"] = float(telemetry_raw.get("duration_sec") or elapsed)
         telemetry_raw["verdict"] = result.verdict
     cost = float(telemetry_raw.get("estimated_cost_usd") or 0.0)
-    over = active_budget.reconcile(cost)
     verdict = result.verdict
     findings = result.findings
-    if over:
-        verdict = "HUMAN_REQUIRED"
-        findings = f"{over}. {findings}"
+    if not provider_owns_budget:
+        over = active_budget.reconcile(cost)
+        if over:
+            verdict = "HUMAN_REQUIRED"
+            findings = f"{over}. {findings}"
     telemetry_raw["verdict"] = verdict
     telemetry_raw["estimated_cost_usd"] = cost
     completed = AuditClaim(
@@ -635,8 +933,13 @@ def run_exact_head_audit(
         telemetry=_sanitize_telemetry(telemetry_raw, target_sha=target),
     )
     ledger.claims[key] = completed
-    ledger.month_spent_usd = active_budget.month_spent_usd
     store.save(ledger, expected_sha=blob_sha)
+    store.save_month_spend(
+        current_month,
+        active_budget.month_spent_usd,
+        repository=repo,
+        expected_sha=budget_sha,
+    )
     if hasattr(auditor, "calls"):
         called = int(auditor.calls)
     else:
