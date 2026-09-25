@@ -1077,7 +1077,7 @@ def _packet_metadata_value(body: str, key: str) -> str | None:
 def optional_audit_base_head(meta: dict[str, str]) -> str:
     if "AUDIT_BASE_HEAD" not in meta:
         return ""
-    raw = str(meta.get("AUDIT_BASE_HEAD") or "").strip().lower()
+    raw = str(meta["AUDIT_BASE_HEAD"]).strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", raw):
         raise ValidationError("invalid AUDIT_BASE_HEAD")
     return raw

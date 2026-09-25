@@ -127,14 +127,12 @@ def _default_evidence(
 
 
 def _audit_bases_match(listed: dict[str, Any], fresh: dict[str, Any]) -> bool:
-    left = str(listed.get("audit_base") or "").strip()
-    right = str(fresh.get("audit_base") or "").strip()
+    left, right = [str(item.get("audit_base") or "").strip() for item in (listed, fresh)]
     if not left and not right:
         return True
     try:
-        return require_exact_commit_sha(left, label="audit_base") == require_exact_commit_sha(
-            right, label="audit_base"
-        )
+        norm = require_exact_commit_sha
+        return norm(left, label="audit_base") == norm(right, label="audit_base")
     except ValidationError:
         return False
 
@@ -156,17 +154,12 @@ def _same_packet(listed: dict[str, Any], fresh: dict[str, Any]) -> bool:
     )
 
 
-def _audit_base_is_ancestor(
-    git_runner: GitRunner, worktree: str, base: str, head: str
-) -> bool:
+def _audit_base_is_ancestor(git_runner: GitRunner, worktree: str, base: str, head: str) -> bool:
     try:
-        git_runner(
-            ["git", "merge-base", "--is-ancestor", base, head],
-            str(Path(worktree).resolve()),
-        )
+        git_runner(["git", "merge-base", "--is-ancestor", base, head], str(Path(worktree).resolve()))
+        return True
     except ValidationError:
         return False
-    return True
 
 
 def _canonical_packet_unchanged(
@@ -273,12 +266,8 @@ def _supervise_project(
             worktree=worktree,
         )
     audit_base = str(fresh.get("audit_base") or "").strip()
-    if audit_base and not _audit_base_is_ancestor(
-        git_runner, worktree, audit_base, str(fresh["head"])
-    ):
-        return _project_result(
-            repository, "audit_base_refused", issue_number=int(fresh["issue_number"])
-        )
+    if audit_base and not _audit_base_is_ancestor(git_runner, worktree, audit_base, str(fresh["head"])):
+        return _project_result(repository, "audit_base_refused", issue_number=int(fresh["issue_number"]))
 
     store = claim_store_for(repository)
     issue_number = int(fresh["issue_number"])

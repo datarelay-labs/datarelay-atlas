@@ -561,27 +561,20 @@ class SuperviseOnceTests(unittest.TestCase):
         self.assertNotIn("crontab", script)
 
     def test_wrapper_python_selection(self) -> None:
-        script = str(Path("scripts/host-worker-supervise-once.sh").resolve())
-
-        def run(root: str, py: str = ""):
-            env = os.environ.copy()
-            env.pop("ATLAS_PYTHON", None)
-            if py:
-                env["ATLAS_PYTHON"] = py
-            argv = ["bash", "-c", 'source "$1"; atlas_py_bin "$2"', "x", script, root]
-            return subprocess.run(argv, capture_output=True, text=True, env=env)
-
-        def exe(path: Path):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("#!/bin/sh\n")
-            path.chmod(0o755)
-
+        s = str(Path("scripts/host-worker-supervise-once.sh").resolve())
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertNotEqual(run(tmp).returncode, 0)
-            stub = Path(tmp) / "py"
-            exe(stub)
-            self.assertEqual(run(tmp, str(stub)).stdout.strip(), str(stub))
-            venv = Path(tmp) / ".venv" / "bin" / "python"
-            exe(venv)
-            self.assertEqual(run(tmp).stdout.strip(), str(venv))
-            self.assertNotEqual(run(tmp, str(Path(tmp) / "nope")).returncode, 0)
+            r, h = Path(tmp) / "r", Path(tmp) / "h"
+            e = {k: v for k, v in os.environ.items() if k != "ATLAS_PYTHON"}
+            e.update(PATH="/usr/bin:/bin", HOME=str(h))
+            go = lambda c: subprocess.run(["bash","-c",c,"x",s,str(r)],capture_output=True,text=True,env=e)
+            mark = lambda p: (p.parent.mkdir(parents=True,exist_ok=True),p.write_text("#!/bin/sh\n"),p.chmod(0o755))
+            py = 'source "$1"; atlas_py_bin "$2"'
+            mark(r / "py")
+            e["ATLAS_PYTHON"] = str(r / "py")
+            self.assertEqual(go(py).stdout.strip(), e["ATLAS_PYTHON"])
+            mark(h / ".local/bin/gh")
+            mark(h / ".local/bin/agent")
+            got = go('source "$1"; cron_bin_path').stdout.strip()
+            self.assertEqual(subprocess.run(["bash","-c","export PATH=$1; command -v gh && command -v agent","x",got],stdout=subprocess.DEVNULL).returncode,0)
+            e["HOME"] = str(r / "e")
+            self.assertIn("gh not found", subprocess.run([s, "d"], capture_output=True, text=True, env=e).stderr)

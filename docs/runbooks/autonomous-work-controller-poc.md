@@ -308,8 +308,7 @@ Do not install a crontab in the E1 slice. Roll out with the wrapper:
 scripts/host-worker-supervise-once.sh /var/lib/atlas/host-descriptors.json
 ```
 
-`ATLAS_PYTHON`, when executable, overrides `<repo>/.venv/bin/python`.
-Otherwise it exits nonzero.
+`ATLAS_PYTHON` or `.venv/bin/python`; cron adds `$HOME/.local/bin` or exits.
 
 ## Telegram / notify
 
