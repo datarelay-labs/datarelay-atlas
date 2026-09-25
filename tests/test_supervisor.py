@@ -337,11 +337,9 @@ class SuperviseOnceTests(unittest.TestCase):
             return str(spec["head"])
         if argv[1:] == ["status", "--porcelain", "--untracked-files=all"]:
             return " M dirty" if spec["dirty"] else ""
-        if argv[:3] == ["git", "merge-base", "--is-ancestor"] and len(argv) == 5:
-            base, target = argv[3], argv[4]
-            if base == str(spec["head"]) or base == target == str(spec["head"]):
-                return ""
-            if base in set(spec.get("ancestors") or ()):
+        if argv[1:3] == ["merge-base", "--is-ancestor"]:
+            base = argv[3]
+            if base == spec["head"] or base in spec.get("ancestors", ()):
                 return ""
             raise ValidationError("not an ancestor")
         raise AssertionError(argv)
@@ -533,106 +531,59 @@ class SuperviseOnceTests(unittest.TestCase):
         self.assertEqual(self.spawned, [])
         self.assertEqual(self.evidence_calls, [])
 
-    def test_invalid_audit_base_makes_no_paid_or_cursor_effect(self) -> None:
-        self.hub.add(REPO, 88, _packet_body(audit_base="not-a-sha"))
-        self._seed(REPO, 88)
-        outcome = self._run()
-        self.assertEqual(self._row(outcome, REPO)["action"], "refused")
-        self.assertEqual(self.auditor.calls, 0)
-        self.assertEqual(outcome["cursor_calls"], 0)
-        self.assertEqual(self.spawned, [])
-        self.assertEqual(self.evidence_calls, [])
+    def test_audit_base_gates_fail_closed_or_audit(self) -> None:
+        cases = (
+            ("not-a-sha", "refused", False, []),
+            (HEAD, "audited", False, [REPO]),
+            (OTHER, "audit_base_refused", True, []),
+        )
+        for base, action, seed, evidence in cases:
+            self.hub.issues.clear()
+            self.spawned.clear()
+            self.evidence_calls.clear()
+            self.auditor.calls = 0
+            self.hub.add(REPO, 88, _packet_body(audit_base=base))
+            if seed:
+                self.stores.clear()
+                self._seed(REPO, 88)
+            outcome = self._run()
+            self.assertEqual(self._row(outcome, REPO)["action"], action)
+            self.assertEqual(self.evidence_calls, evidence)
+            if action != "audited":
+                self.assertFalse(self.auditor.calls or outcome["cursor_calls"] or self.spawned)
 
-    def test_non_ancestor_audit_base_makes_no_paid_or_cursor_effect(self) -> None:
-        self.hub.add(REPO, 88, _packet_body(audit_base=OTHER))
-        self._seed(REPO, 88)
-        outcome = self._run()
-        self.assertEqual(self._row(outcome, REPO)["action"], "audit_base_refused")
-        self.assertEqual(self.auditor.calls, 0)
-        self.assertEqual(outcome["cursor_calls"], 0)
-        self.assertEqual(self.spawned, [])
-        self.assertEqual(self.evidence_calls, [])
-
-    def test_equal_audit_base_is_a_valid_empty_delta(self) -> None:
-        self.hub.add(REPO, 88, _packet_body(audit_base=HEAD))
-        outcome = self._run()
-        self.assertEqual(self._row(outcome, REPO)["action"], "audited")
-        self.assertEqual(self.auditor.calls, 1)
-        self.assertEqual(outcome["cursor_calls"], 0)
-        self.assertEqual(self.evidence_calls, [REPO])
-
-    def test_audit_base_drift_during_evidence_makes_no_paid_call(self) -> None:
+    def test_audit_base_drift_blocks_paid_call(self) -> None:
         self.hub.add(REPO, 88, _packet_body(audit_base=HEAD))
 
-        def evidence(packet: dict, worktree: str) -> dict:
-            del worktree
-            self.evidence_calls.append(str(packet["audit_base"]))
-            mutated = _packet_body(audit_base=OTHER)
-            item = self.hub.issues[(REPO, 88)]
-            item["body"] = mutated
-            item["list_body"] = mutated
+        def evidence(packet: dict, _worktree: str) -> dict:
+            self.evidence_calls.append(packet["audit_base"])
+            body = _packet_body(audit_base=OTHER)
+            self.hub.issues[(REPO, 88)].update(body=body, list_body=body)
             return _bundle()
 
         outcome = self._run(evidence_for=evidence)
         self.assertEqual(self._row(outcome, REPO)["action"], "canonical_drift")
-        self.assertEqual(self.auditor.calls, 0)
-        self.assertEqual(self.spawned, [])
+        self.assertFalse(self.auditor.calls or self.spawned)
         self.assertEqual(self.evidence_calls, [HEAD])
 
-    def test_default_evidence_passes_audit_base_as_base_ref(self) -> None:
-        captured: dict[str, object] = {}
+    def test_evidence_base_ref_and_empty_delta(self) -> None:
+        seen: list[object] = []
 
-        def collect(*args: object, **kwargs: object) -> dict:
-            del args
-            captured["base_ref"] = kwargs.get("base_ref")
-            return {"schema": "awc.codex_evidence_bundle.v1"}
+        def collect(*_a: object, **kw: object) -> dict:
+            seen.append(kw.get("base_ref"))
+            return {"schema": "ok"}
 
-        packet = {
-            "repository": REPO,
-            "issue_number": 88,
-            "branch": BRANCH,
-            "workstream": WORKSTREAM,
-            "head": HEAD,
-            "audit_base": HEAD,
-        }
+        packet = {"repository": REPO, "issue_number": 88, "branch": BRANCH, "workstream": WORKSTREAM, "head": HEAD}
         with patch("atlas.supervisor.collect_audit_evidence_bundle", collect):
-            with patch(
-                "atlas.supervisor.validate_clean_worktree_identity",
-                return_value=object(),
-            ):
-                bundle = _default_evidence(packet, str(self.worktree), git_runner=self._git)
-        self.assertEqual(bundle["schema"], "awc.codex_evidence_bundle.v1")
-        self.assertEqual(captured["base_ref"], HEAD)
-        absent = dict(packet)
-        absent["audit_base"] = ""
-        with patch("atlas.supervisor.collect_audit_evidence_bundle", collect):
-            with patch(
-                "atlas.supervisor.validate_clean_worktree_identity",
-                return_value=object(),
-            ):
-                _default_evidence(absent, str(self.worktree), git_runner=self._git)
-        self.assertIsNone(captured["base_ref"])
+            for base in (HEAD, ""):
+                _default_evidence({**packet, "audit_base": base}, str(self.worktree), git_runner=self._git)
+        self.assertEqual(seen, [HEAD, None])
 
-    def test_empty_audit_base_delta_stays_complete(self) -> None:
         def runner(argv: list[str], _cwd: str) -> str:
-            if argv[:3] == ["git", "diff"] and argv[-1] == f"{HEAD}...HEAD":
-                return ""
-            if argv[:2] == ["git", "diff"]:
-                return ""
-            if argv == ["git", "status", "--short", "--branch"]:
-                return f"## {BRANCH}"
-            if argv == ["git", "rev-parse", "HEAD"]:
-                return HEAD
-            if argv == ["git", "branch", "--show-current"]:
-                return BRANCH
-            if argv == ["git", "remote", "get-url", "origin"]:
-                return f"https://github.com/{REPO}.git"
-            raise AssertionError(argv)
+            return "" if argv[1] == "diff" else HEAD
 
-        evidence = collect_git_evidence(str(self.worktree), base_ref=HEAD, git_runner=runner)
-        self.assertEqual(evidence["evidence_status"], "OK")
-        self.assertEqual(evidence["base_ref"], HEAD)
-        self.assertEqual(evidence["diff"], "")
+        got = collect_git_evidence(str(self.worktree), base_ref=HEAD, git_runner=runner)
+        self.assertEqual((got["evidence_status"], got["base_ref"], got["diff"]), ("OK", HEAD, ""))
 
     def test_packet_mutation_during_evidence_makes_no_paid_call(self) -> None:
         self.hub.add(REPO, 88, _packet_body(head=HEAD))

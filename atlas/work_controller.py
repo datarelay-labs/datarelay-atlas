@@ -1075,18 +1075,11 @@ def _packet_metadata_value(body: str, key: str) -> str | None:
 
 
 def optional_audit_base_head(meta: dict[str, str]) -> str:
-    """Return a normalized AUDIT_BASE_HEAD, or empty when the field is absent.
-
-    A present value that is not a 40-character SHA fails closed. Absence is
-    not an audit verdict and keeps the historical origin/main fallback.
-    """
     if "AUDIT_BASE_HEAD" not in meta:
         return ""
     raw = str(meta.get("AUDIT_BASE_HEAD") or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", raw):
-        raise ValidationError(
-            "AUDIT_BASE_HEAD must be an exact 40-char commit SHA"
-        )
+        raise ValidationError("invalid AUDIT_BASE_HEAD")
     return raw
 
 

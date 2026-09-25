@@ -132,9 +132,9 @@ def _audit_bases_match(listed: dict[str, Any], fresh: dict[str, Any]) -> bool:
     if not left and not right:
         return True
     try:
-        return require_exact_commit_sha(
-            left, label="listed.audit_base"
-        ) == require_exact_commit_sha(right, label="fresh.audit_base")
+        return require_exact_commit_sha(left, label="audit_base") == require_exact_commit_sha(
+            right, label="audit_base"
+        )
     except ValidationError:
         return False
 
@@ -159,7 +159,6 @@ def _same_packet(listed: dict[str, Any], fresh: dict[str, Any]) -> bool:
 def _audit_base_is_ancestor(
     git_runner: GitRunner, worktree: str, base: str, head: str
 ) -> bool:
-    """True when base is an ancestor of head, including base == head."""
     try:
         git_runner(
             ["git", "merge-base", "--is-ancestor", base, head],
@@ -278,11 +277,7 @@ def _supervise_project(
         git_runner, worktree, audit_base, str(fresh["head"])
     ):
         return _project_result(
-            repository,
-            "audit_base_refused",
-            issue_number=int(fresh["issue_number"]),
-            chat_id=chat_id,
-            worktree=worktree,
+            repository, "audit_base_refused", issue_number=int(fresh["issue_number"])
         )
 
     store = claim_store_for(repository)

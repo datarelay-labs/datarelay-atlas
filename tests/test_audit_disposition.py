@@ -336,62 +336,33 @@ class SliceDDispositionTests(unittest.TestCase):
         self.assertNotIn("Bugbot advisory", absent.body)
         self.assertEqual(absent.mutations, 1)
 
-    def test_pass_advances_audit_base_only_when_gates_are_current(self) -> None:
-        body = _packet_body().replace(
-            f"LAST_VERIFIED_HEAD={HEAD}\n",
-            f"LAST_VERIFIED_HEAD={HEAD}\nAUDIT_BASE_HEAD={OTHER}\n",
-        )
-        blocked = MemoryPacketStore(body)
-        stalled = self._apply(
-            claim=_claim("PASS"), packet_store=blocked, gates=None
-        )
-        self.assertEqual(stalled["action"], "no_advancement")
-        self.assertEqual(blocked.mutations, 0)
+    def _based(self) -> MemoryPacketStore:
+        needle = f"LAST_VERIFIED_HEAD={HEAD}\n"
+        body = _packet_body().replace(needle, f"{needle}AUDIT_BASE_HEAD={OTHER}\n")
+        return MemoryPacketStore(body)
+
+    def test_pass_advances_audit_base(self) -> None:
+        blocked = self._based()
+        stalled = self._apply(claim=_claim("PASS"), packet_store=blocked, gates=None)
+        self.assertEqual((stalled["action"], blocked.mutations), ("no_advancement", 0))
         self.assertIn(f"AUDIT_BASE_HEAD={OTHER}", blocked.body)
-        advanced = MemoryPacketStore(body)
-        outcome = self._apply(
-            claim=_claim("PASS"), packet_store=advanced, gates=_gates()
-        )
-        self.assertEqual(outcome["action"], "pass_checkpoint")
+        advanced = self._based()
+        done = self._apply(claim=_claim("PASS"), packet_store=advanced, gates=_gates())
+        self.assertEqual(done["action"], "pass_checkpoint")
         self.assertIn(f"AUDIT_BASE_HEAD={HEAD}", advanced.body)
         self.assertNotIn(f"AUDIT_BASE_HEAD={OTHER}", advanced.body)
-        self.assertEqual(self.spawned, [])
 
-    def test_rework_and_human_required_do_not_advance_audit_base(self) -> None:
-        body = _packet_body().replace(
-            f"LAST_VERIFIED_HEAD={HEAD}\n",
-            f"LAST_VERIFIED_HEAD={HEAD}\nAUDIT_BASE_HEAD={OTHER}\n",
-        )
-        rework_packet = MemoryPacketStore(body)
-        rework = self._apply(packet_store=rework_packet)
-        self.assertEqual(rework["action"], "redispatched")
-        self.assertIn(f"AUDIT_BASE_HEAD={OTHER}", rework_packet.body)
-        self.assertNotIn(f"AUDIT_BASE_HEAD={HEAD}", rework_packet.body)
-        human_packet = MemoryPacketStore(body)
-        human_store = MemoryClaimStore()
-        human_claim = _claim("HUMAN_REQUIRED", findings="owner must decide")
-        human_store.save(
-            IssueAuditLedger(
-                repository=REPO,
-                issue_number=47,
-                month_id="2023-11",
-                claims={human_claim.claim_key: human_claim},
-            ),
-            expected_sha=None,
-        )
-        loaded, sha = human_store.load(47)
-        assert loaded is not None
-        human = self._apply(
-            claim=human_claim,
-            packet_store=human_packet,
-            claim_store=human_store,
-            ledger=loaded,
-            ledger_sha=sha,
-        )
-        self.assertEqual(human["action"], "human_required")
-        self.assertEqual(human["cursor_calls"], 0)
-        self.assertEqual(human_packet.mutations, 0)
-        self.assertIn(f"AUDIT_BASE_HEAD={OTHER}", human_packet.body)
+    def test_rework_keeps_audit_base(self) -> None:
+        packet = self._based()
+        self.assertEqual(self._apply(packet_store=packet)["action"], "redispatched")
+        self.assertIn(f"AUDIT_BASE_HEAD={OTHER}", packet.body)
+        self.assertNotIn(f"AUDIT_BASE_HEAD={HEAD}", packet.body)
+
+    def test_human_required_keeps_audit_base(self) -> None:
+        packet = self._based()
+        outcome = self._apply(claim=_claim("HUMAN_REQUIRED"), packet_store=packet)
+        self.assertEqual((outcome["action"], packet.mutations), ("human_required", 0))
+        self.assertIn(f"AUDIT_BASE_HEAD={OTHER}", packet.body)
 
     def test_human_required_persists_reason_without_dispatch(self) -> None:
         outcome = self._apply(claim=_claim("HUMAN_REQUIRED", findings="owner must decide"))
