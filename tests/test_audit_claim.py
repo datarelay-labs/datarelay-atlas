@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from atlas.final_audit import (
     AuditBudget,
     AuditTelemetry,
     BoundedResponsesAuditProvider,
+    build_final_audit_request,
+    request_cost_ceiling_usd,
 )
 from atlas.provenance import ValidationError
 from atlas.work_controller import AuditResult, CompletionEvent, PersistSession, WorkstreamRecord
@@ -239,7 +242,7 @@ class SliceCClaimTests(unittest.TestCase):
             self.assertEqual(outcome["action"], "audited")
             self.assertEqual(outcome["verdict"], verdict)
             self.assertEqual(auditor.calls, 1)
-            self.assertEqual(store.writes, 3)
+            self.assertEqual(store.writes, 5)
             self.assertNotIn(SECRET, json.dumps(outcome))
             self.assertNotIn("diff --git", json.dumps(outcome["telemetry"]))
             self.assertGreater(outcome["telemetry"]["duration_sec"], 0)
@@ -248,7 +251,7 @@ class SliceCClaimTests(unittest.TestCase):
             self.assertEqual(duplicate["action"], "duplicate_completed")
             self.assertEqual(duplicate["verdict"], verdict)
             self.assertEqual(again.calls, 0)
-            self.assertEqual(store.writes, 3)
+            self.assertEqual(store.writes, 5)
 
     def test_live_claim_and_expired_restart_do_not_call_again(self) -> None:
         key = make_audit_claim_key(REPO, 47, HEAD)
@@ -478,6 +481,227 @@ class SliceCClaimTests(unittest.TestCase):
         self.assertEqual(second.calls, 0)
         spent, _sha = self.store.load_month_spend("2023-11")
         self.assertAlmostEqual(spent, 0.04)
+
+    def test_reservation_settles_ceiling_to_actual_cost_once(self) -> None:
+        ceiling = request_cost_ceiling_usd(build_final_audit_request(_bundle()))
+        auditor = ScriptAuditor("PASS", cost=0.04)
+        outcome = self._run(auditor=auditor)
+        self.assertEqual(outcome["action"], "audited")
+        self.assertEqual(auditor.calls, 1)
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        budget, _sha = self.store.load_month_budget("2023-11")
+        slot = budget["reservations"][key]
+        self.assertEqual(slot["state"], "settled")
+        self.assertAlmostEqual(slot["accounted_usd"], 0.04)
+        self.assertAlmostEqual(budget["month_spent_usd"], 0.04)
+        self.assertGreater(ceiling, 0.04)
+        self.assertGreater(abs(budget["month_spent_usd"] - ceiling), 0.001)
+        again = self._run(auditor=ScriptAuditor("PASS", cost=0.04))
+        self.assertEqual(again["action"], "duplicate_completed")
+        spent, _sha = self.store.load_month_spend("2023-11")
+        self.assertAlmostEqual(spent, 0.04)
+
+    def test_concurrent_packets_reserve_only_one_paid_call(self) -> None:
+        store = MemoryClaimStore()
+        barrier = threading.Barrier(2)
+        state = {"loads": 0}
+        gate = threading.Lock()
+        original = store.load_month_budget
+
+        def gated(month_id: str):
+            with gate:
+                state["loads"] += 1
+                count = state["loads"]
+            if count <= 2:
+                barrier.wait(timeout=5)
+            return original(month_id)
+
+        store.load_month_budget = gated  # type: ignore[method-assign]
+        results: list[tuple[dict, int]] = []
+        errors: list[BaseException] = []
+
+        def run(issue: int) -> None:
+            try:
+                auditor = ScriptAuditor("PASS", cost=0.04)
+                outcome = self._run(
+                    auditor=auditor,
+                    store=store,
+                    issue_number=issue,
+                    packets=[_packet(issue=issue)],
+                    budget=AuditBudget(
+                        per_run_hard_usd=10.0,
+                        monthly_hard_usd=0.06,
+                        preflight_usd=0.0,
+                    ),
+                )
+                results.append((outcome, auditor.calls))
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run, args=(issue,)) for issue in (47, 48)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual(sum(calls for _outcome, calls in results), 1)
+        self.assertEqual(
+            sorted(outcome["action"] for outcome, _calls in results),
+            ["audited", "budget_blocked"],
+        )
+
+    def test_lost_reservation_cas_makes_zero_auditor_calls(self) -> None:
+        class LostReservation(MemoryClaimStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self._lost = False
+
+            def save_month_budget(
+                self,
+                month_id: str,
+                *,
+                repository: str,
+                spent_usd: float,
+                reservations: dict,
+                expected_sha: str | None,
+            ) -> str:
+                if not self._lost:
+                    self._lost = True
+                    super().save_month_budget(
+                        month_id,
+                        repository=repository,
+                        spent_usd=1.0,
+                        reservations={
+                            "other-claim": {
+                                "issue_number": 1,
+                                "target_sha": HEAD,
+                                "ceiling_usd": 1.0,
+                                "accounted_usd": 1.0,
+                                "state": "reserved",
+                            }
+                        },
+                        expected_sha=expected_sha,
+                    )
+                    raise CheckpointCasConflict("reservation lost")
+                return super().save_month_budget(
+                    month_id,
+                    repository=repository,
+                    spent_usd=spent_usd,
+                    reservations=reservations,
+                    expected_sha=expected_sha,
+                )
+
+        store = LostReservation()
+        auditor = ScriptAuditor("PASS", cost=0.04)
+        outcome = self._run(
+            auditor=auditor,
+            store=store,
+            budget=AuditBudget(
+                per_run_hard_usd=10.0,
+                monthly_hard_usd=0.06,
+                preflight_usd=0.0,
+            ),
+        )
+        self.assertEqual(outcome["action"], "budget_blocked")
+        self.assertEqual(auditor.calls, 0)
+        self.assertIsNone(auditor.last_request_body)
+
+    def test_settle_failure_keeps_paid_usage_and_retry_does_not_call(self) -> None:
+        ceiling = request_cost_ceiling_usd(build_final_audit_request(_bundle()))
+
+        class FailSettle(MemoryClaimStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.settle_failures = 2
+
+            def save_month_budget(
+                self,
+                month_id: str,
+                *,
+                repository: str,
+                spent_usd: float,
+                reservations: dict,
+                expected_sha: str | None,
+            ) -> str:
+                settling = any(
+                    isinstance(slot, dict) and slot.get("state") == "settled"
+                    for slot in reservations.values()
+                )
+                if settling and self.settle_failures:
+                    self.settle_failures -= 1
+                    raise CheckpointCasConflict("settle lost")
+                return super().save_month_budget(
+                    month_id,
+                    repository=repository,
+                    spent_usd=spent_usd,
+                    reservations=reservations,
+                    expected_sha=expected_sha,
+                )
+
+        store = FailSettle()
+        first_auditor = ScriptAuditor("PASS", cost=0.04)
+        pending = self._run(auditor=first_auditor, store=store)
+        self.assertEqual(pending["action"], "budget_settle_pending")
+        self.assertEqual(first_auditor.calls, 1)
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        loaded, _sha = store.load(47)
+        assert loaded is not None
+        self.assertEqual(loaded.claims[key].state, "claimed")
+        spent, _sha = store.load_month_spend("2023-11")
+        self.assertAlmostEqual(spent, ceiling)
+        self.assertGreater(spent, 0.0)
+
+        retry_auditor = ScriptAuditor("PASS", cost=0.04)
+        live = self._run(auditor=retry_auditor, store=store)
+        self.assertEqual(live["action"], "duplicate_claim")
+        self.assertEqual(retry_auditor.calls, 0)
+        spent, _sha = store.load_month_spend("2023-11")
+        self.assertAlmostEqual(spent, ceiling)
+
+        later = NOW + SLICE_CLAIM_LEASE_SECONDS + 1
+        settled = self._run(
+            auditor=retry_auditor,
+            store=store,
+            now=lambda: later,
+        )
+        self.assertEqual(settled["action"], "usage_reconciled")
+        self.assertEqual(retry_auditor.calls, 0)
+        spent, _sha = store.load_month_spend("2023-11")
+        self.assertAlmostEqual(spent, 0.04)
+        loaded, _sha = store.load(47)
+        assert loaded is not None
+        self.assertEqual(loaded.claims[key].state, "completed")
+        self.assertEqual(loaded.claims[key].verdict, "PASS")
+
+    def test_crash_after_reservation_holds_ceiling_without_a_second_call(self) -> None:
+        ceiling = request_cost_ceiling_usd(build_final_audit_request(_bundle()))
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        self.store.save_month_budget(
+            "2023-11",
+            repository=REPO,
+            spent_usd=ceiling,
+            reservations={
+                key: {
+                    "issue_number": 47,
+                    "target_sha": HEAD,
+                    "ceiling_usd": ceiling,
+                    "accounted_usd": ceiling,
+                    "state": "reserved",
+                }
+            },
+            expected_sha=None,
+        )
+        auditor = ScriptAuditor("PASS", cost=0.04)
+        outcome = self._run(auditor=auditor)
+        self.assertEqual(outcome["action"], "reservation_held")
+        self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
+        self.assertEqual(auditor.calls, 0)
+        spent, _sha = self.store.load_month_spend("2023-11")
+        self.assertAlmostEqual(spent, ceiling)
+        loaded, _sha = self.store.load(47)
+        assert loaded is not None
+        self.assertEqual(loaded.claims[key].state, "completed")
 
     def test_month_spend_cas_rejects_a_stale_writer(self) -> None:
         sha = self.store.save_month_spend(

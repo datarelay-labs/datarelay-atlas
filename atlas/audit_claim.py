@@ -14,6 +14,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -241,12 +242,24 @@ class ClaimStore(Protocol):
 
     def load_month_spend(self, month_id: str) -> tuple[float, str | None]: ...
 
+    def load_month_budget(self, month_id: str) -> tuple[dict[str, Any], str | None]: ...
+
     def save_month_spend(
         self,
         month_id: str,
         spent_usd: float,
         *,
         repository: str,
+        expected_sha: str | None,
+    ) -> str: ...
+
+    def save_month_budget(
+        self,
+        month_id: str,
+        *,
+        repository: str,
+        spent_usd: float,
+        reservations: dict[str, Any],
         expected_sha: str | None,
     ) -> str: ...
 
@@ -257,6 +270,7 @@ class MemoryClaimStore:
     def __init__(self) -> None:
         self._docs: dict[int, tuple[str, str]] = {}
         self._budgets: dict[str, tuple[str, str]] = {}
+        self._budget_lock = threading.Lock()
         self.writes = 0
 
     def load(self, issue_number: int) -> tuple[IssueAuditLedger | None, str | None]:
@@ -280,12 +294,20 @@ class MemoryClaimStore:
         return sha
 
     def load_month_spend(self, month_id: str) -> tuple[float, str | None]:
-        found = self._budgets.get(month_id)
-        if found is None:
-            return 0.0, None
-        raw, sha = found
-        payload = json.loads(raw)
-        return float(payload["month_spent_usd"]), sha
+        budget, sha = self.load_month_budget(month_id)
+        return float(budget["month_spent_usd"]), sha
+
+    def load_month_budget(self, month_id: str) -> tuple[dict[str, Any], str | None]:
+        with self._budget_lock:
+            found = self._budgets.get(month_id)
+            if found is None:
+                return {"month_spent_usd": 0.0, "reservations": {}}, None
+            raw, sha = found
+            payload = json.loads(raw)
+            return {
+                "month_spent_usd": float(payload.get("month_spent_usd") or 0.0),
+                "reservations": dict(payload.get("reservations") or {}),
+            }, sha
 
     def save_month_spend(
         self,
@@ -295,27 +317,56 @@ class MemoryClaimStore:
         repository: str,
         expected_sha: str | None,
     ) -> str:
-        current = self._budgets.get(month_id)
-        current_sha = current[1] if current else None
-        if current_sha != expected_sha:
-            raise CheckpointCasConflict(
-                "final-audit budget compare-and-set failed: stale budget sha"
-            )
-        raw = _budget_json(
-            repository=repository, month_id=month_id, spent_usd=spent_usd
+        current, _sha = self.load_month_budget(month_id)
+        return self.save_month_budget(
+            month_id,
+            repository=repository,
+            spent_usd=spent_usd,
+            reservations=dict(current.get("reservations") or {}),
+            expected_sha=expected_sha,
         )
-        sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-        self._budgets[month_id] = (raw, sha)
-        self.writes += 1
-        return sha
+
+    def save_month_budget(
+        self,
+        month_id: str,
+        *,
+        repository: str,
+        spent_usd: float,
+        reservations: dict[str, Any],
+        expected_sha: str | None,
+    ) -> str:
+        with self._budget_lock:
+            current = self._budgets.get(month_id)
+            current_sha = current[1] if current else None
+            if current_sha != expected_sha:
+                raise CheckpointCasConflict(
+                    "final-audit budget compare-and-set failed: stale budget sha"
+                )
+            raw = _budget_json(
+                repository=repository,
+                month_id=month_id,
+                spent_usd=spent_usd,
+                reservations=reservations,
+            )
+            sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            self._budgets[month_id] = (raw, sha)
+            self.writes += 1
+            return sha
 
 
-def _budget_json(*, repository: str, month_id: str, spent_usd: float) -> str:
+def _budget_json(
+    *,
+    repository: str,
+    month_id: str,
+    spent_usd: float,
+    reservations: dict[str, Any] | None = None,
+) -> str:
     payload = {
         "schema_version": CLAIM_SCHEMA_VERSION,
         "repository": normalize_github_repository(repository),
         "month_id": month_id,
         "month_spent_usd": float(spent_usd),
+        "reservations": reservations or {},
     }
     raw = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if _contains_unsafe_secret(raw):
@@ -442,16 +493,26 @@ class GitHubContentsClaimStore:
         return {"action": "created", "branch": self.branch, "base_sha": base_sha}
 
     def load_month_spend(self, month_id: str) -> tuple[float, str | None]:
+        budget, sha = self.load_month_budget(month_id)
+        return float(budget["month_spent_usd"]), sha
+
+    def load_month_budget(self, month_id: str) -> tuple[dict[str, Any], str | None]:
         payload = self._get_path(budget_contents_path(month_id))
         if payload is None:
-            return 0.0, None
+            return {"month_spent_usd": 0.0, "reservations": {}}, None
         decoded = _decode_contents(payload)
         if str(decoded.get("month_id") or "") != month_id:
             raise ValidationError("budget document month_id mismatch")
         blob = str(payload.get("sha") or "").strip()
         if not blob:
             raise ValidationError("budget contents response missing blob sha")
-        return float(decoded.get("month_spent_usd") or 0.0), blob
+        reservations = decoded.get("reservations") or {}
+        if not isinstance(reservations, dict):
+            raise ValidationError("budget reservations must be an object")
+        return {
+            "month_spent_usd": float(decoded.get("month_spent_usd") or 0.0),
+            "reservations": reservations,
+        }, blob
 
     def save_month_spend(
         self,
@@ -461,9 +522,30 @@ class GitHubContentsClaimStore:
         repository: str,
         expected_sha: str | None,
     ) -> str:
+        current, _sha = self.load_month_budget(month_id)
+        return self.save_month_budget(
+            month_id,
+            repository=repository,
+            spent_usd=spent_usd,
+            reservations=dict(current.get("reservations") or {}),
+            expected_sha=expected_sha,
+        )
+
+    def save_month_budget(
+        self,
+        month_id: str,
+        *,
+        repository: str,
+        spent_usd: float,
+        reservations: dict[str, Any],
+        expected_sha: str | None,
+    ) -> str:
         self.ensure_claim_branch()
         raw = _budget_json(
-            repository=repository, month_id=month_id, spent_usd=spent_usd
+            repository=repository,
+            month_id=month_id,
+            spent_usd=spent_usd,
+            reservations=reservations,
         )
         sha = self._put_raw(
             budget_contents_path(month_id),
@@ -705,6 +787,118 @@ def _claim_is_live(claim: AuditClaim, now: float) -> bool:
     return 0 <= age < float(claim.lease_seconds)
 
 
+def _month_budget(store: ClaimStore, month_id: str) -> tuple[dict[str, Any], str | None]:
+    budget, sha = store.load_month_budget(month_id)
+    reservations = budget.get("reservations") or {}
+    if not isinstance(reservations, dict):
+        raise ValidationError("budget reservations must be an object")
+    return {
+        "month_spent_usd": float(budget.get("month_spent_usd") or 0.0),
+        "reservations": dict(reservations),
+    }, sha
+
+
+def _budget_for(snapshot: AuditBudget, spent: float) -> AuditBudget:
+    return AuditBudget(
+        per_run_hard_usd=snapshot.per_run_hard_usd,
+        monthly_hard_usd=snapshot.monthly_hard_usd,
+        month_spent_usd=spent,
+        preflight_usd=snapshot.preflight_usd,
+        per_run_soft_usd=snapshot.per_run_soft_usd,
+        monthly_soft_usd=snapshot.monthly_soft_usd,
+    )
+
+
+def _reserve_ceiling(
+    store: ClaimStore,
+    *,
+    month_id: str,
+    repository: str,
+    claim_key: str,
+    issue_number: int,
+    target_sha: str,
+    ceiling: float,
+    limits: AuditBudget,
+) -> tuple[str, dict[str, Any]]:
+    """CAS-reserve the request ceiling before a paid call.
+
+    A lost compare-and-set reloads once. A reservation already bound to this
+    claim is not charged again.
+    """
+    last_block = "monthly budget exceeded"
+    for _attempt in range(2):
+        budget, sha = _month_budget(store, month_id)
+        reservations = dict(budget["reservations"])
+        existing = reservations.get(claim_key)
+        if isinstance(existing, dict):
+            return "already", budget
+        spent = float(budget["month_spent_usd"])
+        blocked = _budget_for(limits, spent).blocked_before_call(
+            request_ceiling_usd=ceiling
+        )
+        if blocked:
+            return "blocked", {"findings": blocked, **budget}
+        reservations[claim_key] = {
+            "issue_number": int(issue_number),
+            "target_sha": target_sha,
+            "ceiling_usd": float(ceiling),
+            "accounted_usd": float(ceiling),
+            "state": "reserved",
+        }
+        try:
+            store.save_month_budget(
+                month_id,
+                repository=repository,
+                spent_usd=spent + float(ceiling),
+                reservations=reservations,
+                expected_sha=sha,
+            )
+            return "reserved", _month_budget(store, month_id)[0]
+        except CheckpointCasConflict:
+            last_block = "monthly budget reservation lost compare-and-set"
+            continue
+    return "lost", {"findings": last_block}
+
+
+def _settle_reservation(
+    store: ClaimStore,
+    *,
+    month_id: str,
+    repository: str,
+    claim_key: str,
+    actual_usd: float,
+) -> float:
+    """Move one reservation from its ceiling to the actual cost, exactly once."""
+    for _attempt in range(2):
+        budget, sha = _month_budget(store, month_id)
+        reservations = dict(budget["reservations"])
+        slot = reservations.get(claim_key)
+        if not isinstance(slot, dict):
+            raise ValidationError("missing monthly reservation for exact-head claim")
+        if str(slot.get("state") or "") == "settled":
+            return float(budget["month_spent_usd"])
+        accounted = float(slot.get("accounted_usd") or 0.0)
+        spent = float(budget["month_spent_usd"])
+        updated = dict(slot)
+        updated["accounted_usd"] = float(actual_usd)
+        updated["state"] = "settled"
+        reservations[claim_key] = updated
+        try:
+            store.save_month_budget(
+                month_id,
+                repository=repository,
+                spent_usd=spent + float(actual_usd) - accounted,
+                reservations=reservations,
+                expected_sha=sha,
+            )
+            return spent + float(actual_usd) - accounted
+        except CheckpointCasConflict:
+            continue
+    raise CheckpointCasConflict(
+        "final-audit budget compare-and-set failed while settling reservation"
+    )
+
+
 def _result(
     action: str,
     *,
@@ -801,38 +995,11 @@ def run_exact_head_audit(
             telemetry=existing.telemetry,
             checkpoint_writes=store.writes - writes_before,
         )
+    interrupted_claim: AuditClaim | None = None
     if existing is not None and existing.state == "claimed":
         if _claim_is_live(existing, clock()):
             return _result("duplicate_claim", checkpoint_writes=store.writes - writes_before)
-        reconciled = AuditClaim(
-            repository=repo,
-            issue_number=issue_number,
-            branch=branch_name,
-            target_sha=target,
-            claim_key=key,
-            state="completed",
-            month_id=existing.month_id,
-            claimed_at=existing.claimed_at,
-            lease_seconds=existing.lease_seconds,
-            verdict="HUMAN_REQUIRED",
-            findings=_redact_findings(
-                "interrupted exact-head audit reconciled without a second paid call"
-            ),
-            telemetry=_sanitize_telemetry(
-                {"verdict": "HUMAN_REQUIRED", "duration_sec": 0.0},
-                target_sha=target,
-            ),
-        )
-        assert ledger is not None
-        ledger.claims[key] = reconciled
-        store.save(ledger, expected_sha=blob_sha)
-        return _result(
-            "reconciled",
-            verdict="HUMAN_REQUIRED",
-            findings=reconciled.findings,
-            telemetry=reconciled.telemetry,
-            checkpoint_writes=store.writes - writes_before,
-        )
+        interrupted_claim = existing
 
     if evidence_bundle is None:
         raise ValidationError("exact-head audit requires an evidence bundle")
@@ -847,38 +1014,165 @@ def run_exact_head_audit(
         )
 
     current_month = month_id_for(clock())
-    spent, budget_sha = store.load_month_spend(current_month)
-    active_budget = budget or AuditBudget(per_run_hard_usd=1.0, monthly_hard_usd=25.0)
-    active_budget = AuditBudget(
-        per_run_hard_usd=active_budget.per_run_hard_usd,
-        monthly_hard_usd=active_budget.monthly_hard_usd,
-        month_spent_usd=spent,
-        preflight_usd=active_budget.preflight_usd,
-        per_run_soft_usd=active_budget.per_run_soft_usd,
-        monthly_soft_usd=active_budget.monthly_soft_usd,
-    )
+    limits = budget or AuditBudget(per_run_hard_usd=1.0, monthly_hard_usd=25.0)
+    if evidence_bundle is None:
+        raise ValidationError("exact-head audit requires an evidence bundle")
     request = build_final_audit_request(evidence_bundle)
     ceiling = request_cost_ceiling_usd(request)
-    budget_block = active_budget.blocked_before_call(request_ceiling_usd=ceiling)
-    if budget_block:
-        return _result("budget_blocked", findings=budget_block)
+
+    def _finish_without_call(
+        *,
+        action: str,
+        verdict: str,
+        findings: str,
+        actual_usd: float,
+        claimed_at: float,
+    ) -> dict[str, Any]:
+        _settle_reservation(
+            store,
+            month_id=current_month,
+            repository=repo,
+            claim_key=key,
+            actual_usd=actual_usd,
+        )
+        nonlocal ledger, blob_sha
+        if ledger is None:
+            ledger = IssueAuditLedger(
+                repository=repo,
+                issue_number=issue_number,
+                month_id=current_month,
+            )
+        telemetry = _sanitize_telemetry(
+            {
+                "verdict": verdict,
+                "estimated_cost_usd": actual_usd,
+                "target_sha": target,
+                "duration_sec": 0.0,
+            },
+            target_sha=target,
+        )
+        ledger.claims[key] = AuditClaim(
+            repository=repo,
+            issue_number=issue_number,
+            branch=branch_name,
+            target_sha=target,
+            claim_key=key,
+            state="completed",
+            month_id=current_month,
+            claimed_at=claimed_at,
+            lease_seconds=lease_seconds,
+            verdict=verdict,
+            findings=_redact_findings(findings),
+            telemetry=telemetry,
+        )
+        store.save(ledger, expected_sha=blob_sha)
+        return _result(
+            action,
+            verdict=verdict,
+            findings=ledger.claims[key].findings,
+            telemetry=telemetry,
+            checkpoint_writes=store.writes - writes_before,
+        )
+
+    held = _month_budget(store, current_month)[0]["reservations"].get(key)
+    if isinstance(held, dict):
+        claimed_at = existing.claimed_at if existing is not None else clock()
+        recorded = existing.telemetry if existing is not None else None
+        if str(held.get("state") or "") == "settled":
+            actual = float(held.get("accounted_usd") or 0.0)
+            verdict = existing.verdict if existing and existing.verdict else "HUMAN_REQUIRED"
+            return _finish_without_call(
+                action="reservation_settled",
+                verdict=verdict,
+                findings=(existing.findings if existing else "")
+                or "reserved audit usage already settled",
+                actual_usd=actual,
+                claimed_at=claimed_at,
+            )
+        if isinstance(recorded, dict) and "estimated_cost_usd" in recorded:
+            return _finish_without_call(
+                action="usage_reconciled",
+                verdict=str(recorded.get("verdict") or "HUMAN_REQUIRED"),
+                findings=(existing.findings if existing else "")
+                or "reconciled reserved audit usage without a second paid call",
+                actual_usd=float(recorded.get("estimated_cost_usd") or 0.0),
+                claimed_at=claimed_at,
+            )
+        return _finish_without_call(
+            action="reservation_held",
+            verdict="HUMAN_REQUIRED",
+            findings=(
+                "interrupted exact-head audit kept its monthly reservation "
+                "and made no second paid call"
+            ),
+            actual_usd=float(held.get("accounted_usd") or held.get("ceiling_usd") or 0.0),
+            claimed_at=claimed_at,
+        )
+
+    if not isinstance(held, dict) and interrupted_claim is not None:
+        assert ledger is not None
+        reconciled = AuditClaim(
+            repository=repo,
+            issue_number=issue_number,
+            branch=branch_name,
+            target_sha=target,
+            claim_key=key,
+            state="completed",
+            month_id=interrupted_claim.month_id,
+            claimed_at=interrupted_claim.claimed_at,
+            lease_seconds=interrupted_claim.lease_seconds,
+            verdict="HUMAN_REQUIRED",
+            findings=_redact_findings(
+                "interrupted exact-head audit reconciled without a second paid call"
+            ),
+            telemetry=_sanitize_telemetry(
+                {"verdict": "HUMAN_REQUIRED", "duration_sec": 0.0, "target_sha": target},
+                target_sha=target,
+            ),
+        )
+        ledger.claims[key] = reconciled
+        store.save(ledger, expected_sha=blob_sha)
+        return _result(
+            "reconciled",
+            verdict="HUMAN_REQUIRED",
+            findings=reconciled.findings,
+            telemetry=reconciled.telemetry,
+            checkpoint_writes=store.writes - writes_before,
+        )
+
     if not os.environ.get(api_key_env, "").strip():
         return _result(
             "missing_key",
             verdict="HUMAN_REQUIRED",
             findings="OPENAI_API_KEY absent; Gate B real audit is HUMAN_REQUIRED",
         )
+    reserved, reservation_state = _reserve_ceiling(
+        store,
+        month_id=current_month,
+        repository=repo,
+        claim_key=key,
+        issue_number=issue_number,
+        target_sha=target,
+        ceiling=ceiling,
+        limits=limits,
+    )
+    if reserved != "reserved":
+        return _result(
+            "budget_blocked",
+            findings=str(reservation_state.get("findings") or "monthly budget exceeded"),
+            checkpoint_writes=store.writes - writes_before,
+        )
 
+    pre_reserve_spent = float(reservation_state["month_spent_usd"]) - ceiling
+    active_budget = _budget_for(limits, pre_reserve_spent)
     if ledger is None:
         ledger = IssueAuditLedger(
             repository=repo,
             issue_number=issue_number,
             month_id=current_month,
-            month_spent_usd=0.0,
         )
     elif ledger.month_id != current_month:
         ledger.month_id = current_month
-        ledger.month_spent_usd = 0.0
     claimed_at = clock()
     ledger.claims[key] = AuditClaim(
         repository=repo,
@@ -918,7 +1212,44 @@ def run_exact_head_audit(
             findings = f"{over}. {findings}"
     telemetry_raw["verdict"] = verdict
     telemetry_raw["estimated_cost_usd"] = cost
-    completed = AuditClaim(
+    usage_telemetry = _sanitize_telemetry(telemetry_raw, target_sha=target)
+    ledger.claims[key] = AuditClaim(
+        repository=repo,
+        issue_number=issue_number,
+        branch=branch_name,
+        target_sha=target,
+        claim_key=key,
+        state="claimed",
+        month_id=ledger.month_id,
+        claimed_at=claimed_at,
+        lease_seconds=lease_seconds,
+        verdict=verdict,
+        findings=_redact_findings(findings),
+        telemetry=usage_telemetry,
+    )
+    blob_sha = store.save(ledger, expected_sha=blob_sha)
+    try:
+        _settle_reservation(
+            store,
+            month_id=current_month,
+            repository=repo,
+            claim_key=key,
+            actual_usd=cost,
+        )
+    except CheckpointCasConflict:
+        if hasattr(auditor, "calls"):
+            called = int(auditor.calls)
+        else:
+            called = 1 if getattr(auditor, "last_request_body", None) is not None else 0
+        return _result(
+            "budget_settle_pending",
+            auditor_calls=called,
+            checkpoint_writes=store.writes - writes_before,
+            verdict=verdict,
+            findings=_redact_findings(findings),
+            telemetry=usage_telemetry,
+        )
+    ledger.claims[key] = AuditClaim(
         repository=repo,
         issue_number=issue_number,
         branch=branch_name,
@@ -930,16 +1261,9 @@ def run_exact_head_audit(
         lease_seconds=lease_seconds,
         verdict=verdict,
         findings=_redact_findings(findings),
-        telemetry=_sanitize_telemetry(telemetry_raw, target_sha=target),
+        telemetry=usage_telemetry,
     )
-    ledger.claims[key] = completed
     store.save(ledger, expected_sha=blob_sha)
-    store.save_month_spend(
-        current_month,
-        active_budget.month_spent_usd,
-        repository=repo,
-        expected_sha=budget_sha,
-    )
     if hasattr(auditor, "calls"):
         called = int(auditor.calls)
     else:
@@ -949,6 +1273,6 @@ def run_exact_head_audit(
         auditor_calls=called,
         checkpoint_writes=store.writes - writes_before,
         verdict=verdict,
-        findings=completed.findings,
-        telemetry=completed.telemetry,
+        findings=ledger.claims[key].findings,
+        telemetry=usage_telemetry,
     )
