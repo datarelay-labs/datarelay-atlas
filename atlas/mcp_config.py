@@ -39,6 +39,7 @@ class McpServeConfig:
     introspection_client_secret: str
     tls_cert: Path
     tls_key: Path
+    introspection_client_secret_file: Path | None = None
 
 
 def resolve_mcp_serve_config(
@@ -117,6 +118,7 @@ def resolve_mcp_serve_config(
         introspection_client_secret=resolved["introspection_client_secret"],
         tls_cert=cert,
         tls_key=key,
+        introspection_client_secret_file=Path(secret_file) if secret_file else None,
     )
 
 

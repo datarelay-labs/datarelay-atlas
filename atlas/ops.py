@@ -140,7 +140,10 @@ def require_ready_to_bind(
         TLS_CERT_ENV: str(config.tls_cert),
         TLS_KEY_ENV: str(config.tls_key),
     }
-    secret_file = env.get(INTROSPECTION_CLIENT_SECRET_FILE_ENV, "").strip()
+    if config.introspection_client_secret_file is not None:
+        secret_file = str(config.introspection_client_secret_file)
+    else:
+        secret_file = env.get(INTROSPECTION_CLIENT_SECRET_FILE_ENV, "").strip()
     inline_secret = env.get(INTROSPECTION_CLIENT_SECRET_ENV, "").strip()
     if secret_file and inline_secret:
         source[INTROSPECTION_CLIENT_SECRET_FILE_ENV] = secret_file

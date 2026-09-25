@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from atlas.cli import main
 from atlas.github_sync import FetchedSource
-from atlas.mcp_config import McpServeConfig
+from atlas.mcp_config import McpServeConfig, resolve_mcp_serve_config
 from atlas.ops import (
     assess_service_environment,
     data_root_runtime_ready,
@@ -253,6 +253,34 @@ class OpsCheckTests(unittest.TestCase):
             self.assertNotIn(str(root / "key.pem"), str(caught.exception))
             run.assert_not_called()
 
+    def test_cli_secret_file_flag_permissions_fail_before_bind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_env(root)
+            secret = root / "introspection-client-secret"
+            os.chmod(secret, 0o644)
+            config = _resolved_serve_config(root, secret)
+            self.assertEqual(config.introspection_client_secret_file, secret)
+            self.assertEqual(config.introspection_client_secret, SECRET)
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("uvicorn.Server.run", return_value=None) as run:
+                    with self.assertRaises(ValidationError) as caught:
+                        from atlas.mcp_http import serve_mcp
+
+                        serve_mcp(config)
+            message = str(caught.exception)
+            self.assertNotIn(SECRET, message)
+            self.assertNotIn(str(secret), message)
+            run.assert_not_called()
+
+            os.chmod(secret, 0o640)
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("uvicorn.Server.run", return_value=None) as run:
+                    from atlas.mcp_http import serve_mcp
+
+                    serve_mcp(config)
+            run.assert_called_once()
+
     def test_runbook_creates_account_before_ownership_and_checks_as_atlas(self):
         text = (ROOT / "docs" / "runbooks" / "phase2-production-service.md").read_text(
             encoding="utf-8"
@@ -289,6 +317,22 @@ def _sync_projection(data: Path) -> None:
     service.add_source("alpha", source_id="charter", source_path="docs/charter.md")
     service.sync_project("alpha", fetch=fetch)
     os.chmod(data, 0o750)
+
+
+def _resolved_serve_config(root: Path, secret: Path) -> McpServeConfig:
+    return resolve_mcp_serve_config(
+        data_root=root / "data",
+        bind_host="127.0.0.1",
+        port=8443,
+        resource_url="https://127.0.0.1:8443/mcp",
+        issuer_url="https://issuer.example",
+        introspection_url="https://issuer.example/oauth/introspect",
+        introspection_client_id="atlas-resource",
+        introspection_client_secret_file=str(secret),
+        tls_cert=str(root / "cert.pem"),
+        tls_key=str(root / "key.pem"),
+        environ={},
+    )
 
 
 def _serve_config(root: Path) -> McpServeConfig:
