@@ -25,6 +25,7 @@ from atlas.chat_audit_github import (
     resolve_checkpoint_store,
 )
 from atlas.codex_audit import CodexAuditProvider
+from atlas.host_worker import load_host_worker_config, run_once
 from atlas.ops import assess_service_environment, stage_unit
 from atlas.provenance import ValidationError
 from atlas.semantic_retrieval import embedding_config_from_cli
@@ -864,6 +865,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ca_roll.set_defaults(func=cmd_ca_rollover)
 
+    hw = sub.add_parser(
+        "host-worker",
+        help="Host-local Cursor resume worker (Issue #47 slice A)",
+    )
+    hw_sub = hw.add_subparsers(dest="hw_command", required=True)
+    hw_run = hw_sub.add_parser(
+        "run-once",
+        help="Locked idle pass with zero model and zero Cursor calls",
+    )
+    hw_run.add_argument(
+        "--descriptors",
+        required=True,
+        help="Host-local descriptor file. Lock identity is derived from it.",
+    )
+    hw_run.set_defaults(func=cmd_host_worker_run_once)
+
     ops = sub.add_parser("ops", help="Service configuration and health")
     ops_sub = ops.add_subparsers(dest="ops_command", required=True)
     ops_check = ops_sub.add_parser(
@@ -884,6 +901,15 @@ def build_parser() -> argparse.ArgumentParser:
     ops_stage.set_defaults(func=cmd_ops_stage)
 
     return parser
+
+
+def cmd_host_worker_run_once(args: argparse.Namespace) -> int:
+    outcome = run_once(
+        config=load_host_worker_config(Path(args.descriptors)),
+        resume_requested=False,
+    )
+    _print_json(outcome)
+    return 0
 
 
 def cmd_ops_check(args: argparse.Namespace) -> int:

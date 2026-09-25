@@ -1726,6 +1726,21 @@ class Identity:
     head: str
 
 
+def assert_checkpoint_matches_identity(
+    packet: AuditControlPacket,
+    identity: Identity,
+    *,
+    require_head: bool,
+) -> None:
+    """Fail closed when a checkpoint is not bound to this repo, branch, and SHA."""
+    if packet.target_repository != identity.repository:
+        raise ValidationError("stale repository: checkpoint/repo mismatch")
+    if packet.target_branch != identity.branch:
+        raise ValidationError("stale branch: checkpoint/branch mismatch")
+    if require_head and packet.current_target_sha != identity.head:
+        raise ValidationError("stale HEAD: checkpoint/HEAD mismatch")
+
+
 IdentityResolver = Callable[[], Identity]
 
 
@@ -1888,12 +1903,9 @@ class ChatAuditController:
         *,
         require_head: bool,
     ) -> None:
-        if packet.target_repository != identity.repository:
-            raise ValidationError("stale repository: checkpoint/repo mismatch")
-        if packet.target_branch != identity.branch:
-            raise ValidationError("stale branch: checkpoint/branch mismatch")
-        if require_head and packet.current_target_sha != identity.head:
-            raise ValidationError("stale HEAD: checkpoint/HEAD mismatch")
+        assert_checkpoint_matches_identity(
+            packet, identity, require_head=require_head
+        )
 
     def show(
         self,
