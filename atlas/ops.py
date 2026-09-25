@@ -20,11 +20,14 @@ from atlas.mcp_config import (
     INTROSPECTION_CLIENT_SECRET_FILE_ENV,
     INTROSPECTION_URL_ENV,
     ISSUER_URL_ENV,
+    McpServeConfig,
     RESOURCE_URL_ENV,
     TLS_CERT_ENV,
     TLS_KEY_ENV,
     resolve_mcp_serve_config,
 )
+from atlas.projection import ProjectionStore
+from atlas.projection_retrieval import INDEXABLE_SYNC_STATES, build_keyword_retriever
 from atlas.provenance import ValidationError
 from atlas.registry import REGISTRY_SCHEMA_VERSION
 from atlas.semantic_retrieval import EmbeddingConfig, validate_embedding_config
@@ -88,6 +91,7 @@ def validate_unit_text(text: str) -> None:
         "User=atlas\n",
         "Group=atlas\n",
         "EnvironmentFile=/etc/datarelay-atlas/service.env\n",
+        "ExecStartPre=/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --env-file /etc/datarelay-atlas/service.env\n",
         "ExecStart=/opt/datarelay-atlas/.venv/bin/python -m atlas mcp serve\n",
         "NoNewPrivileges=true\n",
         "WantedBy=multi-user.target\n",
@@ -113,6 +117,41 @@ def data_root_runtime_ready(data_root: Path) -> bool:
     if metadata.exists() and not _projection_metadata_ready(metadata):
         return False
     return True
+
+
+def require_ready_to_bind(
+    config: McpServeConfig,
+    environ: dict[str, str] | None = None,
+) -> None:
+    """Refuse to bind when resolved service configuration is not ready.
+
+    This is the serve-path equivalent of ``ops check``. It assesses the
+    configuration the process will actually use. The systemd unit also runs
+    ``ops check --env-file`` in ``ExecStartPre`` so a world-accessible env file
+    or unknown key never reaches this process.
+    """
+    env = os.environ if environ is None else environ
+    source = {
+        "ATLAS_DATA_ROOT": str(config.data_root),
+        RESOURCE_URL_ENV: config.resource_url,
+        ISSUER_URL_ENV: config.issuer_url,
+        INTROSPECTION_URL_ENV: config.introspection_url,
+        INTROSPECTION_CLIENT_ID_ENV: config.introspection_client_id,
+        TLS_CERT_ENV: str(config.tls_cert),
+        TLS_KEY_ENV: str(config.tls_key),
+    }
+    secret_file = env.get(INTROSPECTION_CLIENT_SECRET_FILE_ENV, "").strip()
+    inline_secret = env.get(INTROSPECTION_CLIENT_SECRET_ENV, "").strip()
+    if secret_file and inline_secret:
+        source[INTROSPECTION_CLIENT_SECRET_FILE_ENV] = secret_file
+        source[INTROSPECTION_CLIENT_SECRET_ENV] = inline_secret
+    elif secret_file:
+        source[INTROSPECTION_CLIENT_SECRET_FILE_ENV] = secret_file
+    else:
+        source[INTROSPECTION_CLIENT_SECRET_ENV] = config.introspection_client_secret
+    report = assess_service_environment(source)
+    if report["status"] != "ready":
+        raise ValidationError("mcp serve configuration is not ready")
 
 
 def assess_service_environment(
@@ -328,10 +367,34 @@ def _registry_file_ready(path: Path) -> bool:
 
 
 def _projection_metadata_ready(path: Path) -> bool:
+    """True when indexable records are acceptable to the serving retriever.
+
+    Non-indexable records are ignored, matching ``build_keyword_retriever``.
+    A projections object alone is not enough: malformed indexable records,
+    missing documents, and digest mismatches are not ready.
+    """
     data = _read_json_object(path)
-    if data is None:
+    if data is None or not isinstance(data.get("projections"), dict):
         return False
-    return isinstance(data.get("projections"), dict)
+    project_ids: set[str] = set()
+    for meta in data["projections"].values():
+        if not isinstance(meta, dict):
+            return False
+        if meta.get("sync_state") not in INDEXABLE_SYNC_STATES:
+            continue
+        project_id = meta.get("project_id")
+        if not isinstance(project_id, str) or not project_id.strip():
+            return False
+        project_ids.add(project_id)
+    if not project_ids:
+        return True
+    store = ProjectionStore(path.parent)
+    try:
+        for project_id in sorted(project_ids):
+            build_keyword_retriever(store, project_id)
+    except ValidationError:
+        return False
+    return True
 
 
 def _read_json_object(path: Path) -> dict | None:

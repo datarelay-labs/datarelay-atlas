@@ -30,11 +30,14 @@ tokens.
 ## Install
 
 Run on the staging host. Do not point these commands at `prod-atlas`.
+Create the `atlas` group and user before any `install` command that assigns
+`atlas` ownership.
 
 ```bash
+sudo groupadd --system atlas
+sudo useradd --system --gid atlas --home /var/lib/datarelay-atlas --shell /usr/sbin/nologin atlas
 sudo install -d -o root -g atlas -m 0750 /etc/datarelay-atlas /etc/datarelay-atlas/tls
 sudo install -d -o atlas -g atlas -m 0750 /var/lib/datarelay-atlas
-sudo useradd --system --home /var/lib/datarelay-atlas --shell /usr/sbin/nologin atlas
 sudo install -d -o atlas -g atlas -m 0755 /opt/datarelay-atlas
 sudo rsync -a --exclude .venv ./ /opt/datarelay-atlas/
 sudo -u atlas python3 -m venv /opt/datarelay-atlas/.venv
@@ -51,12 +54,21 @@ sudo systemctl enable --now datarelay-atlas.service
 
 `ops stage` copies the unit into the destination directory. It does not call
 `systemctl` and does not need root. Enable the unit only after `ops check`
-reports ready.
+reports ready. The unit's `ExecStartPre` runs that same check before every
+start, so a world-accessible env file, secret, or TLS key, or an unknown or
+conflicting setting, does not reach `mcp serve`.
 
 ## Config check
 
+The installed env, introspection secret, and TLS key are `root:atlas` mode
+`0640`. A normal operator account cannot read them. Run the check as `atlas`
+with the installed interpreter:
+
 ```bash
-PYTHONPATH=. python3 -m atlas ops check --env-file /etc/datarelay-atlas/service.env
+sudo --user atlas --group atlas \
+  env PYTHONPATH=/opt/datarelay-atlas \
+  /opt/datarelay-atlas/.venv/bin/python -m atlas ops check \
+  --env-file /etc/datarelay-atlas/service.env
 ```
 
 Exit 0 prints `"status": "ready"`. Exit 1 lists missing setting names and
@@ -87,9 +99,11 @@ curl --silent --show-error --fail --cacert /etc/datarelay-atlas/tls/cert.pem \
 
 A ready process responds `{"status":"ready"}`. If the data root is missing, or
 `registry.json` or `projections/projections.json` is present but unreadable or
-unsupported, the response is HTTP 503 `{"status":"not_ready"}`. Neither body
-includes projects, paths, tokens, or error detail. `/healthz` does not require
-a bearer token. MCP tools still require `atlas.read`.
+unsupported, or an indexable projection record is malformed, missing its
+document, or digest-mismatched, the response is HTTP 503
+`{"status":"not_ready"}`. Neither body includes projects, paths, tokens, or
+error detail. `/healthz` does not require a bearer token. MCP tools still
+require `atlas.read`.
 
 Stop the service before changing the env file or TLS key, then check config
 again and start it. This runbook does not restore or roll back durable state.

@@ -29,7 +29,7 @@ from starlette.responses import JSONResponse
 from atlas.mcp_auth import HttpxIntrospectionTransport, Rfc7662TokenVerifier
 from atlas.mcp_config import McpServeConfig
 from atlas.mcp_context import AtlasContextTools
-from atlas.ops import data_root_runtime_ready
+from atlas.ops import data_root_runtime_ready, require_ready_to_bind
 from atlas.provenance import ValidationError
 from atlas.security import READ_SCOPE
 from atlas.service import AtlasService
@@ -75,6 +75,7 @@ def build_mcp_application(
 
 def serve_mcp(config: McpServeConfig) -> None:
     """Bind the MCP app with the operator TLS certificate. Blocks until exit."""
+    require_ready_to_bind(config)
     import uvicorn
 
     service = AtlasService(config.data_root)

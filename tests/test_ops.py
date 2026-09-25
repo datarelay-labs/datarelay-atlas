@@ -12,8 +12,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from atlas.cli import main
-from atlas.ops import assess_service_environment, data_root_runtime_ready, stage_unit
+from atlas.github_sync import FetchedSource
+from atlas.mcp_config import McpServeConfig
+from atlas.ops import (
+    assess_service_environment,
+    data_root_runtime_ready,
+    stage_unit,
+    validate_unit_text,
+)
 from atlas.provenance import ValidationError
+from atlas.service import AtlasService
 
 ROOT = Path(__file__).resolve().parents[1]
 SECRET = "ops-introspection-secret"
@@ -152,6 +160,12 @@ class OpsCheckTests(unittest.TestCase):
             self.assertNotIn("User=root", text)
             self.assertIn("NoNewPrivileges=true\n", text)
             self.assertIn("python -m atlas mcp serve\n", text)
+            self.assertIn(
+                "ExecStartPre=/opt/datarelay-atlas/.venv/bin/python -m atlas ops check "
+                "--env-file /etc/datarelay-atlas/service.env\n",
+                text,
+            )
+            self.assertLess(text.index("ExecStartPre="), text.index("ExecStart="))
             self.assertNotIn("backup", text)
             self.assertNotIn("rollback", text)
             mode = stat.S_IMODE(target.stat().st_mode)
@@ -175,6 +189,130 @@ class OpsCheckTests(unittest.TestCase):
     def test_missing_env_file_fails_closed(self):
         with self.assertRaises(ValidationError):
             assess_service_environment({}, env_file=Path("/tmp/atlas-missing-service.env"))
+
+    def test_unit_without_prestart_check_is_rejected(self):
+        text = (ROOT / "deploy" / "systemd" / "datarelay-atlas.service").read_text(
+            encoding="utf-8"
+        )
+        broken = text.replace("ExecStartPre=", "ExecStartPreRemoved=", 1)
+        with self.assertRaises(ValidationError):
+            validate_unit_text(broken)
+
+    def test_indexable_projection_defects_are_not_runtime_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            _sync_projection(data)
+            self.assertTrue(data_root_runtime_ready(data))
+            meta_path = data / "projections" / "projections.json"
+            document = data / "projections" / "alpha" / "charter.md"
+            original = meta_path.read_text(encoding="utf-8")
+
+            mismatched = json.loads(original)
+            for record in mismatched["projections"].values():
+                record["content_digest"] = "0" * 64
+            meta_path.write_text(json.dumps(mismatched), encoding="utf-8")
+            self.assertFalse(data_root_runtime_ready(data))
+
+            meta_path.write_text(original, encoding="utf-8")
+            document.unlink()
+            self.assertFalse(data_root_runtime_ready(data))
+
+            meta_path.write_text(original, encoding="utf-8")
+            malformed = json.loads(original)
+            for record in malformed["projections"].values():
+                record["provenance"] = {}
+            meta_path.write_text(json.dumps(malformed), encoding="utf-8")
+            self.assertFalse(data_root_runtime_ready(data))
+
+    def test_non_indexable_projection_defect_stays_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            _sync_projection(data)
+            meta_path = data / "projections" / "projections.json"
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            for record in payload["projections"].values():
+                record["sync_state"] = "failed"
+                record["content_digest"] = "not-a-digest"
+            meta_path.write_text(json.dumps(payload), encoding="utf-8")
+            (data / "projections" / "alpha" / "charter.md").unlink()
+            self.assertTrue(data_root_runtime_ready(data))
+
+    def test_serve_refuses_world_readable_tls_key_before_bind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = _write_env(root)
+            report = assess_service_environment({}, env_file=env)
+            self.assertEqual(report["status"], "ready")
+            config = _serve_config(root)
+            os.chmod(root / "key.pem", 0o644)
+            with patch("uvicorn.Server.run", return_value=None) as run:
+                with self.assertRaises(ValidationError) as caught:
+                    from atlas.mcp_http import serve_mcp
+
+                    serve_mcp(config)
+            self.assertNotIn(str(root / "key.pem"), str(caught.exception))
+            run.assert_not_called()
+
+    def test_runbook_creates_account_before_ownership_and_checks_as_atlas(self):
+        text = (ROOT / "docs" / "runbooks" / "phase2-production-service.md").read_text(
+            encoding="utf-8"
+        )
+        blocks = _bash_blocks(text)
+        install = blocks[0]
+        lines = install.splitlines()
+        account_at = min(
+            index
+            for index, line in enumerate(lines)
+            if "groupadd" in line or "useradd" in line
+        )
+        owned_at = min(
+            index
+            for index, line in enumerate(lines)
+            if "-g atlas" in line or "-o atlas" in line
+        )
+        self.assertLess(account_at, owned_at)
+        self.assertLess(install.index("groupadd"), install.index("useradd"))
+        self.assertLess(install.index("useradd"), install.index("install -d"))
+        check = blocks[1]
+        self.assertIn("sudo --user atlas --group atlas", check)
+        self.assertIn("/opt/datarelay-atlas/.venv/bin/python -m atlas ops check", check)
+        self.assertIn("--env-file /etc/datarelay-atlas/service.env", check)
+        self.assertNotIn("PYTHONPATH=. python3 -m atlas ops check", check)
+
+
+def _sync_projection(data: Path) -> None:
+    def fetch(source, token):  # noqa: ARG001
+        return FetchedSource(content="alpha body", source_revision="rev-1")
+
+    service = AtlasService(data)
+    service.register_project(project_id="alpha", repository="datarelay-labs/alpha")
+    service.add_source("alpha", source_id="charter", source_path="docs/charter.md")
+    service.sync_project("alpha", fetch=fetch)
+    os.chmod(data, 0o750)
+
+
+def _serve_config(root: Path) -> McpServeConfig:
+    data = root / "data"
+    os.chmod(data, 0o750)
+    return McpServeConfig(
+        data_root=data,
+        bind_host="127.0.0.1",
+        port=8443,
+        resource_url="https://127.0.0.1:8443/mcp",
+        issuer_url="https://issuer.example",
+        introspection_url="https://issuer.example/oauth/introspect",
+        introspection_client_id="atlas-resource",
+        introspection_client_secret=SECRET,
+        tls_cert=root / "cert.pem",
+        tls_key=root / "key.pem",
+    )
+
+
+def _bash_blocks(text: str) -> list[str]:
+    blocks: list[str] = []
+    for part in text.split("```bash\n")[1:]:
+        blocks.append(part.split("```", 1)[0])
+    return blocks
 
 
 if __name__ == "__main__":

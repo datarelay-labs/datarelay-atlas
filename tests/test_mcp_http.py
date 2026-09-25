@@ -579,6 +579,25 @@ class McpHttpTests(unittest.TestCase):
                 self.assertEqual(corrupt.status_code, 503)
                 self.assertEqual(corrupt.json(), {"status": "not_ready"})
 
+    def test_healthz_rejects_projection_digest_mismatch_without_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            resource = "https://127.0.0.1:8443/mcp"
+            app, data = self._app(root, resource)
+            with TestClient(app, base_url="http://127.0.0.1:8443") as client:
+                self.assertEqual(client.get("/healthz").status_code, 200)
+                meta_path = data / "projections" / "projections.json"
+                payload = json.loads(meta_path.read_text(encoding="utf-8"))
+                for record in payload["projections"].values():
+                    record["content_digest"] = "0" * 64
+                meta_path.write_text(json.dumps(payload), encoding="utf-8")
+                rejected = client.get("/healthz")
+                self.assertEqual(rejected.status_code, 503)
+                self.assertEqual(rejected.json(), {"status": "not_ready"})
+                self.assertNotIn("0" * 64, rejected.text)
+                self.assertNotIn("charter", rejected.text)
+                self.assertNotIn("rev-alpha", rejected.text)
+
     def test_https_client_round_trip_is_project_scoped(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -681,6 +700,7 @@ class McpHttpsSmokeTests(unittest.TestCase):
             root = Path(tmp)
             data = root / "data"
             _seed(data)
+            os.chmod(data, 0o750)
             cert_path, key_path = _cert(root)
             port = _free_port()
             resource = f"https://127.0.0.1:{port}/mcp"

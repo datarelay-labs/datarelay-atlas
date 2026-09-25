@@ -51,7 +51,8 @@ durable-state half:
 4. **State / migration impact** — No new durable schema and no migration.
    Readiness fails closed when `registry.json` or
    `projections/projections.json` is present but unreadable or structurally
-   unsupported. Unsupported state is not rewritten.
+   unsupported, and when an indexable projection record is malformed, missing
+   its document, or digest-mismatched. Unsupported state is not rewritten.
 5. **Security / operations impact** — The unit user and group are `atlas`, not
    root. `NoNewPrivileges=true` and `UMask=0077`. TLS private keys, inline
    secrets, and the env file must not be world-accessible. The certificate may
@@ -74,7 +75,11 @@ durable-state half:
 
 1. Ship one system unit that starts `.venv/bin/python -m atlas mcp serve` as
    `atlas:atlas`, reads `/etc/datarelay-atlas/service.env`, and writes only
-   `/var/lib/datarelay-atlas`.
+   `/var/lib/datarelay-atlas`. `ExecStartPre` runs
+   `python -m atlas ops check --env-file /etc/datarelay-atlas/service.env` and
+   must succeed before the process starts. `mcp serve` also refuses to bind
+   when the resolved configuration fails that permission and readiness
+   assessment.
 2. Treat that env file as the service configuration. `ops check --env-file`
    does not consult the ambient process environment. Mandatory MCP and TLS
    settings must be present and valid before the report is `ready`.
@@ -82,8 +87,9 @@ durable-state half:
    Semantic settings are optional; a partial set is not ready. Unknown keys
    fail closed.
 3. Publish `GET /healthz` on the existing TLS server without authentication.
-   Ready means the data root is a real directory and any existing registry or
-   projection metadata parses and matches the structure this code can read.
+   Ready means the data root is a real directory, any existing registry
+   metadata parses at the supported schema, and any indexable projection
+   records and document bytes are acceptable to the serving retriever.
 4. Set `operations.health_command` to `python -m atlas ops check --env-file`.
    Do not set `production_oriented: true` and do not invent upgrade, rollback,
    or replacement backup commands in this change.

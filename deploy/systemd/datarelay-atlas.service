@@ -13,6 +13,7 @@ Environment=PYTHONPATH=/opt/datarelay-atlas
 Environment=PYTHONDONTWRITEBYTECODE=1
 EnvironmentFile=/etc/datarelay-atlas/service.env
 WorkingDirectory=/opt/datarelay-atlas
+ExecStartPre=/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --env-file /etc/datarelay-atlas/service.env
 ExecStart=/opt/datarelay-atlas/.venv/bin/python -m atlas mcp serve
 Restart=on-failure
 RestartSec=5
