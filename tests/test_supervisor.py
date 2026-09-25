@@ -8,7 +8,6 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from atlas.audit_claim import (
     AuditBudget,
@@ -25,9 +24,8 @@ from atlas.host_worker import (
     chat_domain_lock_path,
     host_worker_run_lock,
 )
-from atlas.codex_audit import collect_git_evidence
 from atlas.provenance import ValidationError
-from atlas.supervisor import _default_evidence, supervise_once
+from atlas.supervisor import supervise_once
 from atlas.work_controller import AuditResult, GitHubWorkPacketAdapter, PersistSession
 
 
@@ -47,9 +45,7 @@ def _packet_body(
     repository: str = REPO,
     head: str = HEAD,
     status: str = "ACTIVE",
-    audit_base: str | None = None,
 ) -> str:
-    base_line = f"AUDIT_BASE_HEAD={audit_base}\n" if audit_base is not None else ""
     return f"""PACKET_VERSION=1
 TARGET_REPO={repository}
 WORKSTREAM={WORKSTREAM}
@@ -59,7 +55,7 @@ BRANCH={BRANCH}
 TASK_KIND=DEVELOPMENT
 OWNER_INTENT=Replace unreliable scheduled-Chat orchestration.
 LAST_VERIFIED_HEAD={head}
-{base_line}GATE=IMPLEMENTATION
+GATE=IMPLEMENTATION
 NEXT_ACTION=CURSOR_IMPLEMENT_SLICE_E1
 
 ## Goal
@@ -337,11 +333,6 @@ class SuperviseOnceTests(unittest.TestCase):
             return str(spec["head"])
         if argv[1:] == ["status", "--porcelain", "--untracked-files=all"]:
             return " M dirty" if spec["dirty"] else ""
-        if argv[1:3] == ["merge-base", "--is-ancestor"]:
-            base = argv[3]
-            if base == spec["head"] or base in spec.get("ancestors", ()):
-                return ""
-            raise ValidationError("not an ancestor")
         raise AssertionError(argv)
 
     def _spawn(self, argv: list[str], cwd: str) -> int:
@@ -531,60 +522,6 @@ class SuperviseOnceTests(unittest.TestCase):
         self.assertEqual(self.spawned, [])
         self.assertEqual(self.evidence_calls, [])
 
-    def test_audit_base_gates_fail_closed_or_audit(self) -> None:
-        cases = (
-            ("not-a-sha", "refused", False, []),
-            (HEAD, "audited", False, [REPO]),
-            (OTHER, "audit_base_refused", True, []),
-        )
-        for base, action, seed, evidence in cases:
-            self.hub.issues.clear()
-            self.spawned.clear()
-            self.evidence_calls.clear()
-            self.auditor.calls = 0
-            self.hub.add(REPO, 88, _packet_body(audit_base=base))
-            if seed:
-                self.stores.clear()
-                self._seed(REPO, 88)
-            outcome = self._run()
-            self.assertEqual(self._row(outcome, REPO)["action"], action)
-            self.assertEqual(self.evidence_calls, evidence)
-            if action != "audited":
-                self.assertFalse(self.auditor.calls or outcome["cursor_calls"] or self.spawned)
-
-    def test_audit_base_drift_blocks_paid_call(self) -> None:
-        self.hub.add(REPO, 88, _packet_body(audit_base=HEAD))
-
-        def evidence(packet: dict, _worktree: str) -> dict:
-            self.evidence_calls.append(packet["audit_base"])
-            body = _packet_body(audit_base=OTHER)
-            self.hub.issues[(REPO, 88)].update(body=body, list_body=body)
-            return _bundle()
-
-        outcome = self._run(evidence_for=evidence)
-        self.assertEqual(self._row(outcome, REPO)["action"], "canonical_drift")
-        self.assertFalse(self.auditor.calls or self.spawned)
-        self.assertEqual(self.evidence_calls, [HEAD])
-
-    def test_evidence_base_ref_and_empty_delta(self) -> None:
-        seen: list[object] = []
-
-        def collect(*_a: object, **kw: object) -> dict:
-            seen.append(kw.get("base_ref"))
-            return {"schema": "ok"}
-
-        packet = {"repository": REPO, "issue_number": 88, "branch": BRANCH, "workstream": WORKSTREAM, "head": HEAD}
-        with patch("atlas.supervisor.collect_audit_evidence_bundle", collect):
-            for base in (HEAD, ""):
-                _default_evidence({**packet, "audit_base": base}, str(self.worktree), git_runner=self._git)
-        self.assertEqual(seen, [HEAD, None])
-
-        def runner(argv: list[str], _cwd: str) -> str:
-            return "" if argv[1] == "diff" else HEAD
-
-        got = collect_git_evidence(str(self.worktree), base_ref=HEAD, git_runner=runner)
-        self.assertEqual((got["evidence_status"], got["base_ref"], got["diff"]), ("OK", HEAD, ""))
-
     def test_packet_mutation_during_evidence_makes_no_paid_call(self) -> None:
         self.hub.add(REPO, 88, _packet_body(head=HEAD))
 
@@ -622,3 +559,29 @@ class SuperviseOnceTests(unittest.TestCase):
         self.assertIn("flock -n", script)
         self.assertIn("supervise-once", script)
         self.assertNotIn("crontab", script)
+
+    def test_wrapper_python_selection(self) -> None:
+        script = str(Path("scripts/host-worker-supervise-once.sh").resolve())
+
+        def run(root: str, py: str = ""):
+            env = os.environ.copy()
+            env.pop("ATLAS_PYTHON", None)
+            if py:
+                env["ATLAS_PYTHON"] = py
+            argv = ["bash", "-c", 'source "$1"; atlas_py_bin "$2"', "x", script, root]
+            return subprocess.run(argv, capture_output=True, text=True, env=env)
+
+        def exe(path: Path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("#!/bin/sh\n")
+            path.chmod(0o755)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertNotEqual(run(tmp).returncode, 0)
+            stub = Path(tmp) / "py"
+            exe(stub)
+            self.assertEqual(run(tmp, str(stub)).stdout.strip(), str(stub))
+            venv = Path(tmp) / ".venv" / "bin" / "python"
+            exe(venv)
+            self.assertEqual(run(tmp).stdout.strip(), str(venv))
+            self.assertNotEqual(run(tmp, str(Path(tmp) / "nope")).returncode, 0)

@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Callable
@@ -364,7 +365,7 @@ def collect_test_evidence(
     env["PYTHONPATH"] = cwd + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )
-    argv = ["python3", "-m", "unittest", "discover", "-s", "tests", "-v"]
+    argv = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
     try:
         if command_runner is not None:
             completed = command_runner(argv, cwd)

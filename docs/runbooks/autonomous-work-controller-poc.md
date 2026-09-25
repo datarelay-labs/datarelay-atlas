@@ -302,17 +302,14 @@ audit and no Cursor dispatch. A completed exact-HEAD claim uses the existing
 disposition path. An audit-ready HEAD with no completed claim uses the
 existing claim and final-audit path, at most once per project per pass.
 
-Do not install a crontab in the E1 slice. A later host rollout can call:
+Do not install a crontab in the E1 slice. Roll out with the wrapper:
 
 ```bash
-flock -n "$HOME/.local/state/datarelay-atlas/supervise-once.lock" \
-  python3 -m atlas host-worker supervise-once \
-  --descriptors /var/lib/atlas/host-descriptors.json
+scripts/host-worker-supervise-once.sh /var/lib/atlas/host-descriptors.json
 ```
 
-`scripts/host-worker-supervise-once.sh` is the same contract. The Python
-pass also holds `<state_root>/supervise-once.lock`. Neither path installs
-systemd or a crontab, and neither accepts an issue number.
+`ATLAS_PYTHON`, when executable, overrides `<repo>/.venv/bin/python`.
+Otherwise it exits nonzero.
 
 ## Telegram / notify
 

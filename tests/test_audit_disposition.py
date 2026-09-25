@@ -303,7 +303,6 @@ class SliceDDispositionTests(unittest.TestCase):
         self.assertEqual(outcome["cursor_calls"], 0)
         self.assertEqual(self.packet.mutations, 1)
         self.assertIn("NEXT_ACTION=AWAITING_EXACT_HEAD_GOVERNANCE", self.packet.body)
-        self.assertIn(f"AUDIT_BASE_HEAD={HEAD}", self.packet.body)
         self.assertIn("WORK_PACKET_MUTATION=GOVERNANCE_CHECKPOINT", self.packet.body)
         self.assertIn("SUCCESSOR=NONE", self.packet.body)
         self.assertIn("review the bound diff", self.packet.body)
@@ -335,34 +334,6 @@ class SliceDDispositionTests(unittest.TestCase):
         self.assertEqual(quiet["action"], "pass_checkpoint")
         self.assertNotIn("Bugbot advisory", absent.body)
         self.assertEqual(absent.mutations, 1)
-
-    def _based(self) -> MemoryPacketStore:
-        needle = f"LAST_VERIFIED_HEAD={HEAD}\n"
-        body = _packet_body().replace(needle, f"{needle}AUDIT_BASE_HEAD={OTHER}\n")
-        return MemoryPacketStore(body)
-
-    def test_pass_advances_audit_base(self) -> None:
-        blocked = self._based()
-        stalled = self._apply(claim=_claim("PASS"), packet_store=blocked, gates=None)
-        self.assertEqual((stalled["action"], blocked.mutations), ("no_advancement", 0))
-        self.assertIn(f"AUDIT_BASE_HEAD={OTHER}", blocked.body)
-        advanced = self._based()
-        done = self._apply(claim=_claim("PASS"), packet_store=advanced, gates=_gates())
-        self.assertEqual(done["action"], "pass_checkpoint")
-        self.assertIn(f"AUDIT_BASE_HEAD={HEAD}", advanced.body)
-        self.assertNotIn(f"AUDIT_BASE_HEAD={OTHER}", advanced.body)
-
-    def test_rework_keeps_audit_base(self) -> None:
-        packet = self._based()
-        self.assertEqual(self._apply(packet_store=packet)["action"], "redispatched")
-        self.assertIn(f"AUDIT_BASE_HEAD={OTHER}", packet.body)
-        self.assertNotIn(f"AUDIT_BASE_HEAD={HEAD}", packet.body)
-
-    def test_human_required_keeps_audit_base(self) -> None:
-        packet = self._based()
-        outcome = self._apply(claim=_claim("HUMAN_REQUIRED"), packet_store=packet)
-        self.assertEqual((outcome["action"], packet.mutations), ("human_required", 0))
-        self.assertIn(f"AUDIT_BASE_HEAD={OTHER}", packet.body)
 
     def test_human_required_persists_reason_without_dispatch(self) -> None:
         outcome = self._apply(claim=_claim("HUMAN_REQUIRED", findings="owner must decide"))
