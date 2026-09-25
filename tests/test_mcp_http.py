@@ -198,6 +198,7 @@ class McpConfigTests(unittest.TestCase):
             root = Path(tmp)
             secret_path = root / "introspection-secret"
             secret_path.write_text(SECRET + "\n", encoding="utf-8")
+            os.chmod(secret_path, 0o640)
             cert_path, key_path = _cert(root)
             config = resolve_mcp_serve_config(
                 data_root=root,

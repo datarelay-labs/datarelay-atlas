@@ -22,6 +22,8 @@ from atlas.mcp_config import (
     ISSUER_URL_ENV,
     McpServeConfig,
     RESOURCE_URL_ENV,
+    SECRET_SOURCE_ENV_FILE,
+    SECRET_SOURCE_FLAG_FILE,
     TLS_CERT_ENV,
     TLS_KEY_ENV,
     resolve_mcp_serve_config,
@@ -140,11 +142,23 @@ def require_ready_to_bind(
         TLS_CERT_ENV: str(config.tls_cert),
         TLS_KEY_ENV: str(config.tls_key),
     }
-    if config.introspection_client_secret_file is not None:
+    if (
+        config.introspection_client_secret_source == SECRET_SOURCE_FLAG_FILE
+        and config.introspection_client_secret_file is not None
+    ):
+        # The explicit flag already won. Do not rebuild a conflict from the
+        # ambient inline secret that resolution discarded.
         secret_file = str(config.introspection_client_secret_file)
+        inline_secret = ""
+    elif (
+        config.introspection_client_secret_source == SECRET_SOURCE_ENV_FILE
+        and config.introspection_client_secret_file is not None
+    ):
+        secret_file = str(config.introspection_client_secret_file)
+        inline_secret = env.get(INTROSPECTION_CLIENT_SECRET_ENV, "").strip()
     else:
         secret_file = env.get(INTROSPECTION_CLIENT_SECRET_FILE_ENV, "").strip()
-    inline_secret = env.get(INTROSPECTION_CLIENT_SECRET_ENV, "").strip()
+        inline_secret = env.get(INTROSPECTION_CLIENT_SECRET_ENV, "").strip()
     if secret_file and inline_secret:
         source[INTROSPECTION_CLIENT_SECRET_FILE_ENV] = secret_file
         source[INTROSPECTION_CLIENT_SECRET_ENV] = inline_secret

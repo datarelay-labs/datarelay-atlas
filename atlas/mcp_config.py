@@ -7,6 +7,7 @@ operator-supplied files. Nothing in this module reads or writes Git.
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -25,6 +26,9 @@ BIND_HOST_ENV = "ATLAS_MCP_BIND_HOST"
 BIND_PORT_ENV = "ATLAS_MCP_BIND_PORT"
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
+SECRET_SOURCE_FLAG_FILE = "flag_file"
+SECRET_SOURCE_ENV_FILE = "env_file"
+SECRET_SOURCE_INLINE = "inline"
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,7 @@ class McpServeConfig:
     tls_cert: Path
     tls_key: Path
     introspection_client_secret_file: Path | None = None
+    introspection_client_secret_source: str = SECRET_SOURCE_INLINE
 
 
 def resolve_mcp_serve_config(
@@ -62,9 +67,16 @@ def resolve_mcp_serve_config(
     ``introspection_client_secret_file``. It is never taken from a raw flag.
     """
     env = os.environ if environ is None else environ
+    flag_secret_file = (introspection_client_secret_file or "").strip()
     secret_file = _flag_or_env(
         introspection_client_secret_file, env, INTROSPECTION_CLIENT_SECRET_FILE_ENV
     )
+    if secret_file and flag_secret_file:
+        secret_source = SECRET_SOURCE_FLAG_FILE
+    elif secret_file:
+        secret_source = SECRET_SOURCE_ENV_FILE
+    else:
+        secret_source = SECRET_SOURCE_INLINE
     resolved = {
         "resource_url": _flag_or_env(resource_url, env, RESOURCE_URL_ENV),
         "issuer_url": _flag_or_env(issuer_url, env, ISSUER_URL_ENV),
@@ -119,6 +131,7 @@ def resolve_mcp_serve_config(
         tls_cert=cert,
         tls_key=key,
         introspection_client_secret_file=Path(secret_file) if secret_file else None,
+        introspection_client_secret_source=secret_source,
     )
 
 
@@ -130,6 +143,8 @@ def _resolve_introspection_client_secret(
         path = Path(secret_file.strip())
         if not path.is_file():
             raise ValidationError("introspection client secret file is missing")
+        if bool(path.stat().st_mode & stat.S_IRWXO):
+            raise ValidationError("introspection client secret file is not ready")
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as exc:
