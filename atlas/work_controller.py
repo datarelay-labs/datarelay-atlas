@@ -1074,6 +1074,22 @@ def _packet_metadata_value(body: str, key: str) -> str | None:
     return _parse_leading_packet_metadata(body).get(key)
 
 
+def optional_audit_base_head(meta: dict[str, str]) -> str:
+    """Return a normalized AUDIT_BASE_HEAD, or empty when the field is absent.
+
+    A present value that is not a 40-character SHA fails closed. Absence is
+    not an audit verdict and keeps the historical origin/main fallback.
+    """
+    if "AUDIT_BASE_HEAD" not in meta:
+        return ""
+    raw = str(meta.get("AUDIT_BASE_HEAD") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", raw):
+        raise ValidationError(
+            "AUDIT_BASE_HEAD must be an exact 40-char commit SHA"
+        )
+    return raw
+
+
 def _set_packet_metadata_line(body: str, key: str, value: str) -> str:
     line = f"{key}={value}"
     leading = _leading_packet_metadata_text(body)
@@ -1383,6 +1399,7 @@ def render_pass_governance_work_packet_body(
     safe_advisory = sanitize_rework_findings(advisory, max_chars=1000) if advisory else ""
     audited = head.strip().lower()
     updated = _set_packet_metadata_line(raw, "LAST_VERIFIED_HEAD", audited)
+    updated = _set_packet_metadata_line(updated, "AUDIT_BASE_HEAD", audited)
     updated = _set_packet_metadata_line(
         updated, "NEXT_ACTION", "AWAITING_EXACT_HEAD_GOVERNANCE"
     )
@@ -3203,6 +3220,7 @@ class GitHubWorkPacketAdapter:
                     "branch": str(meta.get("BRANCH") or "").strip(),
                     "workstream": str(meta.get("WORKSTREAM") or "").strip(),
                     "head": str(meta.get("LAST_VERIFIED_HEAD") or "").strip(),
+                    "audit_base": optional_audit_base_head(meta),
                     "status": "ACTIVE",
                 }
             )
@@ -3238,6 +3256,7 @@ class GitHubWorkPacketAdapter:
             "branch": branch,
             "workstream": workstream,
             "head": head_raw,
+            "audit_base": optional_audit_base_head(meta),
             "status": "ACTIVE",
             "updated_at": str(
                 payload.get("updatedAt") or payload.get("updated_at") or ""

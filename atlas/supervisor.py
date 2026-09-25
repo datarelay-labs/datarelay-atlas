@@ -113,15 +113,30 @@ def _default_evidence(
         state="AUDIT",
         attempt=1,
     )
+    audit_base = str(packet.get("audit_base") or "").strip() or None
     bundle = collect_audit_evidence_bundle(
         event,
         record,
         identity=identity,
         git_runner=git_runner,
+        base_ref=audit_base,
     )
     if not isinstance(bundle, dict):
         raise ValidationError("audit evidence bundle must be an object")
     return bundle
+
+
+def _audit_bases_match(listed: dict[str, Any], fresh: dict[str, Any]) -> bool:
+    left = str(listed.get("audit_base") or "").strip()
+    right = str(fresh.get("audit_base") or "").strip()
+    if not left and not right:
+        return True
+    try:
+        return require_exact_commit_sha(
+            left, label="listed.audit_base"
+        ) == require_exact_commit_sha(right, label="fresh.audit_base")
+    except ValidationError:
+        return False
 
 
 def _same_packet(listed: dict[str, Any], fresh: dict[str, Any]) -> bool:
@@ -137,7 +152,22 @@ def _same_packet(listed: dict[str, Any], fresh: dict[str, Any]) -> bool:
         and str(listed.get("workstream") or "") == str(fresh["workstream"])
         and listed_head == str(fresh["head"])
         and str(listed.get("status") or "") == str(fresh["status"])
+        and _audit_bases_match(listed, fresh)
     )
+
+
+def _audit_base_is_ancestor(
+    git_runner: GitRunner, worktree: str, base: str, head: str
+) -> bool:
+    """True when base is an ancestor of head, including base == head."""
+    try:
+        git_runner(
+            ["git", "merge-base", "--is-ancestor", base, head],
+            str(Path(worktree).resolve()),
+        )
+    except ValidationError:
+        return False
+    return True
 
 
 def _canonical_packet_unchanged(
@@ -240,6 +270,17 @@ def _supervise_project(
             "identity_refused",
             issue_number=int(fresh["issue_number"]),
             findings=str(exc),
+            chat_id=chat_id,
+            worktree=worktree,
+        )
+    audit_base = str(fresh.get("audit_base") or "").strip()
+    if audit_base and not _audit_base_is_ancestor(
+        git_runner, worktree, audit_base, str(fresh["head"])
+    ):
+        return _project_result(
+            repository,
+            "audit_base_refused",
+            issue_number=int(fresh["issue_number"]),
             chat_id=chat_id,
             worktree=worktree,
         )
