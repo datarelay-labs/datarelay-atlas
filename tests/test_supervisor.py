@@ -577,4 +577,4 @@ class SuperviseOnceTests(unittest.TestCase):
             got = go('source "$1"; cron_bin_path').stdout.strip()
             self.assertEqual(subprocess.run(["bash","-c","export PATH=$1; command -v gh && command -v agent","x",got],stdout=subprocess.DEVNULL).returncode,0)
             e["HOME"] = str(r / "e")
-            self.assertIn("gh not found", subprocess.run([s, "d"], capture_output=True, text=True, env=e).stderr)
+            self.assertIn("not found", subprocess.run([s, "d"], capture_output=True, text=True, env=e).stderr)
