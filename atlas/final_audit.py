@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -78,19 +79,42 @@ class AuditBudget:
     monthly_hard_usd: float
     month_spent_usd: float = 0.0
     preflight_usd: float = 0.05
+    per_run_soft_usd: float | None = None
+    monthly_soft_usd: float | None = None
 
     def blocked_before_call(self, *, request_ceiling_usd: float | None = None) -> str | None:
         """Fail closed before a paid call.
 
         ``preflight_usd`` is a caller reservation. ``request_ceiling_usd`` is
-        the conservative cost of the exact request about to be sent.
+        the conservative cost of the exact request about to be sent. A
+        configured soft limit blocks the same way as a hard limit.
         """
+        if (
+            self.per_run_soft_usd is not None
+            and self.preflight_usd > self.per_run_soft_usd
+        ):
+            return "per-run soft budget exceeded"
+        if (
+            self.monthly_soft_usd is not None
+            and self.month_spent_usd + self.preflight_usd > self.monthly_soft_usd
+        ):
+            return "monthly soft budget exceeded"
         if self.preflight_usd > self.per_run_hard_usd:
             return "per-run budget exceeded"
         if self.month_spent_usd + self.preflight_usd > self.monthly_hard_usd:
             return "monthly budget exceeded"
         if request_ceiling_usd is None:
             return None
+        if (
+            self.per_run_soft_usd is not None
+            and request_ceiling_usd > self.per_run_soft_usd
+        ):
+            return "per-run soft budget exceeded"
+        if (
+            self.monthly_soft_usd is not None
+            and self.month_spent_usd + request_ceiling_usd > self.monthly_soft_usd
+        ):
+            return "monthly soft budget exceeded"
         if request_ceiling_usd > self.per_run_hard_usd:
             return "per-run budget exceeded"
         if self.month_spent_usd + request_ceiling_usd > self.monthly_hard_usd:
@@ -116,6 +140,7 @@ class AuditTelemetry:
     estimated_cost_usd: float
     target_sha: str
     verdict: str
+    duration_sec: float = 0.0
 
     def public_record(self) -> dict[str, object]:
         """Numeric telemetry only. No prompts and no credentials."""
@@ -379,6 +404,7 @@ class BoundedResponsesAuditProvider(OpenAIResponsesAuditAdapter):
                 "OPENAI_API_KEY absent; Gate B real audit is HUMAN_REQUIRED",
             )
         self.last_request_body = body
+        started = time.perf_counter()
         created = self._create_with_retries(api_key, body)
         response_id = str(created.get("id", "")).strip()
         if not response_id:
@@ -418,6 +444,7 @@ class BoundedResponsesAuditProvider(OpenAIResponsesAuditAdapter):
             estimated_cost_usd=cost,
             target_sha=target_sha,
             verdict=verdict,
+            duration_sec=max(0.0, time.perf_counter() - started),
         )
         return AuditResult(verdict=verdict, findings=findings)
 
