@@ -1335,6 +1335,102 @@ def render_dispatch_blocked_work_packet_body(
     return updated.rstrip() + "\n"
 
 
+def render_pass_governance_work_packet_body(
+    body: str,
+    *,
+    repository: str,
+    branch: str,
+    workstream: str,
+    head: str,
+    gate_summary: str,
+    advisory: str = "",
+) -> str:
+    """Record a bounded PASS governance checkpoint. Do not activate a successor.
+
+    Model PASS is not merge, release, or deploy authority. STATUS stays
+    ACTIVE. The next action is governance review of this exact HEAD.
+    """
+    raw = (body or "").strip()
+    if not raw:
+        raise ValidationError("work packet body is empty")
+    _require_unique_managed_sections(raw)
+    _require_v2_packet_metadata(raw)
+    status = _packet_metadata_value(raw, "STATUS")
+    if status != "ACTIVE":
+        raise ValidationError(
+            "work packet STATUS must be ACTIVE for a PASS governance checkpoint"
+        )
+    require_canonical_target_repo(
+        _packet_metadata_value(raw, "TARGET_REPO") or "",
+        repository,
+    )
+    expected_branch = branch.strip()
+    if not expected_branch:
+        raise ValidationError("branch is required for Work Packet mutation")
+    packet_branch = _packet_metadata_value(raw, "BRANCH")
+    if packet_branch != expected_branch:
+        raise ValidationError(
+            f"work packet BRANCH mismatch: {packet_branch!r} != {expected_branch!r}"
+        )
+    expected_workstream = workstream.strip()
+    packet_workstream = _packet_metadata_value(raw, "WORKSTREAM")
+    if packet_workstream != expected_workstream:
+        raise ValidationError(
+            f"work packet WORKSTREAM mismatch: "
+            f"{packet_workstream!r} != {expected_workstream!r}"
+        )
+    safe_gates = sanitize_rework_findings(gate_summary, max_chars=1000) or "gates current"
+    safe_advisory = sanitize_rework_findings(advisory, max_chars=1000) if advisory else ""
+    audited = head.strip().lower()
+    updated = _set_packet_metadata_line(raw, "LAST_VERIFIED_HEAD", audited)
+    updated = _set_packet_metadata_line(
+        updated, "NEXT_ACTION", "AWAITING_EXACT_HEAD_GOVERNANCE"
+    )
+    updated = _set_packet_metadata_line(updated, "GATE", "GOVERNANCE")
+    advisory_line = f"\n- Bugbot advisory: {safe_advisory}" if safe_advisory else ""
+    updated = _replace_packet_section(
+        updated,
+        "Current State",
+        (
+            "- Exact-head audit verdict: PASS\n"
+            f"- Audited HEAD: `{audited}`\n"
+            f"- Branch: `{expected_branch}`\n"
+            f"- Deterministic gates: {safe_gates}\n"
+            "- Model PASS is not merge, release, or deploy authority.\n"
+            "- Successor activation was not performed."
+            f"{advisory_line}"
+        ),
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Next Action",
+        (
+            "AWAITING_EXACT_HEAD_GOVERNANCE for "
+            f"`{audited}` on `{expected_branch}`.\n\n"
+            "Review the exact-head gates and this checkpoint. "
+            "Do not merge, tag, release, deploy, or activate another Work Packet "
+            "from this checkpoint."
+        ),
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Latest Evidence",
+        (
+            "```text\n"
+            f"HEAD={audited}\n"
+            f"BRANCH={expected_branch}\n"
+            "VERDICT=PASS\n"
+            "WORK_PACKET_MUTATION=GOVERNANCE_CHECKPOINT\n"
+            "DISPATCH=NONE\n"
+            "SUCCESSOR=NONE\n"
+            f"GATES={safe_gates}\n"
+            "```"
+        ),
+    )
+    updated = _replace_packet_section(updated, "Blockers", "NONE")
+    return updated.rstrip() + "\n"
+
+
 _CYCLE_EVENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,120}$")
 _CYCLE_KINDS = frozenset(
     {"no_successor", "advanced", "already_activated", "human_required"}

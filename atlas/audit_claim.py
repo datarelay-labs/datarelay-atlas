@@ -2,8 +2,8 @@
 
 One GitHub Contents document per Work Packet remembers completed and live
 claims. A duplicate or stale claim does not call the auditor. Monthly spend
-lives on that document and survives a new worker process. This module does
-not redispatch REWORK and does not merge.
+lives on a repository-month document and survives a new worker process.
+REWORK redispatch lives in ``atlas.audit_disposition`` and is not done here.
 """
 
 from __future__ import annotations
@@ -185,6 +185,7 @@ class IssueAuditLedger:
     month_id: str
     month_spent_usd: float = 0.0
     claims: dict[str, AuditClaim] = field(default_factory=dict)
+    dispositions: dict[str, dict[str, Any]] = field(default_factory=dict)
     schema_version: int = CLAIM_SCHEMA_VERSION
 
     def to_json(self) -> str:
@@ -196,6 +197,9 @@ class IssueAuditLedger:
             "month_spent_usd": self.month_spent_usd,
             "claims": {
                 key: claim.public_dict() for key, claim in sorted(self.claims.items())
+            },
+            "dispositions": {
+                key: dict(value) for key, value in sorted(self.dispositions.items())
             },
         }
         raw = json.dumps(payload, indent=2, sort_keys=True) + "\n"
@@ -219,12 +223,21 @@ class IssueAuditLedger:
             if str(key) != parsed.claim_key:
                 raise ValidationError("audit claim map key mismatch")
             claims[parsed.claim_key] = parsed
+        dispositions_raw = raw.get("dispositions") or {}
+        if not isinstance(dispositions_raw, dict):
+            raise ValidationError("audit dispositions must be an object")
+        dispositions: dict[str, dict[str, Any]] = {}
+        for key, value in dispositions_raw.items():
+            if not isinstance(value, dict):
+                raise ValidationError("audit disposition entry must be an object")
+            dispositions[str(key)] = dict(value)
         return cls(
             repository=normalize_github_repository(str(raw["repository"])),
             issue_number=int(raw["issue_number"]),
             month_id=str(raw.get("month_id") or ""),
             month_spent_usd=float(raw.get("month_spent_usd") or 0.0),
             claims=claims,
+            dispositions=dispositions,
         )
 
 
