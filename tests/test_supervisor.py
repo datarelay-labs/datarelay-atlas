@@ -522,6 +522,26 @@ class SuperviseOnceTests(unittest.TestCase):
         self.assertEqual(self.spawned, [])
         self.assertEqual(self.evidence_calls, [])
 
+    def test_packet_mutation_during_evidence_makes_no_paid_call(self) -> None:
+        self.hub.add(REPO, 88, _packet_body(head=HEAD))
+
+        def evidence(packet: dict, worktree: str) -> dict:
+            del worktree
+            self.evidence_calls.append(str(packet["repository"]))
+            mutated = _packet_body(head=OTHER)
+            item = self.hub.issues[(REPO, 88)]
+            item["body"] = mutated
+            item["list_body"] = mutated
+            return _bundle()
+
+        outcome = self._run(evidence_for=evidence)
+        self.assertEqual(self._row(outcome, REPO)["action"], "canonical_drift")
+        self.assertEqual(self.auditor.calls, 0)
+        self.assertEqual(outcome["auditor_calls"], 0)
+        self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertEqual(self.spawned, [])
+        self.assertEqual(self.evidence_calls, [REPO])
+
     def test_duplicate_invocation_is_locked(self) -> None:
         with host_worker_run_lock(self.state.resolve() / "supervise-once.lock"):
             with self.assertRaises(ValidationError) as caught:

@@ -140,6 +140,28 @@ def _same_packet(listed: dict[str, Any], fresh: dict[str, Any]) -> bool:
     )
 
 
+def _canonical_packet_unchanged(
+    packet_adapter: GitHubWorkPacketAdapter,
+    repository: str,
+    expected: dict[str, Any],
+) -> bool:
+    """Re-read trusted ACTIVE state after a slow pre-effect step.
+
+    Discovery and the issue view must still name the same issue, branch,
+    workstream, HEAD, and ACTIVE status. Any miss fails closed.
+    """
+    try:
+        discovered = packet_adapter.discover_trusted_active_packets(repository)
+        if len(discovered) != 1 or not _same_packet(discovered[0], expected):
+            return False
+        confirmed = packet_adapter.reread_trusted_active_packet(
+            repository, int(expected["issue_number"])
+        )
+    except ValidationError:
+        return False
+    return _same_packet(expected, confirmed)
+
+
 def _snapshot(packet: dict[str, Any]) -> WorkPacketSnapshot:
     return WorkPacketSnapshot(
         repository=str(packet["repository"]),
@@ -256,6 +278,17 @@ def _supervise_project(
             worktree=worktree,
         )
 
+    bundle = evidence_for(fresh, worktree)
+    if not _canonical_packet_unchanged(
+        packet_adapter, repository, fresh
+    ):
+        return _project_result(
+            repository,
+            "canonical_drift",
+            issue_number=issue_number,
+            chat_id=chat_id,
+            worktree=worktree,
+        )
     before_calls = getattr(auditor, "calls", None)
     audited = run_exact_head_audit(
         audit_requested=True,
@@ -267,7 +300,7 @@ def _supervise_project(
         worktree_path=worktree,
         store=store,
         auditor=auditor,
-        evidence_bundle=evidence_for(fresh, worktree),
+        evidence_bundle=bundle,
         budget=budget,
         git_runner=git_runner,
         list_sessions=list_sessions,
