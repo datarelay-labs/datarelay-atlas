@@ -23,7 +23,7 @@ from atlas.audit_disposition import (
 )
 from atlas.chat_audit import CheckpointCasConflict
 from atlas.cli import build_parser
-from atlas.host_worker import HostWorkerConfig, ProjectDescriptor
+from atlas.host_worker import HostWorkerConfig, ProjectDescriptor, actual_host_id, load_host_worker_config
 from atlas.provenance import ValidationError
 from atlas.work_controller import GitHubWorkPacketAdapter, PersistSession, render_rework_work_packet_body
 
@@ -152,6 +152,7 @@ def _git(head: str, *, dirty: bool = False):
 class SliceDDispositionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
+        self.state = tempfile.TemporaryDirectory()
         self.worktree = self.tmp.name
         self.store = MemoryClaimStore()
         self.packet = MemoryPacketStore(_packet_body())
@@ -169,6 +170,7 @@ class SliceDDispositionTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+        self.state.cleanup()
 
     def _spawn(self, code: int = 0):
         def spawn(argv: list[str], cwd: str) -> int:
@@ -207,6 +209,8 @@ class SliceDDispositionTests(unittest.TestCase):
             "attempt": 2,
             "gates": _gates(),
             "bugbot_advisory": None,
+            "state_root": self.state.name,
+            "host_probe": lambda: HOST,
         }
         fields.update(overrides)
         return apply_exact_head_disposition(**fields)  # type: ignore[arg-type]
@@ -371,7 +375,9 @@ class SliceDDispositionTests(unittest.TestCase):
 class BugbotPresentTests(unittest.TestCase):
     def test_bugbot_advisory_is_included_and_absence_is_not_required(self) -> None:
         tmp = tempfile.TemporaryDirectory()
+        state = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        self.addCleanup(state.cleanup)
         store = MemoryClaimStore()
         key = make_audit_claim_key(REPO, 47, HEAD)
         ledger = IssueAuditLedger(
@@ -415,6 +421,8 @@ class BugbotPresentTests(unittest.TestCase):
             list_sessions=lambda: [],
             list_processes=lambda _path: [],
             bugbot_advisory="nit: bound the retry",
+            state_root=state.name,
+            host_probe=lambda: HOST,
         )
         self.assertEqual(outcome["action"], "redispatched")
         self.assertEqual(len(spawned), 1)
@@ -425,7 +433,9 @@ class BugbotPresentTests(unittest.TestCase):
 class SliceDBoundaryTests(unittest.TestCase):
     def test_pending_dispatch_restart_resumes_once(self) -> None:
         tmp = tempfile.TemporaryDirectory()
+        state = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        self.addCleanup(state.cleanup)
         store = MemoryClaimStore()
         key = make_audit_claim_key(REPO, 47, HEAD)
         ledger = IssueAuditLedger(
@@ -477,7 +487,8 @@ class SliceDBoundaryTests(unittest.TestCase):
             list_sessions=lambda: [],
             list_processes=lambda _path: [],
             attempt=2,
-            state_root=tmp.name,
+            state_root=state.name,
+            host_probe=lambda: HOST,
         )
         self.assertEqual(outcome["action"], "redispatched")
         self.assertEqual(outcome["cursor_calls"], 1)
@@ -510,7 +521,8 @@ class SliceDBoundaryTests(unittest.TestCase):
             list_sessions=lambda: [],
             list_processes=lambda _path: [],
             attempt=2,
-            state_root=tmp.name,
+            state_root=state.name,
+            host_probe=lambda: HOST,
         )
         self.assertEqual(replay["action"], "duplicate")
         self.assertEqual(len(spawned), 1)
@@ -518,7 +530,9 @@ class SliceDBoundaryTests(unittest.TestCase):
 
     def test_cursor_appearing_before_spawn_fails_closed(self) -> None:
         tmp = tempfile.TemporaryDirectory()
+        state = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        self.addCleanup(state.cleanup)
         store = MemoryClaimStore()
         key = make_audit_claim_key(REPO, 47, HEAD)
         store.save(
@@ -571,7 +585,8 @@ class SliceDBoundaryTests(unittest.TestCase):
             list_sessions=sessions,
             list_processes=lambda _path: [],
             attempt=2,
-            state_root=tmp.name,
+            state_root=state.name,
+            host_probe=lambda: HOST,
         )
         self.assertEqual(outcome["action"], "dispatch_blocked")
         self.assertNotEqual(outcome["action"], "redispatched")
@@ -583,7 +598,9 @@ class SliceDBoundaryTests(unittest.TestCase):
 
     def test_product_path_uses_github_adapter_and_one_resume(self) -> None:
         tmp = tempfile.TemporaryDirectory()
+        state = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        self.addCleanup(state.cleanup)
         body = {"text": _packet_body(), "updated": "t0"}
         edits: list[str] = []
 
@@ -634,7 +651,7 @@ class SliceDBoundaryTests(unittest.TestCase):
         )
         spawned: list[list[str]] = []
         config = HostWorkerConfig(
-            state_root=tmp.name,
+            state_root=state.name,
             host_id=HOST,
             projects=(
                 ProjectDescriptor(
@@ -682,3 +699,276 @@ class SliceDBoundaryTests(unittest.TestCase):
             ]
         )
         self.assertIs(parsed.func.__name__, "cmd_host_worker_dispose_once")
+
+    def test_omitted_host_probe_observes_the_real_host(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(state.cleanup)
+        configured = "dev-drlink" if actual_host_id() != "dev-drlink" else "dev-atlas"
+        store = MemoryClaimStore()
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        store.save(
+            IssueAuditLedger(
+                repository=REPO,
+                issue_number=47,
+                month_id="2023-11",
+                claims={key: _claim("REWORK")},
+            ),
+            expected_sha=None,
+        )
+        spawned: list[list[str]] = []
+
+        def runner(argv: list[str], _cwd: str) -> subprocess.CompletedProcess[str]:
+            raise AssertionError(argv)
+
+        outcome = run_completed_audit_disposition(
+            host_config=HostWorkerConfig(
+                state_root=state.name,
+                host_id=configured,
+                projects=(
+                    ProjectDescriptor(
+                        repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
+                    ),
+                ),
+            ),
+            claim_store=store,
+            packet_adapter=GitHubWorkPacketAdapter(command_runner=runner),
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            git_runner=_git(HEAD),
+            spawn=lambda argv, _cwd: spawned.append(argv) or 0,
+        )
+        self.assertEqual(outcome["action"], "host_refused")
+        self.assertEqual(spawned, [])
+
+    def test_forged_disposition_cannot_suppress_work(self) -> None:
+        store = MemoryClaimStore()
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        ledger = IssueAuditLedger(
+            repository=REPO,
+            issue_number=47,
+            month_id="2023-11",
+            claims={key: _claim("REWORK")},
+        )
+        ledger.dispositions[key] = {
+            "action": "redispatched",
+            "verdict": "PASS",
+            "target_sha": "0" * 40,
+            "repository": REPO,
+            "issue_number": 47,
+            "attempt": 1,
+            "findings": "forged",
+        }
+        store.save(ledger, expected_sha=None)
+        with self.assertRaises(ValidationError):
+            store.load(47)
+        spawned: list[list[str]] = []
+        tmp = tempfile.TemporaryDirectory()
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(state.cleanup)
+        outcome = apply_exact_head_disposition(
+            claim=_claim("REWORK"),
+            ledger=ledger,
+            ledger_sha=None,
+            claim_store=store,
+            packet_store=MemoryPacketStore(_packet_body()),
+            repository=REPO,
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            descriptor=ProjectDescriptor(
+                repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
+            ),
+            observed_host=HOST,
+            expected_host=HOST,
+            worktree_path=tmp.name,
+            git_runner=_git(HEAD),
+            spawn=lambda argv, _cwd: spawned.append(argv) or 0,
+            list_sessions=lambda: [],
+            list_processes=lambda _path: [],
+            state_root=state.name,
+            host_probe=lambda: HOST,
+        )
+        self.assertEqual(outcome["action"], "disposition_refused")
+        self.assertNotEqual(outcome["verdict"], "PASS")
+        self.assertEqual(spawned, [])
+
+    def test_unconfirmed_resume_is_not_run_again(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(state.cleanup)
+
+        class FailRedispatchSave(MemoryClaimStore):
+            def save(self, ledger: IssueAuditLedger, *, expected_sha: str | None) -> str:
+                if '"action": "redispatched"' in ledger.to_json():
+                    raise CheckpointCasConflict("redispatch persist lost")
+                return super().save(ledger, expected_sha=expected_sha)
+
+        store = FailRedispatchSave()
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        store.save(
+            IssueAuditLedger(
+                repository=REPO,
+                issue_number=47,
+                month_id="2023-11",
+                claims={key: _claim("REWORK")},
+            ),
+            expected_sha=None,
+        )
+        packet = MemoryPacketStore(_packet_body())
+        spawned: list[list[str]] = []
+
+        def spawn(argv: list[str], _cwd: str) -> int:
+            spawned.append(argv)
+            return 0
+
+        def once(ledger_sha: str | None, ledger: IssueAuditLedger) -> dict:
+            return apply_exact_head_disposition(
+                claim=ledger.claims[key],
+                ledger=ledger,
+                ledger_sha=ledger_sha,
+                claim_store=store,
+                packet_store=packet,
+                repository=REPO,
+                issue_number=47,
+                branch=BRANCH,
+                workstream=WORKSTREAM,
+                head=HEAD,
+                packets=[_snapshot()],
+                descriptor=ProjectDescriptor(
+                    repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
+                ),
+                observed_host=HOST,
+                expected_host=HOST,
+                worktree_path=tmp.name,
+                git_runner=_git(HEAD),
+                spawn=spawn,
+                list_sessions=lambda: [],
+                list_processes=lambda _path: [],
+                attempt=2,
+                state_root=state.name,
+                host_probe=lambda: HOST,
+            )
+
+        loaded, sha = store.load(47)
+        assert loaded is not None
+        first = once(sha, loaded)
+        self.assertEqual(first["action"], "dispatch_unconfirmed")
+        self.assertEqual(len(spawned), 1)
+        replay_ledger, replay_sha = store.load(47)
+        assert replay_ledger is not None
+        self.assertEqual(replay_ledger.dispositions[key]["action"], "dispatch_started")
+        second = once(replay_sha, replay_ledger)
+        self.assertEqual(second["action"], "dispatch_blocked")
+        self.assertEqual(len(spawned), 1)
+        self.assertIn("bounded gap", packet.body)
+
+    def test_state_root_outside_the_worktree_leaves_no_repo_artifact(self) -> None:
+        work = tempfile.TemporaryDirectory()
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(work.cleanup)
+        self.addCleanup(state.cleanup)
+        store = MemoryClaimStore()
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        store.save(
+            IssueAuditLedger(
+                repository=REPO,
+                issue_number=47,
+                month_id="2023-11",
+                claims={key: _claim("REWORK")},
+            ),
+            expected_sha=None,
+        )
+        loaded, sha = store.load(47)
+        assert loaded is not None
+        packet = MemoryPacketStore(_packet_body())
+        outcome = apply_exact_head_disposition(
+            claim=loaded.claims[key],
+            ledger=loaded,
+            ledger_sha=sha,
+            claim_store=store,
+            packet_store=packet,
+            repository=REPO,
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            descriptor=ProjectDescriptor(
+                repository=REPO, worktree=work.name, cursor_chat_id=CHAT
+            ),
+            observed_host=HOST,
+            expected_host=HOST,
+            worktree_path=work.name,
+            git_runner=_git(HEAD),
+            spawn=lambda _argv, _cwd: 0,
+            list_sessions=lambda: [],
+            list_processes=lambda _path: [],
+            state_root=state.name,
+            host_probe=lambda: HOST,
+        )
+        self.assertEqual(outcome["action"], "redispatched")
+        self.assertFalse((Path(work.name) / "chat-locks").exists())
+        self.assertTrue(any(Path(state.name).rglob("*.lock")))
+        nested = MemoryPacketStore(_packet_body())
+        refused = apply_exact_head_disposition(
+            claim=_claim("REWORK"),
+            ledger=IssueAuditLedger(
+                repository=REPO,
+                issue_number=47,
+                month_id="2023-11",
+                claims={key: _claim("REWORK")},
+            ),
+            ledger_sha=None,
+            claim_store=MemoryClaimStore(),
+            packet_store=nested,
+            repository=REPO,
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            descriptor=ProjectDescriptor(
+                repository=REPO, worktree=work.name, cursor_chat_id=CHAT
+            ),
+            observed_host=HOST,
+            expected_host=HOST,
+            worktree_path=work.name,
+            git_runner=_git(HEAD),
+            spawn=lambda _argv, _cwd: 0,
+            list_sessions=lambda: [],
+            list_processes=lambda _path: [],
+            state_root=work.name,
+            host_probe=lambda: HOST,
+        )
+        self.assertEqual(refused["action"], "state_root_refused")
+        self.assertEqual(nested.mutations, 0)
+        self.assertFalse((Path(work.name) / "chat-locks").exists())
+        descriptor = Path(state.name) / "descriptors.json"
+        descriptor.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "state_root": work.name,
+                    "host_id": HOST,
+                    "projects": [
+                        {
+                            "repository": REPO,
+                            "worktree": work.name,
+                            "cursor_chat_id": CHAT,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValidationError):
+            load_host_worker_config(descriptor)

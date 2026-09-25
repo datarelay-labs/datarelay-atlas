@@ -200,12 +200,34 @@ def load_host_worker_config(path: Path) -> HostWorkerConfig:
                 cursor_chat_id=chat_id,
             )
         )
+    resolved_root = require_external_state_root(
+        state_root, [item.worktree for item in loaded]
+    )
     return HostWorkerConfig(
-        state_root=str(state_root.resolve()),
+        state_root=resolved_root,
         host_id=host_id,
         projects=tuple(loaded),
         cursor_resume_timeout_sec=timeout_sec,
     )
+
+
+def require_external_state_root(
+    state_root: str | Path | None, worktrees: list[str]
+) -> str:
+    """Host lock state must stay outside every configured worktree."""
+    if state_root is None or not str(state_root).strip():
+        raise ValidationError("state_root must be outside the repository worktree")
+    root = Path(str(state_root)).expanduser().resolve()
+    if not root.is_absolute():
+        raise ValidationError("state_root must be an absolute path")
+    for raw in worktrees:
+        tree = Path(str(raw)).expanduser().resolve()
+        try:
+            root.relative_to(tree)
+        except ValueError:
+            continue
+        raise ValidationError("state_root must be outside the repository worktree")
+    return str(root)
 
 
 def chat_lock_path(state_root: str | Path, chat_id: str) -> Path:

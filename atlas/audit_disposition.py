@@ -17,6 +17,7 @@ from atlas.audit_claim import (
     IssueAuditLedger,
     WorkPacketSnapshot,
     make_audit_claim_key,
+    validate_stored_disposition,
 )
 from atlas.chat_audit import CheckpointCasConflict, require_exact_commit_sha
 from atlas.host_worker import (
@@ -25,8 +26,10 @@ from atlas.host_worker import (
     ProjectDescriptor,
     SessionList,
     _select_descriptor,
+    actual_host_id,
     normalize_host_id,
     persistent_cursor_active,
+    require_external_state_root,
     run_once,
 )
 from atlas.provenance import ValidationError
@@ -141,18 +144,25 @@ def _remember(
     *,
     claim_key: str,
     action: str,
+    repository: str,
+    issue_number: int,
     verdict: str,
     target_sha: str,
     findings: str,
     attempt: int,
 ) -> None:
-    ledger.dispositions[claim_key] = {
-        "action": action,
-        "verdict": verdict,
-        "target_sha": target_sha,
-        "attempt": int(attempt),
-        "findings": findings,
-    }
+    ledger.dispositions[claim_key] = validate_stored_disposition(
+        claim_key,
+        {
+            "action": action,
+            "verdict": verdict,
+            "target_sha": target_sha,
+            "repository": repository,
+            "issue_number": int(issue_number),
+            "attempt": int(attempt),
+            "findings": findings,
+        },
+    )
 
 
 def apply_exact_head_disposition(
@@ -180,6 +190,7 @@ def apply_exact_head_disposition(
     gates: DeterministicGateSnapshot | None = None,
     bugbot_advisory: str | None = None,
     state_root: str | None = None,
+    host_probe: Callable[[], str] | None = None,
 ) -> dict[str, Any]:
     """Apply one completed exact-HEAD claim. Idle callers make no mutation."""
     repo = normalize_github_repository(repository)
@@ -221,15 +232,27 @@ def apply_exact_head_disposition(
         return _result("descriptor_refused")
     if str(observed_host or "").strip().lower() != str(expected_host or "").strip().lower():
         return _result("host_refused")
+    try:
+        external_root = require_external_state_root(
+            state_root, [worktree_path, descriptor.worktree]
+        )
+    except ValidationError:
+        return _result("state_root_refused")
 
     prior = ledger.dispositions.get(expected_key)
-    if isinstance(prior, dict) and str(prior.get("action") or "") in _TERMINAL_ACTIONS:
-        return _result(
-            "duplicate",
-            verdict=str(prior.get("verdict") or claim.verdict),
-            findings=str(prior.get("findings") or ""),
-            packet_mutations=packet_store.mutations,
-        )
+    if isinstance(prior, dict):
+        try:
+            prior = validate_stored_disposition(expected_key, prior)
+        except ValidationError:
+            return _result("disposition_refused", verdict=claim.verdict)
+        ledger.dispositions[expected_key] = prior
+        if str(prior.get("action") or "") in _TERMINAL_ACTIONS:
+            return _result(
+                "duplicate",
+                verdict=str(prior.get("verdict") or ""),
+                findings=str(prior.get("findings") or ""),
+                packet_mutations=packet_store.mutations,
+            )
 
     body, token = packet_store.load()
     meta_head = str(_packet_metadata_value(body, "LAST_VERIFIED_HEAD") or "").lower()
@@ -289,6 +312,8 @@ def apply_exact_head_disposition(
         _remember(
             ledger,
             claim_key=expected_key,
+            repository=repo,
+            issue_number=issue_number,
             action="human_required",
             verdict="HUMAN_REQUIRED",
             target_sha=target,
@@ -328,6 +353,8 @@ def apply_exact_head_disposition(
         _remember(
             ledger,
             claim_key=expected_key,
+            repository=repo,
+            issue_number=issue_number,
             action="pass_checkpoint",
             verdict="PASS",
             target_sha=target,
@@ -373,6 +400,8 @@ def apply_exact_head_disposition(
             _remember(
                 ledger,
                 claim_key=expected_key,
+            repository=repo,
+            issue_number=issue_number,
                 action="dispatch_blocked",
                 verdict="HUMAN_REQUIRED",
                 target_sha=target,
@@ -395,6 +424,8 @@ def apply_exact_head_disposition(
             _remember(
                 ledger,
                 claim_key=expected_key,
+            repository=repo,
+            issue_number=issue_number,
                 action="dispatch_blocked",
                 verdict="HUMAN_REQUIRED",
                 target_sha=target,
@@ -414,6 +445,8 @@ def apply_exact_head_disposition(
         _remember(
             ledger,
             claim_key=expected_key,
+            repository=repo,
+            issue_number=issue_number,
             action="dispatch_blocked",
             verdict="HUMAN_REQUIRED",
             target_sha=target,
@@ -429,12 +462,35 @@ def apply_exact_head_disposition(
         )
 
     def _dispatch_and_record() -> dict[str, Any]:
-        root = state_root or worktree_path
+        nonlocal ledger_sha
+        if isinstance(prior, dict) and str(prior.get("action") or "") == "dispatch_started":
+            return _compensate("prior cursor resume effect is unconfirmed")
+        _remember(
+            ledger,
+            claim_key=expected_key,
+            repository=repo,
+            issue_number=issue_number,
+            action="dispatch_started",
+            verdict="REWORK",
+            target_sha=target,
+            findings=findings,
+            attempt=attempt,
+        )
+        try:
+            ledger_sha = claim_store.save(ledger, expected_sha=ledger_sha)
+        except CheckpointCasConflict:
+            return _result(
+                "disposition_persist_failed",
+                verdict="REWORK",
+                findings=findings,
+                packet_mutations=packet_store.mutations,
+            )
         config = HostWorkerConfig(
-            state_root=root,
+            state_root=external_root,
             host_id=normalize_host_id(expected_host),
             projects=(descriptor,),
         )
+        probe = host_probe or actual_host_id
         try:
             outcome = run_once(
                 config=config,
@@ -445,29 +501,38 @@ def apply_exact_head_disposition(
                 prompt=prompt,
                 git_runner=git_runner,
                 spawn=spawn,
-                host_probe=lambda: expected_host,
+                host_probe=probe,
                 list_sessions=list_sessions,
                 list_processes=list_processes,
             )
         except ValidationError as exc:
             return _compensate(str(exc))
-        if (
-            outcome.get("action") == "resumed"
-            and int(outcome.get("cursor_calls") or 0) > 0
-        ):
+        calls = int(outcome.get("cursor_calls") or 0)
+        if outcome.get("action") == "resumed" and calls > 0:
             _remember(
                 ledger,
                 claim_key=expected_key,
+                repository=repo,
+                issue_number=issue_number,
                 action="redispatched",
                 verdict="REWORK",
                 target_sha=target,
                 findings=findings,
                 attempt=attempt,
             )
-            claim_store.save(ledger, expected_sha=ledger_sha)
+            try:
+                claim_store.save(ledger, expected_sha=ledger_sha)
+            except CheckpointCasConflict:
+                return _result(
+                    "dispatch_unconfirmed",
+                    cursor_calls=calls,
+                    packet_mutations=packet_store.mutations,
+                    verdict="REWORK",
+                    findings=findings,
+                )
             return _result(
                 "redispatched",
-                cursor_calls=int(outcome["cursor_calls"]),
+                cursor_calls=calls,
                 packet_mutations=packet_store.mutations,
                 verdict="REWORK",
                 findings=findings,
@@ -564,7 +629,8 @@ def run_completed_audit_disposition(
     bugbot_advisory: str | None = None,
 ) -> dict[str, Any]:
     """Product entry: completed claim, canonical packet, locked host resume."""
-    observed = normalize_host_id((host_probe or (lambda: host_config.host_id))())
+    probe = host_probe or actual_host_id
+    observed = normalize_host_id(probe())
     if len(host_config.projects) != 1 and not packets:
         return _result("ambiguous_packet")
     repository = packets[0].repository if packets else host_config.projects[0].repository
@@ -606,4 +672,5 @@ def run_completed_audit_disposition(
         gates=gates,
         bugbot_advisory=bugbot_advisory,
         state_root=host_config.state_root,
+        host_probe=probe,
     )

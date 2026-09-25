@@ -178,6 +178,54 @@ class AuditClaim:
         return claim
 
 
+_DISPOSITION_VERDICT = {
+    "redispatched": "REWORK",
+    "dispatch_blocked": "HUMAN_REQUIRED",
+    "pass_checkpoint": "PASS",
+    "human_required": "HUMAN_REQUIRED",
+    "dispatch_started": "REWORK",
+}
+_MAX_DISPOSITION_FINDINGS = 4000
+
+
+def validate_stored_disposition(key: str, value: dict[str, Any]) -> dict[str, Any]:
+    """Reject a durable disposition that cannot prove its own identity."""
+    action = str(value.get("action") or "")
+    expected_verdict = _DISPOSITION_VERDICT.get(action)
+    if expected_verdict is None:
+        raise ValidationError("unsupported audit disposition action")
+    verdict = str(value.get("verdict") or "")
+    if verdict != expected_verdict:
+        raise ValidationError("audit disposition verdict does not match its action")
+    target_sha = require_exact_commit_sha(
+        str(value.get("target_sha") or ""), label="disposition.target_sha"
+    )
+    repository = normalize_github_repository(str(value.get("repository") or ""))
+    try:
+        issue_number = int(value.get("issue_number"))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("audit disposition issue_number is invalid") from exc
+    if make_audit_claim_key(repository, issue_number, target_sha) != str(key):
+        raise ValidationError("audit disposition identity does not match its key")
+    attempt = value.get("attempt")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or not 1 <= attempt <= 100:
+        raise ValidationError("audit disposition attempt is invalid")
+    findings = value.get("findings")
+    if not isinstance(findings, str) or len(findings) > _MAX_DISPOSITION_FINDINGS:
+        raise ValidationError("audit disposition findings are unbounded")
+    if _contains_unsafe_secret(findings):
+        raise ValidationError("audit disposition findings look like secrets")
+    return {
+        "action": action,
+        "verdict": verdict,
+        "target_sha": target_sha,
+        "repository": repository,
+        "issue_number": issue_number,
+        "attempt": attempt,
+        "findings": findings,
+    }
+
+
 @dataclass
 class IssueAuditLedger:
     repository: str
@@ -230,7 +278,7 @@ class IssueAuditLedger:
         for key, value in dispositions_raw.items():
             if not isinstance(value, dict):
                 raise ValidationError("audit disposition entry must be an object")
-            dispositions[str(key)] = dict(value)
+            dispositions[str(key)] = validate_stored_disposition(str(key), value)
         return cls(
             repository=normalize_github_repository(str(raw["repository"])),
             issue_number=int(raw["issue_number"]),
