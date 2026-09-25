@@ -60,5 +60,7 @@ outside Git.
 
 ## Non-goals
 
-This command does not certify a live ChatGPT or Cursor session, and it does
-not install a system service or public reverse proxy.
+This command does not certify a live ChatGPT or Cursor session. The systemd
+unit and readiness check are documented in
+`docs/runbooks/phase2-production-service.md`. That path still does not deploy
+`prod-atlas` or complete ChatGPT OAuth.

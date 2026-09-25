@@ -25,6 +25,7 @@ from atlas.chat_audit_github import (
     resolve_checkpoint_store,
 )
 from atlas.codex_audit import CodexAuditProvider
+from atlas.ops import assess_service_environment, stage_unit
 from atlas.provenance import ValidationError
 from atlas.semantic_retrieval import embedding_config_from_cli
 from atlas.service import AtlasService
@@ -633,8 +634,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Serve Streamable HTTP MCP over HTTPS",
         allow_abbrev=False,
     )
-    mcp_serve.add_argument("--host", default="127.0.0.1")
-    mcp_serve.add_argument("--port", type=int, default=8443)
+    mcp_serve.add_argument(
+        "--host",
+        default=None,
+        help="Bind host. Default: ATLAS_MCP_BIND_HOST or 127.0.0.1",
+    )
+    mcp_serve.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Bind port. Default: ATLAS_MCP_BIND_PORT or 8443",
+    )
     mcp_serve.add_argument("--resource-url", default=None)
     mcp_serve.add_argument("--issuer-url", default=None)
     mcp_serve.add_argument("--introspection-url", default=None)
@@ -854,7 +864,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ca_roll.set_defaults(func=cmd_ca_rollover)
 
+    ops = sub.add_parser("ops", help="Service configuration and health")
+    ops_sub = ops.add_subparsers(dest="ops_command", required=True)
+    ops_check = ops_sub.add_parser(
+        "check",
+        help="Fail closed unless the service environment is ready",
+    )
+    ops_check.add_argument(
+        "--env-file",
+        default=None,
+        help="Service env file. When set, the process environment is ignored.",
+    )
+    ops_check.set_defaults(func=cmd_ops_check)
+    ops_stage = ops_sub.add_parser(
+        "stage",
+        help="Copy the systemd unit into a directory without installing it",
+    )
+    ops_stage.add_argument("--dest", required=True)
+    ops_stage.set_defaults(func=cmd_ops_stage)
+
     return parser
+
+
+def cmd_ops_check(args: argparse.Namespace) -> int:
+    if args.env_file:
+        report = assess_service_environment({}, env_file=Path(args.env_file))
+    else:
+        report = assess_service_environment(os.environ)
+    _print_json(report)
+    return 0 if report["status"] == "ready" else 1
+
+
+def cmd_ops_stage(args: argparse.Namespace) -> int:
+    target = stage_unit(Path(args.dest))
+    _print_json({"unit": str(target)})
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

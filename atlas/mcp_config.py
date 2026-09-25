@@ -7,6 +7,7 @@ operator-supplied files. Nothing in this module reads or writes Git.
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -18,10 +19,16 @@ ISSUER_URL_ENV = "ATLAS_MCP_ISSUER_URL"
 INTROSPECTION_URL_ENV = "ATLAS_MCP_INTROSPECTION_URL"
 INTROSPECTION_CLIENT_ID_ENV = "ATLAS_MCP_INTROSPECTION_CLIENT_ID"
 INTROSPECTION_CLIENT_SECRET_ENV = "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET"
+INTROSPECTION_CLIENT_SECRET_FILE_ENV = "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET_FILE"
 TLS_CERT_ENV = "ATLAS_MCP_TLS_CERT"
 TLS_KEY_ENV = "ATLAS_MCP_TLS_KEY"
+BIND_HOST_ENV = "ATLAS_MCP_BIND_HOST"
+BIND_PORT_ENV = "ATLAS_MCP_BIND_PORT"
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
+SECRET_SOURCE_FLAG_FILE = "flag_file"
+SECRET_SOURCE_ENV_FILE = "env_file"
+SECRET_SOURCE_INLINE = "inline"
 
 
 @dataclass(frozen=True)
@@ -36,13 +43,15 @@ class McpServeConfig:
     introspection_client_secret: str
     tls_cert: Path
     tls_key: Path
+    introspection_client_secret_file: Path | None = None
+    introspection_client_secret_source: str = SECRET_SOURCE_INLINE
 
 
 def resolve_mcp_serve_config(
     *,
     data_root: Path,
-    bind_host: str,
-    port: int,
+    bind_host: str | None,
+    port: int | None,
     resource_url: str | None,
     issuer_url: str | None,
     introspection_url: str | None,
@@ -58,6 +67,16 @@ def resolve_mcp_serve_config(
     ``introspection_client_secret_file``. It is never taken from a raw flag.
     """
     env = os.environ if environ is None else environ
+    flag_secret_file = (introspection_client_secret_file or "").strip()
+    secret_file = _flag_or_env(
+        introspection_client_secret_file, env, INTROSPECTION_CLIENT_SECRET_FILE_ENV
+    )
+    if secret_file and flag_secret_file:
+        secret_source = SECRET_SOURCE_FLAG_FILE
+    elif secret_file:
+        secret_source = SECRET_SOURCE_ENV_FILE
+    else:
+        secret_source = SECRET_SOURCE_INLINE
     resolved = {
         "resource_url": _flag_or_env(resource_url, env, RESOURCE_URL_ENV),
         "issuer_url": _flag_or_env(issuer_url, env, ISSUER_URL_ENV),
@@ -66,20 +85,26 @@ def resolve_mcp_serve_config(
             introspection_client_id, env, INTROSPECTION_CLIENT_ID_ENV
         ),
         "introspection_client_secret": _resolve_introspection_client_secret(
-            introspection_client_secret_file, env
+            secret_file or None, env
         ),
         "tls_cert": _flag_or_env(tls_cert, env, TLS_CERT_ENV),
         "tls_key": _flag_or_env(tls_key, env, TLS_KEY_ENV),
     }
+    host = _resolve_bind_host(bind_host, env)
+    resolved_port = _resolve_port(port, env)
     missing = [name for name, value in resolved.items() if not value]
     if missing:
         names = ", ".join(missing)
         raise ValidationError(f"mcp serve configuration missing: {names}")
 
-    host = bind_host.strip()
     if not host or "://" in host or "/" in host or " " in host:
         raise ValidationError("mcp bind host must be a hostname or IP address")
-    if isinstance(port, bool) or not isinstance(port, int) or port < 1 or port > 65535:
+    if (
+        isinstance(resolved_port, bool)
+        or not isinstance(resolved_port, int)
+        or resolved_port < 1
+        or resolved_port > 65535
+    ):
         raise ValidationError("mcp port must be an integer from 1 to 65535")
 
     resource_text = resolved["resource_url"].strip()
@@ -97,7 +122,7 @@ def resolve_mcp_serve_config(
     return McpServeConfig(
         data_root=Path(data_root),
         bind_host=host,
-        port=port,
+        port=resolved_port,
         resource_url=resource_text.rstrip("/"),
         issuer_url=issuer,
         introspection_url=resolved["introspection_url"].strip(),
@@ -105,6 +130,8 @@ def resolve_mcp_serve_config(
         introspection_client_secret=resolved["introspection_client_secret"],
         tls_cert=cert,
         tls_key=key,
+        introspection_client_secret_file=Path(secret_file) if secret_file else None,
+        introspection_client_secret_source=secret_source,
     )
 
 
@@ -116,6 +143,8 @@ def _resolve_introspection_client_secret(
         path = Path(secret_file.strip())
         if not path.is_file():
             raise ValidationError("introspection client secret file is missing")
+        if bool(path.stat().st_mode & stat.S_IRWXO):
+            raise ValidationError("introspection client secret file is not ready")
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as exc:
@@ -125,6 +154,23 @@ def _resolve_introspection_client_secret(
             raise ValidationError("introspection client secret file is invalid")
         return secret
     return env.get(INTROSPECTION_CLIENT_SECRET_ENV, "").strip()
+
+
+def _resolve_bind_host(bind_host: str | None, env: dict[str, str]) -> str:
+    if bind_host is not None and bind_host.strip():
+        return bind_host.strip()
+    return env.get(BIND_HOST_ENV, "").strip() or "127.0.0.1"
+
+
+def _resolve_port(port: int | None, env: dict[str, str]) -> int:
+    if port is not None:
+        return port
+    raw = env.get(BIND_PORT_ENV, "").strip()
+    if not raw:
+        return 8443
+    if not raw.isascii() or not raw.isdigit():
+        raise ValidationError("mcp port must be an integer from 1 to 65535")
+    return int(raw)
 
 
 def _flag_or_env(flag: str | None, env: dict[str, str], name: str) -> str:

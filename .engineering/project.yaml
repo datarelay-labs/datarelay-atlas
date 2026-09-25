@@ -29,7 +29,8 @@ operations:
   - docs/runbooks/phase1-project-registry-canonical-sync.md
   - docs/runbooks/autonomous-work-controller-poc.md
   - docs/runbooks/continuous-chat-audit-supervisor-poc.md
-  health_command: ''
+  - docs/runbooks/phase2-production-service.md
+  health_command: PYTHONPATH=. python3 -m atlas ops check --env-file "${ATLAS_SERVICE_ENV_FILE:?set ATLAS_SERVICE_ENV_FILE}"
   backup_command: cp -a "${ATLAS_DATA_ROOT:-.atlas-data}" "${ATLAS_DATA_ROOT:-.atlas-data}.bak"
   restore_test_command: test -f "${ATLAS_DATA_ROOT:-.atlas-data}/registry.json" -o
     ! -e "${ATLAS_DATA_ROOT:-.atlas-data}/registry.json"
