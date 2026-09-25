@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from atlas.provenance import ValidationError
 
@@ -3125,13 +3125,12 @@ class GitHubWorkPacketAdapter:
         return issues
 
     @staticmethod
-    def _active_packet_matches(
-        body: str,
-        *,
-        repository: str,
-        branch: str,
-    ) -> bool:
-        """Match /work-resume selection: TARGET_REPO + STATUS=ACTIVE + BRANCH."""
+    def _repository_active_packet(body: str, *, repository: str) -> bool:
+        """True when leading metadata is ACTIVE for this repository.
+
+        Branch is not an input. A parse failure is not a match. Callers that
+        already know a branch still apply that filter separately.
+        """
         try:
             meta = _parse_leading_packet_metadata(body)
         except ValidationError:
@@ -3145,11 +3144,105 @@ class GitHubWorkPacketAdapter:
             require_canonical_target_repo(target, repository)
         except ValidationError:
             return False
+        return True
+
+    @staticmethod
+    def _active_packet_matches(
+        body: str,
+        *,
+        repository: str,
+        branch: str,
+    ) -> bool:
+        """Match /work-resume selection: TARGET_REPO + STATUS=ACTIVE + BRANCH."""
+        if not GitHubWorkPacketAdapter._repository_active_packet(
+            body, repository=repository
+        ):
+            return False
+        meta = _parse_leading_packet_metadata(body)
         packet_branch = meta.get("BRANCH")
         # Missing BRANCH matches any current branch (/work-resume.md:31).
         if packet_branch not in (None, "") and packet_branch != branch:
             return False
         return True
+
+    def discover_trusted_active_packets(self, repository: str) -> list[dict[str, Any]]:
+        """Trusted ACTIVE packets for one repository. Branch is derived, not supplied.
+
+        Zero or many results are returned. Unverifiable authors fail closed.
+        A known weaker permission is ignored and does not create ambiguity.
+        """
+        repo = normalize_github_repository(repository)
+        found: list[dict[str, Any]] = []
+        for issue in self._list_open_ai_work_issues(repo):
+            number = issue.get("number")
+            try:
+                number_i = int(number)
+            except (TypeError, ValueError):
+                number_i = None
+            body = str(issue.get("body") or "")
+            if not self._repository_active_packet(body, repository=repo):
+                continue
+            if number_i is None:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: candidate issue number missing"
+                )
+            try:
+                trust = self._lookup_author_trust(repo, issue)
+            except ValidationError as exc:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                    f"candidate #{number_i} unverifiable ({exc})"
+                ) from exc
+            if trust != "trusted":
+                continue
+            meta = _parse_leading_packet_metadata(body)
+            found.append(
+                {
+                    "repository": repo,
+                    "issue_number": number_i,
+                    "branch": str(meta.get("BRANCH") or "").strip(),
+                    "workstream": str(meta.get("WORKSTREAM") or "").strip(),
+                    "head": str(meta.get("LAST_VERIFIED_HEAD") or "").strip(),
+                    "status": "ACTIVE",
+                }
+            )
+        return found
+
+    def reread_trusted_active_packet(
+        self, repository: str, issue_number: int
+    ) -> dict[str, Any]:
+        """Re-read one packet immediately before an effect. List snapshots are not authority."""
+        repo = normalize_github_repository(repository)
+        payload = self._view_issue(repo, int(issue_number))
+        self._assert_ai_work_issue(payload, issue_number=int(issue_number))
+        self._require_trusted_issue_author(repo, payload)
+        body = str(payload.get("body") or "")
+        meta = _parse_leading_packet_metadata(body)
+        if meta.get("STATUS") != "ACTIVE":
+            raise ValidationError("canonical packet is not ACTIVE")
+        require_canonical_target_repo(str(meta.get("TARGET_REPO") or ""), repo)
+        branch = str(meta.get("BRANCH") or "").strip()
+        workstream = str(meta.get("WORKSTREAM") or "").strip()
+        head_raw = str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower()
+        if not branch or not workstream or not head_raw:
+            raise ValidationError(
+                "canonical packet is missing branch, workstream, or head"
+            )
+        if not re.fullmatch(r"[0-9a-f]{40}", head_raw):
+            raise ValidationError(
+                "LAST_VERIFIED_HEAD must be an exact 40-char commit SHA"
+            )
+        return {
+            "repository": repo,
+            "issue_number": int(issue_number),
+            "branch": branch,
+            "workstream": workstream,
+            "head": head_raw,
+            "status": "ACTIVE",
+            "updated_at": str(
+                payload.get("updatedAt") or payload.get("updated_at") or ""
+            ),
+        }
 
     def _scan_trusted_active_packets(
         self,

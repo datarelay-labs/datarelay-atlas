@@ -283,6 +283,37 @@ ACTIVE packet whose metadata is malformed but still shows that `WORKSTREAM`
 and repository also stops `HUMAN_REQUIRED` before successor activation.
 REWORK does not chain.
 
+## Host-local supervise-once (Issue #47)
+
+One host runs one flocked pass over its descriptor. The descriptor names
+repositories, local worktrees, Cursor Chat IDs, and a state root outside
+every worktree. It does not name Work Packet issue numbers or branches.
+Each pass discovers open trusted `[AI Work]` packets for those repositories.
+Zero trusted ACTIVE packets is idle. Two trusted ACTIVE packets fail closed.
+The unique packet supplies issue, branch, workstream, and `LAST_VERIFIED_HEAD`.
+That packet is read again immediately before any audit or Cursor effect.
+
+GitHub remains canonical for the packet, audit claim, and disposition.
+The host keeps Chat IDs, worktree paths, the state root, and credential
+references. Those values are not written to GitHub or committed config.
+A live Cursor session on the worktree, a dirty or stale worktree, CI or
+review that is not ready, or a missing `OPENAI_API_KEY` performs no paid
+audit and no Cursor dispatch. A completed exact-HEAD claim uses the existing
+disposition path. An audit-ready HEAD with no completed claim uses the
+existing claim and final-audit path, at most once per project per pass.
+
+Do not install a crontab in the E1 slice. A later host rollout can call:
+
+```bash
+flock -n "$HOME/.local/state/datarelay-atlas/supervise-once.lock" \
+  python3 -m atlas host-worker supervise-once \
+  --descriptors /var/lib/atlas/host-descriptors.json
+```
+
+`scripts/host-worker-supervise-once.sh` is the same contract. The Python
+pass also holds `<state_root>/supervise-once.lock`. Neither path installs
+systemd or a crontab, and neither accepts an issue number.
+
 ## Telegram / notify
 
 Observational only. Workflow progress must not require Telegram delivery.

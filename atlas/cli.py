@@ -28,7 +28,9 @@ from atlas.chat_audit_github import (
 from atlas.codex_audit import CodexAuditProvider
 from atlas.audit_claim import GitHubContentsClaimStore
 from atlas.audit_disposition import run_completed_audit_disposition
+from atlas.final_audit import AuditBudget, BoundedResponsesAuditProvider
 from atlas.host_worker import load_host_worker_config, run_once
+from atlas.supervisor import supervise_once
 from atlas.ops import assess_service_environment, stage_unit
 from atlas.provenance import ValidationError
 from atlas.semantic_retrieval import embedding_config_from_cli
@@ -894,6 +896,16 @@ def build_parser() -> argparse.ArgumentParser:
     hw_dispose.add_argument("--workstream", required=True)
     hw_dispose.add_argument("--head", required=True)
     hw_dispose.set_defaults(func=cmd_host_worker_dispose_once)
+    hw_supervise = hw_sub.add_parser(
+        "supervise-once",
+        help="One descriptor-driven pass: discover ACTIVE packets, audit or dispose",
+    )
+    hw_supervise.add_argument(
+        "--descriptors",
+        required=True,
+        help="Host-local descriptor file. Issue numbers are not accepted here.",
+    )
+    hw_supervise.set_defaults(func=cmd_host_worker_supervise_once)
 
     ops = sub.add_parser("ops", help="Service configuration and health")
     ops_sub = ops.add_subparsers(dest="ops_command", required=True)
@@ -964,6 +976,36 @@ def cmd_host_worker_dispose_once(args: argparse.Namespace) -> int:
                 status="ACTIVE",
             )
         ],
+        git_runner=default_git_runner,
+        spawn=lambda argv, cwd: _subprocess_runner(argv, cwd).returncode,
+        host_probe=None,
+    )
+    _print_json(outcome)
+    return 0
+
+
+def cmd_host_worker_supervise_once(args: argparse.Namespace) -> int:
+    """Discover each descriptor repository's unique ACTIVE packet and act once."""
+    config = load_host_worker_config(Path(args.descriptors))
+    adapter = GitHubWorkPacketAdapter(command_runner=_subprocess_runner)
+    budget = AuditBudget(per_run_hard_usd=1.0, monthly_hard_usd=25.0)
+
+    def claim_store_for(repository: str) -> GitHubContentsClaimStore:
+        return GitHubContentsClaimStore(
+            repository,
+            command_runner=_subprocess_runner,
+        )
+
+    outcome = supervise_once(
+        config=config,
+        packet_adapter=adapter,
+        claim_store_for=claim_store_for,
+        auditor=BoundedResponsesAuditProvider(
+            budget=budget,
+            command_runner=_subprocess_runner,
+            git_runner=default_git_runner,
+        ),
+        budget=budget,
         git_runner=default_git_runner,
         spawn=lambda argv, cwd: _subprocess_runner(argv, cwd).returncode,
         host_probe=None,
