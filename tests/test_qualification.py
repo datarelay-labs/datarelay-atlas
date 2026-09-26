@@ -34,6 +34,7 @@ from atlas.qualification import (
     PROD_SOURCE_PATH,
     _checkout_code_head,
     _engineering_system_pin,
+    _preserve_data_root_owner,
     _pin_reason,
     main,
     run_operational_e2e,
@@ -525,6 +526,28 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(evidence["status"], "FAIL_CLOSED")
             self.assertEqual(evidence["reason"], "deployed code head is unavailable")
             self.assertFalse((data / "registry.json").exists())
+
+    def test_preserve_data_root_owner_chowns_only_mismatched_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            child = root / "projections.json"
+            child.write_text("{}", encoding="utf-8")
+            calls: list[tuple[str, int, int]] = []
+
+            def fake_stat(path, follow_symlinks=True):  # noqa: ARG001
+                if Path(path) == child:
+                    return type("Stat", (), {"st_uid": 0, "st_gid": 0})()
+                return type("Stat", (), {"st_uid": 10, "st_gid": 20})()
+
+            def fake_chown(path, uid, gid, follow_symlinks=True):  # noqa: ARG001
+                calls.append((os.fspath(path), uid, gid))
+
+            with (
+                patch("atlas.qualification.os.stat", fake_stat),
+                patch("atlas.qualification.os.chown", fake_chown),
+            ):
+                self.assertIsNone(_preserve_data_root_owner(root))
+            self.assertEqual(calls, [(os.fspath(child), 10, 20)])
 
     def test_cryptography_is_a_direct_bounded_dependency(self):
         text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
