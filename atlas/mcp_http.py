@@ -163,9 +163,11 @@ def _add_host(hosts: set[str], origins: set[str], host: str, port: int | None, s
     if not host:
         return
     display = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    hosts.add(display)
     hosts.add(f"{display}:*")
     if port:
         hosts.add(f"{display}:{port}")
+    origins.add(f"{scheme}://{display}")
     origins.add(f"{scheme}://{display}:*")
     if port:
         origins.add(f"{scheme}://{display}:{port}")
