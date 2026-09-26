@@ -77,9 +77,9 @@ rollback, and the production Engineering System profile stay later slices.
 - Operators can prove a restorable snapshot without stopping on a torn JSON
   write from `ProjectRegistry` or `ProjectionStore`.
 - Secrets that the shared classifier flags never enter the backup directory.
-- The production-profile slice sets `production_oriented: true` and points
-  backup, restore-test, upgrade, and rollback at these commands. Public smoke
-  and operational E2E stay disabled until `prod-atlas` evidence exists.
+- The operations-contract slice points backup, restore-test, upgrade, and
+  rollback at these commands. `production_oriented` stays false until real
+  `prod-atlas` public-smoke and operational E2E evidence exists.
 
 ## Amendment — full data-root contract
 
@@ -116,6 +116,6 @@ controller state. This amendment is part of the same backup/restore slice.
 The profile slice points `.engineering/project.yaml` at `ops backup`,
 `ops restore-test`, `ops upgrade`, and `ops rollback --target-code`.
 Destination and rollback-target variables are required and have no default.
-`incident_response_required` is true because the pinned adoption check
-requires it whenever `production_oriented` is true. Public smoke and
-operational E2E remain disabled until real `prod-atlas` evidence exists.
+`runbook_required` and `incident_response_required` are true.
+`production_oriented` stays false so adoption does not require public-smoke
+or operational-E2E evidence that does not exist yet.

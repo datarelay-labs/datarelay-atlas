@@ -194,7 +194,7 @@ class OpsCheckTests(unittest.TestCase):
     def test_production_profile_uses_audited_data_protection_commands(self):
         project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
         release = (ROOT / ".engineering" / "release.yaml").read_text(encoding="utf-8")
-        self.assertIn("production_oriented: true", project)
+        self.assertIn("production_oriented: false", project)
         self.assertIn("runbook_required: true", project)
         self.assertIn("incident_response_required: true", project)
         self.assertIn("docs/runbooks/phase2-data-protection.md", project)
