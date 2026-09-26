@@ -194,8 +194,11 @@ def _issuer_matches(payload: dict[str, Any], expected_issuer: str) -> bool:
 def _audience_matches(payload: dict[str, Any], expected_resource: str) -> bool:
     """Each present resource-identifying claim must name the expected resource.
 
-    An ``aud`` list is valid when it includes the expected resource. A
-    conflicting ``resource`` claim is not ignored just because ``aud`` matched.
+    An ``aud`` list matches when at least one entry canonicalizes to the
+    expected resource URL. Additional audience identifiers that are not URLs
+    do not invalidate that match. A single non-URL ``aud`` string is malformed
+    and fails closed. A conflicting ``resource`` claim is not ignored just
+    because ``aud`` matched.
     """
     try:
         expected = _canonical_resource(expected_resource)
@@ -213,6 +216,7 @@ def _claim_matches(value: object, expected: str, *, allow_list: bool) -> bool | 
     """Return True/False for a present claim, None when absent, or ``_REJECT``."""
     if value is None:
         return None
+    skip_non_url_identifiers = False
     if isinstance(value, str):
         values = [value]
     elif (
@@ -222,6 +226,7 @@ def _claim_matches(value: object, expected: str, *, allow_list: bool) -> bool | 
         and all(isinstance(item, str) for item in value)
     ):
         values = value
+        skip_non_url_identifiers = True
     else:
         return _REJECT
     matched = False
@@ -230,6 +235,8 @@ def _claim_matches(value: object, expected: str, *, allow_list: bool) -> bool | 
             if _canonical_resource(item) == expected:
                 matched = True
         except ValueError:
+            if skip_non_url_identifiers:
+                continue
             return _REJECT
     return matched
 
