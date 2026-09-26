@@ -8,6 +8,7 @@ roots, and credentials stay on the host.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -299,6 +300,16 @@ def _supervise_project(
             cursor_calls=int(outcome.get("cursor_calls") or 0),
             verdict=outcome.get("verdict"),
             findings=outcome.get("findings"),
+            chat_id=chat_id,
+            worktree=worktree,
+        )
+    if not os.environ.get(api_key_env, "").strip():
+        return _project_result(
+            repository,
+            "missing_key",
+            issue_number=issue_number,
+            verdict="HUMAN_REQUIRED",
+            findings="OPENAI_API_KEY absent; Gate B real audit is HUMAN_REQUIRED",
             chat_id=chat_id,
             worktree=worktree,
         )

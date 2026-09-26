@@ -431,6 +431,7 @@ class SuperviseOnceTests(unittest.TestCase):
     def test_completed_claim_disposes_once_and_replay_does_not_respawn(self) -> None:
         self.hub.add(REPO, 88, _packet_body())
         self._seed(REPO, 88)
+        os.environ.pop("OPENAI_API_KEY", None)
         first = self._run()
         self.assertEqual(self._row(first, REPO)["action"], "redispatched")
         self.assertEqual(first["cursor_calls"], 1)
@@ -463,6 +464,8 @@ class SuperviseOnceTests(unittest.TestCase):
         self.assertEqual(row["verdict"], "HUMAN_REQUIRED")
         self.assertEqual(self.auditor.calls, 0)
         self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertEqual(outcome["model_calls"], 0)
+        self.assertEqual(self.evidence_calls, [])
 
     def test_stale_ci_review_and_head_make_no_paid_call(self) -> None:
         self.hub.add(REPO, 88, _packet_body())
