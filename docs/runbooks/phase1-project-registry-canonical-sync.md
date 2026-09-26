@@ -18,7 +18,8 @@ registered and its selected canonical knowledge is reproducibly projected.
   - `registry.json` — Atlas-owned durable project/source configuration (ADR-0005)
   - `projections/` — rebuildable derived knowledge + metadata
 
-Backup implication: copy the data root directory. Restoring registry restores
+Backup implication: use `python -m atlas ops backup` (ADR-0010). A live
+directory copy can observe a partial write. Restoring registry restores
 configuration; run `rebuild`/`sync` to refresh derived projections.
 
 ## E2E flow

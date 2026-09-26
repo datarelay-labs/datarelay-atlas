@@ -3,9 +3,10 @@
 Install the existing authenticated MCP process as a non-root systemd service.
 This runbook does not deploy `prod-atlas`, provision public DNS, complete
 ChatGPT OAuth, or take a consistent backup. Issue #41 stays HUMAN_REQUIRED.
-Backup, restore, upgrade, and rollback are Issue #43. The directory copy in
-`.engineering/project.yaml` `backup_command` is not an online-consistent
-backup.
+Consistent backup and restore verification are ADR-0010
+(`docs/runbooks/phase2-data-protection.md`). Upgrade and rollback remain
+Issue #43. The directory copy in `.engineering/project.yaml` `backup_command`
+is not an online-consistent backup.
 
 ## Layout
 
