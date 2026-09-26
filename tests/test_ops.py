@@ -24,6 +24,8 @@ from atlas.ops import (
     data_root_runtime_ready,
     prod_launch_contract,
     stage_unit,
+    validate_ingress_service_text,
+    validate_ingress_socket_text,
     validate_unit_text,
 )
 from atlas.provenance import ValidationError
@@ -226,6 +228,10 @@ class OpsCheckTests(unittest.TestCase):
         self.assertEqual(contract["mcp_dns"], "mcp.atlas.datarelay.run")
         self.assertEqual(contract["resource_url"], "https://mcp.atlas.datarelay.run/mcp")
         self.assertEqual(contract["bind_host"], "127.0.0.1")
+        self.assertEqual(contract["bind_port"], 8443)
+        self.assertEqual(contract["ingress_listen"], "0.0.0.0:443")
+        self.assertEqual(contract["ingress_target"], "127.0.0.1:8443")
+        self.assertEqual(contract["resource_port"], 443)
         self.assertEqual(contract["restart"], "on-failure")
         self.assertFalse(contract["chatgpt_mcp_required"])
         self.assertFalse(contract["production_evidence"])
@@ -239,7 +245,25 @@ class OpsCheckTests(unittest.TestCase):
             code = main(["ops", "prod-contract"])
         self.assertEqual(code, 0)
         self.assertIn('"production_evidence": false', stdout.getvalue())
+        self.assertIn('"ingress_listen": "0.0.0.0:443"', stdout.getvalue())
         self.assertNotIn(SECRET, stdout.getvalue())
+        with tempfile.TemporaryDirectory() as tmp:
+            stage_unit(Path(tmp))
+            socket_text = (Path(tmp) / "datarelay-atlas-ingress.socket").read_text(
+                encoding="utf-8"
+            )
+            proxy_text = (Path(tmp) / "datarelay-atlas-ingress.service").read_text(
+                encoding="utf-8"
+            )
+        self.assertIn("ListenStream=0.0.0.0:443\n", socket_text)
+        self.assertIn("systemd-socket-proxyd 127.0.0.1:8443\n", proxy_text)
+        self.assertNotIn("key.pem", socket_text + proxy_text)
+        self.assertNotIn("service.env", socket_text + proxy_text)
+        self.assertNotIn("CAP_NET_BIND_SERVICE", socket_text + proxy_text)
+        with self.assertRaises(ValidationError):
+            validate_ingress_socket_text(socket_text.replace("0.0.0.0:443", "127.0.0.1:8443", 1))
+        with self.assertRaises(ValidationError):
+            validate_ingress_service_text(proxy_text + "EnvironmentFile=/etc/datarelay-atlas/service.env\n")
         project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
         self.assertIn("production_oriented: false", project)
         text = (ROOT / "deploy" / "systemd" / "datarelay-atlas.service").read_text(

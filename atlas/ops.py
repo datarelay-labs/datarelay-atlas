@@ -38,11 +38,16 @@ from atlas.work_controller import CONTROLLER_SCHEMA_VERSION
 
 ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 UNIT_NAME = "datarelay-atlas.service"
+INGRESS_SOCKET_NAME = "datarelay-atlas-ingress.socket"
+INGRESS_UNIT_NAME = "datarelay-atlas-ingress.service"
 PROD_HOSTNAME = "prod-atlas"
 PROD_MCP_DNS = "mcp.atlas.datarelay.run"
 PROD_RESOURCE_URL = "https://mcp.atlas.datarelay.run/mcp"
 PROD_BIND_HOST = "127.0.0.1"
 PROD_BIND_PORT = 8443
+PROD_INGRESS_LISTEN = "0.0.0.0:443"
+PROD_INGRESS_PROXY = "/usr/lib/systemd/systemd-socket-proxyd"
+PROD_INGRESS_TARGET = "127.0.0.1:8443"
 
 _REQUIRED_KEYS = (
     "ATLAS_DATA_ROOT",
@@ -90,8 +95,14 @@ def prod_launch_contract() -> dict:
         "data_root": "/var/lib/datarelay-atlas",
         "env_file": "/etc/datarelay-atlas/service.env",
         "hostname": PROD_HOSTNAME,
+        "ingress_listen": PROD_INGRESS_LISTEN,
+        "ingress_proxy": PROD_INGRESS_PROXY,
+        "ingress_socket": INGRESS_SOCKET_NAME,
+        "ingress_target": PROD_INGRESS_TARGET,
+        "ingress_unit": INGRESS_UNIT_NAME,
         "mcp_dns": PROD_MCP_DNS,
         "production_evidence": False,
+        "resource_port": 443,
         "resource_url": PROD_RESOURCE_URL,
         "restart": "on-failure",
         "secret_paths_outside_git": [
@@ -109,16 +120,22 @@ def unit_source_path() -> Path:
 
 
 def stage_unit(dest_dir: Path) -> Path:
-    """Copy the systemd unit into ``dest_dir`` without invoking systemd."""
-    source = unit_source_path()
-    text = source.read_text(encoding="utf-8")
-    validate_unit_text(text)
+    """Copy the service and port-443 ingress units without invoking systemd."""
     destination = Path(dest_dir)
     destination.mkdir(parents=True, exist_ok=True)
-    target = destination / UNIT_NAME
+    _stage_validated(destination, UNIT_NAME, validate_unit_text)
+    _stage_validated(destination, INGRESS_SOCKET_NAME, validate_ingress_socket_text)
+    _stage_validated(destination, INGRESS_UNIT_NAME, validate_ingress_service_text)
+    return destination / UNIT_NAME
+
+
+def _stage_validated(destination: Path, name: str, validate) -> None:
+    source = Path(__file__).resolve().parents[1] / "deploy" / "systemd" / name
+    text = source.read_text(encoding="utf-8")
+    validate(text)
+    target = destination / name
     target.write_text(text, encoding="utf-8")
     os.chmod(target, 0o644)
-    return target
 
 
 def validate_unit_text(text: str) -> None:
@@ -135,6 +152,40 @@ def validate_unit_text(text: str) -> None:
     missing = [line.strip() for line in required if line not in text]
     if missing or "User=root" in text or "\nUser=0\n" in text:
         raise ValidationError("systemd unit does not match the non-root service contract")
+    if "CAP_NET_BIND_SERVICE" in text:
+        raise ValidationError("systemd unit does not match the non-root service contract")
+
+
+def validate_ingress_socket_text(text: str) -> None:
+    required = (
+        "ListenStream=0.0.0.0:443\n",
+        "BindIPv6Only=ipv4\n",
+        "Service=datarelay-atlas-ingress.service\n",
+        "WantedBy=sockets.target\n",
+    )
+    if any(line not in text for line in required) or "ListenStream=443\n" in text:
+        raise ValidationError("ingress socket does not listen on 0.0.0.0:443")
+    _reject_ingress_secrets(text)
+
+
+def validate_ingress_service_text(text: str) -> None:
+    required = (
+        "ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:8443\n",
+        "Requires=datarelay-atlas.service\n",
+        "DynamicUser=yes\n",
+        "NoNewPrivileges=true\n",
+        "IPAddressAllow=localhost\n",
+        "IPAddressDeny=any\n",
+    )
+    if any(line not in text for line in required) or "User=root" in text:
+        raise ValidationError("ingress service does not forward TCP to 127.0.0.1:8443")
+    _reject_ingress_secrets(text)
+
+
+def _reject_ingress_secrets(text: str) -> None:
+    lowered = text.lower()
+    if any(token in lowered for token in ("key.pem", "cert.pem", "service.env", "github_token", "begin ")):
+        raise ValidationError("ingress unit must not reference TLS material or service secrets")
 
 
 def data_root_runtime_ready(data_root: Path) -> bool:

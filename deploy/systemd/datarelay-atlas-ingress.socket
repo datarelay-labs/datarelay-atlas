@@ -1,0 +1,14 @@
+[Unit]
+Description=DataRelay Atlas public MCP ingress on TCP port 443
+Documentation=file:/opt/datarelay-atlas/docs/runbooks/phase2-production-service.md
+After=network-online.target
+Wants=network-online.target
+
+[Socket]
+ListenStream=0.0.0.0:443
+BindIPv6Only=ipv4
+NoDelay=true
+Service=datarelay-atlas-ingress.service
+
+[Install]
+WantedBy=sockets.target

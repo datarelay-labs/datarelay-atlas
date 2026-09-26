@@ -29,9 +29,13 @@ keys, a world-accessible env file or private key, and a partial semantic
 configuration are not ready. Do not put `GITHUB_TOKEN` in the service env
 file. `atlas sync` reads `GITHUB_TOKEN` from the operator shell.
 
-TLS terminates in the MCP process. A proxy may forward TCP to
-`127.0.0.1:8443`. The process does not bind cleartext and does not issue
-tokens.
+TLS terminates in the MCP process. Production ingress is not optional.
+`datarelay-atlas-ingress.socket` listens on `0.0.0.0:443`.
+`systemd-socket-proxyd` forwards that TCP stream to `127.0.0.1:8443`.
+The proxy unit is `DynamicUser=yes`, has no TLS file paths, and does not run
+as root. The MCP process still binds only `127.0.0.1:8443` and does not
+receive `CAP_NET_BIND_SERVICE`. The process does not bind cleartext and does
+not issue tokens.
 
 ## Install
 
@@ -56,12 +60,15 @@ sudo install -m 0640 -o root -g atlas /path/outside/git/key.pem /etc/datarelay-a
 sudo install -m 0644 -o root -g atlas /path/outside/git/cert.pem /etc/datarelay-atlas/tls/cert.pem
 PYTHONPATH=. python3 -m atlas ops stage --dest /tmp/atlas-unit-stage
 sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas.service /etc/systemd/system/datarelay-atlas.service
+sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas-ingress.socket /etc/systemd/system/datarelay-atlas-ingress.socket
+sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas-ingress.service /etc/systemd/system/datarelay-atlas-ingress.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now datarelay-atlas.service
+sudo systemctl enable --now datarelay-atlas-ingress.socket
 ```
 
-`ops stage` copies the unit into the destination directory. It does not call
-`systemctl` and does not need root. Enable the unit only after `ops check`
+`ops stage` copies the service unit and the port-443 ingress units. It does
+not call `systemctl` and does not need root. Enable them only after `ops check`
 reports ready. The unit's `ExecStartPre` runs that same check before every
 start, so a world-accessible env file, secret, or TLS key, or an unknown or
 conflicting setting, does not reach `mcp serve`.

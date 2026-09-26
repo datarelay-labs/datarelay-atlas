@@ -1,0 +1,16 @@
+[Unit]
+Description=DataRelay Atlas TCP forward from port 443 to the loopback MCP process
+Documentation=file:/opt/datarelay-atlas/docs/runbooks/phase2-production-service.md
+After=datarelay-atlas.service
+Requires=datarelay-atlas.service
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:8443
+DynamicUser=yes
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET
+IPAddressAllow=localhost
+IPAddressDeny=any
