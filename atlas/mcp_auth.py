@@ -194,9 +194,12 @@ def _issuer_matches(payload: dict[str, Any], expected_issuer: str) -> bool:
 def _audience_matches(payload: dict[str, Any], expected_resource: str) -> bool:
     """Each present resource-identifying claim must name the expected resource.
 
-    An ``aud`` list is valid when it includes the expected resource. A
-    non-URL member, such as a client id, does not invalidate that list.
-    A conflicting ``resource`` claim is not ignored just because ``aud`` matched.
+    An ``aud`` list matches when at least one entry canonicalizes to the
+    expected resource URL. Additional audience identifiers that are not URLs
+    do not invalidate that match. An entry that purports to be an HTTP(S) URL
+    but is malformed fails closed. A single non-URL ``aud`` string is malformed
+    and fails closed. A conflicting ``resource`` claim is not ignored just
+    because ``aud`` matched.
     """
     try:
         expected = _canonical_resource(expected_resource)
@@ -214,6 +217,7 @@ def _claim_matches(value: object, expected: str, *, allow_list: bool) -> bool | 
     """Return True/False for a present claim, None when absent, or ``_REJECT``."""
     if value is None:
         return None
+    skip_non_url_identifiers = False
     if isinstance(value, str):
         values = [value]
     elif (
@@ -223,6 +227,7 @@ def _claim_matches(value: object, expected: str, *, allow_list: bool) -> bool | 
         and all(isinstance(item, str) for item in value)
     ):
         values = value
+        skip_non_url_identifiers = True
     else:
         return _REJECT
     matched = False
@@ -231,10 +236,23 @@ def _claim_matches(value: object, expected: str, *, allow_list: bool) -> bool | 
             if _canonical_resource(item) == expected:
                 matched = True
         except ValueError:
-            if not allow_list or len(values) == 1:
-                return _REJECT
-            continue
+            if skip_non_url_identifiers and not _purports_http_url(item):
+                continue
+            return _REJECT
     return matched
+
+
+def _purports_http_url(value: str) -> bool:
+    """True when the value claims an HTTP(S) scheme, even if the URL is invalid.
+
+    A parse error is treated as a malformed URL so the caller fails closed
+    instead of letting the exception escape token verification.
+    """
+    try:
+        scheme = urlsplit(value.strip()).scheme.lower()
+    except ValueError:
+        return True
+    return scheme in {"http", "https"}
 
 
 def _canonical_resource(url: str) -> str:
