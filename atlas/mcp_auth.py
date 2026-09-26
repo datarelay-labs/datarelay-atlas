@@ -195,7 +195,8 @@ def _audience_matches(payload: dict[str, Any], expected_resource: str) -> bool:
     """Each present resource-identifying claim must name the expected resource.
 
     An ``aud`` list is valid when it includes the expected resource. A
-    conflicting ``resource`` claim is not ignored just because ``aud`` matched.
+    non-URL member, such as a client id, does not invalidate that list.
+    A conflicting ``resource`` claim is not ignored just because ``aud`` matched.
     """
     try:
         expected = _canonical_resource(expected_resource)
@@ -230,7 +231,9 @@ def _claim_matches(value: object, expected: str, *, allow_list: bool) -> bool | 
             if _canonical_resource(item) == expected:
                 matched = True
         except ValueError:
-            return _REJECT
+            if not allow_list or len(values) == 1:
+                return _REJECT
+            continue
     return matched
 
 

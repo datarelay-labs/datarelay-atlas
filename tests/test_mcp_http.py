@@ -383,6 +383,20 @@ class IntrospectionVerifierTests(unittest.TestCase):
                     "resource": resource,
                     "iss": ISSUER,
                 },
+                "aud-list-client-id": {
+                    "active": True,
+                    "client_id": "atlas-cli",
+                    "scope": "atlas.read",
+                    "aud": [resource, "atlas-resource"],
+                    "iss": ISSUER,
+                },
+                "aud-client-id-only": {
+                    "active": True,
+                    "client_id": "atlas-cli",
+                    "scope": "atlas.read",
+                    "aud": ["atlas-resource"],
+                    "iss": ISSUER,
+                },
             }
         )
         verifier = Rfc7662TokenVerifier(
@@ -405,6 +419,8 @@ class IntrospectionVerifierTests(unittest.TestCase):
                 await verifier.verify_token("conflict"),
                 await verifier.verify_token("aud-list"),
                 await verifier.verify_token("aud-list-conflict"),
+                await verifier.verify_token("aud-list-client-id"),
+                await verifier.verify_token("aud-client-id-only"),
             )
 
         (
@@ -417,6 +433,8 @@ class IntrospectionVerifierTests(unittest.TestCase):
             conflict,
             aud_list,
             aud_list_conflict,
+            aud_list_client_id,
+            aud_client_id_only,
         ) = asyncio.run(check())
         self.assertIsNone(wrong)
         self.assertIsNotNone(omitted)
@@ -431,6 +449,10 @@ class IntrospectionVerifierTests(unittest.TestCase):
         assert aud_list is not None
         self.assertEqual(aud_list.resource, resource)
         self.assertIsNone(aud_list_conflict)
+        self.assertIsNotNone(aud_list_client_id)
+        assert aud_list_client_id is not None
+        self.assertEqual(aud_list_client_id.resource, resource)
+        self.assertIsNone(aud_client_id_only)
 
     def test_http_transport_posts_form_and_does_not_follow_redirects(self):
         hits = {"introspect": 0, "collected": 0}
