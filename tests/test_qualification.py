@@ -41,6 +41,8 @@ from atlas.service import AtlasService
 ROOT = Path(__file__).resolve().parents[1]
 PROD_URL = "https://mcp.atlas.datarelay.run"
 PIN = "14150e424c922ff3a930b45dcf31d3a3d3ba28b2"
+DEPLOYED_HEAD = "a" * 40
+STALE_HEAD = "b" * 40
 
 
 class QualificationTests(unittest.TestCase):
@@ -297,8 +299,7 @@ class QualificationTests(unittest.TestCase):
             revision = "rev-prod-bind-1"
             evidence_path = root / "cursor.json"
             evidence_path.write_text(json.dumps(_bound_cursor(revision)), encoding="utf-8")
-            marker = root / "restarted"
-            command = f"{sys.executable} -c \"open({str(marker)!r}, 'w').write('ok')\""
+            command, identity_command = _changing_restart(root)
             seen: list[str | None] = []
 
             def fetch(source, token):
@@ -312,7 +313,13 @@ class QualificationTests(unittest.TestCase):
 
             evidence = run_operational_e2e(
                 "prod",
-                _prod_env(root, data, evidence_path, command),
+                _prod_env(
+                    root,
+                    data,
+                    evidence_path,
+                    command,
+                    identity_command=identity_command,
+                ),
                 repo_root=ROOT,
                 smoke_client=_ready_smoke(),
                 fetch=fetch,
@@ -320,7 +327,7 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(evidence["status"], "PASS", evidence)
             self.assertTrue(evidence["production_claim"])
             self.assertEqual(seen, ["qual-github-credential"])
-            self.assertTrue(marker.is_file())
+            self.assertEqual((root / "service-identity").read_text(encoding="utf-8"), "boot-2\n")
             names = [step["name"] for step in evidence["steps"]]
             self.assertIn("register_source", names)
             self.assertIn("sync", names)
@@ -342,6 +349,126 @@ class QualificationTests(unittest.TestCase):
             shown = AtlasService(data).show_project(PROD_PROJECT_ID)
             self.assertEqual(shown["project"]["repository"], PROD_REPOSITORY)
         self._assert_release_flags_unchanged()
+
+    def test_prod_sync_leaves_a_failing_unrelated_source_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            service = AtlasService(data)
+            service.register_project(project_id=PROD_PROJECT_ID, repository=PROD_REPOSITORY)
+            service.add_source(
+                PROD_PROJECT_ID,
+                source_id="notes",
+                source_path="docs/notes.md",
+                title="Notes",
+            )
+            notes = next(
+                source
+                for source in service.registry.canonical_sources(PROD_PROJECT_ID)
+                if source.source_id == "notes"
+            )
+            service.projections.sync_one(
+                notes,
+                fetch=lambda source, token: FetchedSource(  # noqa: ARG005
+                    content="notes-prior-marker\n",
+                    source_revision="rev-notes-prior",
+                ),
+            )
+            notes_path = data / "projections" / PROD_PROJECT_ID / "notes.md"
+            before_bytes = notes_path.read_bytes()
+            before_meta = next(
+                record
+                for record in service.projection_records(PROD_PROJECT_ID)
+                if record["source_id"] == "notes"
+            )
+            revision = "rev-prod-bind-1"
+            evidence_path = root / "cursor.json"
+            evidence_path.write_text(json.dumps(_bound_cursor(revision)), encoding="utf-8")
+            command, identity_command = _changing_restart(root)
+            seen: list[str] = []
+
+            def fetch(source, token):  # noqa: ARG001
+                seen.append(source.source_id)
+                if source.source_id != PROD_SOURCE_ID:
+                    raise RuntimeError(f"unrelated source fetched {token}")
+                return FetchedSource(content=PROD_QUERY + "\n", source_revision=revision)
+
+            evidence = run_operational_e2e(
+                "prod",
+                _prod_env(
+                    root,
+                    data,
+                    evidence_path,
+                    command,
+                    identity_command=identity_command,
+                ),
+                repo_root=ROOT,
+                smoke_client=_ready_smoke(),
+                fetch=fetch,
+            )
+            self.assertEqual(evidence["status"], "PASS", evidence)
+            self.assertEqual(seen, [PROD_SOURCE_ID])
+            self.assertEqual(notes_path.read_bytes(), before_bytes)
+            after_meta = next(
+                record
+                for record in AtlasService(data).projection_records(PROD_PROJECT_ID)
+                if record["source_id"] == "notes"
+            )
+            self.assertEqual(after_meta["source_revision"], "rev-notes-prior")
+            self.assertEqual(after_meta["sync_state"], before_meta["sync_state"])
+            self.assertEqual(after_meta["content_digest"], before_meta["content_digest"])
+            hits = AtlasService(data).search(PROD_PROJECT_ID, "notes-prior-marker", limit=4)
+            self.assertEqual(hits[0].provenance["source_revision"], "rev-notes-prior")
+            self.assertNotIn("qual-github-credential", json.dumps(evidence))
+
+    def test_prod_restart_rejects_a_noop_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            evidence_path = root / "cursor.json"
+            evidence_path.write_text(
+                json.dumps(_bound_cursor("rev-prod-bind-1")),
+                encoding="utf-8",
+            )
+            evidence = run_operational_e2e(
+                "prod",
+                _prod_env(root, data, evidence_path, f"{sys.executable} -c pass"),
+                repo_root=ROOT,
+                smoke_client=_ready_smoke(),
+                fetch=lambda source, token: FetchedSource(  # noqa: ARG005
+                    content=PROD_QUERY + "\n",
+                    source_revision="rev-prod-bind-1",
+                ),
+            )
+            self.assertEqual(evidence["status"], "FAIL")
+            self.assertFalse(evidence["production_claim"])
+            self.assertEqual(evidence["reason"], "restart did not change service identity")
+            self.assertNotIn("boot-constant", json.dumps(evidence))
+
+    def test_stale_deployed_head_fails_closed_before_registration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            evidence_path = root / "cursor.json"
+            stale = _bound_cursor("rev-prod-bind-1")
+            stale["code_head"] = STALE_HEAD
+            evidence_path.write_text(json.dumps(stale), encoding="utf-8")
+            evidence = run_operational_e2e(
+                "prod",
+                _prod_env(root, data, evidence_path, f"{sys.executable} -c pass"),
+                repo_root=ROOT,
+            )
+            self.assertEqual(evidence["status"], "FAIL_CLOSED")
+            self.assertFalse(evidence["production_claim"])
+            self.assertIn("deployed code head", evidence["reason"])
+            self.assertFalse((data / "registry.json").exists())
+            self.assertNotIn(STALE_HEAD, json.dumps(evidence))
+
+    def test_cryptography_is_a_direct_bounded_dependency(self):
+        text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("cryptography>=46.0.0,<52\n", text)
 
     def test_prod_cursor_evidence_must_match_the_synced_revision(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -421,10 +548,20 @@ class QualificationTests(unittest.TestCase):
         self.assertIn("operational_e2e_command: ''", release)
 
 
-def _prod_env(root: Path, data: Path, evidence: Path, command: str) -> dict[str, str]:
+def _prod_env(
+    root: Path,
+    data: Path,
+    evidence: Path,
+    command: str,
+    *,
+    identity_command: str | None = None,
+    deployed_head: str = DEPLOYED_HEAD,
+) -> dict[str, str]:
     token = root / "github-token"
     token.write_text("qual-github-credential\n", encoding="utf-8")
     os.chmod(token, 0o600)
+    if identity_command is None:
+        identity_command = f"{sys.executable} -c \"print('boot-constant')\""
     return {
         "ATLAS_QUALIFICATION_CONFIRM_PROD": "yes",
         "ATLAS_PUBLIC_BASE_URL": PROD_URL,
@@ -433,9 +570,23 @@ def _prod_env(root: Path, data: Path, evidence: Path, command: str) -> dict[str,
         "ATLAS_RESTORE_PROOF_DEST": str(root / "restore"),
         "ATLAS_ROLLBACK_TARGET": str(ROOT),
         "ATLAS_QUALIFICATION_RESTART_COMMAND": command,
+        "ATLAS_QUALIFICATION_RESTART_IDENTITY_COMMAND": identity_command,
+        "ATLAS_QUALIFICATION_DEPLOYED_HEAD": deployed_head,
         "ATLAS_CURSOR_MCP_EVIDENCE": str(evidence),
         "ATLAS_QUALIFICATION_GITHUB_TOKEN_FILE": str(token),
     }
+
+
+def _changing_restart(root: Path) -> tuple[str, str]:
+    identity = root / "service-identity"
+    identity.write_text("boot-1\n", encoding="utf-8")
+    marker = root / "restarted"
+    identity_command = f"{sys.executable} -c \"print(open({str(identity)!r}).read().strip())\""
+    command = (
+        f"{sys.executable} -c \"[open({str(identity)!r}, 'w').write('boot-2\\n'), "
+        f"open({str(marker)!r}, 'w').write('ok')]\""
+    )
+    return command, identity_command
 
 
 def _bound_cursor(revision: str) -> dict[str, object]:
@@ -447,6 +598,7 @@ def _bound_cursor(revision: str) -> dict[str, object]:
         "query": PROD_QUERY,
         "identity": f"{PROD_SOURCE_ID}@main",
         "source_revision": revision,
+        "code_head": DEPLOYED_HEAD,
         "repository": PROD_REPOSITORY,
         "source_path": PROD_SOURCE_PATH,
         "tools": ["search_project", "get_provenance"],

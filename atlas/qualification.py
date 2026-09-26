@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import ssl
 import stat
@@ -43,6 +44,7 @@ _PROJECT_ID = "qual"
 _QUERY = "qualification-marker"
 _REVISION = "rev-qual-1"
 _SHELLS = {"sh", "bash", "dash", "zsh", "sudo"}
+_CODE_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 _SMOKE_BODY = b'{"jsonrpc":"2.0","id":1,"method":"ping"}'
 
 SmokeClient = Callable[[str, str, bytes | None], tuple[int, bytes]]
@@ -300,17 +302,35 @@ def _prod_operational_e2e(
             token_reason or "github credential file is unreadable",
             [],
         )
+    deployed_head = _deployed_code_head(environ.get("ATLAS_QUALIFICATION_DEPLOYED_HEAD", ""))
+    if deployed_head is None:
+        return _evidence(
+            "operational-e2e",
+            "prod",
+            "FAIL_CLOSED",
+            "deployed code head is malformed",
+            [],
+        )
     evidence_path = Path(environ["ATLAS_CURSOR_MCP_EVIDENCE"])
-    static_reason = _cursor_static_reason(evidence_path)
+    static_reason = _cursor_static_reason(evidence_path, code_head=deployed_head)
     if static_reason:
         return _evidence("operational-e2e", "prod", "FAIL_CLOSED", static_reason, [])
     restart = _restart_argv(environ["ATLAS_QUALIFICATION_RESTART_COMMAND"])
+    identity_command = _restart_argv(environ["ATLAS_QUALIFICATION_RESTART_IDENTITY_COMMAND"])
     if restart is None:
         return _evidence(
             "operational-e2e",
             "prod",
             "FAIL_CLOSED",
             "restart command is not a direct argv",
+            [],
+        )
+    if identity_command is None:
+        return _evidence(
+            "operational-e2e",
+            "prod",
+            "FAIL_CLOSED",
+            "restart identity command is not a direct argv",
             [],
         )
     data_root = Path(environ["ATLAS_DATA_ROOT"])
@@ -358,11 +378,10 @@ def _prod_operational_e2e(
     steps.append(_step("register_source", "PASS"))
     guarded = _guard_fetch(fetch or fetch_github_file, token)
     try:
-        records = service.sync_project(PROD_PROJECT_ID, token=token, fetch=guarded)
+        revision = _sync_charter_only(service, token=token, fetch=guarded)
     except (OSError, ValidationError, subprocess.SubprocessError):
         steps.append(_step("sync", "FAIL"))
         return _evidence("operational-e2e", "prod", "FAIL", "github sync failed", steps)
-    revision = _synced_revision(records)
     if revision is None:
         steps.append(_step("sync", "FAIL"))
         return _evidence("operational-e2e", "prod", "FAIL", "github sync failed", steps)
@@ -379,7 +398,12 @@ def _prod_operational_e2e(
         )
     identity = bound["identity"]
     steps.append(_step("retrieval", "PASS", source_revision=revision, identity=identity))
-    binding = _cursor_binding_reason(evidence_path, revision=revision, identity=identity)
+    binding = _cursor_binding_reason(
+        evidence_path,
+        revision=revision,
+        identity=identity,
+        code_head=deployed_head,
+    )
     if binding:
         steps.append(_step("cursor_mcp", "FAIL", source_revision=revision, identity=identity))
         return _evidence("operational-e2e", "prod", "FAIL", binding, steps)
@@ -405,22 +429,10 @@ def _prod_operational_e2e(
         backup_data_root(data_root, backup_dest)
         restore_test(backup_dest, restore_dest)
         steps.append(_step("backup_restore", "PASS"))
-        completed = subprocess.run(
-            restart,
-            check=False,
-            capture_output=True,
-            timeout=60,
-            env=_scrubbed_env(),
-        )
-        if completed.returncode != 0:
+        restart_reason = _prove_service_restart(restart, identity_command)
+        if restart_reason:
             steps.append(_step("restart_recovery", "FAIL"))
-            return _evidence(
-                "operational-e2e",
-                "prod",
-                "FAIL",
-                "restart command failed",
-                steps,
-            )
+            return _evidence("operational-e2e", "prod", "FAIL", restart_reason, steps)
         steps.append(_step("restart_recovery", "PASS"))
     except (OSError, ValidationError, subprocess.SubprocessError):
         steps.append(_step("data_protection", "FAIL"))
@@ -459,7 +471,12 @@ def _prod_operational_e2e(
             identity=identity,
         )
     )
-    rebound = _cursor_binding_reason(evidence_path, revision=revision, identity=identity)
+    rebound = _cursor_binding_reason(
+        evidence_path,
+        revision=revision,
+        identity=identity,
+        code_head=deployed_head,
+    )
     if rebound:
         steps.append(_step("cursor_mcp_after_restart", "FAIL"))
         return _evidence("operational-e2e", "prod", "FAIL", rebound, steps)
@@ -614,6 +631,77 @@ def _guard_fetch(fetch: FetchFn, token: str) -> FetchFn:
     return wrapped
 
 
+def _sync_charter_only(service: AtlasService, *, token: str, fetch: FetchFn) -> str | None:
+    """Fetch only the qualification charter. Other enabled sources stay untouched."""
+    matches = [
+        source
+        for source in service.registry.canonical_sources(PROD_PROJECT_ID)
+        if source.source_id == PROD_SOURCE_ID
+    ]
+    if len(matches) != 1:
+        return None
+    record = service.projections.sync_one(matches[0], token=token, fetch=fetch)
+    return _synced_revision([record])
+
+
+def _prove_service_restart(restart: list[str], identity_command: list[str]) -> str | None:
+    """Return a failure reason unless restart changes a service identity marker.
+
+    Exit status alone is not evidence. The identity command is collected before
+    and after the restart command and must differ. Its output is not recorded.
+    """
+    before, reason = _service_identity(identity_command)
+    if reason or before is None:
+        return reason or "restart identity is unavailable"
+    try:
+        completed = subprocess.run(
+            restart,
+            check=False,
+            capture_output=True,
+            timeout=60,
+            env=_scrubbed_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "restart command failed"
+    if completed.returncode != 0:
+        return "restart command failed"
+    after, reason = _service_identity(identity_command)
+    if reason or after is None:
+        return reason or "restart identity is unavailable"
+    if before == after:
+        return "restart did not change service identity"
+    return None
+
+
+def _service_identity(argv: list[str]) -> tuple[str | None, str | None]:
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            timeout=30,
+            env=_scrubbed_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, "restart identity is unavailable"
+    if completed.returncode != 0:
+        return None, "restart identity is unavailable"
+    try:
+        text = completed.stdout.decode("utf-8").strip()
+    except UnicodeError:
+        return None, "restart identity is unavailable"
+    if not text or any(char.isspace() for char in text) or contains_unsafe_secret(text):
+        return None, "restart identity is unavailable"
+    return text, None
+
+
+def _deployed_code_head(value: str) -> str | None:
+    head = value.strip()
+    if _CODE_HEAD_RE.fullmatch(head):
+        return head
+    return None
+
+
 def _synced_revision(records: list) -> str | None:
     matched = [record for record in records if record.source_id == PROD_SOURCE_ID]
     if len(matched) != 1:
@@ -669,6 +757,8 @@ def _missing_prod_inputs(environ: dict[str, str]) -> list[str]:
         "ATLAS_RESTORE_PROOF_DEST",
         "ATLAS_ROLLBACK_TARGET",
         "ATLAS_QUALIFICATION_RESTART_COMMAND",
+        "ATLAS_QUALIFICATION_RESTART_IDENTITY_COMMAND",
+        "ATLAS_QUALIFICATION_DEPLOYED_HEAD",
         "ATLAS_CURSOR_MCP_EVIDENCE",
         "ATLAS_QUALIFICATION_GITHUB_TOKEN_FILE",
     )
@@ -699,7 +789,7 @@ def _load_cursor_evidence(path: Path) -> tuple[dict | None, str | None]:
     return data, None
 
 
-def _cursor_static_reason(path: Path) -> str | None:
+def _cursor_static_reason(path: Path, *, code_head: str) -> str | None:
     data, reason = _load_cursor_evidence(path)
     if reason or data is None:
         return reason or "cursor evidence is unreadable"
@@ -722,11 +812,19 @@ def _cursor_static_reason(path: Path) -> str | None:
         return "cursor evidence is not bound to the prod project"
     if not isinstance(revision, str) or not revision.strip():
         return "cursor evidence is not bound to the synced revision"
+    if data.get("code_head") != code_head:
+        return "cursor evidence is not bound to the deployed code head"
     return None
 
 
-def _cursor_binding_reason(path: Path, *, revision: str, identity: str) -> str | None:
-    static = _cursor_static_reason(path)
+def _cursor_binding_reason(
+    path: Path,
+    *,
+    revision: str,
+    identity: str,
+    code_head: str,
+) -> str | None:
+    static = _cursor_static_reason(path, code_head=code_head)
     if static:
         return static
     data, reason = _load_cursor_evidence(path)

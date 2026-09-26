@@ -28,9 +28,10 @@ Engineering System pin.
    `public-smoke` and `operational-e2e`. Evidence is secret-free JSON.
    Prod mode proves project `datarelay-atlas` /
    `datarelay-labs/datarelay-atlas` and source
-   `docs/product/PRODUCT-CHARTER.md` on the live data root. Cursor MCP
-   evidence must carry the same endpoint, project, query, identity, and
-   exact `source_revision`. `.engineering/release.yaml` commands stay empty.
+   `docs/product/PRODUCT-CHARTER.md` on the live data root. Only that source
+   is synced. Cursor MCP evidence must carry the same endpoint, project,
+   query, identity, exact `source_revision`, and deployed code HEAD.
+   `.engineering/release.yaml` commands stay empty.
 4. **State / migration impact** — No schema change. The local journey uses a
    temporary data root and synthetic content. Prod mode registers the Atlas
    project only when it is absent, and fails closed when an existing
@@ -46,6 +47,8 @@ Engineering System pin.
    The harness reads `engineering_system.version` and `baseline` from the
    project profile directly. It does not run the Phase 1 adoption parser over
    the rest of that file. A mismatch or unreadable pin fails closed.
+   Restart evidence requires a service identity marker that changes across
+   the restart command. A zero exit status with an unchanged marker fails.
    Restart is followed by another health check and the same attributable
    retrieval.
 6. **Architecture boundary** — `atlas.qualification` owns the harness.
@@ -62,9 +65,9 @@ Engineering System pin.
 
 Ship the harness as an isolated script and module. Local mode is the
 deterministic proof and stays synthetic. Prod mode is operator-gated. It
-syncs the canonical Atlas charter with a GitHub credential file, then
-accepts Cursor MCP evidence only when that evidence names the same public
-endpoint, project, query, identity, and exact source revision. After
-restart it repeats health and retrieval against that same state. A generic
-Cursor PASS file is not sufficient. Release metadata stays unchanged until
-that live journey has passed.
+syncs only the canonical Atlas charter with a GitHub credential file and
+does not rewrite other enabled sources. It accepts Cursor MCP evidence only
+when that evidence names the same public endpoint, project, query, identity,
+exact source revision, and deployed code HEAD. Restart must change a service
+identity marker. A generic Cursor PASS file is not sufficient. Release
+metadata stays unchanged until that live journey has passed.
