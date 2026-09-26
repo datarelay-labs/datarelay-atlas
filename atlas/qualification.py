@@ -836,25 +836,54 @@ def _pin_reason(repo_root: Path) -> str | None:
 def _engineering_system_pin(text: str) -> tuple[str, str] | None:
     """Read only engineering_system.version and baseline from a project profile.
 
-    The Phase 1 canonical-source adoption parser rejects list items in the
-    rest of `.engineering/project.yaml`. This reader stops at the next root
-    key and does not interpret domains, platforms, or operations.
+    The search stops at the first root ``engineering_system:`` mapping. Direct
+    children are read until the next indent-0 root key. Later lists, including
+    ``domains``, are ignored. A second root ``engineering_system:`` fails closed.
     """
     lines = text.splitlines()
-    start = _engineering_system_index(lines)
+    start = _find_engineering_system_root(lines)
     if start is None:
         return None
+    parsed = _engineering_system_children(lines, start)
+    if parsed is None:
+        return None
+    version, baseline, end = parsed
+    if _duplicate_engineering_system_root(lines, end):
+        return None
+    return version, baseline
+
+
+def _find_engineering_system_root(lines: list[str]) -> int | None:
+    """Return the first root engineering_system mapping and stop scanning."""
+    for index, raw in enumerate(lines):
+        if _ignored_root_line(raw):
+            continue
+        if "\t" in raw:
+            return None
+        key, separator, value = raw.partition(":")
+        if separator != ":" or key != "engineering_system":
+            continue
+        if value.strip():
+            return None
+        return index
+    return None
+
+
+def _engineering_system_children(
+    lines: list[str], start: int
+) -> tuple[str, str, int] | None:
     version: str | None = None
     baseline: str | None = None
     child_indent: int | None = None
-    end = start + 1
-    for end, raw in enumerate(lines[start + 1 :], start=start + 1):
+    end = len(lines)
+    for index, raw in enumerate(lines[start + 1 :], start=start + 1):
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
         if "\t" in raw:
             return None
         indent = len(raw) - len(raw.lstrip(" "))
         if indent == 0:
+            end = index
             break
         if child_indent is None:
             child_indent = indent
@@ -878,31 +907,27 @@ def _engineering_system_pin(text: str) -> tuple[str, str] | None:
             if baseline is not None:
                 return None
             baseline = scalar
-    else:
-        end = len(lines)
     if version is None or baseline is None:
         return None
-    if _engineering_system_index(lines[end:]) is not None:
-        return None
-    return version, baseline
+    return version, baseline, end
 
 
-def _engineering_system_index(lines: list[str]) -> int | None:
-    found: int | None = None
-    for index, raw in enumerate(lines):
-        if not raw.strip() or raw.lstrip().startswith("#") or raw[0] in {" ", "\t"}:
+def _duplicate_engineering_system_root(lines: list[str], start: int) -> bool:
+    """True when another root engineering_system key exists after the block."""
+    for raw in lines[start:]:
+        if _ignored_root_line(raw):
             continue
-        if raw.startswith("-"):
-            continue
-        if "\t" in raw:
-            return None
-        key, separator, value = raw.partition(":")
-        if separator != ":" or key != "engineering_system":
-            continue
-        if value.strip() or found is not None:
-            return None
-        found = index
-    return found
+        key, separator, _value = raw.partition(":")
+        if separator == ":" and key == "engineering_system":
+            return True
+    return False
+
+
+def _ignored_root_line(raw: str) -> bool:
+    """Skip blanks, comments, indented lines, and list items outside the block."""
+    if not raw.strip() or raw.lstrip().startswith("#"):
+        return True
+    return raw[0] in {" ", "\t"} or raw.startswith("-")
 
 
 def _plain_scalar(value: str) -> str | None:

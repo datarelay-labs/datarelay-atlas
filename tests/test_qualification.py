@@ -47,7 +47,14 @@ class QualificationTests(unittest.TestCase):
     def test_pin_reader_accepts_current_project_yaml_and_fails_closed(self):
         profile = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
         self.assertIn("\n- methodology\n", profile)
+        later_list = profile + "\nqualification_probe:\n- later-top-level-list\n"
         self.assertEqual(_engineering_system_pin(profile), (PIN_VERSION, PIN_BASELINE))
+        self.assertEqual(_engineering_system_pin(later_list), (PIN_VERSION, PIN_BASELINE))
+        self.assertIsNone(
+            _engineering_system_pin(
+                profile + "\nengineering_system:\n  version: 1.6.5\n  baseline: " + PIN_BASELINE + "\n"
+            )
+        )
         self.assertIsNone(_pin_reason(ROOT))
         smoke = run_public_smoke({}, repo_root=ROOT)
         self.assertIn("ATLAS_PUBLIC_BASE_URL", smoke["reason"])
