@@ -5,7 +5,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
-import re
 import socket
 import ssl
 import subprocess
@@ -13,6 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,6 +32,7 @@ from atlas.qualification import (
     PROD_REPOSITORY,
     PROD_SOURCE_ID,
     PROD_SOURCE_PATH,
+    _checkout_code_head,
     _engineering_system_pin,
     _pin_reason,
     main,
@@ -43,10 +44,20 @@ from atlas.service import AtlasService
 ROOT = Path(__file__).resolve().parents[1]
 PROD_URL = "https://mcp.atlas.datarelay.run"
 PIN = "14150e424c922ff3a930b45dcf31d3a3d3ba28b2"
+FIXTURE_HEAD = "a" * 40
 STALE_HEAD = "b" * 40
 
 
 class QualificationTests(unittest.TestCase):
+    def setUp(self):
+        self._head_patch = patch(
+            "atlas.qualification._checkout_code_head",
+            return_value=FIXTURE_HEAD,
+        )
+        self._head_patch.start()
+
+    def tearDown(self):
+        self._head_patch.stop()
     def test_pin_reader_accepts_current_project_yaml_and_fails_closed(self):
         profile = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
         self.assertIn("\n- methodology\n", profile)
@@ -447,6 +458,19 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(evidence["reason"], "restart did not change service identity")
             self.assertNotIn("boot-constant", json.dumps(evidence))
 
+    def test_checkout_code_head_matches_rev_parse_head(self):
+        self._head_patch.stop()
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(_checkout_code_head(ROOT), completed.stdout.strip())
+        finally:
+            self._head_patch.start()
+
     def test_stale_deployed_head_fails_closed_before_registration(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -470,6 +494,13 @@ class QualificationTests(unittest.TestCase):
             self.assertNotIn(STALE_HEAD, json.dumps(evidence))
 
     def test_checkout_without_head_fails_closed(self):
+        self._head_patch.stop()
+        try:
+            self._assert_checkout_without_head_fails_closed()
+        finally:
+            self._head_patch.start()
+
+    def _assert_checkout_without_head_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data = root / "data"
@@ -616,19 +647,6 @@ def _changing_restart(root: Path) -> tuple[str, str]:
     return command, identity_command
 
 
-def _checkout_head(repo: Path = ROOT) -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    head = completed.stdout.strip()
-    if re.fullmatch(r"[0-9a-f]{40}", head) is None:
-        raise AssertionError("checkout head is not a full sha")
-    return head
-
-
 def _bound_cursor(revision: str) -> dict[str, object]:
     return {
         "client": "cursor",
@@ -638,7 +656,7 @@ def _bound_cursor(revision: str) -> dict[str, object]:
         "query": PROD_QUERY,
         "identity": f"{PROD_SOURCE_ID}@main",
         "source_revision": revision,
-        "code_head": _checkout_head(),
+        "code_head": FIXTURE_HEAD,
         "repository": PROD_REPOSITORY,
         "source_path": PROD_SOURCE_PATH,
         "tools": ["search_project", "get_provenance"],

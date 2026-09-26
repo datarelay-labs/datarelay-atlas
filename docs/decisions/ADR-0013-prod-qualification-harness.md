@@ -30,9 +30,9 @@ Engineering System pin.
    `datarelay-labs/datarelay-atlas` and source
    `docs/product/PRODUCT-CHARTER.md` on the live data root. Only that source
    is synced. Cursor MCP evidence must carry the same endpoint, project,
-   query, identity, exact `source_revision`, and the checkout HEAD from
-   `git -C <repo_root> rev-parse --verify HEAD`. An optional operator SHA
-   must equal that derived HEAD.
+   query, identity, exact `source_revision`, and the checkout commit from
+   `git -C <repo_root> rev-parse --verify HEAD^{commit}`. An operator-supplied
+   SHA is not an input.
    `.engineering/release.yaml` commands stay empty.
 4. **State / migration impact** — No schema change. The local journey uses a
    temporary data root and synthetic content. Prod mode registers the Atlas
@@ -51,9 +51,9 @@ Engineering System pin.
    the rest of that file. A mismatch or unreadable pin fails closed.
    Restart evidence requires a service identity marker that changes across
    the restart command. A zero exit status with an unchanged marker fails.
-   The deployed code HEAD is the full SHA of the qualification checkout.
-   Cursor evidence that names another SHA fails closed, including when an
-   operator variable repeats that other SHA.
+   The deployed code HEAD is the full commit SHA of the qualification checkout.
+   Cursor evidence that names another SHA fails closed. An environment variable
+   cannot supply that SHA.
    Restart is followed by another health check and the same attributable
    retrieval.
 6. **Architecture boundary** — `atlas.qualification` owns the harness.
