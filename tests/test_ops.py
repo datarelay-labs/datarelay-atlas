@@ -22,6 +22,7 @@ from atlas.mcp_config import (
 from atlas.ops import (
     assess_service_environment,
     data_root_runtime_ready,
+    prod_launch_contract,
     stage_unit,
     validate_unit_text,
 )
@@ -217,6 +218,36 @@ class OpsCheckTests(unittest.TestCase):
         self.assertIn("operational_e2e_command: ''", release)
         with self.assertRaises(SystemExit):
             main(["ops", "backup"])
+
+    def test_prod_launch_contract_does_not_claim_a_live_host(self):
+        contract = prod_launch_contract()
+        self.assertEqual(contract["status"], "contract")
+        self.assertEqual(contract["hostname"], "prod-atlas")
+        self.assertEqual(contract["mcp_dns"], "mcp.atlas.datarelay.run")
+        self.assertEqual(contract["resource_url"], "https://mcp.atlas.datarelay.run/mcp")
+        self.assertEqual(contract["bind_host"], "127.0.0.1")
+        self.assertEqual(contract["restart"], "on-failure")
+        self.assertFalse(contract["chatgpt_mcp_required"])
+        self.assertFalse(contract["production_evidence"])
+        for path in contract["secret_paths_outside_git"]:
+            self.assertTrue(path.startswith("/etc/datarelay-atlas/"))
+        rendered = json.dumps(contract)
+        self.assertNotIn("BEGIN ", rendered)
+        self.assertNotIn(SECRET, rendered)
+        stdout = StringIO()
+        with patch("sys.stdout", stdout):
+            code = main(["ops", "prod-contract"])
+        self.assertEqual(code, 0)
+        self.assertIn('"production_evidence": false', stdout.getvalue())
+        self.assertNotIn(SECRET, stdout.getvalue())
+        project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
+        self.assertIn("production_oriented: false", project)
+        text = (ROOT / "deploy" / "systemd" / "datarelay-atlas.service").read_text(
+            encoding="utf-8"
+        )
+        broken = text.replace("Restart=on-failure\n", "Restart=no\n", 1)
+        with self.assertRaises(ValidationError):
+            validate_unit_text(broken)
 
     def test_missing_env_file_fails_closed(self):
         with self.assertRaises(ValidationError):

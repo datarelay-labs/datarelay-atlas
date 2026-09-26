@@ -1,11 +1,17 @@
 # Atlas MCP service runtime
 
-Install the existing authenticated MCP process as a non-root systemd service.
-This runbook does not deploy `prod-atlas`, provision public DNS, complete
-ChatGPT OAuth, or take a consistent backup. Issue #41 stays HUMAN_REQUIRED.
+Install the existing authenticated MCP process as a non-root systemd service
+on hostname `prod-atlas`. The public MCP name is `mcp.atlas.datarelay.run`.
+`app.atlas.datarelay.run` is not required. This runbook does not prove that
+the host is serving, provision DNS, complete ChatGPT OAuth, or flip
+`production_oriented`. Issue #41 stays blocked and is not a launch gate.
 Consistent backup, restore verification, upgrade, and rollback are ADR-0010
 and ADR-0011 (`docs/runbooks/phase2-data-protection.md`). The operations
 profile commands are those commands.
+
+`python -m atlas ops prod-contract` prints the secret-free launch contract.
+It does not contact the host. `production_evidence` stays false until a later
+slice records real service, health, and restart output from `prod-atlas`.
 
 ## Layout
 
@@ -29,9 +35,11 @@ tokens.
 
 ## Install
 
-Run on the staging host. Do not point these commands at `prod-atlas`.
-Create the `atlas` group and user before any `install` command that assigns
-`atlas` ownership.
+Run on hostname `prod-atlas`. Create the `atlas` group and user before any
+`install` command that assigns `atlas` ownership. Copy secrets from outside
+Git. Do not commit `service.env`, the introspection secret, or `key.pem`.
+The public resource URL is `https://mcp.atlas.datarelay.run/mcp`. The process
+still binds `127.0.0.1:8443`.
 
 ```bash
 sudo groupadd --system atlas

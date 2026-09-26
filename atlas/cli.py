@@ -33,7 +33,7 @@ from atlas.host_worker import load_host_worker_config, run_once
 from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
 from atlas.schema_compat import rollback_data_root, upgrade_data_root
-from atlas.ops import assess_service_environment, stage_unit
+from atlas.ops import assess_service_environment, prod_launch_contract, stage_unit
 from atlas.provenance import ValidationError
 from atlas.semantic_retrieval import embedding_config_from_cli
 from atlas.service import AtlasService
@@ -927,6 +927,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ops_stage.add_argument("--dest", required=True)
     ops_stage.set_defaults(func=cmd_ops_stage)
+    ops_prod = ops_sub.add_parser(
+        "prod-contract",
+        help="Print the secret-free prod-atlas launch contract; do not contact a host",
+    )
+    ops_prod.set_defaults(func=cmd_ops_prod_contract)
     ops_backup = ops_sub.add_parser(
         "backup",
         help="Quiesce Atlas writers and snapshot registry plus projections",
@@ -1055,6 +1060,11 @@ def cmd_ops_check(args: argparse.Namespace) -> int:
 def cmd_ops_stage(args: argparse.Namespace) -> int:
     target = stage_unit(Path(args.dest))
     _print_json({"unit": str(target)})
+    return 0
+
+
+def cmd_ops_prod_contract(_args: argparse.Namespace) -> int:
+    _print_json(prod_launch_contract())
     return 0
 
 

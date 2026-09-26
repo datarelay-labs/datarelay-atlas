@@ -80,6 +80,7 @@ scenarios:
       - "quiesced data-root backup includes controller state, skips chat-audit cache, and rejects corrupt, partial, secret, and unsupported state"
       - "upgrade and rollback refuse unsupported durable schemas and completion events without rewriting them, and rollback executes the staged target code"
       - "the production operations profile points at quiesced backup, restore-test, upgrade, and staged-target rollback commands"
+      - "the prod-atlas launch contract names the host and public MCP URL without claiming the host is up"
       - "Autonomous Work Controller PoC control-loop regressions pass"
       - "Queued Work Packet cycle-chaining regressions pass"
       - "Continuous Chat Audit Supervisor PoC checkpoint/slice regressions pass"

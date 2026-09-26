@@ -38,6 +38,11 @@ from atlas.work_controller import CONTROLLER_SCHEMA_VERSION
 
 ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 UNIT_NAME = "datarelay-atlas.service"
+PROD_HOSTNAME = "prod-atlas"
+PROD_MCP_DNS = "mcp.atlas.datarelay.run"
+PROD_RESOURCE_URL = "https://mcp.atlas.datarelay.run/mcp"
+PROD_BIND_HOST = "127.0.0.1"
+PROD_BIND_PORT = 8443
 
 _REQUIRED_KEYS = (
     "ATLAS_DATA_ROOT",
@@ -73,6 +78,32 @@ _SEMANTIC_KEYS = (
 )
 
 
+def prod_launch_contract() -> dict:
+    """Secret-free prod-atlas launch contract.
+
+    This does not contact a host, read an env file, or claim the service is up.
+    """
+    return {
+        "bind_host": PROD_BIND_HOST,
+        "bind_port": PROD_BIND_PORT,
+        "chatgpt_mcp_required": False,
+        "data_root": "/var/lib/datarelay-atlas",
+        "env_file": "/etc/datarelay-atlas/service.env",
+        "hostname": PROD_HOSTNAME,
+        "mcp_dns": PROD_MCP_DNS,
+        "production_evidence": False,
+        "resource_url": PROD_RESOURCE_URL,
+        "restart": "on-failure",
+        "secret_paths_outside_git": [
+            "/etc/datarelay-atlas/introspection-client-secret",
+            "/etc/datarelay-atlas/service.env",
+            "/etc/datarelay-atlas/tls/key.pem",
+        ],
+        "status": "contract",
+        "unit": UNIT_NAME,
+    }
+
+
 def unit_source_path() -> Path:
     return Path(__file__).resolve().parents[1] / "deploy" / "systemd" / UNIT_NAME
 
@@ -97,6 +128,7 @@ def validate_unit_text(text: str) -> None:
         "EnvironmentFile=/etc/datarelay-atlas/service.env\n",
         "ExecStartPre=/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --env-file /etc/datarelay-atlas/service.env\n",
         "ExecStart=/opt/datarelay-atlas/.venv/bin/python -m atlas mcp serve\n",
+        "Restart=on-failure\n",
         "NoNewPrivileges=true\n",
         "WantedBy=multi-user.target\n",
     )
