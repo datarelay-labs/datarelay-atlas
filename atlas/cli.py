@@ -32,6 +32,7 @@ from atlas.final_audit import AuditBudget, BoundedResponsesAuditProvider
 from atlas.host_worker import load_host_worker_config, run_once
 from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
+from atlas.schema_compat import rollback_data_root, upgrade_data_root
 from atlas.ops import assess_service_environment, stage_unit
 from atlas.provenance import ValidationError
 from atlas.semantic_retrieval import embedding_config_from_cli
@@ -940,6 +941,18 @@ def build_parser() -> argparse.ArgumentParser:
     ops_restore.add_argument("--backup", required=True)
     ops_restore.add_argument("--dest", required=True)
     ops_restore.set_defaults(func=cmd_ops_restore_test)
+    ops_upgrade = ops_sub.add_parser(
+        "upgrade",
+        help="Prove this code can read the data root; do not rewrite it",
+    )
+    ops_upgrade.add_argument("--data-root", required=True)
+    ops_upgrade.set_defaults(func=cmd_ops_upgrade)
+    ops_rollback = ops_sub.add_parser(
+        "rollback",
+        help="Allow rollback only when this code can read the durable schema",
+    )
+    ops_rollback.add_argument("--data-root", required=True)
+    ops_rollback.set_defaults(func=cmd_ops_rollback)
 
     return parser
 
@@ -1051,6 +1064,16 @@ def cmd_ops_backup(args: argparse.Namespace) -> int:
 
 def cmd_ops_restore_test(args: argparse.Namespace) -> int:
     _print_json(restore_test(Path(args.backup), Path(args.dest)))
+    return 0
+
+
+def cmd_ops_upgrade(args: argparse.Namespace) -> int:
+    _print_json(upgrade_data_root(Path(args.data_root)))
+    return 0
+
+
+def cmd_ops_rollback(args: argparse.Namespace) -> int:
+    _print_json(rollback_data_root(Path(args.data_root)))
     return 0
 
 

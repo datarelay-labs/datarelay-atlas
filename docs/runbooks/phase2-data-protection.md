@@ -64,3 +64,20 @@ no successful destination.
 After a real registry restore, run `rebuild` or `sync` before treating
 projections as current. This runbook does not perform that restore over the
 live data root.
+
+## Upgrade and rollback compatibility
+
+These commands do not rewrite the data root and do not switch the installed
+build. They only prove whether this code can read `registry.json` and
+`work-controller.json`.
+
+```bash
+export PYTHONPATH=.
+python3 -m atlas ops upgrade --data-root /var/lib/datarelay-atlas
+python3 -m atlas ops rollback --data-root /var/lib/datarelay-atlas
+```
+
+Expected result: exit 0 and JSON `"rewritten": false` when both files are
+absent or already at the schema this code reads. A newer or unsupported
+schema exits non-zero and leaves the files unchanged. Do not start the older
+build after a refused rollback.
