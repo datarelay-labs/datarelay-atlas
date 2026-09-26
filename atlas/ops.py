@@ -144,7 +144,7 @@ def validate_unit_text(text: str) -> None:
         "User=atlas\n",
         "Group=atlas\n",
         "EnvironmentFile=/etc/datarelay-atlas/service.env\n",
-        "ExecStartPre=/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --env-file /etc/datarelay-atlas/service.env\n",
+        "ExecStartPre=/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod --env-file /etc/datarelay-atlas/service.env\n",
         "ExecStart=/opt/datarelay-atlas/.venv/bin/python -m atlas mcp serve\n",
         "Restart=on-failure\n",
         "NoNewPrivileges=true\n",

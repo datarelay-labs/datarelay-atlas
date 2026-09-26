@@ -33,7 +33,12 @@ from atlas.host_worker import load_host_worker_config, run_once
 from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
 from atlas.schema_compat import rollback_data_root, upgrade_data_root
-from atlas.ops import assess_service_environment, prod_launch_contract, stage_unit
+from atlas.ops import (
+    assess_service_environment,
+    prod_launch_contract,
+    stage_unit,
+    validate_prod_deployment_env,
+)
 from atlas.provenance import ValidationError
 from atlas.semantic_retrieval import embedding_config_from_cli
 from atlas.service import AtlasService
@@ -920,6 +925,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Service env file. When set, the process environment is ignored.",
     )
+    ops_check.add_argument(
+        "--prod",
+        action="store_true",
+        help="Require the prod-atlas public resource URL. Omit for generic checks.",
+    )
     ops_check.set_defaults(func=cmd_ops_check)
     ops_stage = ops_sub.add_parser(
         "stage",
@@ -1049,6 +1059,14 @@ def cmd_host_worker_supervise_once(args: argparse.Namespace) -> int:
 
 
 def cmd_ops_check(args: argparse.Namespace) -> int:
+    if args.prod:
+        if not args.env_file:
+            raise ValidationError("prod check requires --env-file")
+        try:
+            prod_env = Path(args.env_file).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValidationError("prod check requires a readable env file") from exc
+        validate_prod_deployment_env(prod_env)
     if args.env_file:
         report = assess_service_environment({}, env_file=Path(args.env_file))
     else:

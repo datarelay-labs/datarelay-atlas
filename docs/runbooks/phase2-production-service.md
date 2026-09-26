@@ -66,15 +66,21 @@ sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas.service /etc/systemd/
 sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas-ingress.socket /etc/systemd/system/datarelay-atlas-ingress.socket
 sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas-ingress.service /etc/systemd/system/datarelay-atlas-ingress.service
 sudo systemctl daemon-reload
+sudo --user atlas --group atlas \
+  env PYTHONPATH=/opt/datarelay-atlas \
+  /opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod \
+  --env-file /etc/datarelay-atlas/service.env
 sudo systemctl enable --now datarelay-atlas.service
 sudo systemctl enable --now datarelay-atlas-ingress.socket
 ```
 
 `ops stage` copies the service unit and the port-443 ingress units. It does
-not call `systemctl` and does not need root. Enable them only after `ops check`
-reports ready. The unit's `ExecStartPre` runs that same check before every
-start, so a world-accessible env file, secret, or TLS key, or an unknown or
-conflicting setting, does not reach `mcp serve`.
+not call `systemctl` and does not need root. Enable them only after
+`ops check --prod` reports ready. The unit's `ExecStartPre` runs that same
+prod check before every start, so a loopback resource URL, a world-accessible
+env file, secret, or TLS key, or an unknown or conflicting setting, does not
+reach `mcp serve`. Generic `ops check` without `--prod` remains the
+non-production health command.
 
 ## Config check
 
@@ -85,7 +91,7 @@ with the installed interpreter:
 ```bash
 sudo --user atlas --group atlas \
   env PYTHONPATH=/opt/datarelay-atlas \
-  /opt/datarelay-atlas/.venv/bin/python -m atlas ops check \
+  /opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod \
   --env-file /etc/datarelay-atlas/service.env
 ```
 

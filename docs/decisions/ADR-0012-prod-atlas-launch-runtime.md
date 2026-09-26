@@ -48,6 +48,6 @@ reports them.
    selects IPv4. The socket does not set `BindIPv6Only`. The MCP process does
    not bind 443 and does not gain `CAP_NET_BIND_SERVICE`. The proxy has no
    TLS paths.
-6. The prod env example uses the public resource URL. Prod deployment
-   validation rejects a loopback audience. Generic service checks are
-   unchanged.
+6. The prod env example uses the public resource URL. `ops check --prod`
+   and the unit `ExecStartPre` reject a loopback audience before the service
+   is enabled. Generic `ops check` without `--prod` is unchanged.

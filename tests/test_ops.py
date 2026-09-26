@@ -186,7 +186,7 @@ class OpsCheckTests(unittest.TestCase):
             self.assertIn("python -m atlas mcp serve\n", text)
             self.assertIn(
                 "ExecStartPre=/opt/datarelay-atlas/.venv/bin/python -m atlas ops check "
-                "--env-file /etc/datarelay-atlas/service.env\n",
+                "--prod --env-file /etc/datarelay-atlas/service.env\n",
                 text,
             )
             self.assertLess(text.index("ExecStartPre="), text.index("ExecStart="))
@@ -290,6 +290,42 @@ class OpsCheckTests(unittest.TestCase):
         broken = text.replace("Restart=on-failure\n", "Restart=no\n", 1)
         with self.assertRaises(ValidationError):
             validate_unit_text(broken)
+
+    def test_prod_check_rejects_loopback_audience_and_accepts_public_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            loopback = _write_env(root)
+            stdout = StringIO()
+            stderr = StringIO()
+            with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+                generic = main(["ops", "check", "--env-file", str(loopback)])
+            self.assertEqual(generic, 0)
+            self.assertIn('"status": "ready"', stdout.getvalue())
+            stdout = StringIO()
+            stderr = StringIO()
+            with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+                rejected = main(["ops", "check", "--prod", "--env-file", str(loopback)])
+            self.assertEqual(rejected, 1)
+            self.assertIn("public MCP audience", stderr.getvalue())
+            self.assertNotIn(SECRET, stderr.getvalue())
+            self.assertNotIn('"status": "ready"', stdout.getvalue())
+            public = root / "prod.env"
+            public.write_text(
+                loopback.read_text(encoding="utf-8").replace(
+                    "https://127.0.0.1:8443/mcp",
+                    "https://mcp.atlas.datarelay.run/mcp",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            os.chmod(public, 0o640)
+            stdout = StringIO()
+            stderr = StringIO()
+            with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+                accepted = main(["ops", "check", "--prod", "--env-file", str(public)])
+            self.assertEqual(accepted, 0)
+            self.assertIn('"status": "ready"', stdout.getvalue())
+            self.assertNotIn(SECRET, stdout.getvalue() + stderr.getvalue())
 
     def test_missing_env_file_fails_closed(self):
         with self.assertRaises(ValidationError):
@@ -414,9 +450,10 @@ class OpsCheckTests(unittest.TestCase):
         self.assertLess(account_at, owned_at)
         self.assertLess(install.index("groupadd"), install.index("useradd"))
         self.assertLess(install.index("useradd"), install.index("install -d"))
+        self.assertLess(install.index("ops check --prod"), install.index("systemctl enable"))
         check = blocks[1]
         self.assertIn("sudo --user atlas --group atlas", check)
-        self.assertIn("/opt/datarelay-atlas/.venv/bin/python -m atlas ops check", check)
+        self.assertIn("/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod", check)
         self.assertIn("--env-file /etc/datarelay-atlas/service.env", check)
         self.assertNotIn("PYTHONPATH=. python3 -m atlas ops check", check)
 
