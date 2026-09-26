@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from http.client import HTTPSConnection
 from pathlib import Path
 from typing import Callable
@@ -162,6 +163,22 @@ def run_public_smoke(
         steps,
         production_claim=confirmed and prod_host,
     )
+
+
+def _public_smoke_after_restart(
+    environ: dict[str, str],
+    *,
+    repo_root: Path,
+    smoke_client: SmokeClient | None,
+) -> dict:
+    """Retry only while the public endpoint is still coming back after restart."""
+    last = run_public_smoke(environ, repo_root=repo_root, smoke_client=smoke_client)
+    for _ in range(4):
+        if last.get("production_claim") is True or last.get("reason") != "endpoint unreachable":
+            return last
+        time.sleep(1)
+        last = run_public_smoke(environ, repo_root=repo_root, smoke_client=smoke_client)
+    return last
 
 
 def _local_operational_e2e(repo_root: Path) -> dict:
@@ -451,7 +468,11 @@ def _prod_operational_e2e(
             "prod qualification hooks failed",
             steps,
         )
-    again = run_public_smoke(environ, repo_root=repo_root, smoke_client=smoke_client)
+    again = _public_smoke_after_restart(
+        environ,
+        repo_root=repo_root,
+        smoke_client=smoke_client,
+    )
     steps.append(_step("public_smoke_after_restart", again["status"]))
     if again.get("production_claim") is not True:
         return _evidence(

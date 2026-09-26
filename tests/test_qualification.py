@@ -36,6 +36,7 @@ from atlas.qualification import (
     _engineering_system_pin,
     _preserve_data_root_owner,
     _pin_reason,
+    _public_smoke_after_restart,
     main,
     run_operational_e2e,
     run_public_smoke,
@@ -526,6 +527,30 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(evidence["status"], "FAIL_CLOSED")
             self.assertEqual(evidence["reason"], "deployed code head is unavailable")
             self.assertFalse((data / "registry.json").exists())
+
+    def test_public_smoke_after_restart_retries_until_the_endpoint_returns(self):
+        calls = {"n": 0}
+
+        def smoke(method: str, url: str, body: bytes | None) -> tuple[int, bytes]:
+            del method, body
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise OSError("connection reset")
+            if url.endswith("/healthz"):
+                return 200, b'{"status":"ready"}'
+            if url.endswith("/mcp"):
+                return 401, b""
+            return 404, b""
+
+        env = {
+            "ATLAS_QUALIFICATION_CONFIRM_PROD": "yes",
+            "ATLAS_PUBLIC_BASE_URL": PROD_URL,
+        }
+        with patch("atlas.qualification.time.sleep"):
+            evidence = _public_smoke_after_restart(env, repo_root=ROOT, smoke_client=smoke)
+        self.assertEqual(evidence["status"], "PASS")
+        self.assertTrue(evidence["production_claim"])
+        self.assertGreaterEqual(calls["n"], 3)
 
     def test_preserve_data_root_owner_chowns_only_mismatched_files(self):
         with tempfile.TemporaryDirectory() as tmp:
