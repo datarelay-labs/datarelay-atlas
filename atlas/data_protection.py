@@ -18,11 +18,22 @@ from atlas.data_lock import LOCK_NAME, data_root_write_lock
 from atlas.provenance import ValidationError
 from atlas.registry import REGISTRY_SCHEMA_VERSION, ProjectRegistry
 from atlas.secrets import contains_unsafe_secret
+from atlas.work_controller import (
+    COMPLETION_INBOX_DIRNAME,
+    COMPLETION_PROCESSED_DIRNAME,
+    CONTROLLER_SCHEMA_VERSION,
+    CompletionEvent,
+    WorkControllerStore,
+)
 
 BACKUP_SCHEMA_VERSION = 1
 PARTIAL_SUFFIX = ".partial"
 _DURABLE_NAME = "registry.json"
 _PROJECTIONS_DIR = "projections"
+_CONTROLLER_NAME = "work-controller.json"
+_DERIVED_CACHE_FILES = frozenset({"chat-audit.json", "chat-audit.lock", "chat-audit.tmp"})
+_DERIVED_CACHE_DIRS = frozenset({"chat-audit-handoffs"})
+_CONTROLLER_DIRS = frozenset({COMPLETION_INBOX_DIRNAME, COMPLETION_PROCESSED_DIRNAME})
 
 @dataclass(frozen=True)
 class _SnapshotFile:
@@ -116,10 +127,20 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
     unexpected: list[str] = []
     saw_registry = False
     saw_projections = False
+    saw_controller = False
+    controller_dirs: list[str] = []
     for entry in root.iterdir():
         name = entry.name
         if name == LOCK_NAME:
             if entry.is_symlink():
+                raise ValidationError("backup entry is not a regular file")
+            continue
+        if name in _DERIVED_CACHE_FILES:
+            if entry.is_symlink() or not entry.is_file():
+                raise ValidationError("backup entry is not a regular file")
+            continue
+        if name in _DERIVED_CACHE_DIRS:
+            if entry.is_symlink() or not entry.is_dir():
                 raise ValidationError("backup entry is not a regular file")
             continue
         if name.endswith(".tmp"):
@@ -133,6 +154,16 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
             saw_projections = True
             if entry.is_symlink() or not entry.is_dir():
                 raise ValidationError("backup entry is not a regular file")
+            continue
+        if name == _CONTROLLER_NAME:
+            saw_controller = True
+            if entry.is_symlink() or not entry.is_file():
+                raise ValidationError("backup entry is not a regular file")
+            continue
+        if name in _CONTROLLER_DIRS:
+            if entry.is_symlink() or not entry.is_dir():
+                raise ValidationError("backup entry is not a regular file")
+            controller_dirs.append(name)
             continue
         unexpected.append(name)
     if unexpected:
@@ -148,17 +179,29 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
             )
         )
     if saw_projections:
-        for path in _projection_files(root / _PROJECTIONS_DIR):
+        for path in _tree_files(root / _PROJECTIONS_DIR):
             relative = path.relative_to(root).as_posix()
             files.append(_SnapshotFile(relative, "rebuildable", _read_regular(path)))
+    if saw_controller:
+        files.append(
+            _SnapshotFile(
+                _CONTROLLER_NAME,
+                "controller",
+                _read_regular(root / _CONTROLLER_NAME),
+            )
+        )
+    for dirname in sorted(controller_dirs):
+        for path in _tree_files(root / dirname):
+            relative = path.relative_to(root).as_posix()
+            files.append(_SnapshotFile(relative, "controller", _read_regular(path)))
     files.sort(key=lambda item: item.path)
     _validate_snapshot_files(files)
     return files
 
 
-def _projection_files(projections: Path) -> list[Path]:
+def _tree_files(directory: Path) -> list[Path]:
     found: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(projections, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
         current = Path(dirpath)
         if current.is_symlink():
             raise ValidationError("backup entry is not a regular file")
@@ -192,13 +235,12 @@ def _validate_snapshot_files(files: list[_SnapshotFile]) -> None:
     if len(blobs) != len(files):
         raise ValidationError("backup manifest is unsupported")
     for item in files:
-        if item.role == "durable" and item.path != _DURABLE_NAME:
-            raise ValidationError("backup manifest is unsupported")
-        if item.role == "rebuildable" and not item.path.startswith(f"{_PROJECTIONS_DIR}/"):
+        if not _role_matches(item.path, item.role):
             raise ValidationError("backup manifest is unsupported")
         _reject_secret(item.data)
     _validate_registry_blob(blobs.get(_DURABLE_NAME))
     _validate_projection_blobs(blobs)
+    _validate_controller_blobs(blobs)
 
 
 def _validate_registry_blob(raw: bytes | None) -> None:
@@ -235,6 +277,42 @@ def _validate_projection_blobs(blobs: dict[str, bytes]) -> None:
             raise ValidationError("projection record is partial")
         if hashlib.sha256(blob).hexdigest() != digest:
             raise ValidationError("projection document digest mismatch")
+
+
+def _validate_controller_blobs(blobs: dict[str, bytes]) -> None:
+    raw = blobs.get(_CONTROLLER_NAME)
+    if raw is not None:
+        data = _json_object(raw, "work-controller.json is corrupt")
+        version = data.get("schema_version")
+        if type(version) is not int or version != CONTROLLER_SCHEMA_VERSION:
+            raise ValidationError("work-controller schema is unsupported")
+        if not isinstance(data.get("workstreams"), dict):
+            raise ValidationError("work-controller.json is unsupported")
+    for path, blob in blobs.items():
+        if not (
+            path.startswith(f"{COMPLETION_INBOX_DIRNAME}/")
+            or path.startswith(f"{COMPLETION_PROCESSED_DIRNAME}/")
+        ):
+            continue
+        if not path.endswith(".json"):
+            raise ValidationError("completion event is unsupported")
+        event = _json_object(blob, "completion event is corrupt")
+        try:
+            CompletionEvent.from_dict(event)
+        except ValidationError as exc:
+            raise ValidationError("completion event is unsupported") from exc
+
+
+def _role_matches(path: str, role: str) -> bool:
+    if role == "durable":
+        return path == _DURABLE_NAME
+    if role == "rebuildable":
+        return path.startswith(f"{_PROJECTIONS_DIR}/")
+    if role == "controller":
+        return path == _CONTROLLER_NAME or path.startswith(
+            f"{COMPLETION_INBOX_DIRNAME}/"
+        ) or path.startswith(f"{COMPLETION_PROCESSED_DIRNAME}/")
+    return False
 
 
 def _projection_storage_path(rel: str) -> str:
@@ -307,7 +385,7 @@ def _assert_backup_tree(backup: Path) -> list[_SnapshotFile]:
         size = entry.get("bytes")
         if not isinstance(rel, str) or rel in seen or rel == "manifest.json":
             raise ValidationError("backup manifest is unsupported")
-        if role not in {"durable", "rebuildable"} or not isinstance(digest, str):
+        if role not in {"durable", "rebuildable", "controller"} or not isinstance(digest, str):
             raise ValidationError("backup manifest is unsupported")
         if type(size) is not int or size < 0:
             raise ValidationError("backup manifest is unsupported")
@@ -315,9 +393,7 @@ def _assert_backup_tree(backup: Path) -> list[_SnapshotFile]:
         blob = _read_regular(child)
         if len(blob) != size or hashlib.sha256(blob).hexdigest() != digest:
             raise ValidationError("backup file digest mismatch")
-        if role == "durable" and rel != _DURABLE_NAME:
-            raise ValidationError("backup manifest is unsupported")
-        if role == "rebuildable" and not rel.startswith(f"{_PROJECTIONS_DIR}/"):
+        if not _role_matches(rel, role):
             raise ValidationError("backup manifest is unsupported")
         seen.add(rel)
         files.append(_SnapshotFile(rel, role, blob))
@@ -332,6 +408,7 @@ def _assert_backup_tree(backup: Path) -> list[_SnapshotFile]:
             raise ValidationError("backup contains unexpected files")
     _validate_snapshot_files(files)
     _load_projects(backup)
+    _load_controller(backup)
     return files
 
 
@@ -374,6 +451,15 @@ def _load_projects(root: Path) -> list:
         return ProjectRegistry(root).list_projects()
     except (KeyError, TypeError, ValidationError) as exc:
         raise ValidationError("registry.json is unsupported") from exc
+
+
+def _load_controller(root: Path) -> None:
+    if not (root / _CONTROLLER_NAME).is_file():
+        return
+    try:
+        WorkControllerStore(root).list_workstreams()
+    except (KeyError, TypeError, ValidationError) as exc:
+        raise ValidationError("work-controller.json is unsupported") from exc
 
 
 def _project_count(files: list[_SnapshotFile]) -> int:

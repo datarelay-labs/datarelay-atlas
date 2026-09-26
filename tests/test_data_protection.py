@@ -77,6 +77,172 @@ class DataProtectionTests(unittest.TestCase):
             self.assertIn("alpha body", document)
             self.assertIn("rev-alpha", document)
 
+    def test_cli_backup_includes_controller_state_and_skips_chat_audit_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "data"
+            repo = base / "repo"
+            repo.mkdir()
+            head = _git_worktree(repo)
+            stdout = StringIO()
+            with patch("sys.stdout", stdout):
+                self.assertEqual(
+                    main(
+                        [
+                            "--data-root",
+                            str(root),
+                            "project",
+                            "register",
+                            "alpha",
+                            "--repository",
+                            "datarelay-labs/alpha",
+                        ]
+                    ),
+                    0,
+                )
+                self.assertEqual(
+                    main(
+                        [
+                            "--data-root",
+                            str(root),
+                            "work-controller",
+                            "register",
+                            "alpha-ws",
+                            "--repository",
+                            "datarelay-labs/alpha",
+                            "--issue-number",
+                            "43",
+                            "--branch",
+                            "main",
+                            "--worktree",
+                            str(repo),
+                            "--expected-head",
+                            head,
+                        ]
+                    ),
+                    0,
+                )
+            event = {
+                "event_id": "evt-1",
+                "workstream": "alpha-ws",
+                "issue_number": 43,
+                "branch": "main",
+                "head": head,
+                "attempt": 1,
+            }
+            event_path = base / "event.json"
+            event_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            with patch("sys.stdout", StringIO()):
+                self.assertEqual(
+                    main(
+                        [
+                            "--data-root",
+                            str(root),
+                            "work-controller",
+                            "enqueue-completion",
+                            str(event_path),
+                        ]
+                    ),
+                    0,
+                )
+            (root / "chat-audit.json").write_text('{"schema_version": 1}\n', encoding="utf-8")
+            (root / "chat-audit.lock").write_text("", encoding="utf-8")
+            handoff = root / "chat-audit-handoffs"
+            handoff.mkdir()
+            (handoff / "finding.json").write_text("{}\n", encoding="utf-8")
+            (root / "completion-processed").mkdir()
+            (root / "completion-processed" / "old.json").write_text(
+                json.dumps(event) + "\n",
+                encoding="utf-8",
+            )
+            backup_data_root(root, base / "snapshot")
+            proof = base / "proof"
+            restore_test(base / "snapshot", proof)
+            self.assertIn("alpha-ws", (proof / "work-controller.json").read_text(encoding="utf-8"))
+            self.assertTrue((proof / "completion-inbox" / "evt-1.json").is_file())
+            self.assertTrue((proof / "completion-processed" / "old.json").is_file())
+            self.assertFalse((proof / "chat-audit.json").exists())
+            self.assertFalse((proof / "chat-audit-handoffs").exists())
+            (root / "notes.txt").write_text("nope\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "unexpected entries"):
+                backup_data_root(root, base / "rejected")
+
+    def test_controller_lock_blocks_inbox_enqueue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "data"
+            root.mkdir()
+            attempt = base / "attempt"
+            done = base / "done"
+            event = json.dumps(
+                {
+                    "event_id": "evt-lock",
+                    "workstream": "alpha-ws",
+                    "issue_number": 43,
+                    "branch": "main",
+                    "head": "abc1234",
+                    "attempt": 1,
+                }
+            )
+            script = textwrap.dedent(
+                """
+                import json, sys
+                from pathlib import Path
+                from atlas.work_controller import enqueue_completion_event
+                root, attempt, done, raw = sys.argv[1:]
+                Path(attempt).write_text("1", encoding="utf-8")
+                enqueue_completion_event(Path(root), json.loads(raw))
+                Path(done).write_text("1", encoding="utf-8")
+                """
+            )
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(ROOT)
+            with data_root_write_lock(root):
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", script, str(root), str(attempt), str(done), event],
+                    cwd=ROOT,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                deadline = time.time() + 5
+                while not attempt.exists():
+                    if time.time() > deadline:
+                        proc.kill()
+                        self.fail("enqueue did not reach the lock")
+                    time.sleep(0.01)
+                time.sleep(0.2)
+                self.assertFalse(done.exists())
+                self.assertFalse((root / "completion-inbox" / "evt-lock.json").exists())
+            _stdout, stderr = proc.communicate(timeout=5)
+            self.assertEqual(proc.returncode, 0, stderr)
+            self.assertTrue((root / "completion-inbox" / "evt-lock.json").is_file())
+
+    def test_controller_schema_and_completion_bytes_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "data"
+            root.mkdir()
+            (root / "work-controller.json").write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "work-controller.json is corrupt"):
+                backup_data_root(root, base / "corrupt")
+            (root / "work-controller.json").write_text(
+                '{"schema_version": 2, "workstreams": {}}\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "work-controller schema is unsupported"):
+                backup_data_root(root, base / "schema")
+            (root / "work-controller.json").write_text(
+                '{"schema_version": 1, "workstreams": {}}\n',
+                encoding="utf-8",
+            )
+            inbox = root / "completion-inbox"
+            inbox.mkdir()
+            (inbox / "evt-1.json").write_text("{}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "completion event is unsupported"):
+                backup_data_root(root, base / "event")
+
     def test_cooperating_writer_blocks_until_lock_releases(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -280,6 +446,29 @@ class DataProtectionTests(unittest.TestCase):
             document.write_text(document.read_text(encoding="utf-8") + "torn\n", encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "digest mismatch"):
                 backup_data_root(root, base / "snapshot")
+
+
+def _git_worktree(path: Path) -> str:
+    env = dict(os.environ)
+    env["GIT_AUTHOR_NAME"] = "Atlas"
+    env["GIT_AUTHOR_EMAIL"] = "atlas@example.com"
+    env["GIT_COMMITTER_NAME"] = "Atlas"
+    env["GIT_COMMITTER_EMAIL"] = "atlas@example.com"
+    subprocess.check_call(["git", "init", "-b", "main"], cwd=path, env=env)
+    subprocess.check_call(
+        ["git", "remote", "add", "origin", "https://github.com/datarelay-labs/alpha.git"],
+        cwd=path,
+        env=env,
+    )
+    (path / "README").write_text("x\n", encoding="utf-8")
+    subprocess.check_call(["git", "add", "README"], cwd=path, env=env)
+    subprocess.check_call(["git", "commit", "-m", "init"], cwd=path, env=env)
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=path,
+        env=env,
+        text=True,
+    ).strip()
 
 
 if __name__ == "__main__":

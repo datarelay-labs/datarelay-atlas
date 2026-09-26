@@ -78,3 +78,28 @@ rollback, and the production Engineering System profile stay later slices.
   write from `ProjectRegistry` or `ProjectionStore`.
 - Secrets that the shared classifier flags never enter the backup directory.
 - Upgrade, rollback, and `production_oriented: true` remain unimplemented.
+
+## Amendment — full data-root contract
+
+Audited HEAD `c5a8cef` rejected a normal root that also contained ADR-0006
+controller state. This amendment is part of the same backup/restore slice.
+
+1. **Included Atlas-owned state** is `registry.json`, `projections/`,
+   `work-controller.json`, `completion-inbox/`, and `completion-processed/`.
+   Controller and inbox bytes use manifest role `controller`. Registry remains
+   durable configuration. Projections remain rebuildable. Completion events
+   are included because drain idempotency and restart depend on them.
+2. **The same inter-process lock** covers controller publication, inbox
+   enqueue, the inbox directory listing, and the move into
+   `completion-processed/`. Audit and Cursor dispatch stay outside the lock
+   so a spawned session cannot deadlock on it. A snapshot can therefore show
+   a controller record whose event file is still in the inbox; that is the
+   crash-consistent state drain already restarts from, and a later drain
+   treats an already processed event id as a replay.
+3. **Derived Chat Audit cache is not backed up.** `chat-audit.json`,
+   `chat-audit.lock`, `chat-audit.tmp`, and `chat-audit-handoffs/` may sit in
+   the data root without failing the backup and without being copied.
+   ADR-0007 keeps that cache non-canonical. Any other top-level entry still
+   fails closed.
+4. **Restore-test** loads both the registry and, when present, the controller
+   workstream list. It still writes only to a new directory.

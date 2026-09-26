@@ -77,7 +77,7 @@ scenarios:
       - "MCP context scope and provenance regressions pass"
       - "authenticated MCP resource-server and HTTPS smoke regressions pass"
       - "non-root service config fails closed and health exposes no canonical data"
-      - "quiesced data-root backup rejects corrupt, partial, secret, and unsupported state"
+      - "quiesced data-root backup includes controller state, skips chat-audit cache, and rejects corrupt, partial, secret, and unsupported state"
       - "Autonomous Work Controller PoC control-loop regressions pass"
       - "Queued Work Packet cycle-chaining regressions pass"
       - "Continuous Chat Audit Supervisor PoC checkpoint/slice regressions pass"

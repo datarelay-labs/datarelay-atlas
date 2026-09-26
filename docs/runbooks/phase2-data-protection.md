@@ -31,8 +31,17 @@ python3 -m atlas ops backup \
 ```
 
 Expected result: exit 0 and JSON `status` of `ok`, with `file_count` and
-`project_count`. The destination contains `manifest.json`, `registry.json`
-when the data root had one, and `projections/`.
+`project_count`. The destination contains `manifest.json` and whichever of
+these exist in the data root:
+
+- `registry.json` — durable project configuration
+- `projections/` — rebuildable derived documents
+- `work-controller.json`, `completion-inbox/`, and `completion-processed/` —
+  Atlas-owned controller state
+
+`chat-audit.json`, `chat-audit.lock`, and `chat-audit-handoffs/` are derived
+cache. They are left in place and omitted from the snapshot. Any other
+top-level entry fails the backup.
 
 A cooperating registry or projection write waits until the snapshot reads
 finish. A process that writes those files without the Atlas lock is outside
