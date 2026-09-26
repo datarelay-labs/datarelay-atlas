@@ -1,11 +1,17 @@
 # Atlas MCP service runtime
 
-Install the existing authenticated MCP process as a non-root systemd service.
-This runbook does not deploy `prod-atlas`, provision public DNS, complete
-ChatGPT OAuth, or take a consistent backup. Issue #41 stays HUMAN_REQUIRED.
+Install the existing authenticated MCP process as a non-root systemd service
+on hostname `prod-atlas`. The public MCP name is `mcp.atlas.datarelay.run`.
+`app.atlas.datarelay.run` is not required. This runbook does not prove that
+the host is serving, provision DNS, complete ChatGPT OAuth, or flip
+`production_oriented`. Issue #41 stays blocked and is not a launch gate.
 Consistent backup, restore verification, upgrade, and rollback are ADR-0010
 and ADR-0011 (`docs/runbooks/phase2-data-protection.md`). The operations
 profile commands are those commands.
+
+`python -m atlas ops prod-contract` prints the secret-free launch contract.
+It does not contact the host. `production_evidence` stays false until a later
+slice records real service, health, and restart output from `prod-atlas`.
 
 ## Layout
 
@@ -18,20 +24,29 @@ profile commands are those commands.
 | `/etc/datarelay-atlas/tls/cert.pem` | TLS certificate | not world-writable |
 | `/var/lib/datarelay-atlas` | `ATLAS_DATA_ROOT` | `atlas:atlas`, mode `0750` |
 
-`deploy/datarelay-atlas.service.env.example` lists the supported keys. Unknown
+`deploy/datarelay-atlas.service.env.example` is the prod deployment env.
+Its resource URL is `https://mcp.atlas.datarelay.run/mcp`. Bind stays
+`127.0.0.1:8443`. A loopback audience is rejected for that file. Generic
+`ops check` still accepts other resource URLs. Unknown
 keys, a world-accessible env file or private key, and a partial semantic
 configuration are not ready. Do not put `GITHUB_TOKEN` in the service env
 file. `atlas sync` reads `GITHUB_TOKEN` from the operator shell.
 
-TLS terminates in the MCP process. A proxy may forward TCP to
-`127.0.0.1:8443`. The process does not bind cleartext and does not issue
-tokens.
+TLS terminates in the MCP process. Production ingress is not optional.
+`datarelay-atlas-ingress.socket` listens on `0.0.0.0:443`.
+`systemd-socket-proxyd` forwards that TCP stream to `127.0.0.1:8443`.
+The proxy unit is `DynamicUser=yes`, has no TLS file paths, and does not run
+as root. The MCP process still binds only `127.0.0.1:8443` and does not
+receive `CAP_NET_BIND_SERVICE`. The process does not bind cleartext and does
+not issue tokens.
 
 ## Install
 
-Run on the staging host. Do not point these commands at `prod-atlas`.
-Create the `atlas` group and user before any `install` command that assigns
-`atlas` ownership.
+Run on hostname `prod-atlas`. Create the `atlas` group and user before any
+`install` command that assigns `atlas` ownership. Copy secrets from outside
+Git. Do not commit `service.env`, the introspection secret, or `key.pem`.
+The public resource URL is `https://mcp.atlas.datarelay.run/mcp`. The process
+still binds `127.0.0.1:8443`.
 
 ```bash
 sudo groupadd --system atlas
@@ -48,15 +63,24 @@ sudo install -m 0640 -o root -g atlas /path/outside/git/key.pem /etc/datarelay-a
 sudo install -m 0644 -o root -g atlas /path/outside/git/cert.pem /etc/datarelay-atlas/tls/cert.pem
 PYTHONPATH=. python3 -m atlas ops stage --dest /tmp/atlas-unit-stage
 sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas.service /etc/systemd/system/datarelay-atlas.service
+sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas-ingress.socket /etc/systemd/system/datarelay-atlas-ingress.socket
+sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas-ingress.service /etc/systemd/system/datarelay-atlas-ingress.service
 sudo systemctl daemon-reload
+sudo --user atlas --group atlas \
+  env PYTHONPATH=/opt/datarelay-atlas \
+  /opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod \
+  --env-file /etc/datarelay-atlas/service.env
 sudo systemctl enable --now datarelay-atlas.service
+sudo systemctl enable --now datarelay-atlas-ingress.socket
 ```
 
-`ops stage` copies the unit into the destination directory. It does not call
-`systemctl` and does not need root. Enable the unit only after `ops check`
-reports ready. The unit's `ExecStartPre` runs that same check before every
-start, so a world-accessible env file, secret, or TLS key, or an unknown or
-conflicting setting, does not reach `mcp serve`.
+`ops stage` copies the service unit and the port-443 ingress units. It does
+not call `systemctl` and does not need root. Enable them only after
+`ops check --prod` reports ready. The unit's `ExecStartPre` runs that same
+prod check before every start, so a loopback resource URL, a world-accessible
+env file, secret, or TLS key, or an unknown or conflicting setting, does not
+reach `mcp serve`. Generic `ops check` without `--prod` remains the
+non-production health command.
 
 ## Config check
 
@@ -67,7 +91,7 @@ with the installed interpreter:
 ```bash
 sudo --user atlas --group atlas \
   env PYTHONPATH=/opt/datarelay-atlas \
-  /opt/datarelay-atlas/.venv/bin/python -m atlas ops check \
+  /opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod \
   --env-file /etc/datarelay-atlas/service.env
 ```
 

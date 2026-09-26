@@ -22,7 +22,11 @@ from atlas.mcp_config import (
 from atlas.ops import (
     assess_service_environment,
     data_root_runtime_ready,
+    prod_launch_contract,
     stage_unit,
+    validate_ingress_service_text,
+    validate_ingress_socket_text,
+    validate_prod_deployment_env,
     validate_unit_text,
 )
 from atlas.provenance import ValidationError
@@ -182,7 +186,7 @@ class OpsCheckTests(unittest.TestCase):
             self.assertIn("python -m atlas mcp serve\n", text)
             self.assertIn(
                 "ExecStartPre=/opt/datarelay-atlas/.venv/bin/python -m atlas ops check "
-                "--env-file /etc/datarelay-atlas/service.env\n",
+                "--prod --env-file /etc/datarelay-atlas/service.env\n",
                 text,
             )
             self.assertLess(text.index("ExecStartPre="), text.index("ExecStart="))
@@ -217,6 +221,111 @@ class OpsCheckTests(unittest.TestCase):
         self.assertIn("operational_e2e_command: ''", release)
         with self.assertRaises(SystemExit):
             main(["ops", "backup"])
+
+    def test_prod_launch_contract_does_not_claim_a_live_host(self):
+        contract = prod_launch_contract()
+        self.assertEqual(contract["status"], "contract")
+        self.assertEqual(contract["hostname"], "prod-atlas")
+        self.assertEqual(contract["mcp_dns"], "mcp.atlas.datarelay.run")
+        self.assertEqual(contract["resource_url"], "https://mcp.atlas.datarelay.run/mcp")
+        self.assertEqual(contract["bind_host"], "127.0.0.1")
+        self.assertEqual(contract["bind_port"], 8443)
+        self.assertEqual(contract["ingress_listen"], "0.0.0.0:443")
+        self.assertEqual(contract["ingress_target"], "127.0.0.1:8443")
+        self.assertEqual(contract["resource_port"], 443)
+        self.assertEqual(contract["restart"], "on-failure")
+        self.assertFalse(contract["chatgpt_mcp_required"])
+        self.assertFalse(contract["production_evidence"])
+        for path in contract["secret_paths_outside_git"]:
+            self.assertTrue(path.startswith("/etc/datarelay-atlas/"))
+        rendered = json.dumps(contract)
+        self.assertNotIn("BEGIN ", rendered)
+        self.assertNotIn(SECRET, rendered)
+        stdout = StringIO()
+        with patch("sys.stdout", stdout):
+            code = main(["ops", "prod-contract"])
+        self.assertEqual(code, 0)
+        self.assertIn('"production_evidence": false', stdout.getvalue())
+        self.assertIn('"ingress_listen": "0.0.0.0:443"', stdout.getvalue())
+        self.assertNotIn(SECRET, stdout.getvalue())
+        with tempfile.TemporaryDirectory() as tmp:
+            stage_unit(Path(tmp))
+            socket_text = (Path(tmp) / "datarelay-atlas-ingress.socket").read_text(
+                encoding="utf-8"
+            )
+            proxy_text = (Path(tmp) / "datarelay-atlas-ingress.service").read_text(
+                encoding="utf-8"
+            )
+        self.assertIn("ListenStream=0.0.0.0:443\n", socket_text)
+        self.assertNotIn("BindIPv6Only=", socket_text)
+        self.assertIn("systemd-socket-proxyd 127.0.0.1:8443\n", proxy_text)
+        self.assertNotIn("key.pem", socket_text + proxy_text)
+        self.assertNotIn("service.env", socket_text + proxy_text)
+        self.assertNotIn("CAP_NET_BIND_SERVICE", socket_text + proxy_text)
+        with self.assertRaises(ValidationError):
+            validate_ingress_socket_text(socket_text.replace("0.0.0.0:443", "127.0.0.1:8443", 1))
+        with self.assertRaises(ValidationError):
+            validate_ingress_socket_text(socket_text + "BindIPv6Only=ipv4\n")
+        example = (ROOT / "deploy" / "datarelay-atlas.service.env.example").read_text(
+            encoding="utf-8"
+        )
+        validate_prod_deployment_env(example)
+        self.assertIn("ATLAS_MCP_BIND_HOST=127.0.0.1", example)
+        self.assertNotIn("https://127.0.0.1:8443/mcp", example)
+        with self.assertRaises(ValidationError):
+            validate_prod_deployment_env(
+                example.replace(
+                    "https://mcp.atlas.datarelay.run/mcp",
+                    "https://127.0.0.1:8443/mcp",
+                    1,
+                )
+            )
+        with self.assertRaises(ValidationError):
+            validate_ingress_service_text(proxy_text + "EnvironmentFile=/etc/datarelay-atlas/service.env\n")
+        project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
+        self.assertIn("production_oriented: false", project)
+        text = (ROOT / "deploy" / "systemd" / "datarelay-atlas.service").read_text(
+            encoding="utf-8"
+        )
+        broken = text.replace("Restart=on-failure\n", "Restart=no\n", 1)
+        with self.assertRaises(ValidationError):
+            validate_unit_text(broken)
+
+    def test_prod_check_rejects_loopback_audience_and_accepts_public_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            loopback = _write_env(root)
+            stdout = StringIO()
+            stderr = StringIO()
+            with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+                generic = main(["ops", "check", "--env-file", str(loopback)])
+            self.assertEqual(generic, 0)
+            self.assertIn('"status": "ready"', stdout.getvalue())
+            stdout = StringIO()
+            stderr = StringIO()
+            with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+                rejected = main(["ops", "check", "--prod", "--env-file", str(loopback)])
+            self.assertEqual(rejected, 1)
+            self.assertIn("public MCP audience", stderr.getvalue())
+            self.assertNotIn(SECRET, stderr.getvalue())
+            self.assertNotIn('"status": "ready"', stdout.getvalue())
+            public = root / "prod.env"
+            public.write_text(
+                loopback.read_text(encoding="utf-8").replace(
+                    "https://127.0.0.1:8443/mcp",
+                    "https://mcp.atlas.datarelay.run/mcp",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            os.chmod(public, 0o640)
+            stdout = StringIO()
+            stderr = StringIO()
+            with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+                accepted = main(["ops", "check", "--prod", "--env-file", str(public)])
+            self.assertEqual(accepted, 0)
+            self.assertIn('"status": "ready"', stdout.getvalue())
+            self.assertNotIn(SECRET, stdout.getvalue() + stderr.getvalue())
 
     def test_missing_env_file_fails_closed(self):
         with self.assertRaises(ValidationError):
@@ -341,9 +450,10 @@ class OpsCheckTests(unittest.TestCase):
         self.assertLess(account_at, owned_at)
         self.assertLess(install.index("groupadd"), install.index("useradd"))
         self.assertLess(install.index("useradd"), install.index("install -d"))
+        self.assertLess(install.index("ops check --prod"), install.index("systemctl enable"))
         check = blocks[1]
         self.assertIn("sudo --user atlas --group atlas", check)
-        self.assertIn("/opt/datarelay-atlas/.venv/bin/python -m atlas ops check", check)
+        self.assertIn("/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod", check)
         self.assertIn("--env-file /etc/datarelay-atlas/service.env", check)
         self.assertNotIn("PYTHONPATH=. python3 -m atlas ops check", check)
 
