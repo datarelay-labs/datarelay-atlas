@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from atlas.provenance import ValidationError
 
@@ -1074,6 +1074,15 @@ def _packet_metadata_value(body: str, key: str) -> str | None:
     return _parse_leading_packet_metadata(body).get(key)
 
 
+def optional_audit_base_head(meta: dict[str, str]) -> str:
+    if "AUDIT_BASE_HEAD" not in meta:
+        return ""
+    raw = str(meta["AUDIT_BASE_HEAD"]).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", raw):
+        raise ValidationError("invalid AUDIT_BASE_HEAD")
+    return raw
+
+
 def _set_packet_metadata_line(body: str, key: str, value: str) -> str:
     line = f"{key}={value}"
     leading = _leading_packet_metadata_text(body)
@@ -1332,6 +1341,103 @@ def render_dispatch_blocked_work_packet_body(
         "Blockers",
         f"Dispatch blocked before Cursor spawn: {safe_reason}",
     )
+    return updated.rstrip() + "\n"
+
+
+def render_pass_governance_work_packet_body(
+    body: str,
+    *,
+    repository: str,
+    branch: str,
+    workstream: str,
+    head: str,
+    gate_summary: str,
+    advisory: str = "",
+) -> str:
+    """Record a bounded PASS governance checkpoint. Do not activate a successor.
+
+    Model PASS is not merge, release, or deploy authority. STATUS stays
+    ACTIVE. The next action is governance review of this exact HEAD.
+    """
+    raw = (body or "").strip()
+    if not raw:
+        raise ValidationError("work packet body is empty")
+    _require_unique_managed_sections(raw)
+    _require_v2_packet_metadata(raw)
+    status = _packet_metadata_value(raw, "STATUS")
+    if status != "ACTIVE":
+        raise ValidationError(
+            "work packet STATUS must be ACTIVE for a PASS governance checkpoint"
+        )
+    require_canonical_target_repo(
+        _packet_metadata_value(raw, "TARGET_REPO") or "",
+        repository,
+    )
+    expected_branch = branch.strip()
+    if not expected_branch:
+        raise ValidationError("branch is required for Work Packet mutation")
+    packet_branch = _packet_metadata_value(raw, "BRANCH")
+    if packet_branch != expected_branch:
+        raise ValidationError(
+            f"work packet BRANCH mismatch: {packet_branch!r} != {expected_branch!r}"
+        )
+    expected_workstream = workstream.strip()
+    packet_workstream = _packet_metadata_value(raw, "WORKSTREAM")
+    if packet_workstream != expected_workstream:
+        raise ValidationError(
+            f"work packet WORKSTREAM mismatch: "
+            f"{packet_workstream!r} != {expected_workstream!r}"
+        )
+    safe_gates = sanitize_rework_findings(gate_summary, max_chars=1000) or "gates current"
+    safe_advisory = sanitize_rework_findings(advisory, max_chars=1000) if advisory else ""
+    audited = head.strip().lower()
+    updated = _set_packet_metadata_line(raw, "LAST_VERIFIED_HEAD", audited)
+    updated = _set_packet_metadata_line(updated, "AUDIT_BASE_HEAD", audited)
+    updated = _set_packet_metadata_line(
+        updated, "NEXT_ACTION", "AWAITING_EXACT_HEAD_GOVERNANCE"
+    )
+    updated = _set_packet_metadata_line(updated, "GATE", "GOVERNANCE")
+    advisory_line = f"\n- Bugbot advisory: {safe_advisory}" if safe_advisory else ""
+    updated = _replace_packet_section(
+        updated,
+        "Current State",
+        (
+            "- Exact-head audit verdict: PASS\n"
+            f"- Audited HEAD: `{audited}`\n"
+            f"- Branch: `{expected_branch}`\n"
+            f"- Deterministic gates: {safe_gates}\n"
+            "- Model PASS is not merge, release, or deploy authority.\n"
+            "- Successor activation was not performed."
+            f"{advisory_line}"
+        ),
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Next Action",
+        (
+            "AWAITING_EXACT_HEAD_GOVERNANCE for "
+            f"`{audited}` on `{expected_branch}`.\n\n"
+            "Review the exact-head gates and this checkpoint. "
+            "Do not merge, tag, release, deploy, or activate another Work Packet "
+            "from this checkpoint."
+        ),
+    )
+    updated = _replace_packet_section(
+        updated,
+        "Latest Evidence",
+        (
+            "```text\n"
+            f"HEAD={audited}\n"
+            f"BRANCH={expected_branch}\n"
+            "VERDICT=PASS\n"
+            "WORK_PACKET_MUTATION=GOVERNANCE_CHECKPOINT\n"
+            "DISPATCH=NONE\n"
+            "SUCCESSOR=NONE\n"
+            f"GATES={safe_gates}\n"
+            "```"
+        ),
+    )
+    updated = _replace_packet_section(updated, "Blockers", "NONE")
     return updated.rstrip() + "\n"
 
 
@@ -1972,6 +2078,83 @@ class GitHubWorkPacketAdapter:
             head=head,
             body=new_body,
         )
+
+    def commit_unchanged_body(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        new_body: str,
+        expected_body: str,
+        expected_updated_at: str,
+    ) -> None:
+        """CAS-write one body with the same view, trust, and recheck as REWORK.
+
+        Callers render the body with ``render_rework_work_packet_body`` or
+        ``render_dispatch_blocked_work_packet_body``. This method does not
+        invent a second mutation policy.
+        """
+        repo = normalize_github_repository(repository)
+        expected_branch = branch.strip()
+        if not expected_branch:
+            raise ValidationError("branch is required for Work Packet mutation")
+        if int(issue_number) < 1:
+            raise ValidationError(f"invalid issue_number: {issue_number}")
+        self._require_unique_active_packet(
+            repo,
+            issue_number=int(issue_number),
+            branch=expected_branch,
+        )
+        payload = self._view_issue(repo, int(issue_number))
+        self._assert_ai_work_issue(payload, issue_number=int(issue_number))
+        self._require_trusted_issue_author(repo, payload)
+        current_body = str(payload.get("body") or "")
+        current_updated = str(
+            payload.get("updatedAt") or payload.get("updated_at") or ""
+        )
+        if current_body != expected_body or current_updated != expected_updated_at:
+            raise ValidationError(
+                "work packet changed during mutation; refusing overwrite"
+            )
+        recheck = self._view_issue(repo, int(issue_number))
+        recheck_body = str(recheck.get("body") or "")
+        recheck_updated = str(
+            recheck.get("updatedAt") or recheck.get("updated_at") or ""
+        )
+        if recheck_body != current_body or recheck_updated != current_updated:
+            raise ValidationError(
+                "work packet changed during mutation; refusing overwrite"
+            )
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".md",
+            delete=False,
+        ) as handle:
+            handle.write(new_body)
+            body_path = handle.name
+        try:
+            edit = self._run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(int(issue_number)),
+                    "--repo",
+                    repo,
+                    "--body-file",
+                    body_path,
+                ]
+            )
+        finally:
+            Path(body_path).unlink(missing_ok=True)
+        if edit.returncode != 0:
+            detail = (edit.stderr or edit.stdout or "").strip()
+            raise ValidationError(
+                detail[:500]
+                or f"gh issue edit failed with exit {edit.returncode}"
+            )
 
     def _remember_owned_pending_dispatch(
         self,
@@ -2952,13 +3135,12 @@ class GitHubWorkPacketAdapter:
         return issues
 
     @staticmethod
-    def _active_packet_matches(
-        body: str,
-        *,
-        repository: str,
-        branch: str,
-    ) -> bool:
-        """Match /work-resume selection: TARGET_REPO + STATUS=ACTIVE + BRANCH."""
+    def _repository_active_packet(body: str, *, repository: str) -> bool:
+        """True when leading metadata is ACTIVE for this repository.
+
+        Branch is not an input. A parse failure is not a match. Callers that
+        already know a branch still apply that filter separately.
+        """
         try:
             meta = _parse_leading_packet_metadata(body)
         except ValidationError:
@@ -2972,11 +3154,107 @@ class GitHubWorkPacketAdapter:
             require_canonical_target_repo(target, repository)
         except ValidationError:
             return False
+        return True
+
+    @staticmethod
+    def _active_packet_matches(
+        body: str,
+        *,
+        repository: str,
+        branch: str,
+    ) -> bool:
+        """Match /work-resume selection: TARGET_REPO + STATUS=ACTIVE + BRANCH."""
+        if not GitHubWorkPacketAdapter._repository_active_packet(
+            body, repository=repository
+        ):
+            return False
+        meta = _parse_leading_packet_metadata(body)
         packet_branch = meta.get("BRANCH")
         # Missing BRANCH matches any current branch (/work-resume.md:31).
         if packet_branch not in (None, "") and packet_branch != branch:
             return False
         return True
+
+    def discover_trusted_active_packets(self, repository: str) -> list[dict[str, Any]]:
+        """Trusted ACTIVE packets for one repository. Branch is derived, not supplied.
+
+        Zero or many results are returned. Unverifiable authors fail closed.
+        A known weaker permission is ignored and does not create ambiguity.
+        """
+        repo = normalize_github_repository(repository)
+        found: list[dict[str, Any]] = []
+        for issue in self._list_open_ai_work_issues(repo):
+            number = issue.get("number")
+            try:
+                number_i = int(number)
+            except (TypeError, ValueError):
+                number_i = None
+            body = str(issue.get("body") or "")
+            if not self._repository_active_packet(body, repository=repo):
+                continue
+            if number_i is None:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: candidate issue number missing"
+                )
+            try:
+                trust = self._lookup_author_trust(repo, issue)
+            except ValidationError as exc:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                    f"candidate #{number_i} unverifiable ({exc})"
+                ) from exc
+            if trust != "trusted":
+                continue
+            meta = _parse_leading_packet_metadata(body)
+            found.append(
+                {
+                    "repository": repo,
+                    "issue_number": number_i,
+                    "branch": str(meta.get("BRANCH") or "").strip(),
+                    "workstream": str(meta.get("WORKSTREAM") or "").strip(),
+                    "head": str(meta.get("LAST_VERIFIED_HEAD") or "").strip(),
+                    "audit_base": optional_audit_base_head(meta),
+                    "status": "ACTIVE",
+                }
+            )
+        return found
+
+    def reread_trusted_active_packet(
+        self, repository: str, issue_number: int
+    ) -> dict[str, Any]:
+        """Re-read one packet immediately before an effect. List snapshots are not authority."""
+        repo = normalize_github_repository(repository)
+        payload = self._view_issue(repo, int(issue_number))
+        self._assert_ai_work_issue(payload, issue_number=int(issue_number))
+        self._require_trusted_issue_author(repo, payload)
+        body = str(payload.get("body") or "")
+        meta = _parse_leading_packet_metadata(body)
+        if meta.get("STATUS") != "ACTIVE":
+            raise ValidationError("canonical packet is not ACTIVE")
+        require_canonical_target_repo(str(meta.get("TARGET_REPO") or ""), repo)
+        branch = str(meta.get("BRANCH") or "").strip()
+        workstream = str(meta.get("WORKSTREAM") or "").strip()
+        head_raw = str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower()
+        if not branch or not workstream or not head_raw:
+            raise ValidationError(
+                "canonical packet is missing branch, workstream, or head"
+            )
+        if not re.fullmatch(r"[0-9a-f]{40}", head_raw):
+            raise ValidationError(
+                "LAST_VERIFIED_HEAD must be an exact 40-char commit SHA"
+            )
+        return {
+            "repository": repo,
+            "issue_number": int(issue_number),
+            "branch": branch,
+            "workstream": workstream,
+            "head": head_raw,
+            "audit_base": optional_audit_base_head(meta),
+            "status": "ACTIVE",
+            "updated_at": str(
+                payload.get("updatedAt") or payload.get("updated_at") or ""
+            ),
+        }
 
     def _scan_trusted_active_packets(
         self,

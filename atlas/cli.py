@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -25,6 +26,11 @@ from atlas.chat_audit_github import (
     resolve_checkpoint_store,
 )
 from atlas.codex_audit import CodexAuditProvider
+from atlas.audit_claim import GitHubContentsClaimStore
+from atlas.audit_disposition import run_completed_audit_disposition
+from atlas.final_audit import AuditBudget, BoundedResponsesAuditProvider
+from atlas.host_worker import load_host_worker_config, run_once
+from atlas.supervisor import supervise_once
 from atlas.ops import assess_service_environment, stage_unit
 from atlas.provenance import ValidationError
 from atlas.semantic_retrieval import embedding_config_from_cli
@@ -37,6 +43,7 @@ from atlas.work_controller import (
     OpenAIResponsesAuditAdapter,
     PtyPersistCursorDispatcher,
     RecordingCursorDispatcher,
+    default_git_runner,
     RecordingWorkPacketAdapter,
     WorkController,
     drain_completion_inbox,
@@ -864,6 +871,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ca_roll.set_defaults(func=cmd_ca_rollover)
 
+    hw = sub.add_parser(
+        "host-worker",
+        help="Host-local Cursor resume worker (Issue #47 slice A)",
+    )
+    hw_sub = hw.add_subparsers(dest="hw_command", required=True)
+    hw_run = hw_sub.add_parser(
+        "run-once",
+        help="Locked idle pass with zero model and zero Cursor calls",
+    )
+    hw_run.add_argument(
+        "--descriptors",
+        required=True,
+        help="Host-local descriptor file. Lock identity is derived from it.",
+    )
+    hw_run.set_defaults(func=cmd_host_worker_run_once)
+    hw_dispose = hw_sub.add_parser(
+        "dispose-once",
+        help="Apply one completed exact-HEAD audit claim through the host worker",
+    )
+    hw_dispose.add_argument("--descriptors", required=True)
+    hw_dispose.add_argument("--issue", type=int, required=True)
+    hw_dispose.add_argument("--branch", required=True)
+    hw_dispose.add_argument("--workstream", required=True)
+    hw_dispose.add_argument("--head", required=True)
+    hw_dispose.set_defaults(func=cmd_host_worker_dispose_once)
+    hw_supervise = hw_sub.add_parser(
+        "supervise-once",
+        help="One descriptor-driven pass: discover ACTIVE packets, audit or dispose",
+    )
+    hw_supervise.add_argument(
+        "--descriptors",
+        required=True,
+        help="Host-local descriptor file. Issue numbers are not accepted here.",
+    )
+    hw_supervise.set_defaults(func=cmd_host_worker_supervise_once)
+
     ops = sub.add_parser("ops", help="Service configuration and health")
     ops_sub = ops.add_subparsers(dest="ops_command", required=True)
     ops_check = ops_sub.add_parser(
@@ -884,6 +927,91 @@ def build_parser() -> argparse.ArgumentParser:
     ops_stage.set_defaults(func=cmd_ops_stage)
 
     return parser
+
+
+def cmd_host_worker_run_once(args: argparse.Namespace) -> int:
+    outcome = run_once(
+        config=load_host_worker_config(Path(args.descriptors)),
+        resume_requested=False,
+    )
+    _print_json(outcome)
+    return 0
+
+
+def _subprocess_runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def cmd_host_worker_dispose_once(args: argparse.Namespace) -> int:
+    """Completed claim -> canonical GitHub packet -> locked host resume."""
+    config = load_host_worker_config(Path(args.descriptors))
+    if len(config.projects) != 1:
+        raise ValidationError("dispose-once requires exactly one project descriptor")
+    repository = config.projects[0].repository
+    from atlas.audit_claim import WorkPacketSnapshot
+
+    outcome = run_completed_audit_disposition(
+        host_config=config,
+        claim_store=GitHubContentsClaimStore(
+            repository,
+            command_runner=_subprocess_runner,
+        ),
+        packet_adapter=GitHubWorkPacketAdapter(command_runner=_subprocess_runner),
+        issue_number=int(args.issue),
+        branch=str(args.branch),
+        workstream=str(args.workstream),
+        head=str(args.head),
+        packets=[
+            WorkPacketSnapshot(
+                repository=repository,
+                issue_number=int(args.issue),
+                branch=str(args.branch),
+                head=str(args.head),
+                status="ACTIVE",
+            )
+        ],
+        git_runner=default_git_runner,
+        spawn=lambda argv, cwd: _subprocess_runner(argv, cwd).returncode,
+        host_probe=None,
+    )
+    _print_json(outcome)
+    return 0
+
+
+def cmd_host_worker_supervise_once(args: argparse.Namespace) -> int:
+    """Discover each descriptor repository's unique ACTIVE packet and act once."""
+    config = load_host_worker_config(Path(args.descriptors))
+    adapter = GitHubWorkPacketAdapter(command_runner=_subprocess_runner)
+    budget = AuditBudget(per_run_hard_usd=1.0, monthly_hard_usd=25.0)
+
+    def claim_store_for(repository: str) -> GitHubContentsClaimStore:
+        return GitHubContentsClaimStore(
+            repository,
+            command_runner=_subprocess_runner,
+        )
+
+    outcome = supervise_once(
+        config=config,
+        packet_adapter=adapter,
+        claim_store_for=claim_store_for,
+        auditor=BoundedResponsesAuditProvider(
+            budget=budget,
+            command_runner=_subprocess_runner,
+            git_runner=default_git_runner,
+        ),
+        budget=budget,
+        git_runner=default_git_runner,
+        spawn=lambda argv, cwd: _subprocess_runner(argv, cwd).returncode,
+        host_probe=None,
+    )
+    _print_json(outcome)
+    return 0
 
 
 def cmd_ops_check(args: argparse.Namespace) -> int:

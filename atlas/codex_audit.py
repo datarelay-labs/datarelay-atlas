@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Callable
@@ -364,7 +365,7 @@ def collect_test_evidence(
     env["PYTHONPATH"] = cwd + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )
-    argv = ["python3", "-m", "unittest", "discover", "-s", "tests", "-v"]
+    argv = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
     try:
         if command_runner is not None:
             completed = command_runner(argv, cwd)
@@ -1489,6 +1490,49 @@ def _safe_detail(value: object, *, max_chars: int = 300) -> str:
     return _head_and_tail(redacted, max_chars=max_chars)
 
 
+def incomplete_evidence_verdict(bundle: dict) -> AuditResult | None:
+    """Fail closed when collected evidence is ERROR or INCOMPLETE.
+
+    Shared by the Codex CLI auditor and the Responses API final-audit provider.
+    """
+    for section_key, label in (
+        ("pr_reviews", "PR review"),
+        ("work_packet", "Work Packet"),
+    ):
+        section = bundle.get(section_key)
+        if isinstance(section, dict) and section.get("status") in {
+            "ERROR",
+            "INCOMPLETE",
+        }:
+            status = str(section.get("status"))
+            detail = _safe_detail(
+                section.get("detail") or f"{label} evidence unavailable"
+            )
+            return AuditResult(
+                verdict="HUMAN_REQUIRED",
+                findings=(
+                    f"codex audit skipped: {label} evidence "
+                    f"status={status} ({detail})"
+                ),
+            )
+
+    git = bundle.get("git")
+    if isinstance(git, dict) and git.get("evidence_status") in {
+        "ERROR",
+        "INCOMPLETE",
+    }:
+        status = str(git.get("evidence_status"))
+        detail = _safe_detail(git.get("detail") or "git evidence unavailable")
+        return AuditResult(
+            verdict="HUMAN_REQUIRED",
+            findings=(
+                f"codex audit skipped: git evidence status={status} "
+                f"({detail})"
+            ),
+        )
+    return None
+
+
 def _deterministic_gate_before_codex(bundle: dict) -> AuditResult | None:
     """Short-circuit known deterministic failures/errors before spending Codex.
 
@@ -1636,41 +1680,9 @@ class CodexAuditProvider:
                 bundle["legacy_evidence_text"] = self.evidence
         self.last_evidence_bundle = bundle
 
-        for section_key, label in (
-            ("pr_reviews", "PR review"),
-            ("work_packet", "Work Packet"),
-        ):
-            section = bundle.get(section_key)
-            if isinstance(section, dict) and section.get("status") in {
-                "ERROR",
-                "INCOMPLETE",
-            }:
-                status = str(section.get("status"))
-                detail = str(
-                    section.get("detail") or f"{label} evidence unavailable"
-                )
-                return AuditResult(
-                    verdict="HUMAN_REQUIRED",
-                    findings=(
-                        f"codex audit skipped: {label} evidence "
-                        f"status={status} ({detail[:300]})"
-                    ),
-                )
-
-        git = bundle.get("git")
-        if isinstance(git, dict) and git.get("evidence_status") in {
-            "ERROR",
-            "INCOMPLETE",
-        }:
-            status = str(git.get("evidence_status"))
-            detail = str(git.get("detail") or "git evidence unavailable")
-            return AuditResult(
-                verdict="HUMAN_REQUIRED",
-                findings=(
-                    f"codex audit skipped: git evidence status={status} "
-                    f"({detail[:300]})"
-                ),
-            )
+        incomplete = incomplete_evidence_verdict(bundle)
+        if incomplete is not None:
+            return incomplete
 
         # Clean autonomous snapshot before any deterministic REWORK mapping.
         if self.require_identity:

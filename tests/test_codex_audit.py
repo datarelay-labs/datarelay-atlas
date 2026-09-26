@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -482,7 +483,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                     )
                 if argv[:3] == ["gh", "pr", "list"]:
                     return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
-                if argv[:3] == ["python3", "-m", "unittest"]:
+                if argv[1:3] == ["-m", "unittest"]:
                     return subprocess.CompletedProcess(
                         argv, 0, stdout="Ran 1 test\nOK\n", stderr=""
                     )
@@ -728,6 +729,7 @@ class CodexAuditProviderTests(unittest.TestCase):
 
         tests = collect_test_evidence("/tmp", command_runner=runner)
         self.assertEqual(tests["status"], "ERROR")
+        self.assertEqual(tests["command"][0], sys.executable)
         self.assertIn("infrastructure", tests.get("detail", ""))
 
     def test_work_packet_fail_closed_when_body_trimmed(self):
@@ -2543,7 +2545,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                         ),
                         stderr="",
                     )
-            if argv[:3] == ["python3", "-m", "unittest"]:
+            if argv[1:3] == ["-m", "unittest"]:
                 return subprocess.CompletedProcess(
                     argv, 0, stdout="OK\n", stderr=""
                 )
@@ -2616,7 +2618,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     argv, 1, stdout="", stderr="api failed"
                 )
-            if argv[:3] == ["python3", "-m", "unittest"]:
+            if argv[1:3] == ["-m", "unittest"]:
                 return subprocess.CompletedProcess(argv, 0, stdout="OK\n", stderr="")
             raise AssertionError(argv)
 
@@ -2743,7 +2745,7 @@ class CodexAuditProviderTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     argv, 0, stdout=json.dumps(payload), stderr=""
                 )
-            if argv[:3] == ["python3", "-m", "unittest"]:
+            if argv[1:3] == ["-m", "unittest"]:
                 return subprocess.CompletedProcess(argv, 0, stdout="OK\n", stderr="")
             raise AssertionError(argv)
 
