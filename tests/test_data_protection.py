@@ -447,6 +447,58 @@ class DataProtectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "digest mismatch"):
                 backup_data_root(root, base / "snapshot")
 
+    def test_symlink_lock_is_refused_without_changing_the_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "data"
+            root.mkdir()
+            outside = base / "outside-secret"
+            outside.write_text("keep\n", encoding="utf-8")
+            os.chmod(outside, 0o644)
+            before = stat.S_IMODE(outside.stat().st_mode)
+            (root / ".write.lock").symlink_to(outside)
+            with self.assertRaisesRegex(ValidationError, "not a regular file"):
+                backup_data_root(root, base / "snapshot")
+            self.assertEqual(stat.S_IMODE(outside.stat().st_mode), before)
+            self.assertEqual(outside.read_text(encoding="utf-8"), "keep\n")
+            self.assertFalse((base / "snapshot").exists())
+
+    def test_backup_fsyncs_tree_directories_and_parent_after_publish(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "data"
+            _sample_root(root)
+            dest = base / "snapshot"
+            events: list[tuple] = []
+            real_fsync = os.fsync
+            real_rename = os.rename
+
+            def tracing_fsync(fd: int) -> None:
+                events.append(("fsync", os.readlink(f"/proc/self/fd/{fd}")))
+                real_fsync(fd)
+
+            def tracing_rename(src, dst):
+                events.append(("rename", os.fspath(src), os.fspath(dst)))
+                return real_rename(src, dst)
+
+            with (
+                patch("atlas.data_protection.os.fsync", tracing_fsync),
+                patch("atlas.data_protection.os.rename", tracing_rename),
+            ):
+                backup_data_root(root, dest)
+            rename_at = next(index for index, event in enumerate(events) if event[0] == "rename")
+            before = [Path(event[1]) for event in events[:rename_at] if event[0] == "fsync"]
+            after = [Path(event[1]) for event in events[rename_at + 1 :] if event[0] == "fsync"]
+            partial = Path(str(dest) + ".partial")
+            self.assertTrue(any(path == partial.resolve() for path in before))
+            self.assertTrue(any("projections" in path.parts for path in before))
+            self.assertTrue(any(path == dest.resolve() for path in after))
+            self.assertTrue(any(path == dest.parent.resolve() for path in after))
+            self.assertLess(
+                next(index for index, path in enumerate(after) if path == dest.resolve()),
+                next(index for index, path in enumerate(after) if path == dest.parent.resolve()),
+            )
+
 
 def _git_worktree(path: Path) -> str:
     env = dict(os.environ)

@@ -103,3 +103,8 @@ controller state. This amendment is part of the same backup/restore slice.
    fails closed.
 4. **Restore-test** loads both the registry and, when present, the controller
    workstream list. It still writes only to a new directory.
+5. **Lock open does not follow symlinks.** `.write.lock` is opened with
+   `O_NOFOLLOW` and accepted only when the descriptor is a regular file, so
+   a symlink cannot be chmod'd before validation.
+6. **Backup success is published durably.** File bytes, the completed
+   directory tree, and the destination parent are fsynced before `status: ok`.

@@ -73,8 +73,7 @@ def backup_data_root(data_root: Path, dest: Path) -> dict:
     except Exception:
         shutil.rmtree(partial, ignore_errors=True)
         raise
-    os.rename(partial, target)
-    os.chmod(target, 0o700)
+    _publish_tree(partial, target)
     return {
         "dest": str(target),
         "file_count": len(files),
@@ -113,8 +112,7 @@ def restore_test(backup: Path, dest: Path) -> dict:
     except Exception:
         shutil.rmtree(partial, ignore_errors=True)
         raise
-    os.rename(partial, target)
-    os.chmod(target, 0o700)
+    _publish_tree(partial, target)
     return {
         "dest": str(target),
         "file_count": len(checked),
@@ -471,6 +469,39 @@ def _project_count(files: list[_SnapshotFile]) -> int:
     if not isinstance(projects, dict):
         raise ValidationError("registry.json is unsupported")
     return len(projects)
+
+
+def _publish_tree(partial: Path, target: Path) -> None:
+    """Publish a completed tree only after its directory entries are durable.
+
+    File bytes are already fsynced. Directory fsyncs make those names durable,
+    and the destination parent is fsynced after the rename so a crash cannot
+    report success for a publication the filesystem can still drop.
+    """
+    os.chmod(partial, 0o700)
+    _fsync_directories(partial)
+    os.rename(partial, target)
+    os.chmod(target, 0o700)
+    _fsync_directory(target)
+    _fsync_directory(target.parent)
+
+
+def _fsync_directories(root: Path) -> None:
+    directories = [root]
+    for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        for name in dirnames:
+            directories.append(current / name)
+    for directory in reversed(directories):
+        _fsync_directory(directory)
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _write_snapshot_file(root: Path, item: _SnapshotFile) -> None:

@@ -5,12 +5,16 @@ Writers and backup share this module so neither imports the other.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
+import stat
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+from atlas.provenance import ValidationError
 
 LOCK_NAME = ".write.lock"
 
@@ -55,13 +59,8 @@ def data_root_write_lock(data_root: Path):
         if holder.depth == 0:
             path = Path(data_root)
             path.mkdir(parents=True, exist_ok=True)
-            fd = os.open(
-                path / LOCK_NAME,
-                os.O_CREAT | os.O_RDWR | os.O_CLOEXEC,
-                0o600,
-            )
+            fd = _open_lock_file(path / LOCK_NAME)
             try:
-                os.fchmod(fd, 0o600)
                 fcntl.flock(fd, fcntl.LOCK_EX)
             except OSError:
                 os.close(fd)
@@ -79,6 +78,34 @@ def data_root_write_lock(data_root: Path):
                 os.close(fd)
     finally:
         holder.rlock.release()
+
+
+def _open_lock_file(path: Path) -> int:
+    """Open the lock file without following a symlink.
+
+    ``fchmod`` runs on the opened descriptor. Following a symlink would change
+    the target's mode before any backup check can reject it.
+    """
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise ValidationError("data root lock cannot be opened without following symlinks")
+    try:
+        fd = os.open(
+            path,
+            os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValidationError("data root lock is not a regular file") from exc
+        raise
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValidationError("data root lock is not a regular file")
+        os.fchmod(fd, 0o600)
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
 
 
 def atomic_write_text(path: Path, text: str) -> None:
