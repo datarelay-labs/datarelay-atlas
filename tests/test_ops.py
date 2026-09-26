@@ -26,6 +26,7 @@ from atlas.ops import (
     stage_unit,
     validate_ingress_service_text,
     validate_ingress_socket_text,
+    validate_prod_deployment_env,
     validate_unit_text,
 )
 from atlas.provenance import ValidationError
@@ -256,12 +257,29 @@ class OpsCheckTests(unittest.TestCase):
                 encoding="utf-8"
             )
         self.assertIn("ListenStream=0.0.0.0:443\n", socket_text)
+        self.assertNotIn("BindIPv6Only=", socket_text)
         self.assertIn("systemd-socket-proxyd 127.0.0.1:8443\n", proxy_text)
         self.assertNotIn("key.pem", socket_text + proxy_text)
         self.assertNotIn("service.env", socket_text + proxy_text)
         self.assertNotIn("CAP_NET_BIND_SERVICE", socket_text + proxy_text)
         with self.assertRaises(ValidationError):
             validate_ingress_socket_text(socket_text.replace("0.0.0.0:443", "127.0.0.1:8443", 1))
+        with self.assertRaises(ValidationError):
+            validate_ingress_socket_text(socket_text + "BindIPv6Only=ipv4\n")
+        example = (ROOT / "deploy" / "datarelay-atlas.service.env.example").read_text(
+            encoding="utf-8"
+        )
+        validate_prod_deployment_env(example)
+        self.assertIn("ATLAS_MCP_BIND_HOST=127.0.0.1", example)
+        self.assertNotIn("https://127.0.0.1:8443/mcp", example)
+        with self.assertRaises(ValidationError):
+            validate_prod_deployment_env(
+                example.replace(
+                    "https://mcp.atlas.datarelay.run/mcp",
+                    "https://127.0.0.1:8443/mcp",
+                    1,
+                )
+            )
         with self.assertRaises(ValidationError):
             validate_ingress_service_text(proxy_text + "EnvironmentFile=/etc/datarelay-atlas/service.env\n")
         project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")

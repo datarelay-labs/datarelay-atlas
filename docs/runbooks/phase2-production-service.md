@@ -24,7 +24,10 @@ slice records real service, health, and restart output from `prod-atlas`.
 | `/etc/datarelay-atlas/tls/cert.pem` | TLS certificate | not world-writable |
 | `/var/lib/datarelay-atlas` | `ATLAS_DATA_ROOT` | `atlas:atlas`, mode `0750` |
 
-`deploy/datarelay-atlas.service.env.example` lists the supported keys. Unknown
+`deploy/datarelay-atlas.service.env.example` is the prod deployment env.
+Its resource URL is `https://mcp.atlas.datarelay.run/mcp`. Bind stays
+`127.0.0.1:8443`. A loopback audience is rejected for that file. Generic
+`ops check` still accepts other resource URLs. Unknown
 keys, a world-accessible env file or private key, and a partial semantic
 configuration are not ready. Do not put `GITHUB_TOKEN` in the service env
 file. `atlas sync` reads `GITHUB_TOKEN` from the operator shell.

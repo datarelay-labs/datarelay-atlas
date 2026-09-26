@@ -12,6 +12,7 @@ import os
 import re
 import stat
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from atlas.mcp_config import (
     BIND_HOST_ENV,
@@ -159,13 +160,35 @@ def validate_unit_text(text: str) -> None:
 def validate_ingress_socket_text(text: str) -> None:
     required = (
         "ListenStream=0.0.0.0:443\n",
-        "BindIPv6Only=ipv4\n",
         "Service=datarelay-atlas-ingress.service\n",
         "WantedBy=sockets.target\n",
     )
-    if any(line not in text for line in required) or "ListenStream=443\n" in text:
+    if any(line not in text for line in required) or "ListenStream=443\n" in text or "BindIPv6Only=" in text:
         raise ValidationError("ingress socket does not listen on 0.0.0.0:443")
     _reject_ingress_secrets(text)
+
+
+def validate_prod_deployment_env(text: str) -> None:
+    """Require the public MCP audience on a prod env file.
+
+    Generic ``ops check`` still accepts other resource URLs. This check is only
+    the prod deployment contract: loopback bind, public audience.
+    """
+    values: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    if values.get("ATLAS_MCP_BIND_HOST") != PROD_BIND_HOST:
+        raise ValidationError("prod deployment must bind 127.0.0.1")
+    if values.get("ATLAS_MCP_BIND_PORT") != str(PROD_BIND_PORT):
+        raise ValidationError("prod deployment must bind port 8443")
+    url = values.get("ATLAS_MCP_RESOURCE_URL", "")
+    host = (urlsplit(url).hostname or "").lower().strip("[]")
+    if url != PROD_RESOURCE_URL or host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        raise ValidationError("prod deployment resource URL must be the public MCP audience")
 
 
 def validate_ingress_service_text(text: str) -> None:

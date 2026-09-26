@@ -6,7 +6,6 @@ Wants=network-online.target
 
 [Socket]
 ListenStream=0.0.0.0:443
-BindIPv6Only=ipv4
 NoDelay=true
 Service=datarelay-atlas-ingress.service
 

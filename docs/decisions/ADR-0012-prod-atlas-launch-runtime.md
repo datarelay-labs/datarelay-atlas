@@ -44,5 +44,10 @@ reports them.
    slice records real host evidence. It must not be treated as a health check.
 4. `production_oriented` stays false in this slice.
 5. Public TCP 443 is `datarelay-atlas-ingress.socket` plus
-   `systemd-socket-proxyd` to `127.0.0.1:8443`. The MCP process does not bind
-   443 and does not gain `CAP_NET_BIND_SERVICE`. The proxy has no TLS paths.
+   `systemd-socket-proxyd` to `127.0.0.1:8443`. `ListenStream=0.0.0.0:443`
+   selects IPv4. The socket does not set `BindIPv6Only`. The MCP process does
+   not bind 443 and does not gain `CAP_NET_BIND_SERVICE`. The proxy has no
+   TLS paths.
+6. The prod env example uses the public resource URL. Prod deployment
+   validation rejects a loopback audience. Generic service checks are
+   unchanged.
