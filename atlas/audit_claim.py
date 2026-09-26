@@ -1062,24 +1062,18 @@ def run_exact_head_audit(
             return _result("duplicate_claim", checkpoint_writes=store.writes - writes_before)
         interrupted_claim = existing
 
-    if evidence_bundle is None:
-        raise ValidationError("exact-head audit requires an evidence bundle")
-    blocked_evidence = incomplete_evidence_verdict(evidence_bundle)
-    if blocked_evidence is None:
-        blocked_evidence = _deterministic_gate_before_codex(evidence_bundle)
-    if blocked_evidence is not None:
-        return _result(
-            "evidence_blocked",
-            verdict=blocked_evidence.verdict,
-            findings=_redact_findings(blocked_evidence.findings),
-        )
+    if evidence_bundle is not None:
+        blocked_evidence = incomplete_evidence_verdict(evidence_bundle)
+        if blocked_evidence is None:
+            blocked_evidence = _deterministic_gate_before_codex(evidence_bundle)
+        if blocked_evidence is not None:
+            return _result(
+                "evidence_blocked",
+                verdict=blocked_evidence.verdict,
+                findings=_redact_findings(blocked_evidence.findings),
+            )
 
     current_month = month_id_for(clock())
-    limits = budget or AuditBudget(per_run_hard_usd=1.0, monthly_hard_usd=25.0)
-    if evidence_bundle is None:
-        raise ValidationError("exact-head audit requires an evidence bundle")
-    request = build_final_audit_request(evidence_bundle)
-    ceiling = request_cost_ceiling_usd(request)
 
     def _finish_without_call(
         *,
@@ -1201,6 +1195,17 @@ def run_exact_head_audit(
             checkpoint_writes=store.writes - writes_before,
         )
 
+    if evidence_bundle is None:
+        if not os.environ.get(api_key_env, "").strip():
+            return _result(
+                "missing_key",
+                verdict="HUMAN_REQUIRED",
+                findings="OPENAI_API_KEY absent; Gate B real audit is HUMAN_REQUIRED",
+            )
+        raise ValidationError("exact-head audit requires an evidence bundle")
+    limits = budget or AuditBudget(per_run_hard_usd=1.0, monthly_hard_usd=25.0)
+    request = build_final_audit_request(evidence_bundle)
+    ceiling = request_cost_ceiling_usd(request)
     if not os.environ.get(api_key_env, "").strip():
         return _result(
             "missing_key",
