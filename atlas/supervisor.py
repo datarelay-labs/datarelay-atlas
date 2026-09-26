@@ -303,6 +303,44 @@ def _supervise_project(
             chat_id=chat_id,
             worktree=worktree,
         )
+
+    def _audited(bundle: dict[str, Any] | None) -> dict[str, Any]:
+        before_calls = getattr(auditor, "calls", None)
+        audited = run_exact_head_audit(
+            audit_requested=True,
+            repository=repository,
+            issue_number=issue_number,
+            branch=str(fresh["branch"]),
+            head=head,
+            packets=[_snapshot(fresh)],
+            worktree_path=worktree,
+            store=store,
+            auditor=auditor,
+            evidence_bundle=bundle,
+            budget=budget,
+            git_runner=git_runner,
+            list_sessions=list_sessions,
+            list_processes=list_processes,
+            now=now,
+            api_key_env=api_key_env,
+        )
+        if before_calls is None:
+            auditor_calls = int(audited.get("auditor_calls") or 0)
+        else:
+            auditor_calls = int(getattr(auditor, "calls")) - int(before_calls)
+        return _project_result(
+            repository,
+            str(audited.get("action") or "audit"),
+            issue_number=issue_number,
+            auditor_calls=auditor_calls,
+            verdict=audited.get("verdict"),
+            findings=audited.get("findings"),
+            chat_id=chat_id,
+            worktree=worktree,
+        )
+
+    if claim is not None and claim.state == "claimed":
+        return _audited(None)
     if not os.environ.get(api_key_env, "").strip():
         return _project_result(
             repository,
@@ -325,39 +363,7 @@ def _supervise_project(
             chat_id=chat_id,
             worktree=worktree,
         )
-    before_calls = getattr(auditor, "calls", None)
-    audited = run_exact_head_audit(
-        audit_requested=True,
-        repository=repository,
-        issue_number=issue_number,
-        branch=str(fresh["branch"]),
-        head=head,
-        packets=[_snapshot(fresh)],
-        worktree_path=worktree,
-        store=store,
-        auditor=auditor,
-        evidence_bundle=bundle,
-        budget=budget,
-        git_runner=git_runner,
-        list_sessions=list_sessions,
-        list_processes=list_processes,
-        now=now,
-        api_key_env=api_key_env,
-    )
-    if before_calls is None:
-        auditor_calls = int(audited.get("auditor_calls") or 0)
-    else:
-        auditor_calls = int(getattr(auditor, "calls")) - int(before_calls)
-    return _project_result(
-        repository,
-        str(audited.get("action") or "audit"),
-        issue_number=issue_number,
-        auditor_calls=auditor_calls,
-        verdict=audited.get("verdict"),
-        findings=audited.get("findings"),
-        chat_id=chat_id,
-        worktree=worktree,
-    )
+    return _audited(bundle)
 
 
 def supervise_once(
