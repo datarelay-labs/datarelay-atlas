@@ -511,6 +511,38 @@ class SuperviseOnceTests(unittest.TestCase):
         budget, _budget_sha = self._store_for(REPO).load_month_budget("2023-11")
         self.assertEqual(budget["reservations"][claim.claim_key]["state"], "settled")
 
+    def test_reservation_only_reconciles_without_evidence_or_key(self) -> None:
+        self.hub.add(REPO, 88, _packet_body())
+        key = make_audit_claim_key(REPO, 88, HEAD)
+        self._store_for(REPO).save_month_budget(
+            "2023-11",
+            repository=REPO,
+            spent_usd=0.05,
+            reservations={
+                key: {
+                    "issue_number": 88,
+                    "target_sha": HEAD,
+                    "ceiling_usd": 0.05,
+                    "accounted_usd": 0.05,
+                    "state": "reserved",
+                }
+            },
+            expected_sha=None,
+        )
+        os.environ.pop("OPENAI_API_KEY", None)
+        outcome = self._run()
+        row = self._row(outcome, REPO)
+        self.assertEqual(row["action"], "reservation_held")
+        self.assertEqual(row["verdict"], "HUMAN_REQUIRED")
+        self.assertEqual(self.auditor.calls, 0)
+        self.assertEqual(outcome["model_calls"], 0)
+        self.assertEqual(self.evidence_calls, [])
+        loaded, _sha = self._store_for(REPO).load(88)
+        assert loaded is not None
+        self.assertEqual(loaded.claims[key].state, "completed")
+        budget, _budget_sha = self._store_for(REPO).load_month_budget("2023-11")
+        self.assertEqual(budget["reservations"][key]["state"], "settled")
+
     def test_stale_ci_review_and_head_make_no_paid_call(self) -> None:
         self.hub.add(REPO, 88, _packet_body())
         outcome = self._run(evidence_for=lambda _packet, _tree: _bundle(ci="PENDING"))

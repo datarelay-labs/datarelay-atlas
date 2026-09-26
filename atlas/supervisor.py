@@ -339,18 +339,10 @@ def _supervise_project(
             worktree=worktree,
         )
 
+    if not os.environ.get(api_key_env, "").strip():
+        return _audited(None)
     if claim is not None and claim.state == "claimed":
         return _audited(None)
-    if not os.environ.get(api_key_env, "").strip():
-        return _project_result(
-            repository,
-            "missing_key",
-            issue_number=issue_number,
-            verdict="HUMAN_REQUIRED",
-            findings="OPENAI_API_KEY absent; Gate B real audit is HUMAN_REQUIRED",
-            chat_id=chat_id,
-            worktree=worktree,
-        )
 
     bundle = evidence_for(fresh, worktree)
     if not _canonical_packet_unchanged(
