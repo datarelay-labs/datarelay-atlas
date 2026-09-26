@@ -432,6 +432,75 @@ class IntrospectionVerifierTests(unittest.TestCase):
         self.assertEqual(aud_list.resource, resource)
         self.assertIsNone(aud_list_conflict)
 
+    def test_aud_list_accepts_resource_url_plus_non_url_audience(self):
+        resource = "https://mcp.atlas.datarelay.run/mcp"
+        scripted = ScriptedIntrospection(
+            {
+                "prod-shape": {
+                    "active": True,
+                    "client_id": "atlas-cli",
+                    "scope": "atlas.read",
+                    "aud": [resource, "atlas-resource"],
+                    "iss": ISSUER,
+                },
+                "identifier-only": {
+                    "active": True,
+                    "client_id": "atlas-cli",
+                    "scope": "atlas.read",
+                    "aud": ["atlas-resource"],
+                    "iss": ISSUER,
+                },
+                "wrong-resource-plus-identifier": {
+                    "active": True,
+                    "client_id": "atlas-cli",
+                    "scope": "atlas.read",
+                    "aud": [OTHER_RESOURCE, "atlas-resource"],
+                    "iss": ISSUER,
+                },
+                "non-url-string": {
+                    "active": True,
+                    "client_id": "atlas-cli",
+                    "scope": "atlas.read",
+                    "aud": "atlas-resource",
+                    "iss": ISSUER,
+                },
+                "conflict-with-extra-audience": {
+                    "active": True,
+                    "client_id": "atlas-cli",
+                    "scope": "atlas.read",
+                    "aud": [resource, "atlas-resource"],
+                    "resource": OTHER_RESOURCE,
+                    "iss": ISSUER,
+                },
+            }
+        )
+        verifier = Rfc7662TokenVerifier(
+            introspection_url="https://issuer.example/introspect",
+            client_id="atlas-resource",
+            client_secret=SECRET,
+            resource_url=resource,
+            issuer_url=ISSUER,
+            transport=scripted,
+        )
+
+        async def check():
+            return (
+                await verifier.verify_token("prod-shape"),
+                await verifier.verify_token("identifier-only"),
+                await verifier.verify_token("wrong-resource-plus-identifier"),
+                await verifier.verify_token("non-url-string"),
+                await verifier.verify_token("conflict-with-extra-audience"),
+            )
+
+        accepted, identifier_only, wrong, non_url, conflict = asyncio.run(check())
+        self.assertIsNotNone(accepted)
+        assert accepted is not None
+        self.assertEqual(accepted.resource, resource)
+        self.assertIsNone(identifier_only)
+        self.assertIsNone(wrong)
+        self.assertIsNone(non_url)
+        self.assertIsNone(conflict)
+
     def test_http_transport_posts_form_and_does_not_follow_redirects(self):
         hits = {"introspect": 0, "collected": 0}
 
