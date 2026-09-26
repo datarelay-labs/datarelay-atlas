@@ -1,8 +1,8 @@
 """Service configuration and runtime readiness.
 
 Design gate: ADR-0009. Quiesced backup and restore verification are ADR-0010.
-Upgrade and rollback remain later Issue #43 work. This module does not copy
-the data root and does not rewrite schema.
+Upgrade and rollback schema checks live in atlas.schema_compat. This module
+does not copy the data root and does not rewrite schema.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from atlas.projection_retrieval import INDEXABLE_SYNC_STATES, build_keyword_retr
 from atlas.provenance import ValidationError
 from atlas.registry import REGISTRY_SCHEMA_VERSION
 from atlas.semantic_retrieval import EmbeddingConfig, validate_embedding_config
+from atlas.work_controller import CONTROLLER_SCHEMA_VERSION
 
 ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 UNIT_NAME = "datarelay-atlas.service"
@@ -115,6 +116,9 @@ def data_root_runtime_ready(data_root: Path) -> bool:
         return False
     registry = root / "registry.json"
     if registry.exists() and not _registry_file_ready(registry):
+        return False
+    controller = root / "work-controller.json"
+    if controller.exists() and not _controller_file_ready(controller):
         return False
     metadata = root / "projections" / "projections.json"
     if metadata.exists() and not _projection_metadata_ready(metadata):
@@ -381,6 +385,16 @@ def _registry_file_ready(path: Path) -> bool:
     return (
         data.get("schema_version") == REGISTRY_SCHEMA_VERSION
         and isinstance(data.get("projects"), dict)
+    )
+
+
+def _controller_file_ready(path: Path) -> bool:
+    data = _read_json_object(path)
+    if data is None:
+        return False
+    return (
+        data.get("schema_version") == CONTROLLER_SCHEMA_VERSION
+        and isinstance(data.get("workstreams"), dict)
     )
 
 
