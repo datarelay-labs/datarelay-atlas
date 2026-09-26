@@ -59,4 +59,6 @@ until those commands have passed an independent audit.
 - Operators can refuse a schema mismatch before restarting on another build.
 - No migration exists yet. A future schema bump needs an explicit upgrade
   path before `ops upgrade` can accept the older version.
-- `.engineering/project.yaml` upgrade and rollback commands stay empty.
+- The production-profile slice points `.engineering/project.yaml`
+  `upgrade_command` and `rollback_command` at these commands. Rollback requires
+  `ATLAS_ROLLBACK_TARGET` and does not name the running checkout.

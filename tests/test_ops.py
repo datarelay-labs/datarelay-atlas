@@ -191,18 +191,30 @@ class OpsCheckTests(unittest.TestCase):
             mode = stat.S_IMODE(target.stat().st_mode)
             self.assertEqual(mode, 0o644)
 
-    def test_backup_and_production_profile_remain_out_of_scope(self):
+    def test_production_profile_uses_audited_data_protection_commands(self):
         project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
+        release = (ROOT / ".engineering" / "release.yaml").read_text(encoding="utf-8")
         self.assertIn("production_oriented: false", project)
-        self.assertIn("runbook_required: false", project)
-        self.assertIn("incident_response_required: false", project)
-        self.assertIn(
-            'backup_command: cp -a "${ATLAS_DATA_ROOT:-.atlas-data}"',
-            project,
-        )
-        self.assertIn("upgrade_command: ''", project)
-        self.assertIn("rollback_command: ''", project)
+        self.assertIn("runbook_required: true", project)
+        self.assertIn("incident_response_required: true", project)
+        self.assertIn("docs/runbooks/phase2-data-protection.md", project)
         self.assertIn("atlas ops check --env-file", project)
+        self.assertIn("python3 -m atlas ops backup", project)
+        self.assertIn("ATLAS_BACKUP_DEST:?set ATLAS_BACKUP_DEST", project)
+        self.assertIn("python3 -m atlas ops restore-test", project)
+        self.assertIn("ATLAS_BACKUP_SRC:?set ATLAS_BACKUP_SRC", project)
+        self.assertIn("ATLAS_RESTORE_PROOF_DEST:?set ATLAS_RESTORE_PROOF_DEST", project)
+        self.assertIn("python3 -m atlas ops upgrade", project)
+        self.assertIn("--target-code", project)
+        self.assertIn("ATLAS_ROLLBACK_TARGET:?set ATLAS_ROLLBACK_TARGET", project)
+        self.assertNotIn("cp -a", project)
+        self.assertNotIn("upgrade_command: ''", project)
+        self.assertNotIn("rollback_command: ''", project)
+        self.assertNotIn("ATLAS_DATA_ROOT:-", project)
+        self.assertIn("public_smoke_required: false", release)
+        self.assertIn("operational_e2e_required: false", release)
+        self.assertIn("public_smoke_command: ''", release)
+        self.assertIn("operational_e2e_command: ''", release)
         with self.assertRaises(SystemExit):
             main(["ops", "backup"])
 

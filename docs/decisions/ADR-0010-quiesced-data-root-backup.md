@@ -68,16 +68,18 @@ rollback, and the production Engineering System profile stay later slices.
    matching projection document digests. `ops restore-test` checks the
    manifest digest set, rejects partial or unexpected files, restores into an
    empty directory, and loads the registry.
-4. **Keep the production profile unchanged** until upgrade and rollback
-   commands exist. `.engineering/project.yaml` `backup_command` stays the
-   previous directory copy and is still not this snapshot.
+4. **Point the operations profile at this snapshot** once upgrade and rollback
+   exist. `.engineering/project.yaml` `backup_command` is `ops backup` with a
+   required `ATLAS_BACKUP_DEST`. It is not a live directory copy.
 
 ## Consequences
 
 - Operators can prove a restorable snapshot without stopping on a torn JSON
   write from `ProjectRegistry` or `ProjectionStore`.
 - Secrets that the shared classifier flags never enter the backup directory.
-- Upgrade, rollback, and `production_oriented: true` remain unimplemented.
+- The operations-contract slice points backup, restore-test, upgrade, and
+  rollback at these commands. `production_oriented` stays false until real
+  `prod-atlas` public-smoke and operational E2E evidence exists.
 
 ## Amendment — full data-root contract
 
@@ -108,3 +110,12 @@ controller state. This amendment is part of the same backup/restore slice.
    a symlink cannot be chmod'd before validation.
 6. **Backup success is published durably.** File bytes, the completed
    directory tree, and the destination parent are fsynced before `status: ok`.
+
+## Amendment — production operations profile
+
+The profile slice points `.engineering/project.yaml` at `ops backup`,
+`ops restore-test`, `ops upgrade`, and `ops rollback --target-code`.
+Destination and rollback-target variables are required and have no default.
+`runbook_required` and `incident_response_required` are true.
+`production_oriented` stays false so adoption does not require public-smoke
+or operational-E2E evidence that does not exist yet.
