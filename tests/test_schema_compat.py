@@ -12,7 +12,7 @@ from unittest.mock import patch
 from atlas.cli import main
 from atlas.provenance import ValidationError
 from atlas.registry import ProjectRegistry
-from atlas.schema_compat import rollback_data_root, upgrade_data_root
+from atlas.schema_compat import probe_durable_state, rollback_data_root, upgrade_data_root
 from atlas.work_controller import CONTROLLER_SCHEMA_VERSION, WorkControllerStore
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -121,6 +121,53 @@ class SchemaCompatTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("newer than this code can read", stderr.getvalue())
             self.assertNotIn("projects", stderr.getvalue())
+
+    def test_malformed_controller_number_refuses_without_leaking_value(self):
+        secret = "SECRET-NOTINT"
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            root.mkdir()
+            (root / "work-controller.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "workstreams": {
+                            "ws": {
+                                "workstream": "ws",
+                                "repository": "datarelay-labs/datarelay-atlas",
+                                "issue_number": secret,
+                                "branch": "feature/x",
+                                "worktree_path": "/tmp/x",
+                                "expected_head": "abc",
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            before = (root / "work-controller.json").read_bytes()
+            with self.assertRaises(ValidationError) as caught:
+                upgrade_data_root(root)
+            self.assertEqual(str(caught.exception), "upgrade refused: work-controller is unsupported")
+            self.assertNotIn(secret, str(caught.exception))
+            with self.assertRaises(ValidationError) as rolled:
+                probe_durable_state(root)
+            self.assertEqual(
+                str(rolled.exception),
+                "rollback refused: work-controller is unsupported",
+            )
+            self.assertNotIn(secret, str(rolled.exception))
+            self.assertEqual((root / "work-controller.json").read_bytes(), before)
+            stderr = StringIO()
+            with patch("sys.stderr", stderr):
+                code = main(["ops", "upgrade", "--data-root", str(root)])
+            self.assertEqual(code, 1)
+            output = stderr.getvalue()
+            self.assertIn("upgrade refused: work-controller is unsupported", output)
+            self.assertNotIn(secret, output)
+            self.assertNotIn("Traceback", output)
+            self.assertEqual((root / "work-controller.json").read_bytes(), before)
 
     def test_corrupt_completion_events_refuse_without_rewrite(self):
         for dirname in ("completion-inbox", "completion-processed"):

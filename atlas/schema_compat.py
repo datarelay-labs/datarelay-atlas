@@ -198,12 +198,12 @@ def _prove_readable(
     if registry_present:
         try:
             ProjectRegistry(root).list_projects()
-        except (KeyError, TypeError, ValidationError) as exc:
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
             raise ValidationError(f"{action} refused: registry is unsupported") from exc
     if controller_present:
         try:
             WorkControllerStore(root).list_workstreams()
-        except (KeyError, TypeError, ValidationError) as exc:
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
             raise ValidationError(f"{action} refused: work-controller is unsupported") from exc
 
 
