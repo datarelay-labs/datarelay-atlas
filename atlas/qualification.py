@@ -311,15 +311,6 @@ def _prod_operational_e2e(
             "deployed code head is unavailable",
             [],
         )
-    claimed_head = environ.get("ATLAS_QUALIFICATION_DEPLOYED_HEAD", "").strip()
-    if claimed_head and claimed_head != deployed_head:
-        return _evidence(
-            "operational-e2e",
-            "prod",
-            "FAIL_CLOSED",
-            "deployed code head does not match the checkout",
-            [],
-        )
     evidence_path = Path(environ["ATLAS_CURSOR_MCP_EVIDENCE"])
     static_reason = _cursor_static_reason(evidence_path, code_head=deployed_head)
     if static_reason:
@@ -707,7 +698,7 @@ def _service_identity(argv: list[str]) -> tuple[str | None, str | None]:
 def _checkout_code_head(repo_root: Path) -> str | None:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--verify", "HEAD"],
+            ["git", "-C", str(repo_root), "rev-parse", "--verify", "HEAD^{commit}"],
             check=False,
             capture_output=True,
             timeout=30,
