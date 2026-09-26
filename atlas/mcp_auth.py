@@ -196,7 +196,8 @@ def _audience_matches(payload: dict[str, Any], expected_resource: str) -> bool:
 
     An ``aud`` list matches when at least one entry canonicalizes to the
     expected resource URL. Additional audience identifiers that are not URLs
-    do not invalidate that match. A single non-URL ``aud`` string is malformed
+    do not invalidate that match. An entry that purports to be an HTTP(S) URL
+    but is malformed fails closed. A single non-URL ``aud`` string is malformed
     and fails closed. A conflicting ``resource`` claim is not ignored just
     because ``aud`` matched.
     """
@@ -235,10 +236,23 @@ def _claim_matches(value: object, expected: str, *, allow_list: bool) -> bool | 
             if _canonical_resource(item) == expected:
                 matched = True
         except ValueError:
-            if skip_non_url_identifiers:
+            if skip_non_url_identifiers and not _purports_http_url(item):
                 continue
             return _REJECT
     return matched
+
+
+def _purports_http_url(value: str) -> bool:
+    """True when the value claims an HTTP(S) scheme, even if the URL is invalid.
+
+    A parse error is treated as a malformed URL so the caller fails closed
+    instead of letting the exception escape token verification.
+    """
+    try:
+        scheme = urlsplit(value.strip()).scheme.lower()
+    except ValueError:
+        return True
+    return scheme in {"http", "https"}
 
 
 def _canonical_resource(url: str) -> str:
