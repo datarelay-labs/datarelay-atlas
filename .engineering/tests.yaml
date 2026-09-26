@@ -82,7 +82,7 @@ scenarios:
       - "the production operations profile points at quiesced backup, restore-test, upgrade, and staged-target rollback commands"
       - "the prod-atlas launch contract names the host, public MCP URL, and required TCP 443 ingress without claiming the host is up"
       - "the qualification harness fails closed without prod inputs and does not claim production from the local journey"
-      - "prod qualification syncs only the charter, requires a changed service identity, and binds Cursor evidence to the deployed code head"
+      - "prod qualification syncs only the charter, requires a changed service identity, and binds Cursor evidence to the checkout HEAD"
       - "Autonomous Work Controller PoC control-loop regressions pass"
       - "Queued Work Packet cycle-chaining regressions pass"
       - "Continuous Chat Audit Supervisor PoC checkpoint/slice regressions pass"

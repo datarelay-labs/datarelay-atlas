@@ -5,8 +5,10 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import socket
 import ssl
+import subprocess
 import sys
 import tempfile
 import threading
@@ -41,7 +43,6 @@ from atlas.service import AtlasService
 ROOT = Path(__file__).resolve().parents[1]
 PROD_URL = "https://mcp.atlas.datarelay.run"
 PIN = "14150e424c922ff3a930b45dcf31d3a3d3ba28b2"
-DEPLOYED_HEAD = "a" * 40
 STALE_HEAD = "b" * 40
 
 
@@ -455,9 +456,11 @@ class QualificationTests(unittest.TestCase):
             stale = _bound_cursor("rev-prod-bind-1")
             stale["code_head"] = STALE_HEAD
             evidence_path.write_text(json.dumps(stale), encoding="utf-8")
+            env = _prod_env(root, data, evidence_path, f"{sys.executable} -c pass")
+            env["ATLAS_QUALIFICATION_DEPLOYED_HEAD"] = STALE_HEAD
             evidence = run_operational_e2e(
                 "prod",
-                _prod_env(root, data, evidence_path, f"{sys.executable} -c pass"),
+                env,
                 repo_root=ROOT,
             )
             self.assertEqual(evidence["status"], "FAIL_CLOSED")
@@ -465,6 +468,32 @@ class QualificationTests(unittest.TestCase):
             self.assertIn("deployed code head", evidence["reason"])
             self.assertFalse((data / "registry.json").exists())
             self.assertNotIn(STALE_HEAD, json.dumps(evidence))
+
+    def test_checkout_without_head_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            engineering = root / ".engineering"
+            engineering.mkdir()
+            (engineering / "project.yaml").write_text(
+                (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+            evidence_path = root / "cursor.json"
+            evidence_path.write_text(
+                json.dumps(_bound_cursor("rev-prod-bind-1")),
+                encoding="utf-8",
+            )
+            evidence = run_operational_e2e(
+                "prod",
+                _prod_env(root, data, evidence_path, f"{sys.executable} -c pass"),
+                repo_root=root,
+            )
+            self.assertEqual(evidence["status"], "FAIL_CLOSED")
+            self.assertEqual(evidence["reason"], "deployed code head is unavailable")
+            self.assertFalse((data / "registry.json").exists())
 
     def test_cryptography_is_a_direct_bounded_dependency(self):
         text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -555,7 +584,6 @@ def _prod_env(
     command: str,
     *,
     identity_command: str | None = None,
-    deployed_head: str = DEPLOYED_HEAD,
 ) -> dict[str, str]:
     token = root / "github-token"
     token.write_text("qual-github-credential\n", encoding="utf-8")
@@ -571,7 +599,6 @@ def _prod_env(
         "ATLAS_ROLLBACK_TARGET": str(ROOT),
         "ATLAS_QUALIFICATION_RESTART_COMMAND": command,
         "ATLAS_QUALIFICATION_RESTART_IDENTITY_COMMAND": identity_command,
-        "ATLAS_QUALIFICATION_DEPLOYED_HEAD": deployed_head,
         "ATLAS_CURSOR_MCP_EVIDENCE": str(evidence),
         "ATLAS_QUALIFICATION_GITHUB_TOKEN_FILE": str(token),
     }
@@ -589,6 +616,19 @@ def _changing_restart(root: Path) -> tuple[str, str]:
     return command, identity_command
 
 
+def _checkout_head(repo: Path = ROOT) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    head = completed.stdout.strip()
+    if re.fullmatch(r"[0-9a-f]{40}", head) is None:
+        raise AssertionError("checkout head is not a full sha")
+    return head
+
+
 def _bound_cursor(revision: str) -> dict[str, object]:
     return {
         "client": "cursor",
@@ -598,7 +638,7 @@ def _bound_cursor(revision: str) -> dict[str, object]:
         "query": PROD_QUERY,
         "identity": f"{PROD_SOURCE_ID}@main",
         "source_revision": revision,
-        "code_head": DEPLOYED_HEAD,
+        "code_head": _checkout_head(),
         "repository": PROD_REPOSITORY,
         "source_path": PROD_SOURCE_PATH,
         "tools": ["search_project", "get_provenance"],

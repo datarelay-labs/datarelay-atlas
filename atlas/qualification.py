@@ -302,13 +302,22 @@ def _prod_operational_e2e(
             token_reason or "github credential file is unreadable",
             [],
         )
-    deployed_head = _deployed_code_head(environ.get("ATLAS_QUALIFICATION_DEPLOYED_HEAD", ""))
+    deployed_head = _checkout_code_head(repo_root)
     if deployed_head is None:
         return _evidence(
             "operational-e2e",
             "prod",
             "FAIL_CLOSED",
-            "deployed code head is malformed",
+            "deployed code head is unavailable",
+            [],
+        )
+    claimed_head = environ.get("ATLAS_QUALIFICATION_DEPLOYED_HEAD", "").strip()
+    if claimed_head and claimed_head != deployed_head:
+        return _evidence(
+            "operational-e2e",
+            "prod",
+            "FAIL_CLOSED",
+            "deployed code head does not match the checkout",
             [],
         )
     evidence_path = Path(environ["ATLAS_CURSOR_MCP_EVIDENCE"])
@@ -695,10 +704,25 @@ def _service_identity(argv: list[str]) -> tuple[str | None, str | None]:
     return text, None
 
 
-def _deployed_code_head(value: str) -> str | None:
-    head = value.strip()
-    if _CODE_HEAD_RE.fullmatch(head):
-        return head
+def _checkout_code_head(repo_root: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--verify", "HEAD"],
+            check=False,
+            capture_output=True,
+            timeout=30,
+            env=_scrubbed_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        text = completed.stdout.decode("utf-8").strip()
+    except UnicodeError:
+        return None
+    if _CODE_HEAD_RE.fullmatch(text):
+        return text
     return None
 
 
@@ -758,7 +782,6 @@ def _missing_prod_inputs(environ: dict[str, str]) -> list[str]:
         "ATLAS_ROLLBACK_TARGET",
         "ATLAS_QUALIFICATION_RESTART_COMMAND",
         "ATLAS_QUALIFICATION_RESTART_IDENTITY_COMMAND",
-        "ATLAS_QUALIFICATION_DEPLOYED_HEAD",
         "ATLAS_CURSOR_MCP_EVIDENCE",
         "ATLAS_QUALIFICATION_GITHUB_TOKEN_FILE",
     )
