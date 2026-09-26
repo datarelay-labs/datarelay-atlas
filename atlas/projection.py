@@ -10,6 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from atlas.data_lock import (
+    atomic_write_text,
+    data_root_write_lock,
+    projection_store_lock_root,
+)
 from atlas.github_sync import FetchedSource, FetchFn, fetch_github_file
 from atlas.provenance import (
     CanonicalSource,
@@ -48,9 +53,9 @@ class ProjectionStore:
         return json.loads(self._meta.read_text(encoding="utf-8"))
 
     def _save(self, data: dict) -> None:
-        self._meta.write_text(
-            json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        text = json.dumps(data, indent=2, sort_keys=True) + "\n"
+        with data_root_write_lock(projection_store_lock_root(self.root)):
+            atomic_write_text(self._meta, text)
 
     def projection_key(self, source: CanonicalSource) -> str:
         return f"{source.project_id}/{source.source_id}.md"
@@ -77,9 +82,10 @@ class ProjectionStore:
                 fetched_at=datetime.now(timezone.utc).isoformat(),
                 sync_state="disabled",
             )
-            data = self._load()
-            data["projections"][key] = asdict(record)
-            self._save(data)
+            with data_root_write_lock(projection_store_lock_root(self.root)):
+                data = self._load()
+                data["projections"][key] = asdict(record)
+                self._save(data)
             return record
 
         fetch_fn = fetch or (lambda src, tok: fetch_github_file(src, tok))
@@ -87,60 +93,62 @@ class ProjectionStore:
             fetched: FetchedSource = fetch_fn(source, token)
         except Exception as exc:  # noqa: BLE001 - fail closed to sync_state
             # Preserve prior successful projection bytes; mark current sync as error.
-            data = self._load()
-            prior = data["projections"].get(key) or {}
-            record = ProjectionRecord(
-                source_id=source.source_id,
-                project_id=source.project_id,
-                projection_path=str(prior.get("projection_path") or ""),
-                content_digest=str(prior.get("content_digest") or ""),
-                source_revision=str(prior.get("source_revision") or ""),
-                fetched_at=datetime.now(timezone.utc).isoformat(),
-                sync_state="error",
-            )
-            entry = asdict(record)
-            entry["error"] = str(exc)
-            if prior.get("provenance"):
-                entry["prior_provenance"] = prior["provenance"]
-            data["projections"][key] = entry
-            self._save(data)
+            with data_root_write_lock(projection_store_lock_root(self.root)):
+                data = self._load()
+                prior = data["projections"].get(key) or {}
+                record = ProjectionRecord(
+                    source_id=source.source_id,
+                    project_id=source.project_id,
+                    projection_path=str(prior.get("projection_path") or ""),
+                    content_digest=str(prior.get("content_digest") or ""),
+                    source_revision=str(prior.get("source_revision") or ""),
+                    fetched_at=datetime.now(timezone.utc).isoformat(),
+                    sync_state="error",
+                )
+                entry = asdict(record)
+                entry["error"] = str(exc)
+                if prior.get("provenance"):
+                    entry["prior_provenance"] = prior["provenance"]
+                data["projections"][key] = entry
+                self._save(data)
             return record
 
         body = render_derived_document(source, fetched.content, fetched.source_revision)
         digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
         rel = self.projection_key(source)
-        data = self._load()
-        prior = data["projections"].get(key) or {}
-        unchanged = (
-            prior.get("sync_state") in {"success", "unchanged", "ok"}
-            and prior.get("source_revision") == fetched.source_revision
-            and prior.get("content_digest") == digest
-            and prior.get("projection_path") == rel
-        )
-        path = self.root / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
+        with data_root_write_lock(projection_store_lock_root(self.root)):
+            data = self._load()
+            prior = data["projections"].get(key) or {}
+            unchanged = (
+                prior.get("sync_state") in {"success", "unchanged", "ok"}
+                and prior.get("source_revision") == fetched.source_revision
+                and prior.get("content_digest") == digest
+                and prior.get("projection_path") == rel
+            )
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(path, body)
 
-        sync_state = "unchanged" if unchanged else "success"
-        prov = provenance_from_source(source, fetched.source_revision)
-        record = ProjectionRecord(
-            source_id=source.source_id,
-            project_id=source.project_id,
-            projection_path=rel,
-            content_digest=digest,
-            source_revision=fetched.source_revision,
-            fetched_at=datetime.now(timezone.utc).isoformat(),
-            sync_state=sync_state,
-        )
-        data["projections"][key] = {
-            **asdict(record),
-            "provenance": dict(provenance_dict(prov)),
-            "rebuild_key": (
-                f"{source.project_id}:{source.source_id}:"
-                f"{fetched.source_revision}:{PROJECTOR_ID}"
-            ),
-        }
-        self._save(data)
+            sync_state = "unchanged" if unchanged else "success"
+            prov = provenance_from_source(source, fetched.source_revision)
+            record = ProjectionRecord(
+                source_id=source.source_id,
+                project_id=source.project_id,
+                projection_path=rel,
+                content_digest=digest,
+                source_revision=fetched.source_revision,
+                fetched_at=datetime.now(timezone.utc).isoformat(),
+                sync_state=sync_state,
+            )
+            data["projections"][key] = {
+                **asdict(record),
+                "provenance": dict(provenance_dict(prov)),
+                "rebuild_key": (
+                    f"{source.project_id}:{source.source_id}:"
+                    f"{fetched.source_revision}:{PROJECTOR_ID}"
+                ),
+            }
+            self._save(data)
         return record
 
     def sync_all(
@@ -153,17 +161,18 @@ class ProjectionStore:
         return [self.sync_one(source, token=token, fetch=fetch) for source in sources]
 
     def clear_project(self, project_id: str) -> None:
-        data = self._load()
-        remaining = {
-            key: value
-            for key, value in data.get("projections", {}).items()
-            if value.get("project_id") != project_id
-        }
-        project_dir = self.root / project_id
-        if project_dir.exists():
-            shutil.rmtree(project_dir)
-        data["projections"] = remaining
-        self._save(data)
+        with data_root_write_lock(projection_store_lock_root(self.root)):
+            data = self._load()
+            remaining = {
+                key: value
+                for key, value in data.get("projections", {}).items()
+                if value.get("project_id") != project_id
+            }
+            project_dir = self.root / project_id
+            if project_dir.exists():
+                shutil.rmtree(project_dir)
+            data["projections"] = remaining
+            self._save(data)
 
     def list_records(self, project_id: str | None = None) -> list[dict[str, Any]]:
         data = self._load()

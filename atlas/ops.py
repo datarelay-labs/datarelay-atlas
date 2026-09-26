@@ -1,7 +1,8 @@
 """Service configuration and runtime readiness.
 
-Design gate: ADR-0009. Backup, restore, upgrade, and rollback are Issue #43.
-This module does not copy the data root and does not rewrite schema.
+Design gate: ADR-0009. Quiesced backup and restore verification are ADR-0010.
+Upgrade and rollback remain later Issue #43 work. This module does not copy
+the data root and does not rewrite schema.
 """
 
 from __future__ import annotations

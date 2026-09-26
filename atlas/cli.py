@@ -31,6 +31,7 @@ from atlas.audit_disposition import run_completed_audit_disposition
 from atlas.final_audit import AuditBudget, BoundedResponsesAuditProvider
 from atlas.host_worker import load_host_worker_config, run_once
 from atlas.supervisor import supervise_once
+from atlas.data_protection import backup_data_root, restore_test
 from atlas.ops import assess_service_environment, stage_unit
 from atlas.provenance import ValidationError
 from atlas.semantic_retrieval import embedding_config_from_cli
@@ -925,6 +926,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ops_stage.add_argument("--dest", required=True)
     ops_stage.set_defaults(func=cmd_ops_stage)
+    ops_backup = ops_sub.add_parser(
+        "backup",
+        help="Quiesce Atlas writers and snapshot registry plus projections",
+    )
+    ops_backup.add_argument("--data-root", required=True)
+    ops_backup.add_argument("--dest", required=True)
+    ops_backup.set_defaults(func=cmd_ops_backup)
+    ops_restore = ops_sub.add_parser(
+        "restore-test",
+        help="Validate a backup and restore it into an empty directory",
+    )
+    ops_restore.add_argument("--backup", required=True)
+    ops_restore.add_argument("--dest", required=True)
+    ops_restore.set_defaults(func=cmd_ops_restore_test)
 
     return parser
 
@@ -1026,6 +1041,16 @@ def cmd_ops_check(args: argparse.Namespace) -> int:
 def cmd_ops_stage(args: argparse.Namespace) -> int:
     target = stage_unit(Path(args.dest))
     _print_json({"unit": str(target)})
+    return 0
+
+
+def cmd_ops_backup(args: argparse.Namespace) -> int:
+    _print_json(backup_data_root(Path(args.data_root), Path(args.dest)))
+    return 0
+
+
+def cmd_ops_restore_test(args: argparse.Namespace) -> int:
+    _print_json(restore_test(Path(args.backup), Path(args.dest)))
     return 0
 
 

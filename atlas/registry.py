@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from atlas.data_lock import atomic_write_text, data_root_write_lock
 from atlas.provenance import (
     REPO_RE,
     CanonicalSource,
@@ -74,10 +75,9 @@ class ProjectRegistry:
             "schema_version": REGISTRY_SCHEMA_VERSION,
             "projects": data.get("projects", {}),
         }
-        self.path.write_text(
-            json.dumps(data, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        text = json.dumps(data, indent=2, sort_keys=True) + "\n"
+        with data_root_write_lock(self.data_root):
+            atomic_write_text(self.path, text)
 
     def _validate_ref(self, ref: str) -> None:
         if not ref or not ref.strip() or not REF_RE.match(ref):
@@ -152,22 +152,23 @@ class ProjectRegistry:
         self._validate_ref(default_ref)
         validate_source_path(engineering_metadata_path)
 
-        data = self._load()
-        if project_id in data["projects"]:
-            raise ValidationError(f"duplicate project_id: {project_id}")
+        with data_root_write_lock(self.data_root):
+            data = self._load()
+            if project_id in data["projects"]:
+                raise ValidationError(f"duplicate project_id: {project_id}")
 
-        project = ProjectRecord(
-            project_id=project_id,
-            display_name=display_name or project_id,
-            repository=repository,
-            default_ref=default_ref,
-            engineering_metadata_path=engineering_metadata_path,
-            enabled=enabled,
-            sources={},
-        )
-        data["projects"][project_id] = self._project_to_dict(project)
-        self._save(data)
-        return project
+            project = ProjectRecord(
+                project_id=project_id,
+                display_name=display_name or project_id,
+                repository=repository,
+                default_ref=default_ref,
+                engineering_metadata_path=engineering_metadata_path,
+                enabled=enabled,
+                sources={},
+            )
+            data["projects"][project_id] = self._project_to_dict(project)
+            self._save(data)
+            return project
 
     def get(self, project_id: str) -> ProjectRecord:
         validate_project_id(project_id)
@@ -196,32 +197,34 @@ class ProjectRegistry:
         title: str | None = None,
         provider: str = "github",
     ) -> RegisteredSource:
-        project = self.get(project_id)
         self._validate_source_id(source_id)
         validate_source_path(source_path)
         if provider != "github":
             raise ValidationError(f"unsupported provider: {provider}")
         if ref is not None:
             self._validate_ref(ref)
-        if source_id in project.sources:
-            raise ValidationError(
-                f"duplicate source_id in project {project_id}: {source_id}"
-            )
 
-        source = RegisteredSource(
-            source_id=source_id,
-            source_path=source_path,
-            ref=ref,
-            enabled=enabled,
-            media_type=media_type,
-            title=title,
-            provider=provider,
-        )
-        data = self._load()
-        sources = data["projects"][project_id].setdefault("sources", {})
-        sources[source_id] = asdict(source)
-        self._save(data)
-        return source
+        with data_root_write_lock(self.data_root):
+            project = self.get(project_id)
+            if source_id in project.sources:
+                raise ValidationError(
+                    f"duplicate source_id in project {project_id}: {source_id}"
+                )
+
+            source = RegisteredSource(
+                source_id=source_id,
+                source_path=source_path,
+                ref=ref,
+                enabled=enabled,
+                media_type=media_type,
+                title=title,
+                provider=provider,
+            )
+            data = self._load()
+            sources = data["projects"][project_id].setdefault("sources", {})
+            sources[source_id] = asdict(source)
+            self._save(data)
+            return source
 
     def list_sources(self, project_id: str) -> list[RegisteredSource]:
         project = self.get(project_id)

@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from atlas.data_lock import atomic_write_text, data_root_write_lock
 from atlas.provenance import ValidationError
 
 GitRunner = Callable[[list[str], str], str]
@@ -4224,10 +4225,9 @@ class WorkControllerStore:
             "schema_version": CONTROLLER_SCHEMA_VERSION,
             "workstreams": data.get("workstreams", {}),
         }
-        self.path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        with data_root_write_lock(self.data_root):
+            atomic_write_text(self.path, text)
 
     def list_workstreams(self) -> list[WorkstreamRecord]:
         data = self._load()
@@ -4241,10 +4241,11 @@ class WorkControllerStore:
         return self._from_dict(raw)
 
     def put(self, record: WorkstreamRecord) -> WorkstreamRecord:
-        data = self._load()
-        data["workstreams"][record.workstream] = self._to_dict(record)
-        self._save(data)
-        return record
+        with data_root_write_lock(self.data_root):
+            data = self._load()
+            data["workstreams"][record.workstream] = self._to_dict(record)
+            self._save(data)
+            return record
 
     def _from_dict(self, raw: dict) -> WorkstreamRecord:
         state = raw.get("state", "IDLE")
@@ -5048,35 +5049,48 @@ def completion_processed_dir(data_root: Path) -> Path:
 def enqueue_completion_event(data_root: Path, event: dict, *, filename: str | None = None) -> Path:
     """Write a completion event into the local inbox (Cursor hook path)."""
     CompletionEvent.from_dict(event)  # validate early
-    inbox = completion_inbox_dir(data_root)
-    inbox.mkdir(parents=True, exist_ok=True)
+    root = Path(data_root)
     name = filename or f"{event['event_id']}.json"
     if "/" in name or name.startswith("."):
         raise ValidationError(f"invalid completion inbox filename: {name}")
-    path = inbox / name
-    if path.exists():
-        raise ValidationError(f"completion inbox file already exists: {path.name}")
-    path.write_text(json.dumps(event, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    text = json.dumps(event, indent=2, sort_keys=True) + "\n"
+    with data_root_write_lock(root):
+        inbox = completion_inbox_dir(root)
+        inbox.mkdir(parents=True, exist_ok=True)
+        path = inbox / name
+        if path.exists():
+            raise ValidationError(f"completion inbox file already exists: {path.name}")
+        atomic_write_text(path, text)
     return path
 
 
 def drain_completion_inbox(controller: WorkController, data_root: Path) -> list[dict]:
-    """Process queued completion events from the local inbox directory."""
-    inbox = completion_inbox_dir(data_root)
-    processed = completion_processed_dir(data_root)
-    processed.mkdir(parents=True, exist_ok=True)
-    if not inbox.exists():
-        return []
+    """Process queued completion events from the local inbox directory.
+
+    Listing and the inbox-to-processed move take the data-root snapshot lock.
+    Audit and dispatch stay outside that lock so a spawned session cannot
+    deadlock on the same flock.
+    """
+    root = Path(data_root)
+    inbox = completion_inbox_dir(root)
+    processed = completion_processed_dir(root)
+    with data_root_write_lock(root):
+        processed.mkdir(parents=True, exist_ok=True)
+        if not inbox.exists():
+            return []
+        pending = sorted(path for path in inbox.glob("*.json") if path.is_file())
     outcomes: list[dict] = []
-    for path in sorted(inbox.glob("*.json")):
+    for path in pending:
         event = load_completion_event(path)
         outcome = controller.handle_completion(event)
         outcome = dict(outcome)
         outcome["inbox_file"] = path.name
-        dest = processed / path.name
-        if dest.exists():
-            dest = processed / f"{path.stem}-{os.getpid()}{path.suffix}"
-        path.replace(dest)
+        with data_root_write_lock(root):
+            if path.is_file():
+                dest = processed / path.name
+                if dest.exists():
+                    dest = processed / f"{path.stem}-{os.getpid()}{path.suffix}"
+                path.replace(dest)
         outcomes.append(outcome)
     return outcomes
 
