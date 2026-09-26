@@ -479,6 +479,13 @@ class IntrospectionVerifierTests(unittest.TestCase):
                     "aud": [resource, "https://"],
                     "iss": ISSUER,
                 },
+                "malformed-bracket-url": {
+                    "active": True,
+                    "client_id": "atlas-cli",
+                    "scope": "atlas.read",
+                    "aud": [resource, "https://["],
+                    "iss": ISSUER,
+                },
             }
         )
         verifier = Rfc7662TokenVerifier(
@@ -498,9 +505,10 @@ class IntrospectionVerifierTests(unittest.TestCase):
                 await verifier.verify_token("non-url-string"),
                 await verifier.verify_token("conflict-with-extra-audience"),
                 await verifier.verify_token("malformed-url"),
+                await verifier.verify_token("malformed-bracket-url"),
             )
 
-        accepted, identifier_only, wrong, non_url, conflict, malformed = asyncio.run(check())
+        accepted, identifier_only, wrong, non_url, conflict, malformed, bracket = asyncio.run(check())
         self.assertIsNotNone(accepted)
         assert accepted is not None
         self.assertEqual(accepted.resource, resource)
@@ -509,6 +517,7 @@ class IntrospectionVerifierTests(unittest.TestCase):
         self.assertIsNone(non_url)
         self.assertIsNone(conflict)
         self.assertIsNone(malformed)
+        self.assertIsNone(bracket)
 
     def test_http_transport_posts_form_and_does_not_follow_redirects(self):
         hits = {"introspect": 0, "collected": 0}

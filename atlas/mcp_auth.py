@@ -243,8 +243,16 @@ def _claim_matches(value: object, expected: str, *, allow_list: bool) -> bool | 
 
 
 def _purports_http_url(value: str) -> bool:
-    """True when the value claims an HTTP(S) scheme, even if the URL is invalid."""
-    return urlsplit(value.strip()).scheme.lower() in {"http", "https"}
+    """True when the value claims an HTTP(S) scheme, even if the URL is invalid.
+
+    A parse error is treated as a malformed URL so the caller fails closed
+    instead of letting the exception escape token verification.
+    """
+    try:
+        scheme = urlsplit(value.strip()).scheme.lower()
+    except ValueError:
+        return True
+    return scheme in {"http", "https"}
 
 
 def _canonical_resource(url: str) -> str:
