@@ -42,13 +42,17 @@ until those commands have passed an independent audit.
 1. **Supported durable schemas** are registry `1` and work-controller `1`.
    A missing file is compatible. Projections and chat-audit cache are not
    part of this decision.
-2. **`ops upgrade`** succeeds only when every present durable file is already
-   at the supported schema and the normal reader can load it. That is the
-   proof that the target code can read the state. Unsupported or newer
-   schemas fail closed with no rewrite.
-3. **`ops rollback`** succeeds only when this code can read the current
-   durable schema. A newer schema fails closed so an older binary is never
-   treated as able to open it. Rollback does not modify bytes.
+2. **`ops upgrade`** succeeds only when this running code can read every
+   present durable file. That includes `registry.json`, `work-controller.json`,
+   and completion events in `completion-inbox/` and `completion-processed/`
+   through `CompletionEvent`. A missing file or directory is compatible.
+   Unsupported, corrupt, or newer schemas fail closed with no rewrite.
+3. **`ops rollback`** does not use the running binary as the compatibility
+   proof. The operator passes `--target-code` pointing at the staged rollback
+   checkout. The command runs that tree's `probe_durable_state` in a separate
+   interpreter and allows the rollback only when that target exits successfully.
+   A newer schema fails closed inside the target. Neither process rewrites the
+   data root.
 
 ## Consequences
 

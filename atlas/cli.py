@@ -949,9 +949,10 @@ def build_parser() -> argparse.ArgumentParser:
     ops_upgrade.set_defaults(func=cmd_ops_upgrade)
     ops_rollback = ops_sub.add_parser(
         "rollback",
-        help="Allow rollback only when this code can read the durable schema",
+        help="Prove the staged target code can read the data root; do not rewrite it",
     )
     ops_rollback.add_argument("--data-root", required=True)
+    ops_rollback.add_argument("--target-code", required=True)
     ops_rollback.set_defaults(func=cmd_ops_rollback)
 
     return parser
@@ -1073,7 +1074,7 @@ def cmd_ops_upgrade(args: argparse.Namespace) -> int:
 
 
 def cmd_ops_rollback(args: argparse.Namespace) -> int:
-    _print_json(rollback_data_root(Path(args.data_root)))
+    _print_json(rollback_data_root(Path(args.data_root), Path(args.target_code)))
     return 0
 
 

@@ -147,6 +147,21 @@ class OpsCheckTests(unittest.TestCase):
             self.assertIn("runtime_not_ready", report["invalid"])
             self.assertNotIn("schema_version", json.dumps(report))
 
+    def test_unsupported_controller_schema_is_not_runtime_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = _write_env(root)
+            data = root / "data"
+            (data / "work-controller.json").write_text(
+                '{"schema_version": 99, "workstreams": {}}\n',
+                encoding="utf-8",
+            )
+            self.assertFalse(data_root_runtime_ready(data))
+            report = assess_service_environment({}, env_file=env)
+            self.assertEqual(report["status"], "not_ready")
+            self.assertIn("runtime_not_ready", report["invalid"])
+            self.assertNotIn("schema_version", json.dumps(report))
+
     def test_cli_check_reports_github_credential_without_echoing_secret(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = _write_env(Path(tmp), extra=f"GITHUB_TOKEN={SECRET}\n")
