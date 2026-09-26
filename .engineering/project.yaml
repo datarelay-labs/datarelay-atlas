@@ -21,18 +21,18 @@ platforms:
 - linux
 - web
 operations:
-  production_oriented: false
-  runbook_required: false
-  incident_response_required: false
+  production_oriented: true
+  runbook_required: true
+  incident_response_required: true
   persistent_state: true
   runbook_paths:
   - docs/runbooks/phase1-project-registry-canonical-sync.md
   - docs/runbooks/autonomous-work-controller-poc.md
   - docs/runbooks/continuous-chat-audit-supervisor-poc.md
   - docs/runbooks/phase2-production-service.md
+  - docs/runbooks/phase2-data-protection.md
   health_command: PYTHONPATH=. python3 -m atlas ops check --env-file "${ATLAS_SERVICE_ENV_FILE:?set ATLAS_SERVICE_ENV_FILE}"
-  backup_command: cp -a "${ATLAS_DATA_ROOT:-.atlas-data}" "${ATLAS_DATA_ROOT:-.atlas-data}.bak"
-  restore_test_command: test -f "${ATLAS_DATA_ROOT:-.atlas-data}/registry.json" -o
-    ! -e "${ATLAS_DATA_ROOT:-.atlas-data}/registry.json"
-  upgrade_command: ''
-  rollback_command: ''
+  backup_command: PYTHONPATH=. python3 -m atlas ops backup --data-root "${ATLAS_DATA_ROOT:?set ATLAS_DATA_ROOT}" --dest "${ATLAS_BACKUP_DEST:?set ATLAS_BACKUP_DEST}"
+  restore_test_command: PYTHONPATH=. python3 -m atlas ops restore-test --backup "${ATLAS_BACKUP_SRC:?set ATLAS_BACKUP_SRC}" --dest "${ATLAS_RESTORE_PROOF_DEST:?set ATLAS_RESTORE_PROOF_DEST}"
+  upgrade_command: PYTHONPATH=. python3 -m atlas ops upgrade --data-root "${ATLAS_DATA_ROOT:?set ATLAS_DATA_ROOT}"
+  rollback_command: PYTHONPATH=. python3 -m atlas ops rollback --data-root "${ATLAS_DATA_ROOT:?set ATLAS_DATA_ROOT}" --target-code "${ATLAS_ROLLBACK_TARGET:?set ATLAS_ROLLBACK_TARGET}"

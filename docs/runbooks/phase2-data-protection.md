@@ -1,12 +1,16 @@
 # Data-root backup and restore verification
 
 Snapshot Atlas durable registry state and rebuildable projections without
-copying a live directory over in-flight writes. This runbook does not upgrade,
-roll back, deploy `prod-atlas`, or replace the data root in place.
+copying a live directory over in-flight writes. This runbook does not deploy
+`prod-atlas` or replace the data root in place.
 
-The commands below are the consistent backup path from ADR-0010. The
-`backup_command` directory copy in `.engineering/project.yaml` is not that
-path.
+The commands below are the consistent path from ADR-0010 and ADR-0011.
+`.engineering/project.yaml` uses the same commands. `ATLAS_BACKUP_DEST`,
+`ATLAS_BACKUP_SRC`, `ATLAS_RESTORE_PROOF_DEST`, and `ATLAS_ROLLBACK_TARGET`
+have no default, so a backup does not reuse an old snapshot path and rollback
+is not aimed at the running checkout. A production incident that needs one of
+these commands follows the Engineering System incident lifecycle before any
+destructive step.
 
 ## Safety
 
