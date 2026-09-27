@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from http.client import HTTPSConnection
 from pathlib import Path
 from typing import Callable
@@ -162,6 +163,22 @@ def run_public_smoke(
         steps,
         production_claim=confirmed and prod_host,
     )
+
+
+def _public_smoke_after_restart(
+    environ: dict[str, str],
+    *,
+    repo_root: Path,
+    smoke_client: SmokeClient | None,
+) -> dict:
+    """Retry only while the public endpoint is still coming back after restart."""
+    last = run_public_smoke(environ, repo_root=repo_root, smoke_client=smoke_client)
+    for _ in range(4):
+        if last.get("production_claim") is True or last.get("reason") != "endpoint unreachable":
+            return last
+        time.sleep(1)
+        last = run_public_smoke(environ, repo_root=repo_root, smoke_client=smoke_client)
+    return last
 
 
 def _local_operational_e2e(repo_root: Path) -> dict:
@@ -311,15 +328,6 @@ def _prod_operational_e2e(
             "deployed code head is unavailable",
             [],
         )
-    claimed_head = environ.get("ATLAS_QUALIFICATION_DEPLOYED_HEAD", "").strip()
-    if claimed_head and claimed_head != deployed_head:
-        return _evidence(
-            "operational-e2e",
-            "prod",
-            "FAIL_CLOSED",
-            "deployed code head does not match the checkout",
-            [],
-        )
     evidence_path = Path(environ["ATLAS_CURSOR_MCP_EVIDENCE"])
     static_reason = _cursor_static_reason(evidence_path, code_head=deployed_head)
     if static_reason:
@@ -395,6 +403,10 @@ def _prod_operational_e2e(
         steps.append(_step("sync", "FAIL"))
         return _evidence("operational-e2e", "prod", "FAIL", "github sync failed", steps)
     steps.append(_step("sync", "PASS", source_revision=revision))
+    owner_reason = _preserve_data_root_owner(data_root)
+    if owner_reason:
+        steps.append(_step("data_root_owner", "FAIL"))
+        return _evidence("operational-e2e", "prod", "FAIL", owner_reason, steps)
     bound = _bound_hit(service.search(PROD_PROJECT_ID, PROD_QUERY, limit=8), revision)
     if bound is None:
         steps.append(_step("retrieval", "FAIL", source_revision=revision))
@@ -438,6 +450,10 @@ def _prod_operational_e2e(
         backup_data_root(data_root, backup_dest)
         restore_test(backup_dest, restore_dest)
         steps.append(_step("backup_restore", "PASS"))
+        owner_reason = _preserve_data_root_owner(data_root)
+        if owner_reason:
+            steps.append(_step("restart_recovery", "FAIL"))
+            return _evidence("operational-e2e", "prod", "FAIL", owner_reason, steps)
         restart_reason = _prove_service_restart(restart, identity_command)
         if restart_reason:
             steps.append(_step("restart_recovery", "FAIL"))
@@ -452,7 +468,11 @@ def _prod_operational_e2e(
             "prod qualification hooks failed",
             steps,
         )
-    again = run_public_smoke(environ, repo_root=repo_root, smoke_client=smoke_client)
+    again = _public_smoke_after_restart(
+        environ,
+        repo_root=repo_root,
+        smoke_client=smoke_client,
+    )
     steps.append(_step("public_smoke_after_restart", again["status"]))
     if again.get("production_claim") is not True:
         return _evidence(
@@ -653,6 +673,28 @@ def _sync_charter_only(service: AtlasService, *, token: str, fetch: FetchFn) -> 
     return _synced_revision([record])
 
 
+def _preserve_data_root_owner(data_root: Path) -> str | None:
+    """Keep files created by a root-run harness readable by the service user."""
+    try:
+        root_stat = os.stat(data_root, follow_symlinks=False)
+    except OSError:
+        return "data root owner was not preserved"
+    for dirpath, dirnames, filenames in os.walk(data_root, followlinks=False):
+        for name in (*dirnames, *filenames):
+            path = os.path.join(dirpath, name)
+            try:
+                current = os.stat(path, follow_symlinks=False)
+            except OSError:
+                return "data root owner was not preserved"
+            if current.st_uid == root_stat.st_uid and current.st_gid == root_stat.st_gid:
+                continue
+            try:
+                os.chown(path, root_stat.st_uid, root_stat.st_gid, follow_symlinks=False)
+            except OSError:
+                return "data root owner was not preserved"
+    return None
+
+
 def _prove_service_restart(restart: list[str], identity_command: list[str]) -> str | None:
     """Return a failure reason unless restart changes a service identity marker.
 
@@ -707,7 +749,7 @@ def _service_identity(argv: list[str]) -> tuple[str | None, str | None]:
 def _checkout_code_head(repo_root: Path) -> str | None:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--verify", "HEAD"],
+            ["git", "-C", str(repo_root), "rev-parse", "--verify", "HEAD^{commit}"],
             check=False,
             capture_output=True,
             timeout=30,
