@@ -1,7 +1,7 @@
 """Prod-atlas qualification harness.
 
-Design gate: ADR-0013. The Engineering System pin remains v1.6.5 baseline
-14150e424c922ff3a930b45dcf31d3a3d3ba28b2. Local success is not a production
+Design gate: ADR-0013. The Engineering System pin is v1.6.5 baseline
+cdc54b3220b5ec38e84dc2c33bd500b35edd6b39. Local success is not a production
 pass, and this module does not change the release contract flags.
 """
 
@@ -33,7 +33,7 @@ from atlas.secrets import contains_unsafe_secret
 from atlas.service import AtlasService
 
 PIN_VERSION = "1.6.5"
-PIN_BASELINE = "14150e424c922ff3a930b45dcf31d3a3d3ba28b2"
+PIN_BASELINE = "cdc54b3220b5ec38e84dc2c33bd500b35edd6b39"
 PROD_HOST = "mcp.atlas.datarelay.run"
 PROD_ENDPOINT = "https://mcp.atlas.datarelay.run"
 PROD_PROJECT_ID = "datarelay-atlas"
@@ -990,8 +990,7 @@ def _pin_reason(repo_root: Path) -> str | None:
     version, baseline = pin
     if version != PIN_VERSION or baseline != PIN_BASELINE:
         return (
-            "engineering system pin is not v1.6.5 baseline "
-            "14150e424c922ff3a930b45dcf31d3a3d3ba28b2"
+            f"engineering system pin is not v{PIN_VERSION} baseline {PIN_BASELINE}"
         )
     return None
 

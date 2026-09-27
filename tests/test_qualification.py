@@ -45,7 +45,7 @@ from atlas.service import AtlasService
 
 ROOT = Path(__file__).resolve().parents[1]
 PROD_URL = "https://mcp.atlas.datarelay.run"
-PIN = "14150e424c922ff3a930b45dcf31d3a3d3ba28b2"
+PIN = PIN_BASELINE
 FIXTURE_HEAD = "a" * 40
 STALE_HEAD = "b" * 40
 
@@ -80,7 +80,7 @@ class QualificationTests(unittest.TestCase):
             self._write_profile(root, profile.replace("version: 1.6.5", "version: 1.6.4", 1))
             mismatched = run_public_smoke({}, repo_root=root)
             self.assertEqual(mismatched["status"], "FAIL_CLOSED")
-            self.assertIn("14150e424c922ff3a930b45dcf31d3a3d3ba28b2", mismatched["reason"])
+            self.assertIn(PIN_BASELINE, mismatched["reason"])
             self.assertNotIn("ATLAS_PUBLIC_BASE_URL", mismatched["reason"])
 
             self._write_profile(root, "engineering_system:\n  version: 1.6.5\n")
@@ -94,7 +94,7 @@ class QualificationTests(unittest.TestCase):
             self._write_profile(
                 root,
                 profile.replace(
-                    "baseline: 14150e424c922ff3a930b45dcf31d3a3d3ba28b2",
+                    f"baseline: {PIN_BASELINE}",
                     "baseline: 0000000000000000000000000000000000000000",
                     1,
                 ),
