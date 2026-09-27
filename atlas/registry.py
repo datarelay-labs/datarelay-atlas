@@ -10,6 +10,12 @@ from typing import Iterable
 
 from atlas.data_lock import atomic_write_text, data_root_write_lock
 from atlas.provenance import (
+    ENGINEERING_SOURCE_CLASS,
+    GITHUB_PROVIDER,
+    LOCAL_MARKDOWN_PROVIDER,
+    LOCAL_MARKDOWN_REF,
+    LOCAL_MARKDOWN_REPOSITORY,
+    PERSONAL_SOURCE_CLASS,
     REPO_RE,
     CanonicalSource,
     ValidationError,
@@ -32,6 +38,7 @@ class RegisteredSource:
     media_type: str = "text/markdown"
     title: str | None = None
     provider: str = "github"
+    source_class: str = ENGINEERING_SOURCE_CLASS
 
 
 @dataclass(frozen=True)
@@ -94,6 +101,14 @@ class ProjectRegistry:
     def _project_from_dict(self, raw: dict) -> ProjectRecord:
         sources: dict[str, RegisteredSource] = {}
         for source_id, src in (raw.get("sources") or {}).items():
+            provider = src.get("provider", GITHUB_PROVIDER)
+            source_class = src.get("source_class", ENGINEERING_SOURCE_CLASS)
+            if provider == GITHUB_PROVIDER and source_class != ENGINEERING_SOURCE_CLASS:
+                raise ValidationError("github sources are engineering authority")
+            if provider == LOCAL_MARKDOWN_PROVIDER and source_class != PERSONAL_SOURCE_CLASS:
+                raise ValidationError("local markdown snapshots are personal/reference only")
+            if provider not in {GITHUB_PROVIDER, LOCAL_MARKDOWN_PROVIDER}:
+                raise ValidationError(f"unsupported provider: {provider}")
             sources[source_id] = RegisteredSource(
                 source_id=source_id,
                 source_path=src["source_path"],
@@ -101,7 +116,8 @@ class ProjectRegistry:
                 enabled=bool(src.get("enabled", True)),
                 media_type=src.get("media_type", "text/markdown"),
                 title=src.get("title"),
-                provider=src.get("provider", "github"),
+                provider=provider,
+                source_class=source_class,
             )
         return ProjectRecord(
             project_id=raw["project_id"],
@@ -132,6 +148,7 @@ class ProjectRegistry:
                     "media_type": src.media_type,
                     "title": src.title,
                     "provider": src.provider,
+                    "source_class": src.source_class,
                 }
                 for sid, src in sorted(project.sources.items())
             },
@@ -199,7 +216,7 @@ class ProjectRegistry:
     ) -> RegisteredSource:
         self._validate_source_id(source_id)
         validate_source_path(source_path)
-        if provider != "github":
+        if provider != GITHUB_PROVIDER:
             raise ValidationError(f"unsupported provider: {provider}")
         if ref is not None:
             self._validate_ref(ref)
@@ -226,6 +243,41 @@ class ProjectRegistry:
             self._save(data)
             return source
 
+    def add_personal_snapshot(
+        self,
+        project_id: str,
+        *,
+        source_id: str,
+        source_path: str,
+        enabled: bool = True,
+        title: str | None = None,
+    ) -> RegisteredSource:
+        self._validate_source_id(source_id)
+        validate_source_path(source_path)
+        if not source_path.endswith(".md"):
+            raise ValidationError("unsupported media")
+        with data_root_write_lock(self.data_root):
+            project = self.get(project_id)
+            if source_id in project.sources:
+                raise ValidationError(
+                    f"duplicate source_id in project {project_id}: {source_id}"
+                )
+            source = RegisteredSource(
+                source_id=source_id,
+                source_path=source_path,
+                ref=LOCAL_MARKDOWN_REF,
+                enabled=enabled,
+                media_type="text/markdown",
+                title=title,
+                provider=LOCAL_MARKDOWN_PROVIDER,
+                source_class=PERSONAL_SOURCE_CLASS,
+            )
+            data = self._load()
+            sources = data["projects"][project_id].setdefault("sources", {})
+            sources[source_id] = asdict(source)
+            self._save(data)
+            return source
+
     def list_sources(self, project_id: str) -> list[RegisteredSource]:
         project = self.get(project_id)
         return [project.sources[sid] for sid in sorted(project.sources)]
@@ -234,17 +286,24 @@ class ProjectRegistry:
         project = self.get(project_id)
         out: list[CanonicalSource] = []
         for source in self.list_sources(project_id):
+            if source.provider == LOCAL_MARKDOWN_PROVIDER:
+                repository = LOCAL_MARKDOWN_REPOSITORY
+                ref = LOCAL_MARKDOWN_REF
+            else:
+                repository = project.repository
+                ref = source.ref or project.default_ref
             out.append(
                 CanonicalSource(
                     source_id=source.source_id,
                     project_id=project.project_id,
                     provider=source.provider,
-                    repository=project.repository,
-                    ref=source.ref or project.default_ref,
+                    repository=repository,
+                    ref=ref,
                     source_path=source.source_path,
                     enabled=project.enabled and source.enabled,
                     media_type=source.media_type,
                     title=source.title,
+                    source_class=source.source_class,
                 )
             )
         return out

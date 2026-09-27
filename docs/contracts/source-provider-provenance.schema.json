@@ -60,7 +60,7 @@
       "properties": {
         "source_id": { "type": "string", "minLength": 1 },
         "project_id": { "type": "string", "minLength": 1 },
-        "provider": { "type": "string", "const": "github" },
+        "provider": { "type": "string", "enum": ["github", "local-markdown"] },
         "repository": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
@@ -69,13 +69,46 @@
         "source_path": {
           "type": "string",
           "minLength": 1,
-          "description": "Repository-relative path. No leading slash; no '..' segments.",
+          "description": "Relative path. No leading slash; no '..' segments.",
           "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
         },
         "media_type": { "type": "string" },
+        "source_class": {
+          "type": "string",
+          "enum": ["engineering", "personal"]
+        },
         "enabled": { "type": "boolean" },
         "integration_projection_key": { "type": "string", "minLength": 1 }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "provider": { "const": "github" } },
+            "required": ["provider"]
+          },
+          "then": {
+            "properties": {
+              "source_class": { "const": "engineering" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "provider": { "const": "local-markdown" } },
+            "required": ["provider"]
+          },
+          "then": {
+            "required": ["source_class", "media_type"],
+            "properties": {
+              "source_class": { "const": "personal" },
+              "repository": { "const": "local/markdown" },
+              "ref": { "const": "snapshot" },
+              "media_type": { "const": "text/markdown" },
+              "source_path": { "pattern": "\\.md$" }
+            }
+          }
+        }
+      ]
     },
     "sync_result": {
       "type": "object",
@@ -136,8 +169,42 @@
         "resolved_commit": { "type": "string", "minLength": 1 },
         "fetched_at": { "type": "string", "minLength": 1 },
         "canonical": { "type": "boolean", "const": false },
-        "provenance_complete": { "type": "boolean" }
-      }
+        "provenance_complete": { "type": "boolean" },
+        "source_class": {
+          "type": "string",
+          "enum": ["engineering", "personal"]
+        },
+        "engineering_authority": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "provider": { "const": "github" } },
+            "required": ["provider"]
+          },
+          "then": {
+            "properties": {
+              "source_class": { "const": "engineering" },
+              "engineering_authority": { "const": true }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "provider": { "const": "local-markdown" } },
+            "required": ["provider"]
+          },
+          "then": {
+            "required": ["source_class", "engineering_authority"],
+            "properties": {
+              "source_class": { "const": "personal" },
+              "engineering_authority": { "const": false },
+              "repository": { "const": "local/markdown" },
+              "ref": { "const": "snapshot" }
+            }
+          }
+        }
+      ]
     },
     "retrieval_hit": {
       "type": "object",
@@ -162,8 +229,42 @@
         "projection_id": { "type": "string", "minLength": 1 },
         "canonical": { "type": "boolean", "const": false },
         "provenance_complete": { "type": "boolean" },
+        "source_class": {
+          "type": "string",
+          "enum": ["engineering", "personal"]
+        },
+        "engineering_authority": { "type": "boolean" },
         "snippet": { "type": "string" }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "provider": { "const": "github" } },
+            "required": ["provider"]
+          },
+          "then": {
+            "properties": {
+              "source_class": { "const": "engineering" },
+              "engineering_authority": { "const": true }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "provider": { "const": "local-markdown" } },
+            "required": ["provider"]
+          },
+          "then": {
+            "required": ["source_class", "engineering_authority"],
+            "properties": {
+              "source_class": { "const": "personal" },
+              "engineering_authority": { "const": false },
+              "repository": { "const": "local/markdown" },
+              "ref": { "const": "snapshot" }
+            }
+          }
+        }
+      ]
     }
   }
 }

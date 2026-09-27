@@ -12,6 +12,12 @@ import json
 from atlas.projection import ProjectionStore
 from atlas.registry import REF_RE, SOURCE_ID_RE
 from atlas.provenance import (
+    ENGINEERING_SOURCE_CLASS,
+    GITHUB_PROVIDER,
+    LOCAL_MARKDOWN_PROVIDER,
+    LOCAL_MARKDOWN_REF,
+    LOCAL_MARKDOWN_REPOSITORY,
+    PERSONAL_SOURCE_CLASS,
     PROJECT_ID_RE,
     REPO_RE,
     Provenance,
@@ -164,7 +170,25 @@ def _provenance_from_record(meta: dict, *, project_id: str, label: str) -> Prove
         raise ValidationError(f"projection provenance mismatch: {label}")
     if raw.get("canonical") is not False or raw.get("derived") is not True:
         raise ValidationError(f"malformed projection provenance: {label}")
-    if values["provider"] != "github" or not REPO_RE.match(values["repository"]):
+    source_class = raw.get("source_class", ENGINEERING_SOURCE_CLASS)
+    if source_class == PERSONAL_SOURCE_CLASS:
+        authority = raw.get("engineering_authority")
+        if (
+            values["provider"] != LOCAL_MARKDOWN_PROVIDER
+            or values["repository"] != LOCAL_MARKDOWN_REPOSITORY
+            or values["ref"] != LOCAL_MARKDOWN_REF
+            or authority is not False
+        ):
+            raise ValidationError(f"malformed projection provenance: {label}")
+    elif source_class == ENGINEERING_SOURCE_CLASS:
+        authority = raw.get("engineering_authority", True)
+        if (
+            values["provider"] != GITHUB_PROVIDER
+            or not REPO_RE.match(values["repository"])
+            or authority is not True
+        ):
+            raise ValidationError(f"malformed projection provenance: {label}")
+    else:
         raise ValidationError(f"malformed projection provenance: {label}")
     if not PROJECT_ID_RE.match(values["project_id"]):
         raise ValidationError(f"malformed projection provenance: {label}")
@@ -181,6 +205,8 @@ def _provenance_from_record(meta: dict, *, project_id: str, label: str) -> Prove
         source_revision=values["source_revision"],
         derived=True,
         canonical=False,
+        source_class=source_class,
+        engineering_authority=authority is True,
     )
 
 
@@ -230,5 +256,17 @@ def _require_rendered_identity(text: str, provenance: Provenance, label: str) ->
         "source_path": provenance.source_path,
         "source_revision": provenance.source_revision,
     }
-    if rendered != expected:
+    base = {key: rendered[key] for key in expected}
+    if base != expected:
+        raise ValidationError(f"projection provenance mismatch: {label}")
+    if provenance.source_class == PERSONAL_SOURCE_CLASS or provenance.provider == LOCAL_MARKDOWN_PROVIDER:
+        if (
+            rendered.get("source_class") != PERSONAL_SOURCE_CLASS
+            or rendered.get("engineering_authority") != "false"
+        ):
+            raise ValidationError(f"projection provenance mismatch: {label}")
+        return
+    if rendered.get("source_class", ENGINEERING_SOURCE_CLASS) != ENGINEERING_SOURCE_CLASS:
+        raise ValidationError(f"projection provenance mismatch: {label}")
+    if rendered.get("engineering_authority", "true") != "true":
         raise ValidationError(f"projection provenance mismatch: {label}")

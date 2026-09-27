@@ -114,6 +114,19 @@ def cmd_source_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_source_import(args: argparse.Namespace) -> int:
+    svc = _service(args)
+    source = svc.import_personal_markdown(
+        args.project_id,
+        source_id=args.source_id,
+        source_path=args.source_path,
+        title=args.title,
+        enabled=not args.disabled,
+    )
+    _print_json(asdict(source))
+    return 0
+
+
 def cmd_source_list(args: argparse.Namespace) -> int:
     svc = _service(args)
     _print_json([asdict(s) for s in svc.list_sources(args.project_id)])
@@ -582,6 +595,17 @@ def build_parser() -> argparse.ArgumentParser:
     sadd.add_argument("--title")
     sadd.add_argument("--disabled", action="store_true")
     sadd.set_defaults(func=cmd_source_add)
+
+    simport = source_sub.add_parser(
+        "import",
+        help="Import a personal Markdown file into the Atlas snapshot root",
+    )
+    simport.add_argument("project_id")
+    simport.add_argument("source_id")
+    simport.add_argument("--path", dest="source_path", required=True)
+    simport.add_argument("--title")
+    simport.add_argument("--disabled", action="store_true")
+    simport.set_defaults(func=cmd_source_import)
 
     slist = source_sub.add_parser("list", help="List sources for a project")
     slist.add_argument("project_id")
