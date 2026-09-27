@@ -29,6 +29,17 @@ from atlas.codex_audit import CodexAuditProvider
 from atlas.audit_claim import GitHubContentsClaimStore
 from atlas.audit_disposition import run_completed_audit_disposition
 from atlas.final_audit import AuditBudget, BoundedResponsesAuditProvider
+from atlas.cursor_usage import (
+    assert_content_free,
+    build_report,
+    collect_process_facts,
+    identities_for_workspaces,
+    live_sessions,
+    load_packet_facts,
+    parse_usage_csv,
+    summary_report,
+    summarize_usage,
+)
 from atlas.host_worker import load_host_worker_config, run_once
 from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
@@ -938,6 +949,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hw_supervise.set_defaults(func=cmd_host_worker_supervise_once)
 
+    usage = sub.add_parser(
+        "usage",
+        help="Read-only Cursor worker inventory and usage-event summary",
+    )
+    usage_sub = usage.add_subparsers(dest="usage_command", required=True)
+    usage_inventory = usage_sub.add_parser(
+        "inventory",
+        help="Content-free resident worker inventory",
+    )
+    usage_inventory.add_argument(
+        "--packet-facts",
+        default=None,
+        help="Optional JSON packet facts. Titles and bodies are not accepted.",
+    )
+    usage_inventory.set_defaults(func=cmd_usage_inventory)
+    usage_summarize = usage_sub.add_parser(
+        "summarize",
+        help="Summarize one Cursor Usage Events CSV",
+    )
+    usage_summarize.add_argument("--csv", required=True)
+    usage_summarize.set_defaults(func=cmd_usage_summarize)
+    usage_report = usage_sub.add_parser(
+        "report",
+        help="Inventory plus optional CSV summary and a warning advisor",
+    )
+    usage_report.add_argument("--csv", default=None)
+    usage_report.add_argument("--packet-facts", default=None)
+    usage_report.set_defaults(func=cmd_usage_report)
+
     ops = sub.add_parser("ops", help="Service configuration and health")
     ops_sub = ops.add_subparsers(dest="ops_command", required=True)
     ops_check = ops_sub.add_parser(
@@ -995,6 +1035,47 @@ def build_parser() -> argparse.ArgumentParser:
     ops_rollback.set_defaults(func=cmd_ops_rollback)
 
     return parser
+
+
+def _usage_inputs(args: argparse.Namespace, *, kind: str) -> dict:
+    sessions = live_sessions()
+    processes = collect_process_facts(
+        known_session_ids={session.session_id for session in sessions}
+    )
+    identities = identities_for_workspaces(
+        workspace
+        for workspace in (session.workspace for session in sessions)
+        if workspace
+    )
+    packets = (
+        load_packet_facts(Path(args.packet_facts))
+        if getattr(args, "packet_facts", None)
+        else None
+    )
+    summary = None
+    if getattr(args, "csv", None):
+        summary = summarize_usage(parse_usage_csv(Path(args.csv)))
+    report = build_report(sessions, processes, identities, packets, summary)
+    report["kind"] = kind
+    if kind == "cursor_worker_inventory":
+        report.pop("usage", None)
+    assert_content_free(report)
+    return report
+
+
+def cmd_usage_inventory(args: argparse.Namespace) -> int:
+    _print_json(_usage_inputs(args, kind="cursor_worker_inventory"))
+    return 0
+
+
+def cmd_usage_summarize(args: argparse.Namespace) -> int:
+    _print_json(summary_report(parse_usage_csv(Path(args.csv))))
+    return 0
+
+
+def cmd_usage_report(args: argparse.Namespace) -> int:
+    _print_json(_usage_inputs(args, kind="cursor_usage_report"))
+    return 0
 
 
 def cmd_host_worker_run_once(args: argparse.Namespace) -> int:
