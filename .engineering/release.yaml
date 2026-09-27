@@ -11,7 +11,7 @@ artifact_hash_command: ''
 provenance_command: ''
 sbom_command: ''
 operational_e2e_required: true
-operational_e2e_command: 'PYTHONPATH=. python3 scripts/prod-qualification.py operational-e2e --mode prod'
+operational_e2e_command: 'PYTHONPATH=. python3 scripts/release-operational-e2e.py'
 full_e2e_passes: 1
 public_smoke_required: true
 public_smoke_command: 'PYTHONPATH=. python3 scripts/prod-qualification.py public-smoke'

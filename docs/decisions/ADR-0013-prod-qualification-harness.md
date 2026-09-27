@@ -84,6 +84,8 @@ and `operational-e2e --mode prod` `production_claim=true`. The metadata
 activation sets `production_oriented`, `operational_e2e_required`, and
 `public_smoke_required` true, and `full_e2e_passes` to 1. The release
 commands name this harness and remain operator-gated: they fail closed
-without the prod inputs. `atlas ops prod-contract` keeps
+without the prod inputs. Each operational-E2E release invocation derives a
+fresh backup destination and a fresh restore destination under the
+configured parents, so an existing destination is left unused. `atlas ops prod-contract` keeps
 `production_evidence` false; this activation does not change product code
 or the live host.

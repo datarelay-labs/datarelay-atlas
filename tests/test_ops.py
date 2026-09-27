@@ -223,7 +223,7 @@ class OpsCheckTests(unittest.TestCase):
             release,
         )
         self.assertIn(
-            "operational_e2e_command: 'PYTHONPATH=. python3 scripts/prod-qualification.py operational-e2e --mode prod'",
+            "operational_e2e_command: 'PYTHONPATH=. python3 scripts/release-operational-e2e.py'",
             release,
         )
         with self.assertRaises(SystemExit):
