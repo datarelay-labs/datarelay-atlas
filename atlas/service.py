@@ -11,6 +11,13 @@ from atlas.adoption import (
     parse_adoption_yaml,
 )
 from atlas.github_sync import FetchFn, fetch_github_file
+from atlas.data_lock import data_root_write_lock
+from atlas.local_markdown import (
+    IMPORT_DIRNAME,
+    SNAPSHOT_DIRNAME,
+    publish_snapshot,
+    read_allowlisted_markdown,
+)
 from atlas.projection import PROJECTOR_ID, ProjectionRecord, ProjectionStore
 from atlas.projection_retrieval import build_keyword_retriever
 from atlas.provenance import CanonicalSource, ValidationError
@@ -25,7 +32,12 @@ class AtlasService:
     def __init__(self, data_root: Path):
         self.data_root = Path(data_root)
         self.registry = ProjectRegistry(self.data_root)
-        self.projections = ProjectionStore(self.data_root / "projections")
+        self.snapshot_root = self.data_root / SNAPSHOT_DIRNAME
+        self.import_root = self.data_root / IMPORT_DIRNAME
+        self.projections = ProjectionStore(
+            self.data_root / "projections",
+            snapshot_root=self.snapshot_root,
+        )
 
     def register_project(
         self,
@@ -77,6 +89,36 @@ class AtlasService:
 
     def list_sources(self, project_id: str) -> list[RegisteredSource]:
         return self.registry.list_sources(project_id)
+
+    def import_personal_markdown(
+        self,
+        project_id: str,
+        *,
+        source_id: str,
+        source_path: str,
+        title: str | None = None,
+        enabled: bool = True,
+    ) -> RegisteredSource:
+        """Copy one relative Markdown path from the fixed Atlas import root."""
+        with data_root_write_lock(self.data_root):
+            project = self.registry.get(project_id)
+            if source_id in project.sources:
+                raise ValidationError(
+                    f"duplicate source_id in project {project_id}: {source_id}"
+                )
+            text = read_allowlisted_markdown(self.import_root, source_path)
+            published = publish_snapshot(self.snapshot_root, project_id, source_id, text)
+            try:
+                return self.registry.add_personal_snapshot(
+                    project_id,
+                    source_id=source_id,
+                    source_path=source_path,
+                    enabled=enabled,
+                    title=title,
+                )
+            except Exception:
+                published.unlink(missing_ok=True)
+                raise
 
     def sync_project(
         self,

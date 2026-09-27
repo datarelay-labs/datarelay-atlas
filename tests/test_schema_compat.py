@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from atlas.cli import main
 from atlas.provenance import ValidationError
+from atlas.service import AtlasService
 from atlas.registry import ProjectRegistry
 from atlas.schema_compat import probe_durable_state, rollback_data_root, upgrade_data_root
 from atlas.work_controller import CONTROLLER_SCHEMA_VERSION, WorkControllerStore
@@ -258,6 +259,74 @@ class SchemaCompatTests(unittest.TestCase):
             self.assertEqual(rolled["probe"], "stub-target")
             self.assertFalse(rolled["rewritten"])
             self.assertEqual(_durable(root), before)
+
+    def test_rollback_refuses_personal_source_on_github_only_target(self):
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "data"
+            service = AtlasService(root)
+            service.register_project(project_id="notes", repository="datarelay-labs/notes")
+            staged = service.import_root / "notes"
+            staged.mkdir(parents=True)
+            (staged / "page.md").write_text("# Page\n\nhello\n", encoding="utf-8")
+            service.import_personal_markdown(
+                "notes",
+                source_id="page",
+                source_path="notes/page.md",
+            )
+            service.sync_project("notes")
+            snapshot = service.snapshot_root / "notes" / "page.md"
+            before_snapshot = snapshot.read_bytes()
+            before = _durable(root)
+            with self.assertRaisesRegex(ValidationError, "unsupported provider"):
+                rollback_data_root(root, _github_only_target(base / "old-target"))
+            self.assertEqual(_durable(root), before)
+            self.assertEqual(snapshot.read_bytes(), before_snapshot)
+            rolled = rollback_data_root(root, _REPO)
+            self.assertEqual(rolled["status"], "ok")
+            self.assertFalse(rolled["rewritten"])
+            self.assertEqual(_durable(root), before)
+            self.assertEqual(snapshot.read_bytes(), before_snapshot)
+
+
+def _github_only_target(target: Path) -> Path:
+    package = target / "atlas"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "schema_compat.py").write_text(
+        "def probe_durable_state(data_root):\n"
+        "    return {\n"
+        "        'controller_schema': None,\n"
+        "        'registry_schema': 1,\n"
+        "        'rewritten': False,\n"
+        "        'status': 'ok',\n"
+        "    }\n",
+        encoding="utf-8",
+    )
+    (package / "provenance.py").write_text(
+        "class ValidationError(ValueError):\n"
+        "    pass\n"
+        "def validate_source(source):\n"
+        "    if getattr(source, 'provider', None) != 'github':\n"
+        "        raise ValidationError(f'unsupported provider: {source.provider}')\n",
+        encoding="utf-8",
+    )
+    (package / "registry.py").write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "class ProjectRegistry:\n"
+        "    def __init__(self, data_root):\n"
+        "        self.path = Path(data_root) / 'registry.json'\n"
+        "    def list_projects(self):\n"
+        "        data = json.loads(self.path.read_text(encoding='utf-8'))\n"
+        "        return [type('P', (), {'project_id': pid})() for pid in data.get('projects', {})]\n"
+        "    def canonical_sources(self, project_id):\n"
+        "        data = json.loads(self.path.read_text(encoding='utf-8'))\n"
+        "        sources = data['projects'][project_id].get('sources') or {}\n"
+        "        return [type('S', (), {'provider': src.get('provider', 'github')})() for src in sources.values()]\n",
+        encoding="utf-8",
+    )
+    return target
 
 
 def _durable(root: Path) -> dict[str, bytes]:

@@ -16,8 +16,12 @@ from atlas.data_lock import (
     projection_store_lock_root,
 )
 from atlas.github_sync import FetchedSource, FetchFn, fetch_github_file
+from atlas.local_markdown import fetch_local_markdown
 from atlas.provenance import (
+    GITHUB_PROVIDER,
+    LOCAL_MARKDOWN_PROVIDER,
     CanonicalSource,
+    ValidationError,
     provenance_dict,
     provenance_from_source,
     render_derived_document,
@@ -42,10 +46,20 @@ class ProjectionRecord:
 class ProjectionStore:
     """Project-scoped derived store. Rebuildable from canonical sources."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, snapshot_root: Path | None = None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self.snapshot_root = Path(snapshot_root) if snapshot_root is not None else None
         self._meta = self.root / "projections.json"
+
+    def _default_fetch(self, source: CanonicalSource, token: str | None) -> FetchedSource:
+        if source.provider == GITHUB_PROVIDER:
+            return fetch_github_file(source, token)
+        if source.provider == LOCAL_MARKDOWN_PROVIDER:
+            if self.snapshot_root is None:
+                raise ValidationError("local markdown snapshot root is not configured")
+            return fetch_local_markdown(self.snapshot_root, source)
+        raise ValidationError(f"unsupported provider: {source.provider}")
 
     def _load(self) -> dict:
         if not self._meta.exists():
@@ -88,7 +102,7 @@ class ProjectionStore:
                 self._save(data)
             return record
 
-        fetch_fn = fetch or (lambda src, tok: fetch_github_file(src, tok))
+        fetch_fn = fetch or self._default_fetch
         try:
             fetched: FetchedSource = fetch_fn(source, token)
         except Exception as exc:  # noqa: BLE001 - fail closed to sync_state

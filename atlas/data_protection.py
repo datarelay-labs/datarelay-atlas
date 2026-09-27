@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from atlas.data_lock import LOCK_NAME, data_root_write_lock
+from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
 from atlas.provenance import ValidationError
 from atlas.registry import REGISTRY_SCHEMA_VERSION, ProjectRegistry
 from atlas.secrets import contains_unsafe_secret
@@ -163,6 +164,14 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
                 raise ValidationError("backup entry is not a regular file")
             controller_dirs.append(name)
             continue
+        if name == SNAPSHOT_DIRNAME:
+            if entry.is_symlink() or not entry.is_dir():
+                raise ValidationError("backup entry is not a regular file")
+            continue
+        if name == IMPORT_DIRNAME:
+            if entry.is_symlink() or not entry.is_dir():
+                raise ValidationError("backup entry is not a regular file")
+            continue
         unexpected.append(name)
     if unexpected:
         raise ValidationError("data root contains unexpected entries")
@@ -192,6 +201,11 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
         for path in _tree_files(root / dirname):
             relative = path.relative_to(root).as_posix()
             files.append(_SnapshotFile(relative, "controller", _read_regular(path)))
+    snapshot_root = root / SNAPSHOT_DIRNAME
+    if snapshot_root.exists():
+        for path in _tree_files(snapshot_root):
+            relative = path.relative_to(root).as_posix()
+            files.append(_SnapshotFile(relative, "durable", _read_regular(path)))
     files.sort(key=lambda item: item.path)
     _validate_snapshot_files(files)
     return files
@@ -303,7 +317,7 @@ def _validate_controller_blobs(blobs: dict[str, bytes]) -> None:
 
 def _role_matches(path: str, role: str) -> bool:
     if role == "durable":
-        return path == _DURABLE_NAME
+        return path == _DURABLE_NAME or path.startswith(f"{SNAPSHOT_DIRNAME}/")
     if role == "rebuildable":
         return path.startswith(f"{_PROJECTIONS_DIR}/")
     if role == "controller":

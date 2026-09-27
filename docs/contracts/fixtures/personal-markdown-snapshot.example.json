@@ -1,0 +1,60 @@
+{
+  "contract_version": "1",
+  "project": {
+    "project_id": "personal-notes",
+    "display_name": "Personal notes",
+    "namespace": "personal-notes"
+  },
+  "provider": {
+    "provider": "local-markdown",
+    "auth_mode": "none"
+  },
+  "source": {
+    "source_id": "page",
+    "project_id": "personal-notes",
+    "provider": "local-markdown",
+    "repository": "local/markdown",
+    "ref": "snapshot",
+    "source_path": "notes/page.md",
+    "media_type": "text/markdown",
+    "source_class": "personal",
+    "enabled": true
+  },
+  "sync_result": {
+    "source_id": "page",
+    "state": "success",
+    "source_revision": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "fetched_at": "2026-09-27T00:00:00Z",
+    "content_digest": "sha256:demo"
+  },
+  "derived_record": {
+    "projection_id": "proj_personal_1",
+    "rebuild_key": "personal-notes:page:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:atlas.projection/v1",
+    "projector": "atlas.projection/v1",
+    "source_id": "page",
+    "project_id": "personal-notes",
+    "provider": "local-markdown",
+    "repository": "local/markdown",
+    "ref": "snapshot",
+    "source_path": "notes/page.md",
+    "source_revision": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "canonical": false,
+    "provenance_complete": true,
+    "source_class": "personal",
+    "engineering_authority": false
+  },
+  "retrieval_hit": {
+    "project_id": "personal-notes",
+    "provider": "local-markdown",
+    "repository": "local/markdown",
+    "ref": "snapshot",
+    "source_path": "notes/page.md",
+    "source_revision": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "source_id": "page",
+    "canonical": false,
+    "provenance_complete": true,
+    "source_class": "personal",
+    "engineering_authority": false,
+    "snippet": "Personal reference knowledge."
+  }
+}

@@ -147,7 +147,21 @@ Forbidden:
 - omitting provenance while claiming current canonical knowledge
 - elevating Wiki/Athena identities above GitHub provenance
 
-## 10. Mapping from Athena PoC fields
+## 10. Personal Markdown snapshots
+
+`source_class=engineering` is the default GitHub canonical-engineering class.
+`source_class=personal` is reference knowledge only.
+
+A `local-markdown` source reads an Atlas-owned snapshot under the data root
+(`personal-snapshots/<project_id>/<source_id>.md`). Its provenance repository
+is `local/markdown`, its ref is `snapshot`, and `engineering_authority` is
+`false`. Import reads only a relative `.md` path inside the fixed data-root
+directory `personal-import`. The operator surface cannot select another host
+directory. `source_revision` is the SHA-256 of the snapshot bytes. Personal
+snapshots must not be represented as canonical engineering truth. GitHub
+retrieval provenance keeps its existing field set.
+
+## 11. Mapping from Athena PoC fields
 
 | PoC field | Atlas contract |
 |---|---|

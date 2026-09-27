@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from atlas.data_lock import data_root_write_lock
+from atlas.local_markdown import SNAPSHOT_DIRNAME
 from atlas.provenance import ValidationError
 from atlas.registry import REGISTRY_SCHEMA_VERSION, ProjectRegistry
 from atlas.work_controller import (
@@ -34,8 +35,23 @@ from pathlib import Path
 
 from atlas.schema_compat import probe_durable_state
 
+def _validate_registered_sources(root: Path) -> None:
+    # Use the target tree's own readers. A GitHub-only validate_source
+    # rejects local-markdown. Missing modules mean a stub target.
+    try:
+        from atlas.provenance import validate_source
+        from atlas.registry import ProjectRegistry
+    except ImportError:
+        return
+    registry = ProjectRegistry(root)
+    for project in registry.list_projects():
+        for source in registry.canonical_sources(project.project_id):
+            validate_source(source)
+
 try:
-    result = probe_durable_state(Path(sys.argv[1]))
+    root = Path(sys.argv[1])
+    result = probe_durable_state(root)
+    _validate_registered_sources(root)
 except Exception as exc:
     sys.stderr.write(f"error: {exc}\\n")
     raise SystemExit(1)
@@ -57,8 +73,9 @@ def probe_durable_state(data_root: Path) -> dict:
 def rollback_data_root(data_root: Path, target_code: Path) -> dict:
     """Succeed only when the staged target tree can read the data root.
 
-    The allow decision comes from that tree's ``probe_durable_state``. This
-    process does not treat its own readers as the rollback target.
+    The allow decision comes from that tree's ``probe_durable_state`` and its
+    own source validation. This process does not treat its own readers as the
+    rollback target. The probe does not fetch or rewrite the data root.
     """
     root = Path(data_root)
     target = Path(target_code)
@@ -218,7 +235,22 @@ def _durable_bytes(root: Path) -> dict[str, bytes]:
         if directory.is_symlink() or not directory.is_dir():
             continue
         _snapshot_tree(directory, root, found)
+    snapshots = root / SNAPSHOT_DIRNAME
+    if snapshots.exists():
+        if snapshots.is_symlink() or not snapshots.is_dir():
+            raise ValidationError("personal snapshot root is not a directory")
+        _snapshot_regular_tree(snapshots, root, found)
     return found
+
+
+def _snapshot_regular_tree(directory: Path, root: Path, found: dict[str, bytes]) -> None:
+    for entry in sorted(directory.iterdir(), key=lambda item: item.name):
+        if entry.is_symlink() or not (entry.is_dir() or entry.is_file()):
+            raise ValidationError("personal snapshot entry is not a regular file")
+        if entry.is_dir():
+            _snapshot_regular_tree(entry, root, found)
+        else:
+            found[str(entry.relative_to(root))] = entry.read_bytes()
 
 
 def _snapshot_tree(directory: Path, root: Path, found: dict[str, bytes]) -> None:
