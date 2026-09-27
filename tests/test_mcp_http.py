@@ -45,7 +45,7 @@ from atlas.mcp_config import (
     resolve_mcp_serve_config,
 )
 from atlas.mcp_context import AtlasContextTools, default_read_scopes
-from atlas.mcp_http import build_mcp_application
+from atlas.mcp_http import _transport_security, build_mcp_application
 from atlas.provenance import ValidationError
 from atlas.security import READ_SCOPE
 from atlas.service import AtlasService
@@ -257,6 +257,26 @@ class McpConfigTests(unittest.TestCase):
                 )
             self.assertNotIn(SECRET, str(invalid.exception))
             self.assertIn("invalid", str(invalid.exception))
+
+
+class TransportSecurityTests(unittest.TestCase):
+    def test_default_https_host_is_allowed_without_a_port(self):
+        config = McpServeConfig(
+            data_root=Path("data"),
+            bind_host="127.0.0.1",
+            port=8443,
+            resource_url="https://mcp.atlas.datarelay.run/mcp",
+            issuer_url=ISSUER,
+            introspection_url="https://issuer.example/introspect",
+            introspection_client_id="atlas-resource",
+            introspection_client_secret=SECRET,
+            tls_cert=Path("cert.pem"),
+            tls_key=Path("key.pem"),
+        )
+        settings = _transport_security(config)
+        self.assertIn("mcp.atlas.datarelay.run", settings.allowed_hosts)
+        self.assertIn("mcp.atlas.datarelay.run:*", settings.allowed_hosts)
+        self.assertIn("https://mcp.atlas.datarelay.run", settings.allowed_origins)
 
 
 class IntrospectionVerifierTests(unittest.TestCase):

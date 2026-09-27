@@ -5,7 +5,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
-import re
 import socket
 import ssl
 import subprocess
@@ -13,6 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,8 +32,11 @@ from atlas.qualification import (
     PROD_REPOSITORY,
     PROD_SOURCE_ID,
     PROD_SOURCE_PATH,
+    _checkout_code_head,
     _engineering_system_pin,
+    _preserve_data_root_owner,
     _pin_reason,
+    _public_smoke_after_restart,
     main,
     run_operational_e2e,
     run_public_smoke,
@@ -43,10 +46,20 @@ from atlas.service import AtlasService
 ROOT = Path(__file__).resolve().parents[1]
 PROD_URL = "https://mcp.atlas.datarelay.run"
 PIN = "14150e424c922ff3a930b45dcf31d3a3d3ba28b2"
+FIXTURE_HEAD = "a" * 40
 STALE_HEAD = "b" * 40
 
 
 class QualificationTests(unittest.TestCase):
+    def setUp(self):
+        self._head_patch = patch(
+            "atlas.qualification._checkout_code_head",
+            return_value=FIXTURE_HEAD,
+        )
+        self._head_patch.start()
+
+    def tearDown(self):
+        self._head_patch.stop()
     def test_pin_reader_accepts_current_project_yaml_and_fails_closed(self):
         profile = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
         self.assertIn("\n- methodology\n", profile)
@@ -447,6 +460,19 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(evidence["reason"], "restart did not change service identity")
             self.assertNotIn("boot-constant", json.dumps(evidence))
 
+    def test_checkout_code_head_matches_rev_parse_head(self):
+        self._head_patch.stop()
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(_checkout_code_head(ROOT), completed.stdout.strip())
+        finally:
+            self._head_patch.start()
+
     def test_stale_deployed_head_fails_closed_before_registration(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -470,6 +496,13 @@ class QualificationTests(unittest.TestCase):
             self.assertNotIn(STALE_HEAD, json.dumps(evidence))
 
     def test_checkout_without_head_fails_closed(self):
+        self._head_patch.stop()
+        try:
+            self._assert_checkout_without_head_fails_closed()
+        finally:
+            self._head_patch.start()
+
+    def _assert_checkout_without_head_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data = root / "data"
@@ -494,6 +527,52 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(evidence["status"], "FAIL_CLOSED")
             self.assertEqual(evidence["reason"], "deployed code head is unavailable")
             self.assertFalse((data / "registry.json").exists())
+
+    def test_public_smoke_after_restart_retries_until_the_endpoint_returns(self):
+        calls = {"n": 0}
+
+        def smoke(method: str, url: str, body: bytes | None) -> tuple[int, bytes]:
+            del method, body
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise OSError("connection reset")
+            if url.endswith("/healthz"):
+                return 200, b'{"status":"ready"}'
+            if url.endswith("/mcp"):
+                return 401, b""
+            return 404, b""
+
+        env = {
+            "ATLAS_QUALIFICATION_CONFIRM_PROD": "yes",
+            "ATLAS_PUBLIC_BASE_URL": PROD_URL,
+        }
+        with patch("atlas.qualification.time.sleep"):
+            evidence = _public_smoke_after_restart(env, repo_root=ROOT, smoke_client=smoke)
+        self.assertEqual(evidence["status"], "PASS")
+        self.assertTrue(evidence["production_claim"])
+        self.assertGreaterEqual(calls["n"], 3)
+
+    def test_preserve_data_root_owner_chowns_only_mismatched_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            child = root / "projections.json"
+            child.write_text("{}", encoding="utf-8")
+            calls: list[tuple[str, int, int]] = []
+
+            def fake_stat(path, follow_symlinks=True):  # noqa: ARG001
+                if Path(path) == child:
+                    return type("Stat", (), {"st_uid": 0, "st_gid": 0})()
+                return type("Stat", (), {"st_uid": 10, "st_gid": 20})()
+
+            def fake_chown(path, uid, gid, follow_symlinks=True):  # noqa: ARG001
+                calls.append((os.fspath(path), uid, gid))
+
+            with (
+                patch("atlas.qualification.os.stat", fake_stat),
+                patch("atlas.qualification.os.chown", fake_chown),
+            ):
+                self.assertIsNone(_preserve_data_root_owner(root))
+            self.assertEqual(calls, [(os.fspath(child), 10, 20)])
 
     def test_cryptography_is_a_direct_bounded_dependency(self):
         text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -616,19 +695,6 @@ def _changing_restart(root: Path) -> tuple[str, str]:
     return command, identity_command
 
 
-def _checkout_head(repo: Path = ROOT) -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    head = completed.stdout.strip()
-    if re.fullmatch(r"[0-9a-f]{40}", head) is None:
-        raise AssertionError("checkout head is not a full sha")
-    return head
-
-
 def _bound_cursor(revision: str) -> dict[str, object]:
     return {
         "client": "cursor",
@@ -638,7 +704,7 @@ def _bound_cursor(revision: str) -> dict[str, object]:
         "query": PROD_QUERY,
         "identity": f"{PROD_SOURCE_ID}@main",
         "source_revision": revision,
-        "code_head": _checkout_head(),
+        "code_head": FIXTURE_HEAD,
         "repository": PROD_REPOSITORY,
         "source_path": PROD_SOURCE_PATH,
         "tools": ["search_project", "get_provenance"],
