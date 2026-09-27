@@ -578,6 +578,10 @@ class QualificationTests(unittest.TestCase):
         text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("cryptography>=46.0.0,<52\n", text)
 
+    def test_pyyaml_is_a_direct_bounded_dependency_for_managed_contract_tools(self):
+        text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("PyYAML>=6.0,<7\n", text)
+
     def test_prod_cursor_evidence_must_match_the_synced_revision(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
