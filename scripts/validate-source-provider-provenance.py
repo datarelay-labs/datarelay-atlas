@@ -76,6 +76,16 @@ def main() -> int:
     if not _errors(validator, personal):
         print("INVALID schema accepted personal engineering authority", file=sys.stderr)
         return 1
+    mismatched = json.loads(FIXTURES[1].read_text(encoding="utf-8"))
+    mismatched["provider"] = {"provider": "github", "auth_mode": "installation_token"}
+    if not _errors(validator, mismatched):
+        print("INVALID schema accepted local-markdown source with github auth", file=sys.stderr)
+        return 1
+    reverse = json.loads(FIXTURES[0].read_text(encoding="utf-8"))
+    reverse["provider"] = {"provider": "local-markdown", "auth_mode": "none"}
+    if not _errors(validator, reverse):
+        print("INVALID schema accepted github source with local auth", file=sys.stderr)
+        return 1
 
     print("ATLAS-CONTRACT-001 PASS")
     return 0

@@ -6,8 +6,8 @@
     "namespace": "personal-notes"
   },
   "provider": {
-    "provider": "github",
-    "auth_mode": "installation_token"
+    "provider": "local-markdown",
+    "auth_mode": "none"
   },
   "source": {
     "source_id": "page",
