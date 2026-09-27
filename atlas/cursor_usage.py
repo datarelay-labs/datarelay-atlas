@@ -32,8 +32,7 @@ MAX_LABEL_CHARS = 128
 BURST_WINDOW_SEC = 600
 HEAVY_EVENT_TOKENS = 5_000_000
 EXTREME_EVENT_TOKENS = 10_000_000
-BURST_YIELD_TOKENS = 20_000_000
-SUMMARIZE_EVENT_TOKENS = 1_000_000
+MAX_TOKEN_DIGITS = 18
 MAX_PROCESS_SCAN = 20000
 
 WORKER_STATES = frozenset(
@@ -48,10 +47,8 @@ WORKER_STATES = frozenset(
 RECOMMENDATIONS = frozenset(
     {
         "CONTINUE",
-        "SUMMARIZE_RECOMMENDED",
-        "CHECKPOINT_CLEAR_RECOMMENDED",
-        "YIELD_BUDGET",
         "HUMAN_REQUIRED",
+        "UNKNOWN",
     }
 )
 PACKET_STATUSES = frozenset({"ACTIVE", "PAUSED", "BLOCKED", "COMPLETE"})
@@ -74,7 +71,7 @@ _OPTIONAL_COLUMNS = (
     "Automation ID",
 )
 _ALLOWED_COLUMNS = frozenset(_REQUIRED_COLUMNS + _OPTIONAL_COLUMNS)
-_PACKET_KEYS = frozenset({"repository", "branch", "status", "issue_number"})
+_PACKET_KEYS = frozenset({"repository", "branch", "status", "head", "issue_number"})
 _TOKEN_RE = r"^(0|[1-9][0-9]*)$"
 _COST_RE = r"^(0|[1-9][0-9]*)(\.[0-9]+)?$"
 _HEAD_RE_TEXT = r"^[0-9a-f]{40}$"
@@ -139,6 +136,7 @@ class PacketFact:
     repository: str
     branch: str
     status: str
+    head: str
     issue_number: int | None = None
 
 
@@ -164,9 +162,14 @@ def _optional_label(value: str | None, *, label: str, row_number: int) -> str | 
 
 def _require_token_count(value: str | None, *, label: str, row_number: int) -> int:
     text = "" if value is None else value.strip()
-    if not _TOKEN_PATTERN.fullmatch(text):
-        _reject(f"row {row_number}: {label} is not a non-negative integer")
-    return int(text)
+    if not _TOKEN_PATTERN.fullmatch(text) or len(text) > MAX_TOKEN_DIGITS:
+        _reject(f"row {row_number}: {label} is not a bounded non-negative integer")
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise ValidationError(
+            f"row {row_number}: {label} is not a bounded non-negative integer"
+        ) from exc
 
 
 def _optional_cost(value: str | None, *, label: str, row_number: int) -> str | None:
@@ -432,16 +435,19 @@ def _attachment(status: str) -> str:
     return "unknown"
 
 
-def _packet_index(facts: Iterable[PacketFact]) -> dict[tuple[str, str], str]:
-    index: dict[tuple[str, str], str] = {}
+def _packet_index(facts: Iterable[PacketFact]) -> dict[tuple[str, str, str], str]:
+    """Index packet facts by repository, branch, and exact HEAD."""
+    index: dict[tuple[str, str, str], str] = {}
     for fact in facts:
         if fact.status not in PACKET_STATUSES:
             _reject("packet fact status is not an allowlisted Work Packet status")
+        if not _HEAD_PATTERN.fullmatch(fact.head):
+            _reject("packet fact head is not an exact commit")
         try:
             repository = normalize_github_repository(fact.repository)
         except ValidationError as exc:
             raise ValidationError("packet fact repository is invalid") from exc
-        key = (repository, fact.branch)
+        key = (repository, fact.branch, fact.head)
         if key in index:
             index[key] = "AMBIGUOUS"
         else:
@@ -567,7 +573,7 @@ def classify_workers(
         packet_status = None
         packet_ambiguous = False
         if identity is not None:
-            observed = packets.get((identity.repository, identity.branch))
+            observed = packets.get((identity.repository, identity.branch, identity.head))
             if observed == "AMBIGUOUS":
                 packet_ambiguous = True
             elif observed is not None:
@@ -619,39 +625,28 @@ def classify_workers(
     return workers
 
 
-def recommend(workers: Iterable[dict], summary: dict | None) -> dict:
-    """Warning only. Cache-read ratio is intentionally unused."""
-    rows = list(workers)
-    reasons: list[str] = []
-    states = {item["state"] for item in rows}
-    if "ORPHAN_OR_UNKNOWN" in states:
-        reasons.append("ORPHAN_OR_UNKNOWN_PRESENT")
-    if "DUPLICATE_WORKTREE" in states:
-        reasons.append("DUPLICATE_WORKTREE_PRESENT")
-    if "TERMINAL_WORK_SURVIVOR" in states:
-        reasons.append("TERMINAL_WORK_SURVIVOR_PRESENT")
-    if summary is not None:
-        heavy = summary.get("heavy_events") or {}
-        if int((heavy.get("ge_10000000") or {}).get("count") or 0) > 0:
-            reasons.append("HEAVY_EVENT_10M")
-        if int((heavy.get("ge_5000000") or {}).get("count") or 0) > 0:
-            reasons.append("HEAVY_EVENT_5M")
-        burst = summary.get("max_burst") or {}
-        if int(burst.get("total_tokens") or 0) >= BURST_YIELD_TOKENS:
-            reasons.append("BURST_WINDOW")
-        max_event = int(summary.get("max_event_tokens") or 0)
-        if SUMMARIZE_EVENT_TOKENS <= max_event < HEAVY_EVENT_TOKENS:
-            reasons.append("LARGE_EVENT")
-    if "ORPHAN_OR_UNKNOWN_PRESENT" in reasons or "DUPLICATE_WORKTREE_PRESENT" in reasons:
-        recommendation = "HUMAN_REQUIRED"
-    elif "HEAVY_EVENT_10M" in reasons or "BURST_WINDOW" in reasons:
-        recommendation = "YIELD_BUDGET"
-    elif "TERMINAL_WORK_SURVIVOR_PRESENT" in reasons or "HEAVY_EVENT_5M" in reasons:
-        recommendation = "CHECKPOINT_CLEAR_RECOMMENDED"
-    elif "LARGE_EVENT" in reasons:
-        recommendation = "SUMMARIZE_RECOMMENDED"
+def recommend(workers: Iterable[dict], *, current_observed: bool) -> dict:
+    """Current-state warning only. Historical CSV metrics do not select an action.
+
+    Phase 0 has no native context or quota telemetry. Heavy-event and burst
+    figures stay in the usage summary. This function emits CONTINUE or
+    HUMAN_REQUIRED from observed worker state, or UNKNOWN when that state
+    was not observed.
+    """
+    if not current_observed:
+        recommendation = "UNKNOWN"
+        reasons = ["NO_TRUSTWORTHY_CURRENT_STATE"]
     else:
-        recommendation = "CONTINUE"
+        rows = list(workers)
+        reasons = []
+        states = {item["state"] for item in rows}
+        if "ORPHAN_OR_UNKNOWN" in states:
+            reasons.append("ORPHAN_OR_UNKNOWN_PRESENT")
+        if "DUPLICATE_WORKTREE" in states:
+            reasons.append("DUPLICATE_WORKTREE_PRESENT")
+        if "TERMINAL_WORK_SURVIVOR" in states:
+            reasons.append("TERMINAL_WORK_SURVIVOR_PRESENT")
+        recommendation = "HUMAN_REQUIRED" if reasons else "CONTINUE"
     if recommendation not in RECOMMENDATIONS:
         _reject("recommendation is not allowlisted")
     return {"recommendation": recommendation, "reasons": sorted(set(reasons))}
@@ -671,7 +666,7 @@ def build_report(
         "kind": "cursor_usage_report",
         "workers": workers,
         "usage": usage,
-        "advisor": recommend(workers, usage),
+        "advisor": recommend(workers, current_observed=True),
     }
     assert_content_free(report)
     return report
@@ -694,7 +689,11 @@ def load_packet_facts(path: Path) -> list[PacketFact]:
         unknown = sorted(set(item).difference(_PACKET_KEYS))
         if unknown:
             _reject("unknown packet fact field: " + ", ".join(unknown))
-        missing = [key for key in ("repository", "branch", "status") if not str(item.get(key) or "").strip()]
+        missing = [
+            key
+            for key in ("repository", "branch", "status", "head")
+            if not str(item.get(key) or "").strip()
+        ]
         if missing:
             _reject(f"packet facts[{index}] missing required fields")
         try:
@@ -704,6 +703,9 @@ def load_packet_facts(path: Path) -> list[PacketFact]:
         status = str(item["status"]).strip()
         if status not in PACKET_STATUSES:
             _reject(f"packet facts[{index}] status is not allowlisted")
+        head = str(item["head"]).strip()
+        if not _HEAD_PATTERN.fullmatch(head):
+            _reject(f"packet facts[{index}] head is not an exact commit")
         issue_number = None
         if "issue_number" in item:
             number = item["issue_number"]
@@ -715,6 +717,7 @@ def load_packet_facts(path: Path) -> list[PacketFact]:
                 repository=repository,
                 branch=str(item["branch"]).strip(),
                 status=status,
+                head=head,
                 issue_number=issue_number,
             )
         )
@@ -958,7 +961,7 @@ def summary_report(events: list[UsageEvent]) -> dict:
         "schema_version": SCHEMA_VERSION,
         "kind": "cursor_usage_summary",
         **summary,
-        "advisor": recommend([], summary),
+        "advisor": recommend([], current_observed=False),
     }
     assert_content_free(report)
     return report

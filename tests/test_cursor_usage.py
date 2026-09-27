@@ -19,6 +19,7 @@ from atlas.cursor_usage import (
     canonical_workspace,
     classify_workers,
     collect_process_facts,
+    load_packet_facts,
     parse_usage_csv,
     read_git_identity,
     recommend,
@@ -209,6 +210,7 @@ class CursorUsageCsvTests(unittest.TestCase):
             HEADER + "\n2026-09-22T00:00:00Z,Included,m,maybe,0,1,1,1,3,,,\n",
             HEADER + "\n2026-09-22,Included,m,No,0,1,1,1,3,,,\n",
             HEADER + "\n2026-09-22T00:00:00Z,Included,m,No,0,1,1,1,99,,,\n",
+            HEADER + "\n2026-09-22T00:00:00Z,Included,m,No," + ("9" * 5000) + ",0,0,0," + ("9" * 5000) + ",,,\n",
             "Date,User,Input (w/ Cache Write),Input (w/o Cache Write),"
             "Cache Read,Output Tokens,Total Tokens\n"
             "2026-09-22T00:00:00Z,person,0,1,1,1,3\n",
@@ -229,9 +231,9 @@ class CursorUsageCsvTests(unittest.TestCase):
         )
         summary = summarize_usage(parse_usage_csv(_write_csv(text)))
         self.assertEqual(summary["cache_read_ratio"], "0.990000")
-        advice = recommend([], summary)
-        self.assertEqual(advice["recommendation"], "CONTINUE")
-        self.assertEqual(advice["reasons"], [])
+        advice = recommend([], current_observed=False)
+        self.assertEqual(advice["recommendation"], "UNKNOWN")
+        self.assertNotIn(advice["recommendation"], {"YIELD_BUDGET", "CHECKPOINT_CLEAR_RECOMMENDED"})
 
 
 class CursorUsageWorkerTests(unittest.TestCase):
@@ -272,6 +274,33 @@ class CursorUsageWorkerTests(unittest.TestCase):
         self.assertEqual(report["workers"][0]["runtime"], "quiescent")
         self.assertTrue(report["workers"][0]["resident"])
         self.assertEqual(report["advisor"]["recommendation"], "CONTINUE")
+        heavy = summarize_usage(
+            parse_usage_csv(
+                _write_csv(
+                    "Date,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens\n"
+                    "2026-09-22T00:00:00Z,0,0,9000000,1000000,10000000\n"
+                )
+            )
+        )
+        with_history = build_report(
+            [self._session("sess-idle-01", self.workspace)],
+            [
+                ProcessFact(
+                    session_id="sess-idle-01",
+                    workspace=self.workspace,
+                    ambiguous=False,
+                    runtime="quiescent",
+                )
+            ],
+            self.identities,
+            summary=heavy,
+        )
+        self.assertEqual(with_history["usage"]["heavy_events"]["ge_10000000"]["count"], 1)
+        self.assertEqual(with_history["advisor"]["recommendation"], "CONTINUE")
+        self.assertNotIn(
+            with_history["advisor"]["recommendation"],
+            {"YIELD_BUDGET", "CHECKPOINT_CLEAR_RECOMMENDED", "SUMMARIZE_RECOMMENDED"},
+        )
         encoded = json.dumps(report)
         self.assertNotIn(SECRET, encoded)
         self.assertNotIn("task", encoded)
@@ -312,7 +341,7 @@ class CursorUsageWorkerTests(unittest.TestCase):
         self.assertEqual(by_id["sess-dup-01"]["runtime"], "busy")
         self.assertEqual(by_id["sess-dup-02"]["inference_activity"], "UNKNOWN")
         self.assertEqual(by_id["sess-dup-02"]["runtime"], "unknown")
-        advice = recommend(workers, None)
+        advice = recommend(workers, current_observed=True)
         self.assertEqual(advice["recommendation"], "HUMAN_REQUIRED")
 
     def test_missing_process_and_relative_workspace_are_unknown(self):
@@ -329,7 +358,7 @@ class CursorUsageWorkerTests(unittest.TestCase):
             ["ORPHAN_OR_UNKNOWN", "ORPHAN_OR_UNKNOWN"],
         )
 
-    def test_terminal_packet_survivor_recommends_checkpoint(self):
+    def test_terminal_packet_survivor_requires_exact_head(self):
         report = build_report(
             [self._session("sess-done-01", self.workspace)],
             [ProcessFact("sess-done-01", self.workspace, False, "quiescent")],
@@ -339,15 +368,55 @@ class CursorUsageWorkerTests(unittest.TestCase):
                     repository="datarelay-labs/datarelay-atlas",
                     branch="feature/cursor-usage-phase0-worker-inventory",
                     status="COMPLETE",
+                    head=HEAD,
                     issue_number=78,
                 )
             ],
         )
         self.assertEqual(report["workers"][0]["state"], "TERMINAL_WORK_SURVIVOR")
         self.assertEqual(report["workers"][0]["packet_status"], "COMPLETE")
-        self.assertEqual(
-            report["advisor"]["recommendation"], "CHECKPOINT_CLEAR_RECOMMENDED"
+        self.assertEqual(report["advisor"]["recommendation"], "HUMAN_REQUIRED")
+        self.assertNotIn(
+            report["advisor"]["recommendation"],
+            {"CHECKPOINT_CLEAR_RECOMMENDED", "YIELD_BUDGET", "SUMMARIZE_RECOMMENDED"},
         )
+
+    def test_stale_packet_head_does_not_mark_terminal(self):
+        report = build_report(
+            [self._session("sess-done-02", self.workspace)],
+            [ProcessFact("sess-done-02", self.workspace, False, "quiescent")],
+            self.identities,
+            [
+                PacketFact(
+                    repository="datarelay-labs/datarelay-atlas",
+                    branch="feature/cursor-usage-phase0-worker-inventory",
+                    status="COMPLETE",
+                    head="0" * 40,
+                )
+            ],
+        )
+        worker = report["workers"][0]
+        self.assertEqual(worker["state"], "IDLE_REUSABLE")
+        self.assertIsNone(worker["packet_status"])
+        self.assertEqual(report["advisor"]["recommendation"], "CONTINUE")
+
+    def test_packet_fact_without_exact_head_is_rejected(self):
+        path = _write_csv("")
+        path.write_text(
+            json.dumps(
+                [
+                    {
+                        "repository": "datarelay-labs/datarelay-atlas",
+                        "branch": "feature/cursor-usage-phase0-worker-inventory",
+                        "status": "COMPLETE",
+                        "head": "b61413b",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValidationError):
+            load_packet_facts(path)
 
     def test_conflicting_packet_facts_do_not_guess(self):
         workers = classify_workers(
@@ -359,11 +428,13 @@ class CursorUsageWorkerTests(unittest.TestCase):
                     "datarelay-labs/datarelay-atlas",
                     "feature/cursor-usage-phase0-worker-inventory",
                     "COMPLETE",
+                    HEAD,
                 ),
                 PacketFact(
                     "https://github.com/datarelay-labs/datarelay-atlas.git",
                     "feature/cursor-usage-phase0-worker-inventory",
                     "ACTIVE",
+                    HEAD,
                 ),
             ],
         )
@@ -389,20 +460,29 @@ class CursorUsageWorkerTests(unittest.TestCase):
 
 
 class CursorUsageAdvisorTests(unittest.TestCase):
-    def test_recommendation_priority(self):
-        tiny = {"heavy_events": {"ge_5000000": {"count": 0}, "ge_10000000": {"count": 0}}, "max_burst": {"total_tokens": 10}, "max_event_tokens": 10}
-        five = {"heavy_events": {"ge_5000000": {"count": 1}, "ge_10000000": {"count": 0}}, "max_burst": {"total_tokens": 5_000_000}, "max_event_tokens": 5_000_000}
-        ten = {"heavy_events": {"ge_5000000": {"count": 1}, "ge_10000000": {"count": 1}}, "max_burst": {"total_tokens": 10_000_000}, "max_event_tokens": 10_000_000}
-        burst = {"heavy_events": {"ge_5000000": {"count": 3}, "ge_10000000": {"count": 0}}, "max_burst": {"total_tokens": 21_000_000}, "max_event_tokens": 7_000_000}
-        large = {"heavy_events": {"ge_5000000": {"count": 0}, "ge_10000000": {"count": 0}}, "max_burst": {"total_tokens": 2_000_000}, "max_event_tokens": 2_000_000}
+    def test_historical_heavy_event_does_not_select_a_control_action(self):
+        text = "\n".join(
+            [
+                "Date,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens",
+                "2026-09-22T00:00:00Z,0,0,9000000,1000000,10000000",
+                "2026-09-27T00:00:00Z,0,1,0,0,1",
+            ]
+        )
+        summary = summarize_usage(parse_usage_csv(_write_csv(text)))
+        self.assertEqual(summary["heavy_events"]["ge_10000000"]["count"], 1)
+        self.assertGreaterEqual(summary["heavy_events"]["ge_5000000"]["count"], 1)
         idle = [{"state": "IDLE_REUSABLE"}]
-        orphan = [{"state": "ORPHAN_OR_UNKNOWN"}]
-        self.assertEqual(recommend(idle, tiny)["recommendation"], "CONTINUE")
-        self.assertEqual(recommend(idle, large)["recommendation"], "SUMMARIZE_RECOMMENDED")
-        self.assertEqual(recommend(idle, five)["recommendation"], "CHECKPOINT_CLEAR_RECOMMENDED")
-        self.assertEqual(recommend(idle, ten)["recommendation"], "YIELD_BUDGET")
-        self.assertEqual(recommend(idle, burst)["recommendation"], "YIELD_BUDGET")
-        self.assertEqual(recommend(orphan, ten)["recommendation"], "HUMAN_REQUIRED")
+        current = recommend(idle, current_observed=True)
+        historical = recommend([], current_observed=False)
+        self.assertEqual(current["recommendation"], "CONTINUE")
+        self.assertEqual(historical["recommendation"], "UNKNOWN")
+        for advice in (current, historical):
+            self.assertNotIn(
+                advice["recommendation"],
+                {"YIELD_BUDGET", "CHECKPOINT_CLEAR_RECOMMENDED", "SUMMARIZE_RECOMMENDED"},
+            )
+            self.assertNotIn("HEAVY_EVENT_10M", advice["reasons"])
+            self.assertNotIn("LARGE_EVENT", advice["reasons"])
 
 
 class CursorUsageProcessTests(unittest.TestCase):
@@ -655,7 +735,7 @@ class CursorUsageCliTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["kind"], "cursor_usage_summary")
         self.assertEqual(payload["total_tokens"], 10)
-        self.assertEqual(payload["advisor"]["recommendation"], "CONTINUE")
+        self.assertEqual(payload["advisor"]["recommendation"], "UNKNOWN")
 
         stderr = io.StringIO()
         with redirect_stderr(stderr):

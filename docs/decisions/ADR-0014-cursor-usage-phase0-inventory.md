@@ -23,14 +23,19 @@ transcript, environment, or credential text.
    `usage summarize --csv`, and `usage report`. JSON schema version 1.
    Worker states are only `RUNNING_AUTHORIZED`, `IDLE_REUSABLE`,
    `DUPLICATE_WORKTREE`, `TERMINAL_WORK_SURVIVOR`, and `ORPHAN_OR_UNKNOWN`.
-   Recommendations are only `CONTINUE`, `SUMMARIZE_RECOMMENDED`,
-   `CHECKPOINT_CLEAR_RECOMMENDED`, `YIELD_BUDGET`, and `HUMAN_REQUIRED`.
+   Phase 0 recommendations are only `CONTINUE`, `HUMAN_REQUIRED`, and
+   `UNKNOWN`. `SUMMARIZE_RECOMMENDED`, `CHECKPOINT_CLEAR_RECOMMENDED`, and
+   `YIELD_BUDGET` are not emitted; those actions wait for Engineering System
+   #85/#88 context telemetry.
 4. **State / migration impact** — No persisted schema. CSV and optional
    packet facts are read and discarded. Raw command lines are not stored.
 5. **Security / operations impact** — Missing or conflicting process,
    identity, or packet evidence becomes `ORPHAN_OR_UNKNOWN`. Optional CSV
    columns stay null. Unknown CSV headers and mistyped cells fail closed.
-   Cache-read ratio is descriptive and does not drive the recommendation.
+   Cache-read ratio, >=5M/>=10M buckets, and burst windows are descriptive
+   historical metrics and do not drive the recommendation. Packet facts bind
+   only to the same repository, branch, and exact HEAD. Token fields longer
+   than 18 digits fail closed as `ValidationError`.
    The commands do not signal, kill, or resume processes.
 6. **Architecture boundary** — `atlas.cursor_usage` owns classification,
    CSV normalization, and the advisor. It reuses `parse_persist_list` and
@@ -53,5 +58,6 @@ and is already present in `agent persist list`. Any other restore-shaped argv
 is ambiguous and yields no session id. Process presence is runtime evidence only.
 Scheduler busy/quiescent state is a separate `runtime` field. Without a
 trusted generation lifecycle, `inference_activity` stays `UNKNOWN`. Usage
-metrics come only from an operator-supplied CSV. The advisor reports a
-warning and does not act.
+metrics come only from an operator-supplied CSV and stay descriptive. The
+advisor uses observed worker state only: `CONTINUE` or `HUMAN_REQUIRED`.
+A CSV summary with no worker observation is `UNKNOWN`. It does not act.
