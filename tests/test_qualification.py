@@ -647,13 +647,19 @@ class QualificationTests(unittest.TestCase):
     def _assert_release_flags_unchanged(self) -> None:
         project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
         release = (ROOT / ".engineering" / "release.yaml").read_text(encoding="utf-8")
-        self.assertIn("production_oriented: false", project)
+        self.assertIn("production_oriented: true", project)
         self.assertIn(f"baseline: {PIN}", project)
-        self.assertIn("public_smoke_required: false", release)
-        self.assertIn("operational_e2e_required: false", release)
-        self.assertIn("full_e2e_passes: 0", release)
-        self.assertIn("public_smoke_command: ''", release)
-        self.assertIn("operational_e2e_command: ''", release)
+        self.assertIn("public_smoke_required: true", release)
+        self.assertIn("operational_e2e_required: true", release)
+        self.assertIn("full_e2e_passes: 1", release)
+        self.assertIn(
+            "public_smoke_command: 'PYTHONPATH=. python3 scripts/prod-qualification.py public-smoke'",
+            release,
+        )
+        self.assertIn(
+            "operational_e2e_command: 'PYTHONPATH=. python3 scripts/prod-qualification.py operational-e2e --mode prod'",
+            release,
+        )
 
 
 def _prod_env(

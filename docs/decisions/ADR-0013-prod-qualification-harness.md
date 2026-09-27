@@ -33,7 +33,8 @@ Engineering System pin.
    query, identity, exact `source_revision`, and the checkout commit from
    `git -C <repo_root> rev-parse --verify HEAD^{commit}`. An operator-supplied
    SHA is not an input.
-   `.engineering/release.yaml` commands stay empty.
+   `.engineering/release.yaml` commands stay empty until the live journey
+   passes. After that pass they name this harness.
 4. **State / migration impact** — No schema change. The local journey uses a
    temporary data root and synthetic content. Prod mode registers the Atlas
    project only when it is absent, and fails closed when an existing
@@ -76,3 +77,13 @@ when that evidence names the same public endpoint, project, query, identity,
 exact source revision, and the checkout's full HEAD. Restart must change a service
 identity marker. A generic Cursor PASS file is not sufficient. Release
 metadata stays unchanged until that live journey has passed.
+
+That journey passed on canonical main
+`568277c4cc272c7d4a7ac0fa6ed0a996a0d50bd0` with Cursor-native MCP evidence
+and `operational-e2e --mode prod` `production_claim=true`. The metadata
+activation sets `production_oriented`, `operational_e2e_required`, and
+`public_smoke_required` true, and `full_e2e_passes` to 1. The release
+commands name this harness and remain operator-gated: they fail closed
+without the prod inputs. `atlas ops prod-contract` keeps
+`production_evidence` false; this activation does not change product code
+or the live host.

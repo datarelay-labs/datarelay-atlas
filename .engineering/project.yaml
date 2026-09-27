@@ -21,7 +21,7 @@ platforms:
 - linux
 - web
 operations:
-  production_oriented: false
+  production_oriented: true
   runbook_required: true
   incident_response_required: true
   persistent_state: true
