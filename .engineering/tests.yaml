@@ -86,6 +86,7 @@ scenarios:
       - "Autonomous Work Controller PoC control-loop regressions pass"
       - "Queued Work Packet cycle-chaining regressions pass"
       - "Continuous Chat Audit Supervisor PoC checkpoint/slice regressions pass"
+      - "Cursor usage Phase 0 inventory classifies workers without retaining prompts and summarizes usage CSV fixtures"
     release_gate: true
 
   - id: ATLAS-INDEPENDENCE-001
