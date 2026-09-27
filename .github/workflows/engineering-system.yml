@@ -8,13 +8,13 @@ permissions:
 
 jobs:
   adoption-compliance:
-    uses: datarelay-labs/engineering-system/.github/workflows/adoption-compliance.yml@cdc54b3220b5ec38e84dc2c33bd500b35edd6b39
+    uses: datarelay-labs/engineering-system/.github/workflows/adoption-compliance.yml@f912e7a11dea9b289e50cdc530423cbc16b25f58
 
   enforcement-reconcile:
-    uses: datarelay-labs/engineering-system/.github/workflows/enforcement-check.yml@cdc54b3220b5ec38e84dc2c33bd500b35edd6b39
+    uses: datarelay-labs/engineering-system/.github/workflows/enforcement-check.yml@f912e7a11dea9b289e50cdc530423cbc16b25f58
 
   affected-tests:
-    uses: datarelay-labs/engineering-system/.github/workflows/affected-tests.yml@cdc54b3220b5ec38e84dc2c33bd500b35edd6b39
+    uses: datarelay-labs/engineering-system/.github/workflows/affected-tests.yml@f912e7a11dea9b289e50cdc530423cbc16b25f58
     with:
       manifest_path: .engineering/tests.yaml
       trigger: pr
