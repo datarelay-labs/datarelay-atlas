@@ -35,8 +35,23 @@ from pathlib import Path
 
 from atlas.schema_compat import probe_durable_state
 
+def _validate_registered_sources(root: Path) -> None:
+    # Use the target tree's own readers. A GitHub-only validate_source
+    # rejects local-markdown. Missing modules mean a stub target.
+    try:
+        from atlas.provenance import validate_source
+        from atlas.registry import ProjectRegistry
+    except ImportError:
+        return
+    registry = ProjectRegistry(root)
+    for project in registry.list_projects():
+        for source in registry.canonical_sources(project.project_id):
+            validate_source(source)
+
 try:
-    result = probe_durable_state(Path(sys.argv[1]))
+    root = Path(sys.argv[1])
+    result = probe_durable_state(root)
+    _validate_registered_sources(root)
 except Exception as exc:
     sys.stderr.write(f"error: {exc}\\n")
     raise SystemExit(1)
@@ -58,8 +73,9 @@ def probe_durable_state(data_root: Path) -> dict:
 def rollback_data_root(data_root: Path, target_code: Path) -> dict:
     """Succeed only when the staged target tree can read the data root.
 
-    The allow decision comes from that tree's ``probe_durable_state``. This
-    process does not treat its own readers as the rollback target.
+    The allow decision comes from that tree's ``probe_durable_state`` and its
+    own source validation. This process does not treat its own readers as the
+    rollback target. The probe does not fetch or rewrite the data root.
     """
     root = Path(data_root)
     target = Path(target_code)
