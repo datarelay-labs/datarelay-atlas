@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import ipaddress
 import json
 import os
@@ -640,44 +639,6 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(payload["status"], "PASS")
         self.assertFalse(payload["production_claim"])
 
-    def test_release_operational_e2e_allocates_fresh_destinations(self):
-        module = _release_wrapper()
-        with tempfile.TemporaryDirectory() as tmp:
-            parent = Path(tmp)
-            backup = parent / "live-pass"
-            restore = parent / "restore-proof"
-            backup.mkdir()
-            restore.mkdir()
-            base = {
-                "ATLAS_BACKUP_DEST": str(backup),
-                "ATLAS_RESTORE_PROOF_DEST": str(restore),
-                "ATLAS_QUALIFICATION_GITHUB_TOKEN_FILE": str(parent / "github-token"),
-            }
-            first, reason = module.fresh_destinations(base)
-            second, second_reason = module.fresh_destinations(base)
-            self.assertIsNone(reason)
-            self.assertIsNone(second_reason)
-            self.assertNotEqual(first["ATLAS_BACKUP_DEST"], base["ATLAS_BACKUP_DEST"])
-            self.assertNotEqual(first["ATLAS_RESTORE_PROOF_DEST"], base["ATLAS_RESTORE_PROOF_DEST"])
-            self.assertNotEqual(first["ATLAS_BACKUP_DEST"], second["ATLAS_BACKUP_DEST"])
-            self.assertNotEqual(first["ATLAS_RESTORE_PROOF_DEST"], second["ATLAS_RESTORE_PROOF_DEST"])
-            self.assertTrue(backup.is_dir())
-            self.assertTrue(restore.is_dir())
-            self.assertFalse(Path(first["ATLAS_BACKUP_DEST"]).exists())
-            self.assertFalse(Path(first["ATLAS_RESTORE_PROOF_DEST"]).exists())
-            self.assertEqual(
-                first["ATLAS_QUALIFICATION_GITHUB_TOKEN_FILE"],
-                base["ATLAS_QUALIFICATION_GITHUB_TOKEN_FILE"],
-            )
-        missing, missing_reason = module.fresh_destinations({"ATLAS_RESTORE_PROOF_DEST": str(restore)})
-        self.assertEqual(missing_reason, "ATLAS_BACKUP_DEST is absent")
-        self.assertNotIn("ATLAS_BACKUP_DEST", missing)
-        with patch.dict(os.environ, {}, clear=True), patch(
-            "os.execv", side_effect=AssertionError("harness must not start")
-        ):
-            code = module.main()
-        self.assertEqual(code, 2)
-
     def _write_profile(self, root: Path, text: str) -> None:
         engineering = root / ".engineering"
         engineering.mkdir(parents=True, exist_ok=True)
@@ -686,29 +647,13 @@ class QualificationTests(unittest.TestCase):
     def _assert_release_flags_unchanged(self) -> None:
         project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
         release = (ROOT / ".engineering" / "release.yaml").read_text(encoding="utf-8")
-        self.assertIn("production_oriented: true", project)
+        self.assertIn("production_oriented: false", project)
         self.assertIn(f"baseline: {PIN}", project)
-        self.assertIn("public_smoke_required: true", release)
-        self.assertIn("operational_e2e_required: true", release)
-        self.assertIn("full_e2e_passes: 1", release)
-        self.assertIn(
-            "public_smoke_command: 'PYTHONPATH=. python3 scripts/prod-qualification.py public-smoke'",
-            release,
-        )
-        self.assertIn(
-            "operational_e2e_command: 'PYTHONPATH=. python3 scripts/release-operational-e2e.py'",
-            release,
-        )
-
-
-def _release_wrapper():
-    path = ROOT / "scripts" / "release-operational-e2e.py"
-    spec = importlib.util.spec_from_file_location("release_operational_e2e", path)
-    if spec is None or spec.loader is None:
-        raise AssertionError("release wrapper is missing")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+        self.assertIn("public_smoke_required: false", release)
+        self.assertIn("operational_e2e_required: false", release)
+        self.assertIn("full_e2e_passes: 0", release)
+        self.assertIn("public_smoke_command: ''", release)
+        self.assertIn("operational_e2e_command: ''", release)
 
 
 def _prod_env(

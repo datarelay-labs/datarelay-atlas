@@ -33,8 +33,7 @@ Engineering System pin.
    query, identity, exact `source_revision`, and the checkout commit from
    `git -C <repo_root> rev-parse --verify HEAD^{commit}`. An operator-supplied
    SHA is not an input.
-   `.engineering/release.yaml` commands stay empty until the live journey
-   passes. After that pass they name this harness.
+   `.engineering/release.yaml` commands stay empty.
 4. **State / migration impact** — No schema change. The local journey uses a
    temporary data root and synthetic content. Prod mode registers the Atlas
    project only when it is absent, and fails closed when an existing
@@ -78,14 +77,18 @@ exact source revision, and the checkout's full HEAD. Restart must change a servi
 identity marker. A generic Cursor PASS file is not sufficient. Release
 metadata stays unchanged until that live journey has passed.
 
-That journey passed on canonical main
+The live journey later passed on checkout
 `568277c4cc272c7d4a7ac0fa6ed0a996a0d50bd0` with Cursor-native MCP evidence
-and `operational-e2e --mode prod` `production_claim=true`. The metadata
-activation sets `production_oriented`, `operational_e2e_required`, and
-`public_smoke_required` true, and `full_e2e_passes` to 1. The release
-commands name this harness and remain operator-gated: they fail closed
-without the prod inputs. Each operational-E2E release invocation derives a
-fresh backup destination and a fresh restore destination under the
-configured parents, so an existing destination is left unused. `atlas ops prod-contract` keeps
-`production_evidence` false; this activation does not change product code
-or the live host.
+and `operational-e2e --mode prod` `production_claim=true`. Formal release
+metadata activation is deferred. That pass is evidence for that checkout
+only. A later commit is a different source HEAD, and Cursor evidence must
+match the checkout being qualified. Pinned Engineering System v1.6.5 runs
+the release contract on a GitHub-hosted runner and has no path to inject
+the prod environment, credentials, or evidence files. Non-empty prod
+commands would fail closed there. This decision does not substitute a
+no-op command or weaken the adoption checker. `production_oriented`,
+`operational_e2e_required`, `public_smoke_required`, and
+`full_e2e_passes` stay at their non-production values, and the release
+commands stay empty. The acceptance criterion that those flags stay false
+remains in force. `production_evidence` stays false. The prod host is
+unchanged.

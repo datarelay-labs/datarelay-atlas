@@ -198,7 +198,7 @@ class OpsCheckTests(unittest.TestCase):
     def test_production_profile_uses_audited_data_protection_commands(self):
         project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
         release = (ROOT / ".engineering" / "release.yaml").read_text(encoding="utf-8")
-        self.assertIn("production_oriented: true", project)
+        self.assertIn("production_oriented: false", project)
         self.assertIn("runbook_required: true", project)
         self.assertIn("incident_response_required: true", project)
         self.assertIn("docs/runbooks/phase2-data-protection.md", project)
@@ -215,17 +215,10 @@ class OpsCheckTests(unittest.TestCase):
         self.assertNotIn("upgrade_command: ''", project)
         self.assertNotIn("rollback_command: ''", project)
         self.assertNotIn("ATLAS_DATA_ROOT:-", project)
-        self.assertIn("public_smoke_required: true", release)
-        self.assertIn("operational_e2e_required: true", release)
-        self.assertIn("full_e2e_passes: 1", release)
-        self.assertIn(
-            "public_smoke_command: 'PYTHONPATH=. python3 scripts/prod-qualification.py public-smoke'",
-            release,
-        )
-        self.assertIn(
-            "operational_e2e_command: 'PYTHONPATH=. python3 scripts/release-operational-e2e.py'",
-            release,
-        )
+        self.assertIn("public_smoke_required: false", release)
+        self.assertIn("operational_e2e_required: false", release)
+        self.assertIn("public_smoke_command: ''", release)
+        self.assertIn("operational_e2e_command: ''", release)
         with self.assertRaises(SystemExit):
             main(["ops", "backup"])
 
@@ -290,7 +283,7 @@ class OpsCheckTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             validate_ingress_service_text(proxy_text + "EnvironmentFile=/etc/datarelay-atlas/service.env\n")
         project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
-        self.assertIn("production_oriented: true", project)
+        self.assertIn("production_oriented: false", project)
         text = (ROOT / "deploy" / "systemd" / "datarelay-atlas.service").read_text(
             encoding="utf-8"
         )
