@@ -462,6 +462,22 @@
         "trusted_runtime_evidence": { "type": "boolean" }
       }
     },
+    "learnedTrustedSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_repo", "producer_head", "report_digest"],
+      "properties": {
+        "producer_repo": {
+          "type": "string",
+          "const": "datarelay-labs/engineering-system"
+        },
+        "producer_head": {
+          "type": "string",
+          "const": "67e44dc4c92e81ba89657fab81770b81b6eaa93f"
+        },
+        "report_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
     "learnedCanaryEvidence": {
       "type": "object",
       "additionalProperties": false,
@@ -489,6 +505,7 @@
         "canary_ready": { "type": "boolean" },
         "candidate": { "$ref": "#/$defs/learnedCandidate" },
         "requirements": { "$ref": "#/$defs/learnedRequirements" },
+        "trusted_source": { "$ref": "#/$defs/learnedTrustedSource" },
         "blockers": {
           "type": "array",
           "maxItems": 12,
@@ -534,6 +551,7 @@
             }
           },
           "then": {
+            "required": ["trusted_source"],
             "properties": {
               "canary_ready": { "const": true },
               "blockers": { "maxItems": 0 },
@@ -566,7 +584,8 @@
             "properties": {
               "canary_ready": { "const": false },
               "blockers": { "minItems": 1 }
-            }
+            },
+            "not": { "required": ["trusted_source"] }
           }
         }
       ]
