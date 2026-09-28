@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "kind": "provider_capability_descriptor",
+  "provider": "codex",
+  "runtime": "codex_cli",
+  "usage_mode": "chatgpt_plan",
+  "adapter": "CodexAuditProvider",
+  "capabilities": [
+    {
+      "name": "CODE_REVIEW",
+      "status": "SUPPORTED",
+      "result_contract": "audit_result_v1"
+    }
+  ],
+  "authority": "EVIDENCE_ONLY"
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "kind": "provider_capability_descriptor",
+  "provider": "generic",
+  "runtime": "audit_port",
+  "usage_mode": "caller_supplied",
+  "adapter": "AuditPort",
+  "capabilities": [
+    {
+      "name": "CODE_REVIEW",
+      "status": "SUPPORTED",
+      "result_contract": "audit_result_v1"
+    }
+  ],
+  "authority": "EVIDENCE_ONLY"
+}
