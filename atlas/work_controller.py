@@ -3976,6 +3976,92 @@ class GitHubWorkPacketAdapter:
             ),
         }
 
+    def reread_trusted_active_readiness_packet(
+        self, repository: str, issue_number: int
+    ) -> dict[str, Any]:
+        """Strict single-view ACTIVE+NONE fact for graph-driven dispatch."""
+        repo = normalize_github_repository(repository)
+        if (
+            isinstance(issue_number, bool)
+            or not isinstance(issue_number, int)
+            or issue_number < 1
+        ):
+            raise ValidationError(
+                "canonical readiness issue_number is invalid"
+            )
+        number = issue_number
+        payload = self._view_issue(repo, number)
+        payload_number = payload.get("number")
+        if (
+            isinstance(payload_number, bool)
+            or not isinstance(payload_number, int)
+            or payload_number != number
+        ):
+            raise ValidationError("canonical readiness packet issue identity mismatch")
+        self._assert_ai_work_issue(payload, issue_number=number)
+        self._require_trusted_issue_author(repo, payload)
+        body = str(payload.get("body") or "")
+        meta = _parse_leading_packet_metadata(body)
+        version_text = str(meta.get("PACKET_VERSION") or "").strip()
+        if not re.fullmatch(r"[1-9][0-9]{0,2}", version_text):
+            raise ValidationError("canonical readiness PACKET_VERSION is invalid")
+        if int(version_text) < 2:
+            raise ValidationError("canonical readiness packet requires PACKET_VERSION>=2")
+        _require_v2_packet_metadata(body)
+        if meta.get("STATUS") != "ACTIVE":
+            raise ValidationError("canonical readiness packet is not ACTIVE")
+        if str(meta.get("QUEUE_STATE") or "NONE").strip() != "NONE":
+            raise ValidationError(
+                "canonical readiness ACTIVE packet must have QUEUE_STATE=NONE"
+            )
+        require_canonical_target_repo(str(meta.get("TARGET_REPO") or ""), repo)
+        branch = str(meta.get("BRANCH") or "").strip()
+        workstream = str(meta.get("WORKSTREAM") or "").strip()
+        head_raw = str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower()
+        if (
+            not _valid_git_branch_ref(branch)
+            or not WORKSTREAM_RE.fullmatch(workstream)
+            or not re.fullmatch(r"[0-9a-f]{40}", head_raw)
+        ):
+            raise ValidationError(
+                "canonical readiness packet has invalid branch, workstream, or head"
+            )
+
+        predecessor_issue = _after_issue_number(meta.get("AFTER_ISSUE"))
+        if predecessor_issue is None:
+            raise ValidationError(
+                "canonical readiness ACTIVE packet has invalid AFTER_ISSUE"
+            )
+        predecessor = self.read_readiness_packet_fact(repo, predecessor_issue)
+        if (
+            predecessor.get("packet_status") != "COMPLETE"
+            or predecessor.get("queue_state") != "NONE"
+        ):
+            raise ValidationError(
+                "canonical readiness predecessor is not COMPLETE"
+            )
+        active_issues = self._trusted_repository_active_issue_numbers(repo)
+        if active_issues != [number]:
+            listed = ", ".join(
+                f"#{item}" for item in active_issues[:20]
+            ) or "none"
+            raise ValidationError(
+                "canonical readiness ACTIVE occupancy is not unique: "
+                f"{listed}"
+            )
+        return {
+            "repository": repo,
+            "issue_number": number,
+            "branch": branch,
+            "workstream": workstream,
+            "head": head_raw,
+            "status": "ACTIVE",
+            "queue_state": "NONE",
+            "updated_at": str(
+                payload.get("updatedAt") or payload.get("updated_at") or ""
+            ),
+        }
+
     def read_readiness_packet_fact(
         self, repository: str, issue_number: int
     ) -> dict[str, Any]:
@@ -4318,6 +4404,45 @@ class GitHubWorkPacketAdapter:
             if trust == "trusted":
                 trusted.append(number_i)
         return saw_metadata_match, trusted
+
+    def require_unique_active_readiness_packet(
+        self,
+        repository: str,
+        *,
+        issue_number: int,
+        branch: str,
+    ) -> None:
+        """Re-prove single-worker ACTIVE occupancy immediately before dispatch."""
+        repo = normalize_github_repository(repository)
+        if (
+            isinstance(issue_number, bool)
+            or not isinstance(issue_number, int)
+            or issue_number < 1
+        ):
+            raise ValidationError(
+                "readiness dispatch issue_number is invalid"
+            )
+        active = self._trusted_repository_active_issue_numbers(repo)
+        if active != [issue_number]:
+            listed = ", ".join(f"#{number}" for number in active[:20]) or "none"
+            raise ValidationError(
+                "readiness dispatch repository ACTIVE occupancy is not unique: "
+                f"{listed}"
+            )
+        self._require_unique_active_packet(
+            repo,
+            issue_number=issue_number,
+            branch=branch,
+        )
+        active_after_branch_check = self._trusted_repository_active_issue_numbers(repo)
+        if active_after_branch_check != [issue_number]:
+            listed = ", ".join(
+                f"#{number}" for number in active_after_branch_check[:20]
+            ) or "none"
+            raise ValidationError(
+                "readiness dispatch repository ACTIVE occupancy changed: "
+                f"{listed}"
+            )
 
     def _require_unique_active_packet(
         self,

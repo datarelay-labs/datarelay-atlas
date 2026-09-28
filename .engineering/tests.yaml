@@ -90,6 +90,7 @@ scenarios:
       - "dependency/readiness graph planning is deterministic, fail-closed, resource/WIP gated, and read-only"
       - "single-effect authorization requires max_wip=1, stable double GitHub reconciliation, exactly one selected node, and remains read-only"
       - "authorized readiness activation reauthorizes at the effect boundary and CAS-transitions only trusted PAUSED+QUEUED packets to ACTIVE+NONE without dispatch"
+      - "single-worker readiness dispatch rechecks canonical ACTIVE identity and delegates exactly once to the existing exact-head persistent dispatcher without automatic retry"
     release_gate: true
 
   - id: ATLAS-INDEPENDENCE-001

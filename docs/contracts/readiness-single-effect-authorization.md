@@ -103,13 +103,47 @@ exactly the newly activated issue.
 
 GitHub Issues do not provide a conditional body update primitive through the
 current `gh issue edit` path, so a residual server-side race remains between
-the final recheck and the edit. This slice therefore does not dispatch a worker
-and does not treat activation as replayable authority.
+the final recheck and the edit. Activation is not replayable authority.
+
+## Authorized single-worker dispatch
+
+The next bounded effect composes the activation primitive with the existing
+persistent Cursor dispatcher. It remains library-only and keeps `max_wip=1`.
+
+The orchestration:
+
+1. rejects an invalid or missing local worktree before canonical mutation;
+2. invokes authorized activation exactly once;
+3. if activation is denied or cannot be proven, performs zero dispatches;
+4. performs a fresh trusted ACTIVE packet read and requires the selected
+   repository, issue, branch, exact HEAD, and caller-bound workstream to match;
+5. requires `QUEUE_STATE=NONE`, re-confirms the canonical predecessor is still
+   `COMPLETE+NONE`, and requires repository ACTIVE occupancy to be exactly the
+   selected issue;
+6. immediately before spawn, re-proves repository-wide trusted ACTIVE
+   occupancy is exactly the selected issue and re-proves the selected issue is
+   the unique ACTIVE packet that `/work-resume` can select on that branch;
+7. accepts only the canonical `GitHubWorkPacketAdapter` and
+   `PtyPersistCursorDispatcher` at this production effect boundary;
+8. emits exactly one existing `DispatchRequest` using `/work-resume`;
+9. relies on `PtyPersistCursorDispatcher` for the final resource preflight,
+   repository/branch/exact-HEAD/clean-worktree check, owned spawn attribution,
+   and persistent-session observation.
+
+There is no automatic retry. Once activation has landed, any resource,
+identity, pre-spawn, spawned-but-unobserved, or cleanup-uncertain dispatch
+failure leaves the packet ACTIVE and returns bounded HUMAN_REQUIRED evidence.
+A subsequent replay of the original PAUSED+QUEUED graph cannot authorize a
+second dispatch because canonical lifecycle state has changed.
+
+The dispatch result never emits Work Packet bodies, prompts, transcripts, or
+the local worktree path. Bounded session/preflight/reason metadata is allowed;
+preflight reason text is path-redacted before output.
 
 ## Non-goals
 
 - multi-worker effect authorization (#58);
-- a public mutation CLI or automatic worker dispatch;
+- a public mutation/dispatch CLI or broad automatic scheduling;
 - stored/replayable capability tokens;
 - provider/model routing;
 - quota or billing inference;
