@@ -86,6 +86,7 @@ class FakeGitHubRunner:
         self.mutate_on_view: int | None = None
         self.activate_on_view: int | None = None
         self.close_on_view: int | None = None
+        self.wrong_number_on_view: int | None = None
         self.downgrade_on_permission: int | None = None
         self.corrupt_edit = False
 
@@ -104,7 +105,11 @@ class FakeGitHubRunner:
             if self.close_on_view == self.view_count:
                 self.state = "CLOSED"
             payload = {
-                "number": ISSUE,
+                "number": (
+                    ISSUE + 1
+                    if self.wrong_number_on_view == self.view_count
+                    else ISSUE
+                ),
                 "title": self.title,
                 "state": self.state,
                 "body": self.body,
@@ -156,6 +161,7 @@ class ReadinessActivationTests(unittest.TestCase):
             packet_body().replace(BRANCH, "feature/other", 1),
             packet_body().replace(HEAD, "b" * 40, 1),
             packet_body().replace("PACKET_VERSION=2\n", "", 1),
+            packet_body().replace("PACKET_VERSION=2", "PACKET_VERSION=1", 1),
             packet_body().replace(
                 "WORKSTREAM=readiness-candidate",
                 "WORKSTREAM=invalid workstream",
@@ -184,6 +190,68 @@ class ReadinessActivationTests(unittest.TestCase):
         self.assertEqual(result["authorization"]["decision"], "DENY")
         self.assertEqual(runner.view_count, 0)
         self.assertEqual(runner.permission_count, 0)
+        self.assertEqual(runner.edit_count, 0)
+
+    def test_denied_after_github_reconciliation_still_performs_zero_writes(self) -> None:
+        runner = FakeGitHubRunner()
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        payload = graph_payload()
+        payload["nodes"][0]["owner_gate"] = True
+        path = write_graph(payload)
+        try:
+            result = adapter.activate_authorized_readiness_packet(path)
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertEqual(result["action"], "denied")
+        self.assertEqual(result["authorization"]["decision"], "DENY")
+        self.assertGreaterEqual(runner.view_count, 2)
+        self.assertGreaterEqual(runner.permission_count, 2)
+        self.assertEqual(runner.edit_count, 0)
+
+    def test_lifecycle_drift_after_authorization_blocks_before_edit(self) -> None:
+        runner = FakeGitHubRunner()
+        # Double authorization reads are views 1-2. The mandatory fresh
+        # selected-packet fact is view 3.
+        runner.activate_on_view = 3
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        path = write_graph(graph_payload())
+        try:
+            with self.assertRaisesRegex(
+                ValidationError, "changed before activation"
+            ):
+                adapter.activate_authorized_readiness_packet(path)
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertEqual(runner.edit_count, 0)
+
+    def test_issue_closure_at_cas_boundary_blocks_edit(self) -> None:
+        runner = FakeGitHubRunner()
+        # Views 1-2 authorize, 3 fresh-fact, 4 payload, 5 CAS recheck.
+        runner.close_on_view = 5
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        path = write_graph(graph_payload())
+        try:
+            with self.assertRaisesRegex(
+                ValidationError, "is not OPEN"
+            ):
+                adapter.activate_authorized_readiness_packet(path)
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertEqual(runner.edit_count, 0)
+
+    def test_issue_identity_drift_at_cas_boundary_blocks_edit(self) -> None:
+        runner = FakeGitHubRunner()
+        # Views 1-2 authorize, 3 fresh-fact, 4 payload, 5 CAS recheck.
+        runner.wrong_number_on_view = 5
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        path = write_graph(graph_payload())
+        try:
+            with self.assertRaisesRegex(
+                ValidationError, "identity changed during mutation"
+            ):
+                adapter.activate_authorized_readiness_packet(path)
+        finally:
+            path.unlink(missing_ok=True)
         self.assertEqual(runner.edit_count, 0)
 
     def test_authorized_activation_is_content_free_and_confirmed(self) -> None:

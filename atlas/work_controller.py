@@ -3119,6 +3119,15 @@ class GitHubWorkPacketAdapter:
     ) -> None:
         recheck = self._view_issue(repository, issue_number)
         if require_open_ai_work:
+            recheck_number = recheck.get("number")
+            if (
+                isinstance(recheck_number, bool)
+                or not isinstance(recheck_number, int)
+                or recheck_number != int(issue_number)
+            ):
+                raise ValidationError(
+                    "work packet issue identity changed during mutation"
+                )
             self._assert_ai_work_issue(recheck, issue_number=issue_number)
         if require_trusted_author:
             self._require_trusted_issue_author(repository, recheck)
@@ -4040,6 +4049,15 @@ class GitHubWorkPacketAdapter:
             )
 
         payload = self._view_issue(repo, issue_number)
+        payload_number = payload.get("number")
+        if (
+            isinstance(payload_number, bool)
+            or not isinstance(payload_number, int)
+            or payload_number != issue_number
+        ):
+            raise ValidationError(
+                "readiness activation issue identity changed"
+            )
         self._assert_ai_work_issue(payload, issue_number=issue_number)
         self._require_trusted_issue_author(repo, payload)
         original_body = str(payload.get("body") or "")
