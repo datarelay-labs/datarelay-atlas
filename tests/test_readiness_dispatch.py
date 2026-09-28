@@ -13,15 +13,17 @@ from atlas.work_controller import (
     DispatchSpawnCleanupUncertainError,
     DispatchSpawnedButUnobservedError,
     GitHubWorkPacketAdapter,
-    RecordingCursorDispatcher,
+    PtyPersistCursorDispatcher,
     ResourcePreflightBlocked,
 )
 
 REPO = "datarelay-labs/datarelay-atlas"
 ISSUE = 109
+PREDECESSOR = 106
 BRANCH = "feature/readiness-authorized-worker-dispatch"
 WORKSTREAM = "readiness-authorized-worker-dispatch"
 HEAD = "a" * 40
+PREDECESSOR_HEAD = "c" * 40
 DIGEST = "b" * 64
 WORKTREE = "/tmp"
 
@@ -57,7 +59,7 @@ def active_fact(*, workstream: str = WORKSTREAM) -> dict:
     }
 
 
-class FakePacketAdapter:
+class FakePacketAdapter(GitHubWorkPacketAdapter):
     def __init__(
         self,
         *,
@@ -65,13 +67,16 @@ class FakePacketAdapter:
         fresh: object | None = None,
         activation_error: bool = False,
         fresh_error: bool = False,
+        uniqueness_error: bool = False,
     ) -> None:
         self.activation = activated() if activation is None else activation
         self.fresh = active_fact() if fresh is None else fresh
         self.activation_error = activation_error
         self.fresh_error = fresh_error
+        self.uniqueness_error = uniqueness_error
         self.activation_calls = 0
         self.fresh_calls = 0
+        self.uniqueness_calls = 0
 
     def activate_authorized_readiness_packet(self, _path: Path) -> object:
         self.activation_calls += 1
@@ -88,8 +93,35 @@ class FakePacketAdapter:
         self.last_identity = (repository, issue_number)
         return self.fresh
 
+    def require_unique_active_readiness_packet(
+        self,
+        repository: str,
+        *,
+        issue_number: int,
+        branch: str,
+    ) -> None:
+        self.uniqueness_calls += 1
+        self.last_unique_identity = (repository, issue_number, branch)
+        if self.uniqueness_error:
+            raise ValidationError("active packet ambiguity")
 
-class RaisingDispatcher:
+
+class FakePersistentDispatcher(PtyPersistCursorDispatcher):
+    def __init__(self, session_prefix: str = "ready") -> None:
+        self.requests: list[DispatchRequest] = []
+        self.session_prefix = session_prefix
+        self._n = 0
+
+    def start_resume(self, request: DispatchRequest) -> DispatchResult:
+        self._n += 1
+        self.requests.append(request)
+        return DispatchResult(
+            session_id=f"{self.session_prefix}-{self._n}",
+            command=["agent", "persist", "/work-resume"],
+        )
+
+
+class RaisingDispatcher(PtyPersistCursorDispatcher):
     def __init__(self, error: Exception) -> None:
         self.error = error
         self.calls: list[DispatchRequest] = []
@@ -99,13 +131,30 @@ class RaisingDispatcher:
         raise self.error
 
 
-class InvalidDispatcher:
+class InvalidDispatcher(PtyPersistCursorDispatcher):
     def __init__(self) -> None:
         self.calls = 0
 
     def start_resume(self, _request: DispatchRequest) -> object:
         self.calls += 1
         return {"session_id": "not-a-dispatch-result"}
+
+
+class SuccessfulPreflightDispatcher(PtyPersistCursorDispatcher):
+    def __init__(self) -> None:
+        self.calls: list[DispatchRequest] = []
+
+    def start_resume(self, request: DispatchRequest) -> DispatchResult:
+        self.calls.append(request)
+        return DispatchResult(
+            session_id="ready-preflight",
+            command=["agent", "persist", "/work-resume"],
+            resource_preflight_result="PASS",
+            resource_preflight_reason=(
+                "capacity ok for /home/aella/private/worktree "
+                "and https://example.invalid/health"
+            ),
+        )
 
 
 class ReadinessAuthorizedDispatchTests(unittest.TestCase):
@@ -119,7 +168,7 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
                 },
             }
         )
-        dispatcher = RecordingCursorDispatcher()
+        dispatcher = FakePersistentDispatcher()
 
         result = activate_and_dispatch_single_worker(
             graph_path=Path("/tmp/graph.json"),
@@ -136,7 +185,7 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
 
     def test_activation_failure_is_human_required_without_dispatch(self) -> None:
         adapter = FakePacketAdapter(activation_error=True)
-        dispatcher = RecordingCursorDispatcher()
+        dispatcher = FakePersistentDispatcher()
 
         result = activate_and_dispatch_single_worker(
             graph_path=Path("/tmp/graph.json"),
@@ -154,7 +203,7 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
 
     def test_confirmed_activation_dispatches_exactly_once(self) -> None:
         adapter = FakePacketAdapter()
-        dispatcher = RecordingCursorDispatcher(session_prefix="ready")
+        dispatcher = FakePersistentDispatcher(session_prefix="ready")
 
         result = activate_and_dispatch_single_worker(
             graph_path=Path("/tmp/graph.json"),
@@ -169,6 +218,10 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
         self.assertEqual(result["resume_prompt"], "/work-resume")
         self.assertEqual(adapter.activation_calls, 1)
         self.assertEqual(adapter.fresh_calls, 1)
+        self.assertEqual(adapter.uniqueness_calls, 1)
+        self.assertEqual(
+            adapter.last_unique_identity, (REPO, ISSUE, BRANCH)
+        )
         self.assertEqual(len(dispatcher.requests), 1)
         request = dispatcher.requests[0]
         self.assertEqual(request.workstream, WORKSTREAM)
@@ -197,7 +250,7 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
             ),
         ):
             with self.subTest(reason=expected_reason):
-                dispatcher = RecordingCursorDispatcher()
+                dispatcher = FakePersistentDispatcher()
                 result = activate_and_dispatch_single_worker(
                     graph_path=Path("/tmp/graph.json"),
                     workstream=WORKSTREAM,
@@ -208,6 +261,44 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
                 self.assertEqual(result["action"], "human_required")
                 self.assertEqual(result["reason"], expected_reason)
                 self.assertEqual(dispatcher.requests, [])
+
+    def test_active_uniqueness_failure_never_dispatches(self) -> None:
+        adapter = FakePacketAdapter(uniqueness_error=True)
+        dispatcher = FakePersistentDispatcher()
+
+        result = activate_and_dispatch_single_worker(
+            graph_path=Path("/tmp/graph.json"),
+            workstream=WORKSTREAM,
+            worktree_path=WORKTREE,
+            packet_adapter=adapter,  # type: ignore[arg-type]
+            dispatcher=dispatcher,
+        )
+
+        self.assertEqual(result["action"], "human_required")
+        self.assertEqual(result["reason"], "ACTIVE_PACKET_UNIQUENESS_FAILED")
+        self.assertEqual(adapter.activation_calls, 1)
+        self.assertEqual(adapter.fresh_calls, 1)
+        self.assertEqual(adapter.uniqueness_calls, 1)
+        self.assertEqual(dispatcher.requests, [])
+
+    def test_success_preflight_reason_redacts_absolute_paths(self) -> None:
+        adapter = FakePacketAdapter()
+        dispatcher = SuccessfulPreflightDispatcher()
+
+        result = activate_and_dispatch_single_worker(
+            graph_path=Path("/tmp/graph.json"),
+            workstream=WORKSTREAM,
+            worktree_path=WORKTREE,
+            packet_adapter=adapter,  # type: ignore[arg-type]
+            dispatcher=dispatcher,
+        )
+
+        self.assertEqual(result["action"], "dispatched")
+        self.assertEqual(result["resource_preflight_result"], "PASS")
+        reason = result["resource_preflight_reason"]
+        self.assertNotIn("/home/aella/private/worktree", reason)
+        self.assertIn("<local-path>", reason)
+        self.assertIn("https://example.invalid/health", reason)
 
     def test_dispatch_failures_are_terminal_for_this_invocation(self) -> None:
         cases = [
@@ -270,9 +361,33 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
         self.assertEqual(result["reason"], "DISPATCH_RESULT_INVALID")
         self.assertEqual(dispatcher.calls, 1)
 
+    def test_dispatch_boundary_requires_canonical_adapter_and_dispatcher(self) -> None:
+        adapter = FakePacketAdapter()
+        with self.assertRaisesRegex(
+            ValidationError, "requires GitHubWorkPacketAdapter"
+        ):
+            activate_and_dispatch_single_worker(
+                graph_path=Path("/tmp/graph.json"),
+                workstream=WORKSTREAM,
+                worktree_path=WORKTREE,
+                packet_adapter=object(),  # type: ignore[arg-type]
+                dispatcher=FakePersistentDispatcher(),
+            )
+        with self.assertRaisesRegex(
+            ValidationError, "requires PtyPersistCursorDispatcher"
+        ):
+            activate_and_dispatch_single_worker(
+                graph_path=Path("/tmp/graph.json"),
+                workstream=WORKSTREAM,
+                worktree_path=WORKTREE,
+                packet_adapter=adapter,
+                dispatcher=object(),  # type: ignore[arg-type]
+            )
+        self.assertEqual(adapter.activation_calls, 0)
+
     def test_invalid_local_inputs_fail_before_activation(self) -> None:
         adapter = FakePacketAdapter()
-        dispatcher = RecordingCursorDispatcher()
+        dispatcher = FakePersistentDispatcher()
         with self.assertRaises(ValidationError):
             activate_and_dispatch_single_worker(
                 graph_path=Path("/tmp/graph.json"),
@@ -319,6 +434,7 @@ class ActivePacketDispatchBoundaryTests(unittest.TestCase):
             "TASK_KIND=DEVELOPMENT\n"
             "OWNER_INTENT=Dispatch the authorized worker.\n"
             f"LAST_VERIFIED_HEAD={HEAD}\n"
+            f"AFTER_ISSUE={PREDECESSOR}\n"
         )
 
     def _adapter(
@@ -328,6 +444,8 @@ class ActivePacketDispatchBoundaryTests(unittest.TestCase):
         issue_number: int = ISSUE,
         state: str = "OPEN",
         permission: str = "write",
+        extra_active: bool = False,
+        predecessor_status: str = "COMPLETE",
     ) -> GitHubWorkPacketAdapter:
         packet_body = body if body is not None else self._body()
 
@@ -335,26 +453,87 @@ class ActivePacketDispatchBoundaryTests(unittest.TestCase):
             argv: list[str], _cwd: str
         ) -> subprocess.CompletedProcess[str]:
             if argv[:3] == ["gh", "issue", "view"]:
+                requested = int(argv[3])
+                if requested == PREDECESSOR:
+                    predecessor_body = (
+                        "PACKET_VERSION=2\n"
+                        f"TARGET_REPO={REPO}\n"
+                        f"WORKSTREAM={WORKSTREAM}\n"
+                        f"STATUS={predecessor_status}\n"
+                        "QUEUE_STATE=NONE\n"
+                        f"BRANCH={BRANCH}\n"
+                        "TASK_KIND=DEVELOPMENT\n"
+                        "OWNER_INTENT=Completed predecessor.\n"
+                        f"LAST_VERIFIED_HEAD={PREDECESSOR_HEAD}\n"
+                    )
+                    payload = {
+                        "number": PREDECESSOR,
+                        "title": "[AI Work] readiness predecessor",
+                        "state": (
+                            "CLOSED"
+                            if predecessor_status == "COMPLETE"
+                            else "OPEN"
+                        ),
+                        "body": predecessor_body,
+                        "updatedAt": "2026-09-28T00:00:00Z",
+                        "author": {"login": "predecessor-author"},
+                    }
+                else:
+                    payload = {
+                        "number": issue_number,
+                        "title": "[AI Work] readiness dispatch",
+                        "state": state,
+                        "body": packet_body,
+                        "updatedAt": "2026-09-28T00:00:00Z",
+                        "author": {"login": "trusted-author"},
+                    }
                 return subprocess.CompletedProcess(
                     argv,
                     0,
-                    stdout=json.dumps(
+                    stdout=json.dumps(payload),
+                    stderr="",
+                )
+            if argv[:4] == ["gh", "api", "--paginate", "--slurp"]:
+                issues = []
+                if state == "OPEN" and "STATUS=ACTIVE" in packet_body:
+                    issues.append(
                         {
                             "number": issue_number,
                             "title": "[AI Work] readiness dispatch",
-                            "state": state,
+                            "state": "open",
                             "body": packet_body,
-                            "updatedAt": "2026-09-28T00:00:00Z",
-                            "author": {"login": "trusted-author"},
+                            "user": {"login": "trusted-author"},
                         }
-                    ),
-                    stderr="",
-                )
-            if argv[:2] == ["gh", "api"]:
+                    )
+                if extra_active:
+                    issues.append(
+                        {
+                            "number": ISSUE + 50,
+                            "title": "[AI Work] graph omitted active",
+                            "state": "open",
+                            "body": packet_body.replace(
+                                BRANCH, "feature/other-active", 1
+                            ),
+                            "user": {"login": "other-active-author"},
+                        }
+                    )
                 return subprocess.CompletedProcess(
                     argv,
                     0,
-                    stdout=json.dumps({"permission": permission}),
+                    stdout=json.dumps([issues]),
+                    stderr="",
+                )
+            if argv[:2] == ["gh", "api"]:
+                path = argv[2] if len(argv) > 2 else ""
+                effective_permission = (
+                    permission
+                    if "trusted-author/permission" in path
+                    else "write"
+                )
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps({"permission": effective_permission}),
                     stderr="",
                 )
             raise AssertionError(argv)
@@ -372,6 +551,39 @@ class ActivePacketDispatchBoundaryTests(unittest.TestCase):
         encoded = json.dumps(fact)
         self.assertNotIn("OWNER_INTENT", encoded)
         self.assertNotIn("body", encoded)
+
+    def test_dispatch_uniqueness_gate_rejects_graph_omitted_active(self) -> None:
+        adapter = self._adapter(extra_active=True)
+        with self.assertRaisesRegex(
+            ValidationError, "ACTIVE occupancy is not unique"
+        ):
+            adapter.require_unique_active_readiness_packet(
+                REPO,
+                issue_number=ISSUE,
+                branch=BRANCH,
+            )
+
+    def test_active_effect_reread_rejects_predecessor_or_occupancy_drift(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError, "predecessor is not COMPLETE"
+        ):
+            self._adapter(
+                predecessor_status="PAUSED"
+            ).reread_trusted_active_readiness_packet(REPO, ISSUE)
+
+        with self.assertRaisesRegex(
+            ValidationError, "ACTIVE occupancy is not unique"
+        ):
+            self._adapter(
+                extra_active=True
+            ).reread_trusted_active_readiness_packet(REPO, ISSUE)
+
+        with self.assertRaisesRegex(
+            ValidationError, "issue_number is invalid"
+        ):
+            self._adapter().reread_trusted_active_readiness_packet(
+                REPO, True  # type: ignore[arg-type]
+            )
 
     def test_active_effect_reread_rejects_noncanonical_state(self) -> None:
         cases = [

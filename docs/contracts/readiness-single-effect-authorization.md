@@ -117,9 +117,16 @@ The orchestration:
 3. if activation is denied or cannot be proven, performs zero dispatches;
 4. performs a fresh trusted ACTIVE packet read and requires the selected
    repository, issue, branch, exact HEAD, and caller-bound workstream to match;
-5. requires the ACTIVE packet to have `QUEUE_STATE=NONE`;
-6. emits exactly one existing `DispatchRequest` using `/work-resume`;
-7. relies on `PtyPersistCursorDispatcher` for the final resource preflight,
+5. requires `QUEUE_STATE=NONE`, re-confirms the canonical predecessor is still
+   `COMPLETE+NONE`, and requires repository ACTIVE occupancy to be exactly the
+   selected issue;
+6. immediately before spawn, re-proves repository-wide trusted ACTIVE
+   occupancy is exactly the selected issue and re-proves the selected issue is
+   the unique ACTIVE packet that `/work-resume` can select on that branch;
+7. accepts only the canonical `GitHubWorkPacketAdapter` and
+   `PtyPersistCursorDispatcher` at this production effect boundary;
+8. emits exactly one existing `DispatchRequest` using `/work-resume`;
+9. relies on `PtyPersistCursorDispatcher` for the final resource preflight,
    repository/branch/exact-HEAD/clean-worktree check, owned spawn attribution,
    and persistent-session observation.
 

@@ -20,6 +20,7 @@ from atlas.work_controller import (
     DispatchSpawnCleanupUncertainError,
     DispatchSpawnedButUnobservedError,
     GitHubWorkPacketAdapter,
+    PtyPersistCursorDispatcher,
     ResourcePreflightBlocked,
     WORKSTREAM_RE,
     redact_absolute_paths,
@@ -98,7 +99,7 @@ def activate_and_dispatch_single_worker(
     workstream: str,
     worktree_path: str,
     packet_adapter: GitHubWorkPacketAdapter,
-    dispatcher: Any,
+    dispatcher: PtyPersistCursorDispatcher,
 ) -> dict[str, Any]:
     """Activate one graph-selected packet and dispatch exactly once.
 
@@ -116,12 +117,14 @@ def activate_and_dispatch_single_worker(
     if not resolved_worktree.is_dir():
         raise ValidationError("readiness dispatch worktree_path is not a directory")
     target_worktree = str(resolved_worktree)
-    if not hasattr(packet_adapter, "activate_authorized_readiness_packet"):
-        raise ValidationError("readiness dispatch packet adapter is invalid")
-    if not hasattr(packet_adapter, "reread_trusted_active_readiness_packet"):
-        raise ValidationError("readiness dispatch packet adapter is invalid")
-    if not hasattr(dispatcher, "start_resume"):
-        raise ValidationError("readiness dispatch dispatcher is invalid")
+    if not isinstance(packet_adapter, GitHubWorkPacketAdapter):
+        raise ValidationError(
+            "readiness dispatch requires GitHubWorkPacketAdapter"
+        )
+    if not isinstance(dispatcher, PtyPersistCursorDispatcher):
+        raise ValidationError(
+            "readiness dispatch requires PtyPersistCursorDispatcher"
+        )
 
     try:
         activation = packet_adapter.activate_authorized_readiness_packet(
@@ -187,6 +190,19 @@ def activate_and_dispatch_single_worker(
             plan_digest=plan_digest,
         )
 
+    try:
+        packet_adapter.require_unique_active_readiness_packet(
+            selected["repository"],
+            issue_number=selected["issue_number"],
+            branch=selected["branch"],
+        )
+    except ValidationError:
+        return _human_required(
+            "ACTIVE_PACKET_UNIQUENESS_FAILED",
+            selected_node=selected,
+            plan_digest=plan_digest,
+        )
+
     request = DispatchRequest(
         workstream=expected_workstream,
         worktree_path=target_worktree,
@@ -244,7 +260,7 @@ def activate_and_dispatch_single_worker(
     }
     if dispatched.resource_preflight_result:
         result["resource_preflight_result"] = dispatched.resource_preflight_result
-        result["resource_preflight_reason"] = (
+        result["resource_preflight_reason"] = redact_absolute_paths(
             dispatched.resource_preflight_reason or ""
         )[:300]
     return result
