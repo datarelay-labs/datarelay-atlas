@@ -71,7 +71,16 @@ class ReadinessGraphTests(unittest.TestCase):
         schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
         Draft202012Validator.check_schema(schema)
-        Draft202012Validator(schema).validate(fixture)
+        validator = Draft202012Validator(schema)
+        validator.validate(fixture)
+        for invalid_branch in (
+            "feature//bad",
+            "feature/.hidden",
+            "feature/foo.lock/bar",
+        ):
+            invalid = deepcopy(fixture)
+            invalid["nodes"][0]["branch"] = invalid_branch
+            self.assertTrue(list(validator.iter_errors(invalid)))
 
     def test_example_fixture_selects_independent_nodes(self) -> None:
         plan = plan_readiness_file(FIXTURE)
@@ -363,9 +372,14 @@ class ReadinessGraphTests(unittest.TestCase):
         )
         cases.append(duplicate_issue)
 
-        bad_branch = deepcopy(valid)
-        bad_branch["nodes"][0]["branch"] = "feature//bad"
-        cases.append(bad_branch)
+        for invalid_branch in (
+            "feature//bad",
+            "feature/.hidden",
+            "feature/foo.lock/bar",
+        ):
+            bad_branch = deepcopy(valid)
+            bad_branch["nodes"][0]["branch"] = invalid_branch
+            cases.append(bad_branch)
 
         duplicate_resource = deepcopy(valid)
         duplicate_resource["nodes"][0]["resources"] = ["host:a", "host:a"]
@@ -427,6 +441,18 @@ class ReadinessGraphTests(unittest.TestCase):
                 plan_readiness_file(oversized_path)
         finally:
             oversized_path.unlink(missing_ok=True)
+
+    def test_file_loader_normalizes_json_numeric_limit_errors(self) -> None:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".json", delete=False
+        ) as handle:
+            handle.write('{"schema_version":' + ("9" * 5000) + "}")
+            numeric_path = Path(handle.name)
+        try:
+            with self.assertRaisesRegex(ValidationError, "supported UTF-8 JSON"):
+                plan_readiness_file(numeric_path)
+        finally:
+            numeric_path.unlink(missing_ok=True)
 
     def test_cli_plan_is_read_only_and_machine_parseable(self) -> None:
         result = subprocess.run(
