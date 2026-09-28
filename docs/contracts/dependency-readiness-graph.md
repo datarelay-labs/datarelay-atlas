@@ -22,7 +22,7 @@ are not graph inputs.
 
 Each node supplies:
 - stable `node_id` and GitHub issue number;
-- repository, branch, and exact 40-hex HEAD;
+- repository, Git-ref-safe branch, and exact 40-hex HEAD;
 - packet status and queue state;
 - typed dependency edges (`node_id` + v1 relation `REQUIRES_COMPLETE`);
 - explicit resource keys;
