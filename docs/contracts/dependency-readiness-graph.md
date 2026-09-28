@@ -64,21 +64,45 @@ alongside `node_id` and `issue_number`. This keeps multi-repository plans
 attributable even when different repositories use the same issue number.
 Titles, issue bodies, source text, and conversation content are not emitted.
 
+## GitHub reconciliation
+
+The optional GitHub reconciliation gate re-reads each graph node's bounded
+canonical Work Packet identity before planning:
+
+- repository and issue number;
+- branch and exact 40-hex HEAD;
+- packet status and queue state.
+
+Only trusted `[AI Work]` packet authors may produce canonical facts. Exact
+matches remain eligible for normal planning. Lifecycle identity drift marks the
+node `STALE`; unreadable, malformed, missing, or untrusted packet facts mark it
+`UNTRUSTED`. Either condition makes the graph fail closed. An authority state
+that was already non-`TRUSTED` in the graph is never promoted by a later read.
+
+Issue title/body, prompts, transcripts, and other free-form content are parsed
+only as needed for trust/metadata verification and are never emitted as facts
+or plan output.
+
 ## Safety boundary
 
-Slice A is pure planning:
+Slice A/B remain read-only planning:
 - no GitHub mutation;
 - no Cursor/session process action;
 - no provider/model routing;
 - no quota estimation;
 - no bypass of owner/HUMAN_REQUIRED state.
 
-Repeated evaluation of the same input is idempotent and deterministic.
+A reconciled plan is observation evidence, not mutation authority. Any future
+graph-driven effect must re-read mutable canonical state at its own effect
+boundary. Repeated evaluation of unchanged graph and GitHub facts is
+idempotent and deterministic.
 
 ## CLI
 
 ```bash
 PYTHONPATH=. python3 -m atlas readiness plan --graph graph.json
+PYTHONPATH=. python3 -m atlas readiness github-plan --graph graph.json
 ```
 
-The command emits a bounded plan and performs no network access.
+`plan` performs no network access. `github-plan` performs authenticated
+read-only GitHub/permission lookups and then emits the same bounded plan shape.

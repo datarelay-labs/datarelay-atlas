@@ -3523,6 +3523,70 @@ class GitHubWorkPacketAdapter:
             ),
         }
 
+    def read_readiness_packet_fact(
+        self, repository: str, issue_number: int
+    ) -> dict[str, Any]:
+        """Return bounded trusted lifecycle identity for one AI Work Packet.
+
+        This is a read-only projection for readiness reconciliation. It never
+        returns issue title/body or other free-form content.
+        """
+        repo = normalize_github_repository(repository)
+        if (
+            isinstance(issue_number, bool)
+            or not isinstance(issue_number, int)
+            or issue_number < 1
+        ):
+            raise ValidationError("invalid issue_number for readiness fact")
+        payload = self._view_issue(repo, issue_number)
+        title = str(payload.get("title") or "")
+        if not title.startswith("[AI Work]"):
+            raise ValidationError(
+                f"issue #{issue_number} is not an [AI Work] packet"
+            )
+        self._require_trusted_issue_author(repo, payload)
+        issue_state = str(payload.get("state") or "").strip().upper()
+        if issue_state not in {"OPEN", "CLOSED"}:
+            raise ValidationError("readiness packet GitHub state is invalid")
+        body = str(payload.get("body") or "")
+        _require_v2_packet_metadata(body)
+        meta = _parse_leading_packet_metadata(body)
+        require_canonical_target_repo(str(meta.get("TARGET_REPO") or ""), repo)
+
+        branch = str(meta.get("BRANCH") or "").strip()
+        if (
+            not branch
+            or len(branch) > 255
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in branch)
+        ):
+            raise ValidationError("readiness packet branch is missing or invalid")
+
+        head = str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", head):
+            raise ValidationError(
+                "readiness packet LAST_VERIFIED_HEAD must be an exact 40-char SHA"
+            )
+
+        packet_status = str(meta.get("STATUS") or "").strip()
+        if packet_status not in {"ACTIVE", "PAUSED", "BLOCKED", "COMPLETE"}:
+            raise ValidationError("readiness packet STATUS is invalid")
+        queue_state = str(meta.get("QUEUE_STATE") or "NONE").strip()
+        if queue_state not in {"NONE", "QUEUED"}:
+            raise ValidationError("readiness packet QUEUE_STATE is invalid")
+        if issue_state == "CLOSED" and packet_status != "COMPLETE":
+            raise ValidationError(
+                "closed readiness packet must have STATUS=COMPLETE"
+            )
+
+        return {
+            "repository": repo,
+            "issue_number": int(issue_number),
+            "branch": branch,
+            "head": head,
+            "packet_status": packet_status,
+            "queue_state": queue_state,
+        }
+
     def _scan_trusted_active_packets(
         self,
         repository: str,
