@@ -78,10 +78,17 @@ The result is one of:
 The transition plan records only bounded current/prior/aggregate failed route
 ids, failure classification, attempt counts, and the remaining broker plan.
 Its validator requires `failed_route_ids` to equal the sorted union of
-`prior_failed_route_ids` and the current `from_route_id`, and forbids failed
-routes from reappearing in the remaining plan. It never performs the transition.
-Provider invocation and any later effect authorization require a separate
-exact-state boundary.
+`prior_failed_route_ids` and the current `from_route_id`, forbids failed
+routes from reappearing in the remaining plan, and requires the embedded broker
+plan to use the same strategy and required capability as the enclosing
+transition. A request whose prior failures have already reached
+`max_attempts`, or a serialized plan whose attempt exceeds that ceiling, fails
+closed.
+
+The allowlisted failure reason is bounded advisory input for this planning
+slice; it is not promoted to provider-authoritative quota/health evidence. The
+planner never performs the transition. Provider invocation and any later effect
+authorization require a separate exact-state boundary.
 
 Read-only CLI example:
 
