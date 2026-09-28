@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -64,6 +65,7 @@ ALLOWED_STATES = frozenset(
 TERMINAL_STATES = frozenset({"PASSED", "HUMAN_REQUIRED"})
 AUDIT_VERDICTS = frozenset({"PASS", "REWORK", "HUMAN_REQUIRED"})
 MAX_SELECTED_PACKET_PROJECTIONS = 256
+MAX_SELECTED_PACKET_PRS_PER_BRANCH = 32
 
 
 @dataclass(frozen=True)
@@ -3366,49 +3368,8 @@ class GitHubWorkPacketAdapter:
             raise ValidationError("selected packet issue numbers contain duplicates")
 
         pulls_by_branch: dict[str, list[dict[str, Any]]] = {}
-        for pull in self._list_pull_requests(repo):
-            try:
-                pr_number = int(pull.get("number"))
-            except (TypeError, ValueError):
-                continue
-            head = pull.get("head")
-            if not isinstance(head, dict):
-                continue
-            branch = str(head.get("ref") or "").strip()
-            sha = str(head.get("sha") or "").strip().lower()
-            head_repo = head.get("repo")
-            head_repo_name = (
-                str(head_repo.get("full_name") or "").strip()
-                if isinstance(head_repo, dict)
-                else ""
-            )
-            try:
-                normalized_head_repo = normalize_github_repository(head_repo_name)
-            except ValidationError:
-                continue
-            if (
-                normalized_head_repo != repo
-                or not _valid_git_branch_ref(branch)
-                or not re.fullmatch(r"[0-9a-f]{40}", sha)
-            ):
-                continue
-            state = str(pull.get("state") or "").strip().lower()
-            if state not in {"open", "closed"}:
-                continue
-            merged = bool(pull.get("merged_at"))
-            merge_head = str(pull.get("merge_commit_sha") or "").strip().lower()
-            if not re.fullmatch(r"[0-9a-f]{40}", merge_head):
-                merge_head = ""
-            pulls_by_branch.setdefault(branch, []).append(
-                {
-                    "number": pr_number,
-                    "state": "MERGED" if merged else state.upper(),
-                    "head": sha,
-                    "merge_head": merge_head or None,
-                }
-            )
-
         projections: list[dict[str, Any]] = []
+        transient_packets: dict[int, dict[str, Any]] = {}
         allowed_statuses = {"ACTIVE", "PAUSED", "BLOCKED", "COMPLETE"}
         for issue_number in sorted(normalized_numbers):
             payload = self._view_issue(repo, issue_number)
@@ -3448,6 +3409,11 @@ class GitHubWorkPacketAdapter:
                 )
             _require_v2_packet_metadata(body)
             require_canonical_target_repo(meta.get("TARGET_REPO") or "", repo)
+            workstream = str(meta.get("WORKSTREAM") or "").strip()
+            if not WORKSTREAM_RE.fullmatch(workstream):
+                raise ValidationError(
+                    f"selected work packet #{issue_number} WORKSTREAM is invalid"
+                )
 
             status = str(meta.get("STATUS") or "").strip()
             if status not in allowed_statuses:
@@ -3491,7 +3457,56 @@ class GitHubWorkPacketAdapter:
                     f"selected work packet #{issue_number} queued without AFTER_ISSUE"
                 )
 
-            branch_pulls = pulls_by_branch.get(branch, [])
+            if branch not in pulls_by_branch:
+                normalized_pulls: list[dict[str, Any]] = []
+                for pull in self._list_pull_requests_for_branch(repo, branch):
+                    try:
+                        pr_number = int(pull.get("number"))
+                    except (TypeError, ValueError):
+                        continue
+                    pull_head = pull.get("head")
+                    if not isinstance(pull_head, dict):
+                        continue
+                    pull_branch = str(pull_head.get("ref") or "").strip()
+                    sha = str(pull_head.get("sha") or "").strip().lower()
+                    head_repo = pull_head.get("repo")
+                    head_repo_name = (
+                        str(head_repo.get("full_name") or "").strip()
+                        if isinstance(head_repo, dict)
+                        else ""
+                    )
+                    try:
+                        normalized_head_repo = normalize_github_repository(
+                            head_repo_name
+                        )
+                    except ValidationError:
+                        continue
+                    if (
+                        normalized_head_repo != repo
+                        or pull_branch != branch
+                        or not re.fullmatch(r"[0-9a-f]{40}", sha)
+                    ):
+                        continue
+                    state = str(pull.get("state") or "").strip().lower()
+                    if state not in {"open", "closed"}:
+                        continue
+                    merged = bool(pull.get("merged_at"))
+                    merge_head = str(
+                        pull.get("merge_commit_sha") or ""
+                    ).strip().lower()
+                    if not re.fullmatch(r"[0-9a-f]{40}", merge_head):
+                        merge_head = ""
+                    normalized_pulls.append(
+                        {
+                            "number": pr_number,
+                            "state": "MERGED" if merged else state.upper(),
+                            "head": sha,
+                            "merge_head": merge_head or None,
+                        }
+                    )
+                pulls_by_branch[branch] = normalized_pulls
+
+            branch_pulls = pulls_by_branch[branch]
             exact = [
                 item
                 for item in branch_pulls
@@ -3545,6 +3560,31 @@ class GitHubWorkPacketAdapter:
                     "after_issue": after_issue,
                 }
             )
+            transient_packets[issue_number] = {
+                "branch": branch,
+                "workstream": workstream,
+                "queue_state": queue_state,
+                "after_issue": after_issue,
+            }
+
+        for issue_number in sorted(transient_packets):
+            packet = transient_packets[issue_number]
+            if packet["queue_state"] != "QUEUED":
+                continue
+            predecessor_number = packet["after_issue"]
+            predecessor = transient_packets.get(predecessor_number)
+            if predecessor is None:
+                continue
+            if packet["branch"] != predecessor["branch"]:
+                raise ValidationError(
+                    f"selected work packet #{issue_number} queued successor "
+                    "branch does not match predecessor"
+                )
+            if packet["workstream"] != predecessor["workstream"]:
+                raise ValidationError(
+                    f"selected work packet #{issue_number} queued successor "
+                    "WORKSTREAM does not match predecessor"
+                )
         return projections
 
     def _view_issue(self, repository: str, issue_number: int) -> dict:
@@ -3622,6 +3662,42 @@ class GitHubWorkPacketAdapter:
 
     def _list_open_ai_work_issues(self, repository: str) -> list[dict]:
         return self._list_ai_work_issues(repository, state="open")
+
+    def _list_pull_requests_for_branch(
+        self,
+        repository: str,
+        branch: str,
+    ) -> list[dict]:
+        """Read a bounded set of same-repository PRs for one selected branch."""
+        repo = normalize_github_repository(repository)
+        if not _valid_git_branch_ref(branch):
+            raise ValidationError("selected packet PR branch is invalid")
+        owner = repo.split("/", 1)[0]
+        head = urllib.parse.quote(f"{owner}:{branch}", safe="")
+        limit = MAX_SELECTED_PACKET_PRS_PER_BRANCH + 1
+        path = f"repos/{repo}/pulls?state=all&head={head}&per_page={limit}"
+        listed = self._run(["gh", "api", path])
+        if listed.returncode != 0:
+            detail = (listed.stderr or listed.stdout or "").strip()
+            raise ValidationError(
+                detail[:500]
+                or f"gh api selected pulls failed with exit {listed.returncode}"
+            )
+        try:
+            payload = json.loads(listed.stdout or "[]")
+        except (json.JSONDecodeError, ValueError, RecursionError) as exc:
+            raise ValidationError(
+                "gh api selected pulls returned unsupported JSON"
+            ) from exc
+        if not isinstance(payload, list) or not all(
+            isinstance(item, dict) for item in payload
+        ):
+            raise ValidationError("gh api selected pulls returned non-list JSON")
+        if len(payload) > MAX_SELECTED_PACKET_PRS_PER_BRANCH:
+            raise ValidationError(
+                "selected packet PR query exceeds bounded result count"
+            )
+        return payload
 
     def _list_pull_requests(self, repository: str) -> list[dict]:
         """List all pull requests for read-only packet/head reconciliation."""
