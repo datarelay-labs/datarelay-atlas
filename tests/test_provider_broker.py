@@ -422,6 +422,41 @@ class ProviderBrokerTests(unittest.TestCase):
         wrong_fallback["fallback_route_ids"] = ["made-up-route"]
         with self.assertRaises(ValidationError):
             validate_provider_broker_plan(wrong_fallback, consumed_at=FRESH_EVALUATED_AT)
+
+    def test_evidence_expiry_overflow_fails_closed(self):
+        near_max = _candidate(
+            "codex",
+            "codex-near-max",
+            capability_rank=0,
+            stewardship_rank=0,
+            window_start="9999-12-31T23:59:59Z",
+            window_end="9999-12-31T23:59:59Z",
+        )
+        with self.assertRaisesRegex(
+            ValidationError, "evidence expiry is out of range"
+        ):
+            plan_provider_routes(
+                [near_max],
+                required_capability="CODE_REVIEW",
+                evaluated_at="9999-12-31T23:59:59Z",
+                max_evidence_age_seconds=1,
+            )
+
+        plan = plan_provider_routes(
+            [near_max],
+            required_capability="CODE_REVIEW",
+            evaluated_at="9999-12-31T23:59:59Z",
+            max_evidence_age_seconds=0,
+        )
+        tampered = deepcopy(plan)
+        tampered["max_evidence_age_seconds"] = 1
+        with self.assertRaisesRegex(
+            ValidationError, "evidence expiry is out of range"
+        ):
+            validate_provider_broker_plan(
+                tampered, consumed_at="9999-12-31T23:59:59Z"
+            )
+
     def test_output_is_content_free_and_has_no_effect_authority(self):
         candidate = _candidate(
             "codex",

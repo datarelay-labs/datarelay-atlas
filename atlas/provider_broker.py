@@ -229,6 +229,16 @@ def _format_utc(value: datetime) -> str:
     return f"{text}Z"
 
 
+def _evidence_expiry(observed: datetime, max_age: timedelta) -> datetime:
+    """Derive a bounded expiry without leaking datetime arithmetic errors."""
+    try:
+        return observed + max_age
+    except OverflowError as exc:
+        raise ValidationError(
+            "provider broker evidence expiry is out of range"
+        ) from exc
+
+
 def _validated_plan_freshness(
     payload: dict,
     *,
@@ -256,7 +266,7 @@ def _validated_plan_freshness(
         observed = _utc_instant(route.get("observed_at"), label="observed_at")
         if observed > evaluated or evaluated - observed > limit:
             _reject("provider broker plan evidence boundary is inconsistent")
-        expiry = observed + limit
+        expiry = _evidence_expiry(observed, limit)
         route_expiry = _utc_instant(route.get("fresh_until"), label="fresh_until")
         if route_expiry != expiry:
             _reject("provider broker plan evidence boundary is inconsistent")
@@ -413,7 +423,7 @@ def plan_provider_routes(
             candidate["capacity_input"]["evidence"]["window_end"],
             label="window_end",
         )
-        expiry = observed + evidence_age_limit
+        expiry = _evidence_expiry(observed, evidence_age_limit)
         expiries.append(expiry)
         eligible.append(
             _route_summary(
