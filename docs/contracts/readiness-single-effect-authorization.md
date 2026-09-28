@@ -84,14 +84,22 @@ selected canonical packet and requires all of the following again:
 - trusted `[AI Work]` author and `PACKET_VERSION>=2`;
 - canonical `TARGET_REPO` and valid `WORKSTREAM`;
 - exact repository, issue number, branch, and 40-hex HEAD;
-- `STATUS=PAUSED` and `QUEUE_STATE=QUEUED`.
+- `STATUS=PAUSED` and `QUEUE_STATE=QUEUED`;
+- the canonical `AFTER_ISSUE` predecessor is represented by a same-repository
+  `REQUIRES_COMPLETE` graph edge and still reads as `COMPLETE+NONE`;
+- repository-wide trusted ACTIVE occupancy is zero, including trusted
+  malformed ACTIVE-looking packets that cannot be classified safely.
 
 The mutation is best-effort CAS-protected using the existing issue body and
 `updatedAt` recheck immediately before edit, with issue-number identity, OPEN
-`[AI Work]` state, and author trust checked again at that boundary. It changes
+`[AI Work]` state, and author trust checked again at that boundary. After that
+CAS recheck and before the edit call, Atlas repeats authorization, canonical
+predecessor confirmation, and repository-wide ACTIVE occupancy. It changes
 only the two lifecycle metadata fields to
 `STATUS=ACTIVE` and `QUEUE_STATE=NONE`, adds no new Work Packet metadata,
-and then performs a fresh canonical read to confirm the landed state.
+and then performs fresh canonical reads to confirm the landed selected packet,
+the predecessor remains `COMPLETE+NONE`, and repository ACTIVE occupancy is
+exactly the newly activated issue.
 
 GitHub Issues do not provide a conditional body update primitive through the
 current `gh issue edit` path, so a residual server-side race remains between
