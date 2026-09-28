@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "kind": "dependency_readiness_graph",
+  "max_wip": 3,
+  "nodes": [
+    {
+      "node_id": "foundation",
+      "issue_number": 47,
+      "repository": "datarelay-labs/datarelay-atlas",
+      "branch": "feature/autonomous-local-supervisor-gpt56-audit",
+      "head": "64978cf68b6f1ede704f2b7092cd51894cfba04f",
+      "packet_status": "COMPLETE",
+      "queue_state": "NONE",
+      "dependencies": [],
+      "resources": [],
+      "authority_state": "TRUSTED",
+      "owner_gate": false,
+      "human_required": false,
+      "priority": 0
+    },
+    {
+      "node_id": "current",
+      "issue_number": 91,
+      "repository": "datarelay-labs/datarelay-atlas",
+      "branch": "feature/dependency-readiness-graph-planner",
+      "head": "ff1cdb7b85c299eb6ef2e218b77e0bfbf08f6012",
+      "packet_status": "ACTIVE",
+      "queue_state": "NONE",
+      "dependencies": [
+        {
+          "node_id": "foundation",
+          "relation": "REQUIRES_COMPLETE"
+        }
+      ],
+      "resources": [
+        "host:dev-atlas"
+      ],
+      "authority_state": "TRUSTED",
+      "owner_gate": false,
+      "human_required": false,
+      "priority": 0
+    },
+    {
+      "node_id": "independent-a",
+      "issue_number": 101,
+      "repository": "datarelay-labs/engineering-system",
+      "branch": "feature/independent-a",
+      "head": "1111111111111111111111111111111111111111",
+      "packet_status": "PAUSED",
+      "queue_state": "QUEUED",
+      "dependencies": [
+        {
+          "node_id": "foundation",
+          "relation": "REQUIRES_COMPLETE"
+        }
+      ],
+      "resources": [
+        "host:dev-control"
+      ],
+      "authority_state": "TRUSTED",
+      "owner_gate": false,
+      "human_required": false,
+      "priority": 10
+    },
+    {
+      "node_id": "independent-b",
+      "issue_number": 102,
+      "repository": "datarelay-labs/datarelay-link",
+      "branch": "feature/independent-b",
+      "head": "2222222222222222222222222222222222222222",
+      "packet_status": "PAUSED",
+      "queue_state": "QUEUED",
+      "dependencies": [
+        {
+          "node_id": "foundation",
+          "relation": "REQUIRES_COMPLETE"
+        }
+      ],
+      "resources": [
+        "host:dev-drlink"
+      ],
+      "authority_state": "TRUSTED",
+      "owner_gate": false,
+      "human_required": false,
+      "priority": 20
+    }
+  ]
+}
