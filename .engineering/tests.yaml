@@ -89,7 +89,7 @@ scenarios:
       - "Dependency/readiness multi-node E2E proves deterministic independent selection, conflict serialization, gate preservation, one max_wip=1 activation/dispatch lifecycle, and replay fail-closed behavior"
       - "Cursor usage Phase 0 inventory classifies workers without retaining prompts and summarizes usage CSV fixtures"
       - "context-canary intake strictly preserves measured comparable optimizer facts while remaining OBSERVE_ONLY with quality/security/runtime gates UNKNOWN"
-      - "context-shadow quality binding may advance only quality_noninferiority to SHADOW_ACTION_EQUIVALENT on exact P0.75-B identity/run binding; active control, egress, and runtime gates remain blocked/UNKNOWN"
+      - "context-shadow quality binding may advance only quality_noninferiority to SHADOW_ACTION_EQUIVALENT on v2 repository/task/head/profile/run-set digest identity plus control-consistent action counts; active control, egress, and runtime gates remain blocked/UNKNOWN"
       - "dependency/readiness graph planning is deterministic, fail-closed, resource/WIP gated, and read-only"
       - "single-effect authorization requires max_wip=1, stable double GitHub reconciliation, exactly one selected node, and remains read-only"
       - "authorized readiness activation reauthorizes at the effect boundary and CAS-transitions only trusted PAUSED+QUEUED packets to ACTIVE+NONE without dispatch"

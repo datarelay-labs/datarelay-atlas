@@ -186,6 +186,46 @@ class ContextOptimizationInputTests(unittest.TestCase):
         self.assertEqual(by_arm["baseline"]["input_tokens_total"], 2200)
         self.assertEqual(by_arm["compiler"]["provider_cost_total"], "2")
 
+    def test_accepts_v2_exact_run_set_binding_without_changing_control_state(self) -> None:
+        report = _report()
+        report["schema_version"] = 2
+        report["run_set_digest"] = "b" * 64
+
+        normalized = normalize_context_canary_report(report)
+
+        self.assertEqual(
+            normalized["source_evidence"],
+            {
+                "source_kind": "engineering_system_context_canary_v2",
+                "source_schema_version": 2,
+                "system_head": HEAD,
+                "comparability": "ELIGIBLE",
+                "record_count": 2,
+                "arm_count": 2,
+                "run_set_digest": "b" * 64,
+            },
+        )
+        self.assertEqual(normalized["control_mode"], "OBSERVE_ONLY")
+        self.assertEqual(
+            normalized["gates"]["active_control"],
+            "NOT_ELIGIBLE_FOR_ACTIVE_CONTROL",
+        )
+
+        missing = deepcopy(report)
+        del missing["run_set_digest"]
+        with self.assertRaises(ValidationError):
+            normalize_context_canary_report(missing)
+
+        malformed = deepcopy(report)
+        malformed["run_set_digest"] = "B" * 64
+        with self.assertRaises(ValidationError):
+            normalize_context_canary_report(malformed)
+
+        legacy_with_digest = _report()
+        legacy_with_digest["run_set_digest"] = "b" * 64
+        with self.assertRaises(ValidationError):
+            normalize_context_canary_report(legacy_with_digest)
+
     def test_source_bound_accepts_more_than_64_valid_arms(self) -> None:
         report = _report()
         report["arms"] = [

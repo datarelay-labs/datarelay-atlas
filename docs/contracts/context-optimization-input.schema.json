@@ -59,14 +59,46 @@
       "properties": {
         "source_kind": {
           "type": "string",
-          "const": "engineering_system_context_canary_v1"
+          "enum": [
+            "engineering_system_context_canary_v1",
+            "engineering_system_context_canary_v2"
+          ]
         },
-        "source_schema_version": { "type": "integer", "const": 1 },
+        "source_schema_version": { "type": "integer", "enum": [1, 2] },
         "system_head": { "$ref": "#/$defs/head" },
         "comparability": { "type": "string", "const": "ELIGIBLE" },
         "record_count": { "$ref": "#/$defs/recordCount" },
-        "arm_count": { "type": "integer", "minimum": 2, "maximum": 256 }
-      }
+        "arm_count": { "type": "integer", "minimum": 2, "maximum": 256 },
+        "run_set_digest": { "$ref": "#/$defs/digest" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source_schema_version": { "const": 1 }
+            }
+          },
+          "then": {
+            "properties": {
+              "source_kind": { "const": "engineering_system_context_canary_v1" }
+            },
+            "not": { "required": ["run_set_digest"] }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source_schema_version": { "const": 2 }
+            }
+          },
+          "then": {
+            "properties": {
+              "source_kind": { "const": "engineering_system_context_canary_v2" }
+            },
+            "required": ["run_set_digest"]
+          }
+        }
+      ]
     },
     "gates": {
       "type": "object",
@@ -130,6 +162,10 @@
     "head": {
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     },
     "profileLabel": {
       "type": "string",
@@ -196,6 +232,9 @@
         "decision",
         "control_arm_id",
         "system_head",
+        "repository",
+        "task_kind",
+        "run_set_digest",
         "case_count",
         "arm_count",
         "observation_count",
@@ -204,15 +243,27 @@
       "properties": {
         "source_kind": {
           "type": "string",
-          "const": "engineering_system_context_shadow_v1"
+          "const": "engineering_system_context_shadow_v2"
         },
-        "source_schema_version": { "type": "integer", "const": 1 },
+        "source_schema_version": { "type": "integer", "const": 2 },
         "decision": { "type": "string", "const": "EQUIVALENT" },
         "control_arm_id": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
         },
         "system_head": { "$ref": "#/$defs/head" },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "task_kind": {
+          "type": "string",
+          "enum": [
+            "DESIGN", "DEVELOPMENT", "TEST", "REVIEW", "RELEASE",
+            "OPERATIONS", "ADOPTION", "DOCUMENTATION", "CLEANUP", "MIXED"
+          ]
+        },
+        "run_set_digest": { "$ref": "#/$defs/digest" },
         "case_count": { "$ref": "#/$defs/runCount" },
         "arm_count": { "type": "integer", "minimum": 2, "maximum": 256 },
         "observation_count": { "$ref": "#/$defs/recordCount" },

@@ -35,6 +35,7 @@ MAX_COST_PER_SOLVED = MAX_PROVIDER_COST_PER_RUN
 MAX_DECIMAL_TEXT = 64
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _ARM_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _PROFILE_RE = re.compile(r"^[A-Za-z0-9_.:@\[\]=,+-]{1,80}$")
 _DECIMAL_RE = re.compile(r"^(0|[1-9][0-9]*)(?:\.[0-9]+)?$")
@@ -56,7 +57,7 @@ _TASK_KINDS = frozenset(
     }
 )
 _PROFILE_KEYS = frozenset({"provider", "model", "reasoning", "toolset"})
-_TOP_KEYS = frozenset(
+_TOP_KEYS_V1 = frozenset(
     {
         "schema_version",
         "kind",
@@ -70,6 +71,7 @@ _TOP_KEYS = frozenset(
         "arms",
     }
 )
+_TOP_KEYS_V2 = _TOP_KEYS_V1 | frozenset({"run_set_digest"})
 _ARM_KEYS = frozenset(
     {
         "arm_id",
@@ -317,15 +319,18 @@ def _arm(value: object, *, system_head: str) -> dict:
 
 def normalize_context_canary_report(payload: object) -> dict:
     """Validate an ES comparability report and emit observation-only Atlas input."""
-    if not isinstance(payload, dict) or set(payload) != _TOP_KEYS:
+    if not isinstance(payload, dict):
         _reject("context canary report schema is invalid")
     schema_version = payload.get("schema_version")
     if (
         isinstance(schema_version, bool)
         or not isinstance(schema_version, int)
-        or schema_version != 1
+        or schema_version not in {1, 2}
     ):
         _reject("context canary report schema_version is unsupported")
+    expected_keys = _TOP_KEYS_V1 if schema_version == 1 else _TOP_KEYS_V2
+    if set(payload) != expected_keys:
+        _reject("context canary report schema is invalid")
     if payload.get("kind") != INPUT_KIND:
         _reject("context canary report kind is invalid")
     if payload.get("decision") != "ELIGIBLE":
@@ -345,6 +350,16 @@ def normalize_context_canary_report(payload: object) -> dict:
     task_kind = payload.get("task_kind")
     if not isinstance(task_kind, str) or task_kind not in _TASK_KINDS:
         _reject("context canary task_kind is invalid")
+
+    run_set_digest: str | None = None
+    if schema_version == 2:
+        candidate_digest = payload.get("run_set_digest")
+        if (
+            not isinstance(candidate_digest, str)
+            or _DIGEST_RE.fullmatch(candidate_digest) is None
+        ):
+            _reject("context canary run_set_digest is invalid")
+        run_set_digest = candidate_digest
 
     profile = _profile(payload.get("profile"))
     record_count = _nonnegative_int(
@@ -379,6 +394,21 @@ def normalize_context_canary_report(payload: object) -> dict:
         _reject("context canary record_count mismatch")
 
     arms.sort(key=lambda item: item["arm_id"])
+    source_evidence = {
+        "source_kind": (
+            "engineering_system_context_canary_v1"
+            if schema_version == 1
+            else "engineering_system_context_canary_v2"
+        ),
+        "source_schema_version": schema_version,
+        "system_head": system_head,
+        "comparability": "ELIGIBLE",
+        "record_count": record_count,
+        "arm_count": arm_count,
+    }
+    if run_set_digest is not None:
+        source_evidence["run_set_digest"] = run_set_digest
+
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": OUTPUT_KIND,
@@ -387,14 +417,7 @@ def normalize_context_canary_report(payload: object) -> dict:
             "task_kind": task_kind,
             "profile": profile,
         },
-        "source_evidence": {
-            "source_kind": "engineering_system_context_canary_v1",
-            "source_schema_version": 1,
-            "system_head": system_head,
-            "comparability": "ELIGIBLE",
-            "record_count": record_count,
-            "arm_count": arm_count,
-        },
+        "source_evidence": source_evidence,
         "gates": {
             "quality_noninferiority": "UNKNOWN",
             "data_egress_eligibility": "UNKNOWN",

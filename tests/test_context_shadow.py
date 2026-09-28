@@ -25,6 +25,7 @@ from atlas.provenance import ValidationError
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "docs/contracts/context-optimization-input.schema.json"
 HEAD = "a" * 40
+RUN_SET_DIGEST = "b" * 64
 PROFILE = {
     "provider": "cursor",
     "model": "composer-2.5",
@@ -63,13 +64,14 @@ def _arm(arm_id: str, *, kept: int) -> dict:
 def _context_input() -> dict:
     return normalize_context_canary_report(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "context-canary-eligibility-report",
             "decision": "ELIGIBLE",
             "system_head": HEAD,
             "profile": PROFILE,
             "repo": "datarelay-labs/datarelay-atlas",
             "task_kind": "DEVELOPMENT",
+            "run_set_digest": RUN_SET_DIGEST,
             "record_count": 4,
             "arm_count": 2,
             "arms": [
@@ -82,11 +84,14 @@ def _context_input() -> dict:
 
 def _shadow_report() -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "context-shadow-equivalence-report",
         "decision": "EQUIVALENT",
         "control_arm_id": "baseline",
         "system_head": HEAD,
+        "repo": "datarelay-labs/datarelay-atlas",
+        "task_kind": "DEVELOPMENT",
+        "run_set_digest": RUN_SET_DIGEST,
         "profile": PROFILE,
         "case_count": 2,
         "arm_count": 2,
@@ -135,11 +140,20 @@ class ContextShadowQualityTests(unittest.TestCase):
         self.assertEqual(bound["arms"], base["arms"])
         self.assertEqual(
             bound["quality_evidence"]["source_kind"],
-            "engineering_system_context_shadow_v1",
+            "engineering_system_context_shadow_v2",
         )
         self.assertEqual(
             bound["quality_evidence"]["control_arm_id"],
             "baseline",
+        )
+        self.assertEqual(bound["quality_evidence"]["source_schema_version"], 2)
+        self.assertEqual(
+            bound["quality_evidence"]["repository"],
+            "datarelay-labs/datarelay-atlas",
+        )
+        self.assertEqual(
+            bound["quality_evidence"]["run_set_digest"],
+            RUN_SET_DIGEST,
         )
         self.assertEqual(bound["quality_evidence"]["observation_count"], 4)
 
@@ -213,6 +227,14 @@ class ContextShadowQualityTests(unittest.TestCase):
         wrong_observations["observation_count"] = 3
         cases.append(wrong_observations)
 
+        mismatched_actions = deepcopy(_shadow_report())
+        mismatched_actions["arms"][1]["material_action_count"] = 11
+        cases.append(mismatched_actions)
+
+        legacy_shadow = deepcopy(_shadow_report())
+        legacy_shadow["schema_version"] = 1
+        cases.append(legacy_shadow)
+
         for payload in cases:
             with self.subTest(payload=payload):
                 with self.assertRaises(ValidationError):
@@ -224,6 +246,18 @@ class ContextShadowQualityTests(unittest.TestCase):
         head = deepcopy(_shadow_report())
         head["system_head"] = "b" * 40
         mutations.append(head)
+
+        repo = deepcopy(_shadow_report())
+        repo["repo"] = "datarelay-labs/other"
+        mutations.append(repo)
+
+        task_kind = deepcopy(_shadow_report())
+        task_kind["task_kind"] = "TEST"
+        mutations.append(task_kind)
+
+        run_set = deepcopy(_shadow_report())
+        run_set["run_set_digest"] = "c" * 64
+        mutations.append(run_set)
 
         profile = deepcopy(_shadow_report())
         profile["profile"]["model"] = "other-model"
@@ -245,6 +279,32 @@ class ContextShadowQualityTests(unittest.TestCase):
             with self.subTest(shadow=shadow):
                 with self.assertRaises(ValidationError):
                     bind_shadow_quality(_context_input(), shadow)
+
+    def test_legacy_base_context_cannot_receive_shadow_quality_promotion(self) -> None:
+        legacy = normalize_context_canary_report(
+            {
+                "schema_version": 1,
+                "kind": "context-canary-eligibility-report",
+                "decision": "ELIGIBLE",
+                "system_head": HEAD,
+                "profile": PROFILE,
+                "repo": "datarelay-labs/datarelay-atlas",
+                "task_kind": "DEVELOPMENT",
+                "record_count": 4,
+                "arm_count": 2,
+                "arms": [
+                    _arm("candidate", kept=1000),
+                    _arm("baseline", kept=2000),
+                ],
+            }
+        )
+        self.assertEqual(
+            legacy["source_evidence"]["source_schema_version"],
+            1,
+        )
+        self.assertNotIn("run_set_digest", legacy["source_evidence"])
+        with self.assertRaisesRegex(ValidationError, "exact run-set binding"):
+            bind_shadow_quality(legacy, _shadow_report())
 
     def test_base_context_must_be_pristine_observation_only_input(self) -> None:
         active = _context_input()
