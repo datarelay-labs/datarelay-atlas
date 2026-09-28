@@ -273,6 +273,43 @@ class ReadinessAuthorizationTests(unittest.TestCase):
         self.assertEqual(inconsistent_result["decision"], "DENY")
         self.assertEqual(inconsistent_result["reasons"], ["PLAN_INVALID"])
 
+    def test_forged_capacity_and_ready_state_cannot_authorize(self) -> None:
+        forged_capacity = plan_readiness(graph(node("candidate", 103)))
+        forged_capacity["active_count"] = 1
+        forged_capacity["available_slots"] = 0
+        result = authorize_single_effect(lambda: deepcopy(forged_capacity))
+        self.assertEqual(result["decision"], "DENY")
+        self.assertEqual(result["reasons"], ["PLAN_INVALID"])
+
+        forged_ready = plan_readiness(
+            graph(
+                node(
+                    "first",
+                    103,
+                    repository="datarelay-labs/a",
+                    branch="feature/a",
+                    priority=10,
+                ),
+                node(
+                    "second",
+                    104,
+                    repository="datarelay-labs/b",
+                    branch="feature/b",
+                    priority=20,
+                ),
+                max_wip=2,
+            )
+        )
+        forged_ready["max_wip"] = 1
+        forged_ready["available_slots"] = 1
+        forged_ready["selected_node_ids"] = ["first"]
+        forged_ready["nodes"][1]["selected"] = False
+        forged_ready["nodes"][1]["readiness"] = "READY"
+        forged_ready["nodes"][1]["reasons"] = []
+        result = authorize_single_effect(lambda: deepcopy(forged_ready))
+        self.assertEqual(result["decision"], "DENY")
+        self.assertEqual(result["reasons"], ["PLAN_INVALID"])
+
     def test_digest_is_canonical_and_replay_is_idempotent(self) -> None:
         plan = plan_readiness(graph(node("candidate", 103)))
         reordered = {key: plan[key] for key in reversed(list(plan))}

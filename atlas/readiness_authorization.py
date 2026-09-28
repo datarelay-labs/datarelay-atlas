@@ -224,6 +224,27 @@ def _validate_stable_plan(plan: object) -> dict[str, Any]:
         raise ValidationError("readiness authorization ready graph has reasons")
     if graph_state == "HUMAN_REQUIRED" and not plan["graph_reasons"]:
         raise ValidationError("readiness authorization unsafe graph lacks reasons")
+
+    expected_slots = (
+        max(0, max_wip - plan["active_count"])
+        if graph_state == "READY"
+        else 0
+    )
+    if plan["available_slots"] != expected_slots:
+        raise ValidationError(
+            "readiness authorization available_slots is inconsistent"
+        )
+    if len(selected) > plan["available_slots"]:
+        raise ValidationError(
+            "readiness authorization selection exceeds available slots"
+        )
+    if any(
+        node["readiness"] == "READY" and node["node_id"] not in selected_flags
+        for node in nodes
+    ):
+        raise ValidationError(
+            "readiness authorization unselected READY node is inconsistent"
+        )
     return plan
 
 

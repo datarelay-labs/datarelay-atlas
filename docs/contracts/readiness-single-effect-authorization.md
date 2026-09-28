@@ -30,9 +30,11 @@ The GitHub authorization path:
 3. performs two independent fresh GitHub-reconciled readiness plans;
 4. requires those two complete plan objects to be identical;
 5. requires `graph_state=READY`;
-6. requires exactly one selected node;
-7. requires that selected node to still be `READY` and selected;
-8. emits only the selected node's content-free provenance and a SHA-256 digest
+6. validates plan capacity invariants (`active_count`, `available_slots`, and
+   selected-node count) and rejects any unselected node still marked `READY`;
+7. requires exactly one selected node;
+8. requires that selected node to still be `READY` and selected;
+9. emits only the selected node's content-free provenance and a SHA-256 digest
    of the canonical stable plan.
 
 The selected provenance is limited to:
