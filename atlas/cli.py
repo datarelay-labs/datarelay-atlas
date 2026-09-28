@@ -50,6 +50,10 @@ from atlas.cursor_usage import (
 from atlas.context_optimization import load_context_canary_report
 from atlas.context_shadow import load_shadow_quality_binding
 from atlas.context_learned import load_learned_canary_binding
+from atlas.provider_transition import (
+    load_provider_transition_candidates,
+    plan_provider_transition,
+)
 from atlas.host_worker import load_host_worker_config, run_once
 from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
@@ -1021,6 +1025,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     usage_capacity.add_argument("--csv", required=True)
     usage_capacity.set_defaults(func=cmd_usage_capacity_input)
+    usage_transition = usage_sub.add_parser(
+        "provider-transition-plan",
+        help="Plan one advisory provider failover transition without executing it",
+    )
+    usage_transition.add_argument("--candidates", required=True)
+    usage_transition.add_argument("--required-capability", required=True)
+    usage_transition.add_argument("--current-route", required=True)
+    usage_transition.add_argument("--failure-reason", required=True)
+    usage_transition.add_argument(
+        "--prior-failed-route",
+        action="append",
+        default=[],
+    )
+    usage_transition.add_argument(
+        "--strategy",
+        choices=["CAPABILITY_FIRST", "STEWARDSHIP"],
+        default="CAPABILITY_FIRST",
+    )
+    usage_transition.add_argument("--max-attempts", type=int, default=3)
+    usage_transition.set_defaults(func=cmd_usage_provider_transition_plan)
     usage_context_canary = usage_sub.add_parser(
         "context-canary-input",
         help="Normalize Engineering System context-canary evidence into observation-only governor input",
@@ -1326,6 +1350,21 @@ def cmd_usage_summarize(args: argparse.Namespace) -> int:
 
 def cmd_usage_capacity_input(args: argparse.Namespace) -> int:
     _print_json(cursor_capacity_input(parse_usage_csv(Path(args.csv))))
+    return 0
+
+
+def cmd_usage_provider_transition_plan(args: argparse.Namespace) -> int:
+    _print_json(
+        plan_provider_transition(
+            load_provider_transition_candidates(Path(args.candidates)),
+            required_capability=args.required_capability,
+            current_route_id=args.current_route,
+            failure_reason=args.failure_reason,
+            prior_failed_route_ids=args.prior_failed_route,
+            strategy=args.strategy,
+            max_attempts=args.max_attempts,
+        )
+    )
     return 0
 
 
