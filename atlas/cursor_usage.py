@@ -727,26 +727,36 @@ def recommend(workers: Iterable[dict], *, current_observed: bool) -> dict:
 def _apply_reconciliation_uncertainty(
     workers: list[dict], observations: Iterable[dict]
 ) -> None:
-    """Fail closed only for noncanonical observations relevant to a worker branch."""
+    """Fail closed for branch-specific or trusted open repository-wide ambiguity."""
     uncertain: set[tuple[str, str]] = set()
+    repository_uncertain: set[str] = set()
     for item in observations:
         if not isinstance(item, dict) or item.get("canonical_fact") is True:
             continue
         repository = str(item.get("repository") or "").strip()
         branch = str(item.get("branch") or "").strip()
-        if not repository or not branch:
+        if not repository:
             continue
         try:
             normalized = normalize_github_repository(repository)
         except ValidationError:
             continue
-        uncertain.add((normalized, branch))
+        if branch:
+            uncertain.add((normalized, branch))
+        elif (
+            item.get("author_trust") == "trusted"
+            and item.get("issue_state") == "OPEN"
+            and item.get("packet_status") == "ACTIVE"
+        ):
+            # /work-resume treats a missing BRANCH on a trusted open ACTIVE
+            # packet as matching any current branch. Mirror that uncertainty.
+            repository_uncertain.add(normalized)
     for worker in workers:
         repository = worker.get("repository")
         branch = worker.get("branch")
         if not isinstance(repository, str) or not isinstance(branch, str):
             continue
-        if (repository, branch) in uncertain:
+        if repository in repository_uncertain or (repository, branch) in uncertain:
             worker["state"] = "ORPHAN_OR_UNKNOWN"
             worker["packet_status"] = None
 

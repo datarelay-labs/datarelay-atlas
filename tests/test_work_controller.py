@@ -996,7 +996,11 @@ class GitHubPacketObservationTests(unittest.TestCase):
             "number": 84,
             "state": pr_state,
             "merged_at": "2026-09-28T00:01:00Z" if merged else None,
-            "head": {"ref": "feature/usage-dogfood", "sha": pr_head},
+            "head": {
+                "ref": "feature/usage-dogfood",
+                "sha": pr_head,
+                "repo": {"full_name": "datarelay-labs/datarelay-atlas"},
+            },
         }
 
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
@@ -1027,12 +1031,12 @@ class GitHubPacketObservationTests(unittest.TestCase):
         self.assertNotIn("fixture body", encoded)
         self.assertNotIn("OWNER_INTENT", encoded)
 
-    def test_open_complete_packet_fails_closed(self):
+    def test_open_complete_packet_is_valid_controller_lifecycle(self):
         row = self._adapter(
             issue_state="open", packet_status="COMPLETE", pr_state="closed"
         ).read_packet_observations("datarelay-labs/datarelay-atlas")[0]
-        self.assertFalse(row["canonical_fact"])
-        self.assertIn("ISSUE_STATE_STATUS_CONFLICT", row["reasons"])
+        self.assertTrue(row["canonical_fact"])
+        self.assertNotIn("ISSUE_STATE_STATUS_CONFLICT", row["reasons"])
 
     def test_merged_pr_head_mismatch_fails_closed(self):
         row = self._adapter(
@@ -1044,6 +1048,29 @@ class GitHubPacketObservationTests(unittest.TestCase):
         self.assertFalse(row["canonical_fact"])
         self.assertEqual(row["pr_head"], HEAD_B)
         self.assertIn("PR_HEAD_MISMATCH", row["reasons"])
+
+    def test_fork_pr_with_same_branch_is_not_associated(self):
+        adapter = self._adapter(
+            issue_state="closed",
+            packet_status="COMPLETE",
+            packet_head=HEAD_A,
+            pr_head=HEAD_A,
+        )
+        original = adapter._list_pull_requests
+
+        def pulls(repository: str):
+            rows = original(repository)
+            rows[0]["head"]["repo"]["full_name"] = "someone/forked-atlas"
+            return rows
+
+        adapter._list_pull_requests = pulls
+        row = adapter.read_packet_observations(
+            "datarelay-labs/datarelay-atlas"
+        )[0]
+        self.assertTrue(row["canonical_fact"])
+        self.assertIsNone(row["pr_number"])
+        self.assertEqual(row["pr_state"], "NONE")
+        self.assertIsNone(row["pr_head"])
 
 
 if __name__ == "__main__":

@@ -3101,8 +3101,19 @@ class GitHubWorkPacketAdapter:
                 continue
             branch = str(head.get("ref") or "").strip()
             sha = str(head.get("sha") or "").strip().lower()
+            head_repo = head.get("repo")
+            head_repo_name = (
+                str(head_repo.get("full_name") or "").strip()
+                if isinstance(head_repo, dict)
+                else ""
+            )
+            try:
+                normalized_head_repo = normalize_github_repository(head_repo_name)
+            except ValidationError:
+                continue
             if (
-                not branch
+                normalized_head_repo != repo
+                or not branch
                 or len(branch) > 255
                 or any(ord(ch) < 32 or ord(ch) == 127 for ch in branch)
                 or not re.fullmatch(r"[0-9a-f]{40}", sha)
@@ -3117,6 +3128,7 @@ class GitHubWorkPacketAdapter:
                     "number": number,
                     "state": pr_state,
                     "head": sha,
+                    "head_repo": normalized_head_repo,
                 }
             )
 
@@ -3222,8 +3234,6 @@ class GitHubWorkPacketAdapter:
                 head = ""
 
             if issue_state == "closed" and raw_status != "COMPLETE":
-                reasons.append("ISSUE_STATE_STATUS_CONFLICT")
-            if issue_state == "open" and raw_status == "COMPLETE":
                 reasons.append("ISSUE_STATE_STATUS_CONFLICT")
 
             pr_number: int | None = None

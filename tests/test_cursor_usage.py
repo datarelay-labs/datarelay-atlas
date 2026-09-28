@@ -430,6 +430,8 @@ class CursorUsageWorkerTests(unittest.TestCase):
                 {
                     "repository": "datarelay-labs/datarelay-atlas",
                     "issue_number": 80,
+                    "issue_state": "OPEN",
+                    "author_trust": "trusted",
                     "branch": "feature/cursor-usage-phase0-worker-inventory",
                     "canonical_fact": False,
                     "reasons": ["PR_HEAD_MISMATCH"],
@@ -442,6 +444,50 @@ class CursorUsageWorkerTests(unittest.TestCase):
         self.assertEqual(
             report["reconciliation"][0]["reasons"], ["PR_HEAD_MISMATCH"]
         )
+
+    def test_trusted_open_branchless_packet_taints_repository_workers(self):
+        report = build_report(
+            [self._session("sess-branchless", self.workspace)],
+            [ProcessFact("sess-branchless", self.workspace, False, "quiescent")],
+            self.identities,
+            [],
+            packet_observations=[
+                {
+                    "repository": "datarelay-labs/datarelay-atlas",
+                    "issue_number": 81,
+                    "issue_state": "OPEN",
+                    "author_trust": "trusted",
+                    "packet_status": "ACTIVE",
+                    "branch": None,
+                    "canonical_fact": False,
+                    "reasons": ["BRANCH_MISSING_OR_INVALID"],
+                }
+            ],
+        )
+        worker = report["workers"][0]
+        self.assertEqual(worker["state"], "ORPHAN_OR_UNKNOWN")
+        self.assertEqual(report["advisor"]["recommendation"], "HUMAN_REQUIRED")
+
+    def test_closed_branchless_historical_packet_does_not_taint_repository(self):
+        report = build_report(
+            [self._session("sess-historical", self.workspace)],
+            [ProcessFact("sess-historical", self.workspace, False, "quiescent")],
+            self.identities,
+            [],
+            packet_observations=[
+                {
+                    "repository": "datarelay-labs/datarelay-atlas",
+                    "issue_number": 2,
+                    "issue_state": "CLOSED",
+                    "author_trust": "trusted",
+                    "branch": None,
+                    "canonical_fact": False,
+                    "reasons": ["PACKET_METADATA_INVALID"],
+                }
+            ],
+        )
+        worker = report["workers"][0]
+        self.assertEqual(worker["state"], "IDLE_REUSABLE")
 
     def test_packet_fact_without_exact_head_is_rejected(self):
         path = _write_csv("")
