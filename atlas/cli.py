@@ -36,6 +36,7 @@ from atlas.cursor_usage import (
     build_report,
     collect_github_packet_observations,
     collect_process_facts,
+    cursor_capacity_input,
     identities_for_workspaces,
     live_sessions,
     load_context_advice,
@@ -957,7 +958,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     usage = sub.add_parser(
         "usage",
-        help="Read-only Cursor worker inventory and usage-event summary",
+        help="Read-only Cursor worker, usage, and provider-capacity evidence",
     )
     usage_sub = usage.add_subparsers(dest="usage_command", required=True)
     usage_inventory = usage_sub.add_parser(
@@ -1003,6 +1004,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     usage_summarize.add_argument("--csv", required=True)
     usage_summarize.set_defaults(func=cmd_usage_summarize)
+    usage_capacity = usage_sub.add_parser(
+        "capacity-input",
+        help="Normalize Cursor Usage Events CSV into provider-neutral capacity evidence",
+    )
+    usage_capacity.add_argument("--csv", required=True)
+    usage_capacity.set_defaults(func=cmd_usage_capacity_input)
     usage_report = usage_sub.add_parser(
         "report",
         help="Inventory plus optional CSV summary and a warning advisor",
@@ -1245,6 +1252,11 @@ def cmd_usage_github_snapshot(args: argparse.Namespace) -> int:
 
 def cmd_usage_summarize(args: argparse.Namespace) -> int:
     _print_json(summary_report(parse_usage_csv(Path(args.csv))))
+    return 0
+
+
+def cmd_usage_capacity_input(args: argparse.Namespace) -> int:
+    _print_json(cursor_capacity_input(parse_usage_csv(Path(args.csv))))
     return 0
 
 
