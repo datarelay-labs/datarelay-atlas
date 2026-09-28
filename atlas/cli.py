@@ -58,6 +58,7 @@ from atlas.ops import (
     validate_prod_deployment_env,
 )
 from atlas.provenance import ValidationError
+from atlas.readiness_authorization import authorize_github_single_effect_file
 from atlas.readiness_graph import (
     MAX_NODES,
     parse_packet_selector,
@@ -1093,6 +1094,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     readiness_github_packets.add_argument("--max-wip", type=int, default=1)
     readiness_github_packets.set_defaults(func=cmd_readiness_github_packets)
+    readiness_authorize = readiness_sub.add_parser(
+        "github-authorize",
+        help="Double-reconcile one graph and emit a read-only single-effect authorization",
+    )
+    readiness_authorize.add_argument("--graph", required=True)
+    readiness_authorize.set_defaults(func=cmd_readiness_github_authorize)
 
     ops = sub.add_parser("ops", help="Service configuration and health")
     ops_sub = ops.add_subparsers(dest="ops_command", required=True)
@@ -1313,6 +1320,16 @@ def cmd_readiness_github_plan(args: argparse.Namespace) -> int:
     adapter = GitHubWorkPacketAdapter()
     _print_json(
         plan_github_reconciled_readiness_file(
+            Path(args.graph), adapter.read_readiness_packet_fact
+        )
+    )
+    return 0
+
+
+def cmd_readiness_github_authorize(args: argparse.Namespace) -> int:
+    adapter = GitHubWorkPacketAdapter()
+    _print_json(
+        authorize_github_single_effect_file(
             Path(args.graph), adapter.read_readiness_packet_fact
         )
     )

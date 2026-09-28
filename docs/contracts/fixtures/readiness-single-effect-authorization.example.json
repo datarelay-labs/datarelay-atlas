@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "kind": "readiness_single_effect_authorization",
+  "decision": "ALLOW",
+  "reasons": [],
+  "plan_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "selected_node": {
+    "node_id": "datarelay-labs/datarelay-atlas#103",
+    "repository": "datarelay-labs/datarelay-atlas",
+    "issue_number": 103,
+    "branch": "feature/readiness-single-effect-authorization",
+    "head": "254f0a3c0300292882f75d47ea3396f2658d56e7"
+  }
+}
