@@ -225,8 +225,19 @@ def _validate_stable_plan(plan: object) -> dict[str, Any]:
     if graph_state == "HUMAN_REQUIRED" and not plan["graph_reasons"]:
         raise ValidationError("readiness authorization unsafe graph lacks reasons")
 
+    observed_active_count = sum(
+        1 for node in nodes if node["readiness"] == "ACTIVE"
+    )
+    if (
+        graph_state == "READY"
+        and plan["active_count"] != observed_active_count
+    ):
+        raise ValidationError(
+            "readiness authorization active_count is inconsistent"
+        )
+
     expected_slots = (
-        max(0, max_wip - plan["active_count"])
+        max(0, max_wip - observed_active_count)
         if graph_state == "READY"
         else 0
     )
