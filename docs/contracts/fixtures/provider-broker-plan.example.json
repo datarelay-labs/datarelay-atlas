@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "kind": "provider_broker_plan",
+  "strategy": "CAPABILITY_FIRST",
+  "required_capability": "CODE_REVIEW",
+  "authority": "ADVISORY_ONLY",
+  "selected_route_id": "codex-primary",
+  "fallback_route_ids": [],
+  "eligible_routes": [
+    {
+      "route_id": "codex-primary",
+      "provider": "codex",
+      "runtime": "codex_cli",
+      "usage_mode": "chatgpt_plan",
+      "reasons": ["ELIGIBLE"],
+      "rank": [0, 10]
+    }
+  ],
+  "ineligible_routes": []
+}

@@ -125,7 +125,8 @@ def validate_provider_capacity_input(payload: object) -> dict:
     """Validate and normalize one provider-neutral capacity input."""
     if not isinstance(payload, dict) or set(payload) != _TOP_KEYS:
         _reject("provider capacity input schema is invalid")
-    if payload.get("schema_version") != SCHEMA_VERSION:
+    version = payload.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION:
         _reject("provider capacity input schema_version is unsupported")
     if payload.get("kind") != _KIND:
         _reject("provider capacity input kind is invalid")
