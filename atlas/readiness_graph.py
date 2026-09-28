@@ -95,11 +95,16 @@ def _bounded_label(value: object, *, label: str, pattern: re.Pattern[str]) -> st
 def _bounded_branch(value: object) -> str:
     if not isinstance(value, str) or not _BRANCH_RE.fullmatch(value):
         _reject("branch is invalid")
+    components = value.split("/")
     if (
         ".." in value
         or "//" in value
         or "@{" in value
-        or value.endswith(("/", ".", ".lock"))
+        or value.endswith(("/", "."))
+        or any(
+            component.startswith(".") or component.endswith(".lock")
+            for component in components
+        )
     ):
         _reject("branch is invalid")
     return value
@@ -269,8 +274,12 @@ def load_readiness_graph(path: Path) -> tuple[int, list[ReadinessNode]]:
         payload = json.loads(
             raw.decode("utf-8"), object_pairs_hook=_unique_json_object
         )
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise ValidationError("readiness graph is not valid UTF-8 JSON") from exc
+    except ValidationError:
+        raise
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        raise ValidationError(
+            "readiness graph is not valid supported UTF-8 JSON"
+        ) from exc
     return validate_readiness_graph(payload)
 
 
