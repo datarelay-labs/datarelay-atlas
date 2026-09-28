@@ -1166,6 +1166,7 @@ def _usage_inputs(args: argparse.Namespace, *, kind: str) -> dict:
 
     packet_observations = None
     github_snapshot_summary = None
+    reconciled_repositories = None
     if github_reconcile:
         repositories = {
             identity.repository
@@ -1178,8 +1179,9 @@ def _usage_inputs(args: argparse.Namespace, *, kind: str) -> dict:
             if isinstance(worker.get("repository"), str)
         )
         repositories.update(requested_repositories)
+        reconciled_repositories = sorted(repositories)
         packets, packet_observations = collect_github_packet_observations(
-            sorted(repositories)
+            reconciled_repositories
         )
     elif github_snapshot_path:
         (
@@ -1187,6 +1189,7 @@ def _usage_inputs(args: argparse.Namespace, *, kind: str) -> dict:
             packet_observations,
             github_snapshot_summary,
         ) = load_github_reconciliation_snapshot(Path(github_snapshot_path))
+        reconciled_repositories = list(github_snapshot_summary["repositories"])
     else:
         packets = load_packet_facts(Path(packet_path)) if packet_path else None
 
@@ -1208,6 +1211,7 @@ def _usage_inputs(args: argparse.Namespace, *, kind: str) -> dict:
         imported_workers=imported_workers,
         snapshot_summaries=snapshot_summaries,
         github_snapshot_summary=github_snapshot_summary,
+        reconciled_repositories=reconciled_repositories,
     )
     report["kind"] = kind
     report["observed_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

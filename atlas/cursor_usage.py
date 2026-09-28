@@ -808,9 +808,17 @@ def _apply_reconciliation_uncertainty(
 
 
 def _reconcile_imported_workers(
-    workers: list[dict], packet_facts: Iterable[PacketFact]
+    workers: list[dict],
+    packet_facts: Iterable[PacketFact],
+    *,
+    reconciled_repositories: Iterable[str] | None = None,
 ) -> None:
-    """Re-evaluate imported lifecycle facts against current canonical GitHub facts."""
+    """Re-evaluate imported lifecycle facts against current canonical GitHub facts.
+
+    reconciled_repositories records repositories for which the current GitHub
+    observation is authoritative even when it yielded zero canonical packet
+    facts. That absence clears stale snapshot lifecycle state.
+    """
     facts = list(packet_facts)
     packets = _packet_index(facts)
     packet_branches = {
@@ -819,6 +827,9 @@ def _reconcile_imported_workers(
     packet_repositories = {
         normalize_github_repository(fact.repository) for fact in facts
     }
+    coverage = set(packet_repositories)
+    for repository in reconciled_repositories or []:
+        coverage.add(normalize_github_repository(str(repository)))
     for worker in workers:
         repository = worker.get("repository")
         branch = worker.get("branch")
@@ -827,7 +838,7 @@ def _reconcile_imported_workers(
             not isinstance(repository, str)
             or not isinstance(branch, str)
             or not isinstance(head, str)
-            or repository not in packet_repositories
+            or repository not in coverage
         ):
             continue
         structural = worker.get("state") in {
@@ -901,6 +912,7 @@ def build_report(
     imported_workers: Iterable[dict] | None = None,
     snapshot_summaries: Iterable[dict] | None = None,
     github_snapshot_summary: dict | None = None,
+    reconciled_repositories: Iterable[str] | None = None,
 ) -> dict:
     packet_list = list(packet_facts or [])
     workers = classify_workers(sessions, processes, identities, packet_list)
@@ -911,7 +923,11 @@ def build_report(
             worker["host_id"] = local_host_id
 
     imported = [dict(item) for item in (imported_workers or [])]
-    _reconcile_imported_workers(imported, packet_list)
+    _reconcile_imported_workers(
+        imported,
+        packet_list,
+        reconciled_repositories=reconciled_repositories,
+    )
     workers.extend(imported)
 
     observations = (
@@ -1367,13 +1383,27 @@ def _validate_github_observation(
     normalized_reasons.sort()
 
     if canonical:
-        if (
-            normalized_reasons
+        canonical_conflict = (
+            bool(normalized_reasons)
             or author_trust != "trusted"
             or packet_status not in PACKET_STATUSES
             or branch is None
             or head is None
-        ):
+            or (issue_state == "CLOSED" and packet_status != "COMPLETE")
+            or pr_state in {"UNKNOWN", "AMBIGUOUS"}
+            or (
+                pr_state == "NONE"
+                and (pr_number is not None or pr_head is not None)
+            )
+            or (
+                pr_state in {"OPEN", "CLOSED", "MERGED"}
+                and (pr_number is None or pr_head is None)
+            )
+            or (pr_head is not None and pr_head != head)
+            or (packet_status == "ACTIVE" and pr_state == "MERGED")
+            or (packet_status == "COMPLETE" and pr_state == "OPEN")
+        )
+        if canonical_conflict:
             _reject(
                 f"GitHub snapshot observations[{index}] canonical fact is inconsistent"
             )

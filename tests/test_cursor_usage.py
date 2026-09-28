@@ -1009,6 +1009,23 @@ class CursorUsageGitHubSnapshotTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             load_github_reconciliation_snapshot(path)
 
+    def test_canonical_snapshot_recomputes_pr_and_head_consistency(self):
+        path = self._snapshot_path()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        row = payload["observations"][0]
+
+        row["packet_status"] = "ACTIVE"
+        row["pr_state"] = "MERGED"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaises(ValidationError):
+            load_github_reconciliation_snapshot(path)
+
+        payload = json.loads(self._snapshot_path().read_text(encoding="utf-8"))
+        payload["observations"][0]["pr_head"] = "b" * 40
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaises(ValidationError):
+            load_github_reconciliation_snapshot(path)
+
     def test_noncanonical_legacy_status_round_trips_but_cannot_be_canonical(self):
         path = self._snapshot_path()
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1036,6 +1053,56 @@ class CursorUsageGitHubSnapshotTests(unittest.TestCase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         with self.assertRaises(ValidationError):
             load_github_reconciliation_snapshot(path)
+
+    def test_declared_repository_without_canonical_facts_clears_stale_lifecycle(self):
+        worker = CursorUsageSnapshotTests()._worker(state="TERMINAL_WORK_SURVIVOR")
+        worker["packet_status"] = "COMPLETE"
+        worker_path = CursorUsageSnapshotTests()._snapshot(worker)
+
+        github_path = _write_csv("")
+        github_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "cursor_github_reconciliation",
+                    "observed_at": "2026-09-28T00:00:00Z",
+                    "repositories": ["datarelay-labs/datarelay-atlas"],
+                    "observations": [],
+                    "summary": {
+                        "observed_count": 0,
+                        "canonical_count": 0,
+                        "noncanonical_count": 0,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            patch(
+                "atlas.cli.live_sessions",
+                side_effect=AssertionError("local worker discovery was invoked"),
+            ),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            rc = main(
+                [
+                    "usage",
+                    "report",
+                    "--no-local-workers",
+                    "--worker-snapshot",
+                    str(worker_path),
+                    "--github-snapshot",
+                    str(github_path),
+                ]
+            )
+        self.assertEqual(rc, 0, stderr.getvalue())
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(report["workers"][0]["state"], "IDLE_REUSABLE")
+        self.assertIsNone(report["workers"][0]["packet_status"])
+        self.assertEqual(report["github_snapshot"]["canonical_count"], 0)
 
     def test_central_mode_uses_snapshots_without_local_agent_discovery(self):
         worker = CursorUsageSnapshotTests()._worker()
