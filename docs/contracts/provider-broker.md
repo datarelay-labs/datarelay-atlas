@@ -55,11 +55,17 @@ route is eligible. Validation recomputes that expiry from the retained
 observations. A serialized plan that moves `evidence_fresh_until` later than
 that minimum is rejected, including when the new value is still at or before
 `evaluated_at + max_evidence_age_seconds`. Consumption passes an explicit
-`consumed_at` UTC timestamp and does not read a wall clock. An eligible plan
-remains acceptable only while `evaluated_at <= consumed_at <= evidence_fresh_until`.
-A later serialized or cached replay fails closed, and the consumer must replan
-from the candidates. The transition validator applies that same consumption
-instant to its embedded broker plan.
+`consumed_at` UTC timestamp and a trusted
+`expected_max_evidence_age_seconds` policy value; neither comes from the
+serialized plan. Validation requires the plan's recorded maximum age to equal
+that trusted consumer policy before recomputing any expiry. A coordinated
+payload edit that widens both `max_evidence_age_seconds` and the route/plan
+expiry fields therefore fails closed. The validator does not read a wall clock.
+An eligible plan remains acceptable only while
+`evaluated_at <= consumed_at <= evidence_fresh_until`. A later serialized or
+cached replay fails closed, and the consumer must replan from the candidates.
+The transition validator forwards the same consumption instant and trusted
+maximum-age policy to its embedded broker plan.
 
 Capacity facts are never estimated. Unknown capacity stays `UNKNOWN` and cannot
 be made eligible by an attractive preference rank.

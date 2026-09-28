@@ -13,7 +13,7 @@ from referencing import Registry, Resource
 
 from atlas.provider_broker import (
     plan_provider_routes,
-    validate_provider_broker_plan,
+    validate_provider_broker_plan as _validate_provider_broker_plan,
     validate_provider_route_candidate,
 )
 from atlas.provider_capacity import (
@@ -39,6 +39,19 @@ def _descriptor(provider: str) -> dict:
 
 FRESH_EVALUATED_AT = "2026-09-28T00:00:00Z"
 FRESH_MAX_EVIDENCE_AGE_SECONDS = 0
+
+
+def validate_provider_broker_plan(
+    payload: object,
+    *,
+    consumed_at: str,
+    expected_max_evidence_age_seconds: int = FRESH_MAX_EVIDENCE_AGE_SECONDS,
+):
+    return _validate_provider_broker_plan(
+        payload,
+        consumed_at=consumed_at,
+        expected_max_evidence_age_seconds=expected_max_evidence_age_seconds,
+    )
 
 
 def plan_fresh_routes(candidates: object, **kwargs: object):
@@ -454,7 +467,9 @@ class ProviderBrokerTests(unittest.TestCase):
             ValidationError, "evidence expiry is out of range"
         ):
             validate_provider_broker_plan(
-                tampered, consumed_at="9999-12-31T23:59:59Z"
+                tampered,
+                consumed_at="9999-12-31T23:59:59Z",
+                expected_max_evidence_age_seconds=1,
             )
 
     def test_output_is_content_free_and_has_no_effect_authority(self):
@@ -672,6 +687,7 @@ class ProviderBrokerTests(unittest.TestCase):
             validate_provider_broker_plan(
                 bounded,
                 consumed_at="2026-09-28T00:00:01Z",
+                expected_max_evidence_age_seconds=1,
             )["selected_route_id"],
             "codex-earlier",
         )
@@ -679,6 +695,7 @@ class ProviderBrokerTests(unittest.TestCase):
             validate_provider_broker_plan(
                 bounded,
                 consumed_at="2026-09-28T00:00:02Z",
+                expected_max_evidence_age_seconds=1,
             )
         extended = deepcopy(bounded)
         extended["evidence_fresh_until"] = "2026-09-28T00:00:03Z"
@@ -686,6 +703,7 @@ class ProviderBrokerTests(unittest.TestCase):
             validate_provider_broker_plan(
                 extended,
                 consumed_at="2026-09-28T00:00:01Z",
+                expected_max_evidence_age_seconds=1,
             )
         missing = deepcopy(plan)
         del missing["evidence_fresh_until"]
@@ -758,6 +776,7 @@ class ProviderBrokerTests(unittest.TestCase):
             validate_provider_broker_plan(
                 plan,
                 consumed_at="2026-09-28T00:00:01Z",
+                expected_max_evidence_age_seconds=1,
             ),
             plan,
         )
@@ -768,6 +787,7 @@ class ProviderBrokerTests(unittest.TestCase):
             validate_provider_broker_plan(
                 extended,
                 consumed_at="2026-09-28T00:00:01Z",
+                expected_max_evidence_age_seconds=1,
             )
 
         shifted_route = deepcopy(plan)
@@ -776,6 +796,32 @@ class ProviderBrokerTests(unittest.TestCase):
             validate_provider_broker_plan(
                 shifted_route,
                 consumed_at="2026-09-28T00:00:01Z",
+                expected_max_evidence_age_seconds=1,
+            )
+
+    def test_serialized_plan_cannot_widen_trusted_max_age(self):
+        candidate = _candidate(
+            "codex",
+            "codex-primary",
+            capability_rank=0,
+            stewardship_rank=0,
+        )
+        plan = plan_fresh_routes(
+            [candidate],
+            required_capability="CODE_REVIEW",
+        )
+        widened = deepcopy(plan)
+        widened["max_evidence_age_seconds"] = 3600
+        widened["evidence_fresh_until"] = "2026-09-28T01:00:00Z"
+        widened["eligible_routes"][0]["fresh_until"] = "2026-09-28T01:00:00Z"
+
+        with self.assertRaisesRegex(
+            ValidationError, "max evidence age does not match trusted policy"
+        ):
+            validate_provider_broker_plan(
+                widened,
+                consumed_at="2026-09-28T00:01:00Z",
+                expected_max_evidence_age_seconds=0,
             )
 
     def test_module_has_no_execution_or_provider_transport_dependency(self):

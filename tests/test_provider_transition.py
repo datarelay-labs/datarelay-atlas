@@ -19,7 +19,7 @@ from atlas.provider_broker import plan_provider_routes
 from atlas.provider_transition import (
     load_provider_transition_candidates,
     plan_provider_transition as _plan_provider_transition,
-    validate_provider_transition_plan,
+    validate_provider_transition_plan as _validate_provider_transition_plan,
 )
 from tests.test_provider_broker import FRESH_EVALUATED_AT, FRESH_MAX_EVIDENCE_AGE_SECONDS
 from atlas.provenance import ValidationError
@@ -28,6 +28,19 @@ from tests.test_provider_broker import CONTRACTS, _candidate, _json
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = CONTRACTS / "provider-transition-plan.schema.json"
 BROKER_SCHEMA = CONTRACTS / "provider-broker-plan.schema.json"
+
+
+def validate_provider_transition_plan(
+    payload: object,
+    *,
+    consumed_at: str,
+    expected_max_evidence_age_seconds: int = FRESH_MAX_EVIDENCE_AGE_SECONDS,
+):
+    return _validate_provider_transition_plan(
+        payload,
+        consumed_at=consumed_at,
+        expected_max_evidence_age_seconds=expected_max_evidence_age_seconds,
+    )
 
 
 def _plan_transition(*args: object, **kwargs: object):
@@ -259,6 +272,29 @@ class ProviderTransitionTests(unittest.TestCase):
             validate_provider_transition_plan(
                 result,
                 consumed_at="2026-09-28T00:00:01Z",
+            )
+
+    def test_serialized_transition_cannot_widen_trusted_max_age(self) -> None:
+        result = _plan_transition(
+            _candidates(),
+            required_capability="CODE_REVIEW",
+            current_route_id="codex-primary",
+            failure_reason="QUOTA_EXHAUSTED",
+        )
+        widened = deepcopy(result)
+        remaining = widened["remaining_plan"]
+        remaining["max_evidence_age_seconds"] = 3600
+        remaining["evidence_fresh_until"] = "2026-09-28T01:00:00Z"
+        for route in remaining["eligible_routes"]:
+            route["fresh_until"] = "2026-09-28T01:00:00Z"
+
+        with self.assertRaisesRegex(
+            ValidationError, "max evidence age does not match trusted policy"
+        ):
+            validate_provider_transition_plan(
+                widened,
+                consumed_at="2026-09-28T00:01:00Z",
+                expected_max_evidence_age_seconds=0,
             )
 
     def test_current_route_must_be_selected_and_not_already_failed(self) -> None:

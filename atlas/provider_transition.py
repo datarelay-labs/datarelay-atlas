@@ -219,6 +219,7 @@ def plan_provider_transition(
             "remaining_plan": remaining_plan,
         },
         consumed_at=evaluated_at,
+        expected_max_evidence_age_seconds=max_evidence_age_seconds,
     )
 
 
@@ -226,11 +227,12 @@ def validate_provider_transition_plan(
     payload: object,
     *,
     consumed_at: str,
+    expected_max_evidence_age_seconds: int,
 ) -> dict[str, Any]:
     """Validate one content-free advisory transition plan.
 
-    ``consumed_at`` is forwarded to the embedded broker plan. This validator
-    does not read a wall clock.
+    ``consumed_at`` and the trusted maximum evidence age are forwarded to
+    the embedded broker plan. This validator does not read a wall clock.
     """
     _utc_instant(consumed_at, label="consumed_at")
     if not isinstance(payload, dict) or set(payload) != _KEYS:
@@ -299,6 +301,7 @@ def validate_provider_transition_plan(
         else validate_provider_broker_plan(
             remaining_raw,
             consumed_at=consumed_at,
+            expected_max_evidence_age_seconds=expected_max_evidence_age_seconds,
         )
     )
     if remaining is not None:

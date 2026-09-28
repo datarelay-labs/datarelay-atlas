@@ -243,6 +243,7 @@ def _validated_plan_freshness(
     payload: dict,
     *,
     eligible: list[dict],
+    expected_max_evidence_age_seconds: int,
 ) -> tuple[str, int, str | None, datetime, datetime | None]:
     """Recompute plan expiry from each eligible route's retained observation.
 
@@ -252,6 +253,9 @@ def _validated_plan_freshness(
     """
     evaluated = _utc_instant(payload.get("evaluated_at"), label="evaluated_at")
     max_age = _max_evidence_age_seconds(payload.get("max_evidence_age_seconds"))
+    expected_max_age = _max_evidence_age_seconds(expected_max_evidence_age_seconds)
+    if max_age != expected_max_age:
+        _reject("provider broker plan max evidence age does not match trusted policy")
     raw_until = payload.get("evidence_fresh_until")
     if not eligible:
         if raw_until is not None:
@@ -451,7 +455,11 @@ def plan_provider_routes(
         "eligible_routes": eligible,
         "ineligible_routes": ineligible,
     }
-    return validate_provider_broker_plan(plan, consumed_at=evaluated_at)
+    return validate_provider_broker_plan(
+        plan,
+        consumed_at=evaluated_at,
+        expected_max_evidence_age_seconds=evidence_age_seconds,
+    )
 def _validate_summary(item: object, *, eligible: bool) -> dict:
     expected = {"route_id", "provider", "runtime", "usage_mode", "reasons"}
     if eligible:
@@ -497,12 +505,17 @@ def _validate_summary(item: object, *, eligible: bool) -> dict:
         if reasons != sorted(reasons, key=_REASON_ORDER.__getitem__):
             _reject("provider broker ineligible reasons are not deterministic")
     return normalized
-def validate_provider_broker_plan(payload: object, *, consumed_at: str) -> dict:
-    """Validate a content-free advisory broker plan at an explicit instant.
+def validate_provider_broker_plan(
+    payload: object,
+    *,
+    consumed_at: str,
+    expected_max_evidence_age_seconds: int,
+) -> dict:
+    """Validate a broker plan against explicit time and trusted age policy.
 
-    ``consumed_at`` is caller-supplied. This validator does not read a wall
-    clock. An eligible plan is accepted only inside its recorded evidence
-    window; a later replay fails closed so the consumer must replan.
+    Both ``consumed_at`` and ``expected_max_evidence_age_seconds`` are
+    caller-supplied. The serialized plan cannot widen its own freshness policy.
+    This validator does not read a wall clock.
     """
     if not isinstance(payload, dict) or set(payload) != _PLAN_KEYS:
         _reject("provider broker plan schema is invalid")
@@ -561,7 +574,11 @@ def validate_provider_broker_plan(payload: object, *, consumed_at: str) -> dict:
         evidence_fresh_until,
         evaluated_instant,
         fresh_until,
-    ) = _validated_plan_freshness(payload, eligible=eligible)
+    ) = _validated_plan_freshness(
+        payload,
+        eligible=eligible,
+        expected_max_evidence_age_seconds=expected_max_evidence_age_seconds,
+    )
     _require_plan_consumption(
         consumed_at,
         evaluated_at=evaluated_instant,
