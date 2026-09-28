@@ -10,6 +10,7 @@ from atlas.provider_broker import (
     AUTHORITY,
     STRATEGIES,
     _route_id as _broker_route_id,
+    _utc_instant,
     plan_provider_routes,
     validate_provider_broker_plan,
     validate_provider_route_candidate,
@@ -216,12 +217,22 @@ def plan_provider_transition(
             "attempt": attempt,
             "max_attempts": maximum,
             "remaining_plan": remaining_plan,
-        }
+        },
+        consumed_at=evaluated_at,
     )
 
 
-def validate_provider_transition_plan(payload: object) -> dict[str, Any]:
-    """Validate one content-free advisory transition plan."""
+def validate_provider_transition_plan(
+    payload: object,
+    *,
+    consumed_at: str,
+) -> dict[str, Any]:
+    """Validate one content-free advisory transition plan.
+
+    ``consumed_at`` is forwarded to the embedded broker plan. This validator
+    does not read a wall clock.
+    """
+    _utc_instant(consumed_at, label="consumed_at")
     if not isinstance(payload, dict) or set(payload) != _KEYS:
         _reject("provider transition plan schema is invalid")
     version = payload.get("schema_version")
@@ -285,7 +296,10 @@ def validate_provider_transition_plan(payload: object) -> dict[str, Any]:
     remaining = (
         None
         if remaining_raw is None
-        else validate_provider_broker_plan(remaining_raw)
+        else validate_provider_broker_plan(
+            remaining_raw,
+            consumed_at=consumed_at,
+        )
     )
     if remaining is not None:
         if remaining["strategy"] != strategy:

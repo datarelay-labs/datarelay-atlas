@@ -46,6 +46,21 @@ An age equal to the maximum remains eligible when every other gate passes.
 `UNKNOWN` and zero remaining capacity keep their existing reasons and do not
 gain a freshness reason.
 
+The emitted plan records `evaluated_at`, `max_evidence_age_seconds`, and
+`evidence_fresh_until`. Each eligible route retains its observation instant
+as `observed_at` (the capacity `window_end`) and its derived `fresh_until`,
+which must equal `observed_at + max_evidence_age_seconds`. The plan expiry
+must equal the earliest retained route `fresh_until`, and is null when no
+route is eligible. Validation recomputes that expiry from the retained
+observations. A serialized plan that moves `evidence_fresh_until` later than
+that minimum is rejected, including when the new value is still at or before
+`evaluated_at + max_evidence_age_seconds`. Consumption passes an explicit
+`consumed_at` UTC timestamp and does not read a wall clock. An eligible plan
+remains acceptable only while `evaluated_at <= consumed_at <= evidence_fresh_until`.
+A later serialized or cached replay fails closed, and the consumer must replan
+from the candidates. The transition validator applies that same consumption
+instant to its embedded broker plan.
+
 Capacity facts are never estimated. Unknown capacity stays `UNKNOWN` and cannot
 be made eligible by an attractive preference rank.
 

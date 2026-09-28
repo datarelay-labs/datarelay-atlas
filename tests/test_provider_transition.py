@@ -236,6 +236,31 @@ class ProviderTransitionTests(unittest.TestCase):
         self.assertEqual(reasons["openai-stale"], ["REMAINING_CAPACITY_STALE"])
         self.assertEqual(reasons["generic-future"], ["REMAINING_CAPACITY_FUTURE"])
 
+    def test_serialized_transition_replay_fails_closed_after_expiry(self) -> None:
+        result = _plan_transition(
+            _candidates(),
+            required_capability="CODE_REVIEW",
+            current_route_id="codex-primary",
+            failure_reason="QUOTA_EXHAUSTED",
+        )
+        self.assertEqual(result["decision"], "TRANSITION_RECOMMENDED")
+        self.assertEqual(
+            result["remaining_plan"]["evidence_fresh_until"],
+            FRESH_EVALUATED_AT,
+        )
+        self.assertEqual(
+            validate_provider_transition_plan(
+                result,
+                consumed_at=FRESH_EVALUATED_AT,
+            ),
+            result,
+        )
+        with self.assertRaisesRegex(ValidationError, "evidence is stale"):
+            validate_provider_transition_plan(
+                result,
+                consumed_at="2026-09-28T00:00:01Z",
+            )
+
     def test_current_route_must_be_selected_and_not_already_failed(self) -> None:
         with self.assertRaisesRegex(ValidationError, "selected eligible route"):
             _plan_transition(
@@ -348,32 +373,32 @@ class ProviderTransitionTests(unittest.TestCase):
         validator.validate(recommended)
         validator.validate(human)
         self.assertEqual(
-            validate_provider_transition_plan(recommended),
+            validate_provider_transition_plan(recommended, consumed_at=FRESH_EVALUATED_AT),
             recommended,
         )
-        self.assertEqual(validate_provider_transition_plan(human), human)
+        self.assertEqual(validate_provider_transition_plan(human, consumed_at=FRESH_EVALUATED_AT), human)
 
         contradictory = deepcopy(recommended)
         contradictory["decision"] = "HUMAN_REQUIRED"
         with self.assertRaises(JsonSchemaValidationError):
             validator.validate(contradictory)
         with self.assertRaises(ValidationError):
-            validate_provider_transition_plan(contradictory)
+            validate_provider_transition_plan(contradictory, consumed_at=FRESH_EVALUATED_AT)
 
         wrong_to = deepcopy(recommended)
         wrong_to["to_route_id"] = "openai-fallback"
         with self.assertRaises(ValidationError):
-            validate_provider_transition_plan(wrong_to)
+            validate_provider_transition_plan(wrong_to, consumed_at=FRESH_EVALUATED_AT)
 
         wrong_strategy = deepcopy(recommended)
         wrong_strategy["remaining_plan"]["strategy"] = "STEWARDSHIP"
         with self.assertRaisesRegex(ValidationError, "strategy is inconsistent"):
-            validate_provider_transition_plan(wrong_strategy)
+            validate_provider_transition_plan(wrong_strategy, consumed_at=FRESH_EVALUATED_AT)
 
         wrong_capability = deepcopy(recommended)
         wrong_capability["remaining_plan"]["required_capability"] = "PLAN"
         with self.assertRaisesRegex(ValidationError, "capability is inconsistent"):
-            validate_provider_transition_plan(wrong_capability)
+            validate_provider_transition_plan(wrong_capability, consumed_at=FRESH_EVALUATED_AT)
 
         secret_failed = deepcopy(recommended)
         secret_failed["failed_route_ids"] = ["ghp_secretlike"]
@@ -381,12 +406,12 @@ class ProviderTransitionTests(unittest.TestCase):
         with self.assertRaises(JsonSchemaValidationError):
             validator.validate(secret_failed)
         with self.assertRaises(ValidationError):
-            validate_provider_transition_plan(secret_failed)
+            validate_provider_transition_plan(secret_failed, consumed_at=FRESH_EVALUATED_AT)
 
         wrong_history = deepcopy(recommended)
         wrong_history["prior_failed_route_ids"] = ["codex-secondary"]
         with self.assertRaises(ValidationError):
-            validate_provider_transition_plan(wrong_history)
+            validate_provider_transition_plan(wrong_history, consumed_at=FRESH_EVALUATED_AT)
 
         stale_primary = _candidate(
             "codex",
@@ -408,7 +433,7 @@ class ProviderTransitionTests(unittest.TestCase):
         leaked_failed = deepcopy(recommended)
         leaked_failed["remaining_plan"] = stale_remaining
         with self.assertRaisesRegex(ValidationError, "contains a failed route"):
-            validate_provider_transition_plan(leaked_failed)
+            validate_provider_transition_plan(leaked_failed, consumed_at=FRESH_EVALUATED_AT)
 
         over_limit = _plan_transition(
             _candidates(),
@@ -420,7 +445,7 @@ class ProviderTransitionTests(unittest.TestCase):
         )
         over_limit["max_attempts"] = 1
         with self.assertRaisesRegex(ValidationError, "exceeds max_attempts"):
-            validate_provider_transition_plan(over_limit)
+            validate_provider_transition_plan(over_limit, consumed_at=FRESH_EVALUATED_AT)
 
     def test_cli_is_read_only_and_content_free(self) -> None:
         path = _write_json(_candidates())
