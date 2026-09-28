@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import io
 import json
 import subprocess
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 from copy import deepcopy
+from pathlib import Path
+from unittest.mock import patch
 
-from atlas.cli import build_parser
+from atlas.cli import build_parser, main
 from atlas.provenance import ValidationError
 from atlas.readiness_github import (
     plan_github_reconciled_readiness,
@@ -389,6 +394,39 @@ class GitHubReadinessReconciliationTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             reconcile_readiness_graph(payload, None)  # type: ignore[arg-type]
+
+    def test_cli_github_plan_normalizes_missing_gh_to_untrusted_plan(self) -> None:
+        payload = graph(graph_node("candidate", 98))
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".json", delete=False
+        ) as handle:
+            json.dump(payload, handle)
+            graph_path = Path(handle.name)
+
+        output = io.StringIO()
+        try:
+            with patch(
+                "atlas.cli.subprocess.run",
+                side_effect=FileNotFoundError("gh is unavailable"),
+            ):
+                with redirect_stdout(output):
+                    code = main(
+                        [
+                            "readiness",
+                            "github-plan",
+                            "--graph",
+                            str(graph_path),
+                        ]
+                    )
+            self.assertEqual(code, 0)
+            planned = json.loads(output.getvalue())
+            self.assertEqual(planned["graph_state"], "HUMAN_REQUIRED")
+            self.assertEqual(planned["selected_node_ids"], [])
+            item = indexed(planned)["candidate"]
+            self.assertEqual(item["readiness"], "HUMAN_REQUIRED")
+            self.assertIn("AUTHORITY_UNTRUSTED", item["reasons"])
+        finally:
+            graph_path.unlink(missing_ok=True)
 
     def test_cli_exposes_read_only_github_plan(self) -> None:
         args = build_parser().parse_args(
