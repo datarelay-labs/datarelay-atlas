@@ -1293,7 +1293,7 @@ def cmd_readiness_plan(args: argparse.Namespace) -> int:
 
 
 def cmd_readiness_github_plan(args: argparse.Namespace) -> int:
-    adapter = GitHubWorkPacketAdapter(command_runner=_subprocess_runner)
+    adapter = GitHubWorkPacketAdapter()
     _print_json(
         plan_github_reconciled_readiness_file(
             Path(args.graph), adapter.read_readiness_packet_fact
