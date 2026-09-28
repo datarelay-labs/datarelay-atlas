@@ -87,16 +87,23 @@ requirement/blocker relationship. It does not repeat Engineering System's
 trusted runtime-evidence verification.
 
 For `SETUP_ALLOWED`, Atlas records `learned_canary_evidence` but leaves
-`data_egress_eligibility=UNKNOWN` and `runtime_capability=UNKNOWN`. For
-`CANARY_READY` only, Atlas may emit the deliberately narrow states:
+`data_egress_eligibility=UNKNOWN` and `runtime_capability=UNKNOWN`. A raw
+JSON file never creates trusted `CANARY_READY` authority. Local-canary gate
+promotion additionally requires an in-process `TrustedLearnedAdmissionBoundary`
+owned by the Atlas coordinator and bound to the canonical Engineering System
+producer repository, the exact merged #126 producer head, and the SHA-256 digest
+of the normalized admission report. For trusted `CANARY_READY` only, Atlas
+may emit the deliberately narrow states:
 
 - `data_egress_eligibility=LOCAL_CANARY_EGRESS_DENY_VERIFIED`;
 - `runtime_capability=LEARNED_COMPRESSOR_LOCAL_CANARY_READY`.
 
 These states describe only the admitted local learned-compressor canary. They
-are not production eligibility and do not select or execute a compressor. If
-shadow-quality evidence is already present, Atlas reconstructs and revalidates
-the exact #119 binding before preserving `SHADOW_ACTION_EQUIVALENT`.
+are not production eligibility and do not select or execute a compressor.
+The resulting `learned_canary_evidence.trusted_source` retains only the
+producer repository/head and normalized-report digest. If shadow-quality
+evidence is already present, Atlas reconstructs and revalidates the exact #119
+binding before preserving `SHADOW_ACTION_EQUIVALENT`.
 
 Atlas therefore does not emit a winner, rank, score, or recommendation and
 does not choose COMPRESS, CLEAR, YIELD, ROUTE, or any session/model action.
@@ -115,13 +122,19 @@ PYTHONPATH=. python3 -m atlas usage context-shadow-bind \
   --shadow-report shadow-report.json
 ```
 
-To bind final Engineering System P1-A learned-canary admission evidence:
+To attach non-authorizing `SETUP_ALLOWED` Engineering System P1-A
+learned-canary evidence:
 
 ```bash
 PYTHONPATH=. python3 -m atlas usage context-learned-bind \
   --context-input context-input.json \
   --admission-report learned-canary-report.json
 ```
+
+The CLI intentionally has no option for supplying or minting the in-process
+trusted boundary. A serialized `CANARY_READY` report therefore fails closed
+on this path rather than advancing egress/runtime gates. Trusted
+`CANARY_READY` binding is coordinator-only.
 
 All commands read only bounded local JSON and print normalized content-free
 evidence. They perform no network, provider, GitHub, model, compressor, or

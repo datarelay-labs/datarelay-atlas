@@ -16,10 +16,15 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from atlas.cli import main
 from atlas.context_learned import (
     DATA_EGRESS_READY,
+    ENGINEERING_SYSTEM_ADMISSION_HEAD,
+    ENGINEERING_SYSTEM_REPO,
     RUNTIME_READY,
+    TRUST_BOUNDARY_KIND,
+    TrustedLearnedAdmissionBoundary,
     _REQUIREMENT_BLOCKERS,
     _TRUST_BLOCKERS,
     bind_learned_canary_admission,
+    learned_canary_report_digest,
     load_learned_canary_binding,
     normalize_learned_canary_report,
 )
@@ -77,6 +82,18 @@ def _setup_report() -> dict:
     return report
 
 
+def _trusted_boundary(report: dict) -> TrustedLearnedAdmissionBoundary:
+    return TrustedLearnedAdmissionBoundary(
+        {
+            "schema_version": 1,
+            "kind": TRUST_BOUNDARY_KIND,
+            "producer_repo": ENGINEERING_SYSTEM_REPO,
+            "producer_head": ENGINEERING_SYSTEM_ADMISSION_HEAD,
+            "report_digest": learned_canary_report_digest(report),
+        }
+    )
+
+
 def _write_json(payload: object) -> Path:
     handle = tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", suffix=".json", delete=False
@@ -108,7 +125,12 @@ def _legacy_context_input() -> dict:
 class ContextLearnedCanaryTests(unittest.TestCase):
     def test_canary_ready_advances_only_local_canary_gates(self) -> None:
         base = _context_input()
-        bound = bind_learned_canary_admission(base, _ready_report())
+        report = _ready_report()
+        bound = bind_learned_canary_admission(
+            base,
+            report,
+            _trusted_boundary(report),
+        )
 
         self.assertEqual(
             bound["gates"],
@@ -132,6 +154,18 @@ class ContextLearnedCanaryTests(unittest.TestCase):
         self.assertEqual(evidence["decision"], "CANARY_READY")
         self.assertTrue(evidence["requirements"]["trusted_runtime_evidence"])
         self.assertEqual(evidence["candidate"]["source_commit"], SOURCE_COMMIT)
+        self.assertEqual(
+            evidence["trusted_source"]["producer_repo"],
+            ENGINEERING_SYSTEM_REPO,
+        )
+        self.assertEqual(
+            evidence["trusted_source"]["producer_head"],
+            ENGINEERING_SYSTEM_ADMISSION_HEAD,
+        )
+        self.assertEqual(
+            evidence["trusted_source"]["report_digest"],
+            learned_canary_report_digest(report),
+        )
 
         encoded = json.dumps(bound, sort_keys=True)
         for forbidden in (
@@ -151,7 +185,12 @@ class ContextLearnedCanaryTests(unittest.TestCase):
 
     def test_canary_ready_preserves_exact_shadow_quality_binding(self) -> None:
         quality_bound = bind_shadow_quality(_context_input(), _shadow_report())
-        bound = bind_learned_canary_admission(quality_bound, _ready_report())
+        report = _ready_report()
+        bound = bind_learned_canary_admission(
+            quality_bound,
+            report,
+            _trusted_boundary(report),
+        )
 
         self.assertEqual(
             bound["gates"]["quality_noninferiority"],
@@ -172,6 +211,44 @@ class ContextLearnedCanaryTests(unittest.TestCase):
         )
         self.assertEqual(bound["control_mode"], "OBSERVE_ONLY")
 
+    def test_raw_canary_ready_cannot_mint_trust(self) -> None:
+        report = _ready_report()
+        with self.assertRaisesRegex(ValidationError, "boundary is required"):
+            bind_learned_canary_admission(_context_input(), report)
+
+        context_path = _write_json(_context_input())
+        report_path = _write_json(report)
+        with self.assertRaisesRegex(ValidationError, "boundary is required"):
+            load_learned_canary_binding(context_path, report_path)
+
+        raw_boundary = _trusted_boundary(report).payload()
+        with self.assertRaisesRegex(ValidationError, "boundary is required"):
+            bind_learned_canary_admission(
+                _context_input(),
+                report,
+                raw_boundary,
+            )
+
+        wrong_head_payload = _trusted_boundary(report).payload()
+        wrong_head_payload["producer_head"] = "a" * 40
+        wrong_head = TrustedLearnedAdmissionBoundary(wrong_head_payload)
+        with self.assertRaisesRegex(ValidationError, "producer head"):
+            bind_learned_canary_admission(
+                _context_input(),
+                report,
+                wrong_head,
+            )
+
+        wrong_digest_payload = _trusted_boundary(report).payload()
+        wrong_digest_payload["report_digest"] = "c" * 64
+        wrong_digest = TrustedLearnedAdmissionBoundary(wrong_digest_payload)
+        with self.assertRaisesRegex(ValidationError, "digest mismatch"):
+            bind_learned_canary_admission(
+                _context_input(),
+                report,
+                wrong_digest,
+            )
+
     def test_setup_allowed_attaches_evidence_without_runtime_promotion(self) -> None:
         bound = bind_learned_canary_admission(_context_input(), _setup_report())
 
@@ -188,10 +265,16 @@ class ContextLearnedCanaryTests(unittest.TestCase):
             evidence["blockers"],
             ["EXTERNAL_EGRESS_NOT_DENIED"],
         )
+        self.assertNotIn("trusted_source", evidence)
 
     def test_legacy_comparability_input_remains_bindable(self) -> None:
         legacy = _legacy_context_input()
-        bound = bind_learned_canary_admission(legacy, _ready_report())
+        report = _ready_report()
+        bound = bind_learned_canary_admission(
+            legacy,
+            report,
+            _trusted_boundary(report),
+        )
 
         self.assertEqual(
             legacy["source_evidence"]["source_schema_version"],
@@ -368,11 +451,11 @@ class ContextLearnedCanaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "bounded input size"):
             load_learned_canary_binding(context_path, Path(oversized.name))
 
-    def test_cli_binding_is_read_only_and_content_free(self) -> None:
+    def test_cli_binding_is_read_only_and_cannot_mint_ready_trust(self) -> None:
         context_path = _write_json(
             bind_shadow_quality(_context_input(), _shadow_report())
         )
-        admission_path = _write_json(_ready_report())
+        setup_path = _write_json(_setup_report())
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -383,7 +466,7 @@ class ContextLearnedCanaryTests(unittest.TestCase):
                     "--context-input",
                     str(context_path),
                     "--admission-report",
-                    str(admission_path),
+                    str(setup_path),
                 ]
             )
 
@@ -393,16 +476,31 @@ class ContextLearnedCanaryTests(unittest.TestCase):
             payload["gates"]["quality_noninferiority"],
             "SHADOW_ACTION_EQUIVALENT",
         )
-        self.assertEqual(
-            payload["gates"]["data_egress_eligibility"],
-            DATA_EGRESS_READY,
-        )
-        self.assertEqual(payload["gates"]["runtime_capability"], RUNTIME_READY)
+        self.assertEqual(payload["gates"]["data_egress_eligibility"], "UNKNOWN")
+        self.assertEqual(payload["gates"]["runtime_capability"], "UNKNOWN")
         self.assertEqual(
             payload["gates"]["active_control"],
             "NOT_ELIGIBLE_FOR_ACTIVE_CONTROL",
         )
         self.assertEqual(payload["control_mode"], "OBSERVE_ONLY")
+
+        ready_path = _write_json(_ready_report())
+        ready_stdout = io.StringIO()
+        ready_stderr = io.StringIO()
+        with redirect_stdout(ready_stdout), redirect_stderr(ready_stderr):
+            ready_rc = main(
+                [
+                    "usage",
+                    "context-learned-bind",
+                    "--context-input",
+                    str(context_path),
+                    "--admission-report",
+                    str(ready_path),
+                ]
+            )
+        self.assertEqual(ready_rc, 1)
+        self.assertEqual(ready_stdout.getvalue(), "")
+        self.assertIn("boundary is required", ready_stderr.getvalue())
 
     def test_schema_covers_base_shadow_setup_and_ready_states(self) -> None:
         schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
@@ -412,7 +510,12 @@ class ContextLearnedCanaryTests(unittest.TestCase):
         base = _context_input()
         shadow = bind_shadow_quality(base, _shadow_report())
         setup = bind_learned_canary_admission(shadow, _setup_report())
-        ready = bind_learned_canary_admission(shadow, _ready_report())
+        ready_report = _ready_report()
+        ready = bind_learned_canary_admission(
+            shadow,
+            ready_report,
+            _trusted_boundary(ready_report),
+        )
 
         for payload in (base, shadow, setup, ready):
             validator.validate(payload)
@@ -421,6 +524,25 @@ class ContextLearnedCanaryTests(unittest.TestCase):
         del missing["learned_canary_evidence"]
         with self.assertRaises(JsonSchemaValidationError):
             validator.validate(missing)
+
+        missing_trust = deepcopy(ready)
+        del missing_trust["learned_canary_evidence"]["trusted_source"]
+        with self.assertRaises(JsonSchemaValidationError):
+            validator.validate(missing_trust)
+
+        wrong_producer = deepcopy(ready)
+        wrong_producer["learned_canary_evidence"]["trusted_source"][
+            "producer_head"
+        ] = "a" * 40
+        with self.assertRaises(JsonSchemaValidationError):
+            validator.validate(wrong_producer)
+
+        setup_with_trust = deepcopy(setup)
+        setup_with_trust["learned_canary_evidence"]["trusted_source"] = deepcopy(
+            ready["learned_canary_evidence"]["trusted_source"]
+        )
+        with self.assertRaises(JsonSchemaValidationError):
+            validator.validate(setup_with_trust)
 
         contradictory = deepcopy(setup)
         contradictory["gates"]["runtime_capability"] = RUNTIME_READY
