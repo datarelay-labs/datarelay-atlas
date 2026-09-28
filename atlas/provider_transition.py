@@ -51,6 +51,7 @@ _KEYS = frozenset(
         "failure_reason",
         "from_route_id",
         "to_route_id",
+        "prior_failed_route_ids",
         "failed_route_ids",
         "attempt",
         "max_attempts",
@@ -149,6 +150,8 @@ def plan_provider_transition(
         _reject("provider transition failure_reason is unsupported")
     maximum = _positive_int(max_attempts, label="max_attempts")
     prior_failed = _normalize_failed(prior_failed_route_ids, known)
+    if len(prior_failed) >= maximum:
+        _reject("prior failures already reached max_attempts")
     if current in set(prior_failed):
         _reject("current route is already failed")
 
@@ -198,6 +201,7 @@ def plan_provider_transition(
             "failure_reason": failure_reason,
             "from_route_id": current,
             "to_route_id": to_route,
+            "prior_failed_route_ids": prior_failed,
             "failed_route_ids": failed,
             "attempt": attempt,
             "max_attempts": maximum,
@@ -233,6 +237,17 @@ def validate_provider_transition_plan(payload: object) -> dict[str, Any]:
     if failure_reason not in FAILURE_REASONS:
         _reject("provider transition failure_reason is unsupported")
 
+    prior_raw = payload.get("prior_failed_route_ids")
+    if not isinstance(prior_raw, list) or len(prior_raw) >= _MAX_ROUTES:
+        _reject("provider transition prior_failed_route_ids is invalid")
+    prior = [_broker_route_id(item) for item in prior_raw]
+    if len(set(prior)) != len(prior) or prior != sorted(prior):
+        _reject("provider transition prior_failed_route_ids is invalid")
+
+    from_route = _broker_route_id(payload.get("from_route_id"))
+    if from_route in set(prior):
+        _reject("provider transition from_route_id is already failed")
+
     failed_raw = payload.get("failed_route_ids")
     if (
         not isinstance(failed_raw, list)
@@ -241,17 +256,20 @@ def validate_provider_transition_plan(payload: object) -> dict[str, Any]:
     ):
         _reject("provider transition failed_route_ids is invalid")
     failed = [_broker_route_id(item) for item in failed_raw]
-    if len(set(failed)) != len(failed) or failed != sorted(failed):
-        _reject("provider transition failed_route_ids is invalid")
+    expected_failed = sorted([*prior, from_route])
+    if (
+        len(set(failed)) != len(failed)
+        or failed != expected_failed
+    ):
+        _reject("provider transition failed_route_ids is inconsistent")
     known = set(failed)
-    from_route = _broker_route_id(payload.get("from_route_id"))
-    if from_route not in known:
-        _reject("provider transition from_route_id is invalid")
 
     attempt = _positive_int(payload.get("attempt"), label="attempt")
     maximum = _positive_int(payload.get("max_attempts"), label="max_attempts")
     if attempt != len(failed):
         _reject("provider transition attempt does not match failed routes")
+    if attempt > maximum:
+        _reject("provider transition attempt exceeds max_attempts")
 
     remaining_raw = payload.get("remaining_plan")
     remaining = (
@@ -259,6 +277,22 @@ def validate_provider_transition_plan(payload: object) -> dict[str, Any]:
         if remaining_raw is None
         else validate_provider_broker_plan(remaining_raw)
     )
+    if remaining is not None:
+        if remaining["strategy"] != strategy:
+            _reject("provider transition remaining plan strategy is inconsistent")
+        if remaining["required_capability"] != required:
+            _reject(
+                "provider transition remaining plan capability is inconsistent"
+            )
+        remaining_ids = {
+            item["route_id"]
+            for item in (
+                remaining["eligible_routes"]
+                + remaining["ineligible_routes"]
+            )
+        }
+        if remaining_ids & known:
+            _reject("provider transition remaining plan contains a failed route")
     to_raw = payload.get("to_route_id")
     to_route = None if to_raw is None else _broker_route_id(to_raw)
     if to_route is not None and to_route in known:
@@ -303,6 +337,7 @@ def validate_provider_transition_plan(payload: object) -> dict[str, Any]:
         "failure_reason": failure_reason,
         "from_route_id": from_route,
         "to_route_id": to_route,
+        "prior_failed_route_ids": list(prior),
         "failed_route_ids": list(failed),
         "attempt": attempt,
         "max_attempts": maximum,

@@ -15,6 +15,7 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from referencing import Registry, Resource
 
 from atlas.cli import main
+from atlas.provider_broker import plan_provider_routes
 from atlas.provider_transition import (
     load_provider_transition_candidates,
     plan_provider_transition,
@@ -78,6 +79,7 @@ class ProviderTransitionTests(unittest.TestCase):
         self.assertEqual(result["authority"], "ADVISORY_ONLY")
         self.assertEqual(result["from_route_id"], "codex-primary")
         self.assertEqual(result["to_route_id"], "codex-secondary")
+        self.assertEqual(result["prior_failed_route_ids"], [])
         self.assertEqual(result["failed_route_ids"], ["codex-primary"])
         self.assertEqual(result["attempt"], 1)
         self.assertEqual(
@@ -101,6 +103,10 @@ class ProviderTransitionTests(unittest.TestCase):
 
         self.assertEqual(result["decision"], "TRANSITION_RECOMMENDED")
         self.assertEqual(result["to_route_id"], "openai-fallback")
+        self.assertEqual(
+            result["prior_failed_route_ids"],
+            ["codex-primary"],
+        )
         self.assertEqual(
             result["failed_route_ids"],
             ["codex-primary", "codex-secondary"],
@@ -305,6 +311,31 @@ class ProviderTransitionTests(unittest.TestCase):
             validator.validate(secret_failed)
         with self.assertRaises(ValidationError):
             validate_provider_transition_plan(secret_failed)
+
+        wrong_history = deepcopy(recommended)
+        wrong_history["prior_failed_route_ids"] = ["codex-secondary"]
+        with self.assertRaises(ValidationError):
+            validate_provider_transition_plan(wrong_history)
+
+        stale_primary = _candidate(
+            "codex",
+            "codex-primary",
+            capability_rank=0,
+            stewardship_rank=5,
+            remaining=None,
+        )
+        stale_remaining = plan_provider_routes(
+            [stale_primary, _candidates()[1], _candidates()[2]],
+            required_capability="CODE_REVIEW",
+        )
+        self.assertEqual(
+            stale_remaining["selected_route_id"],
+            "codex-secondary",
+        )
+        leaked_failed = deepcopy(recommended)
+        leaked_failed["remaining_plan"] = stale_remaining
+        with self.assertRaisesRegex(ValidationError, "contains a failed route"):
+            validate_provider_transition_plan(leaked_failed)
 
     def test_cli_is_read_only_and_content_free(self) -> None:
         path = _write_json(_candidates())

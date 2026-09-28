@@ -15,6 +15,7 @@
     "failure_reason",
     "from_route_id",
     "to_route_id",
+    "prior_failed_route_ids",
     "failed_route_ids",
     "attempt",
     "max_attempts",
@@ -55,6 +56,12 @@
     "from_route_id": { "$ref": "#/$defs/routeId" },
     "to_route_id": {
       "oneOf": [{ "$ref": "#/$defs/routeId" }, { "type": "null" }]
+    },
+    "prior_failed_route_ids": {
+      "type": "array",
+      "maxItems": 31,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/routeId" }
     },
     "failed_route_ids": {
       "type": "array",

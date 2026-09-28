@@ -75,10 +75,13 @@ The result is one of:
 - `HUMAN_REQUIRED / NO_ELIGIBLE_FALLBACK` when routes remain but all are
   currently ineligible under the existing policy/capability/capacity gates.
 
-The transition plan records only bounded route ids, failure classification,
-attempt counts, and the fresh remaining broker plan. It never performs the
-transition. Provider invocation and any later effect authorization require a
-separate exact-state boundary.
+The transition plan records only bounded current/prior/aggregate failed route
+ids, failure classification, attempt counts, and the remaining broker plan.
+Its validator requires `failed_route_ids` to equal the sorted union of
+`prior_failed_route_ids` and the current `from_route_id`, and forbids failed
+routes from reappearing in the remaining plan. It never performs the transition.
+Provider invocation and any later effect authorization require a separate
+exact-state boundary.
 
 Read-only CLI example:
 
