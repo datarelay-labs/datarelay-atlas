@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datarelay.local/contracts/context-optimization-input.schema.json",
+  "title": "DataRelay Atlas Context Optimization Input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "scope",
+    "source_evidence",
+    "gates",
+    "control_mode",
+    "arms"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "context_optimization_input" },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "task_kind", "profile"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "task_kind": {
+          "type": "string",
+          "enum": [
+            "DESIGN", "DEVELOPMENT", "TEST", "REVIEW", "RELEASE",
+            "OPERATIONS", "ADOPTION", "DOCUMENTATION", "CLEANUP", "MIXED"
+          ]
+        },
+        "profile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "model", "reasoning", "toolset"],
+          "properties": {
+            "provider": { "$ref": "#/$defs/profileLabel" },
+            "model": { "$ref": "#/$defs/profileLabel" },
+            "reasoning": { "$ref": "#/$defs/profileLabel" },
+            "toolset": { "$ref": "#/$defs/profileLabel" }
+          }
+        }
+      }
+    },
+    "source_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_kind",
+        "source_schema_version",
+        "system_head",
+        "comparability",
+        "record_count",
+        "arm_count"
+      ],
+      "properties": {
+        "source_kind": {
+          "type": "string",
+          "const": "engineering_system_context_canary_v1"
+        },
+        "source_schema_version": { "type": "integer", "const": 1 },
+        "system_head": { "$ref": "#/$defs/head" },
+        "comparability": { "type": "string", "const": "ELIGIBLE" },
+        "record_count": { "$ref": "#/$defs/count" },
+        "arm_count": { "type": "integer", "minimum": 2, "maximum": 64 }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quality_noninferiority",
+        "data_egress_eligibility",
+        "runtime_capability",
+        "active_control"
+      ],
+      "properties": {
+        "quality_noninferiority": { "type": "string", "const": "UNKNOWN" },
+        "data_egress_eligibility": { "type": "string", "const": "UNKNOWN" },
+        "runtime_capability": { "type": "string", "const": "UNKNOWN" },
+        "active_control": { "type": "string", "const": "NOT_ELIGIBLE" }
+      }
+    },
+    "control_mode": { "type": "string", "const": "OBSERVE_ONLY" },
+    "arms": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/arm" }
+    }
+  },
+  "$defs": {
+    "head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "profileLabel": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:@\\[\\]=,+-]{1,80}$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000000000
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    },
+    "arm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "arm_id",
+        "system_head",
+        "run_count",
+        "verified_solved_count",
+        "original_context_bytes",
+        "kept_context_bytes",
+        "reduction_ratio",
+        "provider_cost_total",
+        "cost_per_verified_solved_task",
+        "rework_total",
+        "input_tokens_total",
+        "output_tokens_total",
+        "cache_read_tokens_total",
+        "cache_write_tokens_total",
+        "tool_turns_total",
+        "retries_total",
+        "rereads_total",
+        "compactions_total",
+        "pr_rework_total",
+        "ci_rework_total",
+        "review_rework_total",
+        "human_interventions_total"
+      ],
+      "properties": {
+        "arm_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "system_head": { "$ref": "#/$defs/head" },
+        "run_count": { "type": "integer", "minimum": 1, "maximum": 1000000000000 },
+        "verified_solved_count": { "$ref": "#/$defs/count" },
+        "original_context_bytes": { "$ref": "#/$defs/count" },
+        "kept_context_bytes": { "$ref": "#/$defs/count" },
+        "reduction_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "provider_cost_total": { "$ref": "#/$defs/decimal" },
+        "cost_per_verified_solved_task": { "$ref": "#/$defs/decimal" },
+        "rework_total": { "$ref": "#/$defs/count" },
+        "input_tokens_total": { "$ref": "#/$defs/count" },
+        "output_tokens_total": { "$ref": "#/$defs/count" },
+        "cache_read_tokens_total": { "$ref": "#/$defs/count" },
+        "cache_write_tokens_total": { "$ref": "#/$defs/count" },
+        "tool_turns_total": { "$ref": "#/$defs/count" },
+        "retries_total": { "$ref": "#/$defs/count" },
+        "rereads_total": { "$ref": "#/$defs/count" },
+        "compactions_total": { "$ref": "#/$defs/count" },
+        "pr_rework_total": { "$ref": "#/$defs/count" },
+        "ci_rework_total": { "$ref": "#/$defs/count" },
+        "review_rework_total": { "$ref": "#/$defs/count" },
+        "human_interventions_total": { "$ref": "#/$defs/count" }
+      }
+    }
+  }
+}

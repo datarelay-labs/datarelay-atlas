@@ -47,6 +47,7 @@ from atlas.cursor_usage import (
     summary_report,
     summarize_usage,
 )
+from atlas.context_optimization import load_context_canary_report
 from atlas.host_worker import load_host_worker_config, run_once
 from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
@@ -1018,6 +1019,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     usage_capacity.add_argument("--csv", required=True)
     usage_capacity.set_defaults(func=cmd_usage_capacity_input)
+    usage_context_canary = usage_sub.add_parser(
+        "context-canary-input",
+        help="Normalize Engineering System context-canary evidence into observation-only governor input",
+    )
+    usage_context_canary.add_argument("--input", required=True)
+    usage_context_canary.set_defaults(func=cmd_usage_context_canary_input)
     usage_report = usage_sub.add_parser(
         "report",
         help="Inventory plus optional CSV summary and a warning advisor",
@@ -1303,6 +1310,11 @@ def cmd_usage_summarize(args: argparse.Namespace) -> int:
 
 def cmd_usage_capacity_input(args: argparse.Namespace) -> int:
     _print_json(cursor_capacity_input(parse_usage_csv(Path(args.csv))))
+    return 0
+
+
+def cmd_usage_context_canary_input(args: argparse.Namespace) -> int:
+    _print_json(load_context_canary_report(Path(args.input)))
     return 0
 
 
