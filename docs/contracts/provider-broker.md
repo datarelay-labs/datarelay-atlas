@@ -67,6 +67,16 @@ cached replay fails closed, and the consumer must replan from the candidates.
 The transition validator forwards the same consumption instant and trusted
 maximum-age policy to its embedded broker plan.
 
+Serialized consumption also requires an out-of-band trusted SHA-256 identity.
+`provider_broker_plan_digest(plan)` computes the canonical broker-plan digest,
+and `provider_transition_plan_digest(plan)` does the same for the entire
+transition plan. Consumers must preserve the expected digest separately from
+the modifiable serialized payload and provide it during validation. A transition
+digest binds its embedded broker plan as part of the outer object. Changing
+`evaluated_at`, retained `observed_at`, route expiry, and plan expiry together
+therefore cannot mint a replacement freshness window: the trusted digest no
+longer matches. The digest is identity evidence, not execution authority.
+
 Capacity facts are never estimated. Unknown capacity stays `UNKNOWN` and cannot
 be made eligible by an attractive preference rank.
 

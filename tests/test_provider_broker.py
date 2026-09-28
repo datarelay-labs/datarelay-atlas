@@ -13,6 +13,7 @@ from referencing import Registry, Resource
 
 from atlas.provider_broker import (
     plan_provider_routes,
+    provider_broker_plan_digest,
     validate_provider_broker_plan as _validate_provider_broker_plan,
     validate_provider_route_candidate,
 )
@@ -46,11 +47,17 @@ def validate_provider_broker_plan(
     *,
     consumed_at: str,
     expected_max_evidence_age_seconds: int = FRESH_MAX_EVIDENCE_AGE_SECONDS,
+    expected_plan_digest: str | None = None,
 ):
     return _validate_provider_broker_plan(
         payload,
         consumed_at=consumed_at,
         expected_max_evidence_age_seconds=expected_max_evidence_age_seconds,
+        expected_plan_digest=(
+            expected_plan_digest
+            if expected_plan_digest is not None
+            else provider_broker_plan_digest(payload)
+        ),
     )
 
 
@@ -822,6 +829,35 @@ class ProviderBrokerTests(unittest.TestCase):
                 widened,
                 consumed_at="2026-09-28T00:01:00Z",
                 expected_max_evidence_age_seconds=0,
+            )
+
+    def test_serialized_plan_cannot_shift_freshness_window_with_trusted_digest(self):
+        candidate = _candidate(
+            "codex",
+            "codex-primary",
+            capability_rank=0,
+            stewardship_rank=0,
+        )
+        plan = plan_fresh_routes(
+            [candidate],
+            required_capability="CODE_REVIEW",
+        )
+        trusted_digest = provider_broker_plan_digest(plan)
+
+        shifted = deepcopy(plan)
+        shifted["evaluated_at"] = "2026-09-28T00:01:00Z"
+        shifted["evidence_fresh_until"] = "2026-09-28T00:01:00Z"
+        shifted["eligible_routes"][0]["observed_at"] = "2026-09-28T00:01:00Z"
+        shifted["eligible_routes"][0]["fresh_until"] = "2026-09-28T00:01:00Z"
+
+        with self.assertRaisesRegex(
+            ValidationError, "digest does not match trusted identity"
+        ):
+            validate_provider_broker_plan(
+                shifted,
+                consumed_at="2026-09-28T00:01:00Z",
+                expected_max_evidence_age_seconds=0,
+                expected_plan_digest=trusted_digest,
             )
 
     def test_module_has_no_execution_or_provider_transport_dependency(self):

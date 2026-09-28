@@ -7,6 +7,8 @@ provider execution, credential, session, or mutation authority.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -93,12 +95,38 @@ _INELIGIBLE_REASONS = (
 _UTC_TIMESTAMP_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$"
 )
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_EVIDENCE_AGE_SECONDS = 366 * 24 * 60 * 60
 _REASON_ORDER = {value: index for index, value in enumerate(_INELIGIBLE_REASONS)}
 
 
 def _reject(message: str) -> None:
     raise ValidationError(message)
+
+
+def provider_broker_plan_digest(payload: object) -> str:
+    """Return a deterministic content digest for out-of-band plan identity."""
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("provider broker plan is not canonical JSON") from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _require_trusted_plan_digest(payload: object, expected_plan_digest: str) -> None:
+    if (
+        not isinstance(expected_plan_digest, str)
+        or _DIGEST_RE.fullmatch(expected_plan_digest) is None
+    ):
+        _reject("expected provider broker plan digest is invalid")
+    if provider_broker_plan_digest(payload) != expected_plan_digest:
+        _reject("provider broker plan digest does not match trusted identity")
 
 
 def _route_id(value: object) -> str:
@@ -459,6 +487,7 @@ def plan_provider_routes(
         plan,
         consumed_at=evaluated_at,
         expected_max_evidence_age_seconds=evidence_age_seconds,
+        expected_plan_digest=provider_broker_plan_digest(plan),
     )
 def _validate_summary(item: object, *, eligible: bool) -> dict:
     expected = {"route_id", "provider", "runtime", "usage_mode", "reasons"}
@@ -510,15 +539,18 @@ def validate_provider_broker_plan(
     *,
     consumed_at: str,
     expected_max_evidence_age_seconds: int,
+    expected_plan_digest: str,
 ) -> dict:
-    """Validate a broker plan against explicit time and trusted age policy.
+    """Validate a broker plan against trusted policy and out-of-band identity.
 
-    Both ``consumed_at`` and ``expected_max_evidence_age_seconds`` are
-    caller-supplied. The serialized plan cannot widen its own freshness policy.
-    This validator does not read a wall clock.
+    ``consumed_at``, ``expected_max_evidence_age_seconds``, and
+    ``expected_plan_digest`` are caller-supplied. The digest binds the full
+    serialized plan so coordinated timestamp edits cannot mint a new freshness
+    window. This validator does not read a wall clock.
     """
     if not isinstance(payload, dict) or set(payload) != _PLAN_KEYS:
         _reject("provider broker plan schema is invalid")
+    _require_trusted_plan_digest(payload, expected_plan_digest)
     version = payload.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION:
         _reject("provider broker plan schema_version is unsupported")

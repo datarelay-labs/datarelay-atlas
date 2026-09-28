@@ -19,6 +19,7 @@ from atlas.provider_broker import plan_provider_routes
 from atlas.provider_transition import (
     load_provider_transition_candidates,
     plan_provider_transition as _plan_provider_transition,
+    provider_transition_plan_digest,
     validate_provider_transition_plan as _validate_provider_transition_plan,
 )
 from tests.test_provider_broker import FRESH_EVALUATED_AT, FRESH_MAX_EVIDENCE_AGE_SECONDS
@@ -35,11 +36,17 @@ def validate_provider_transition_plan(
     *,
     consumed_at: str,
     expected_max_evidence_age_seconds: int = FRESH_MAX_EVIDENCE_AGE_SECONDS,
+    expected_transition_plan_digest: str | None = None,
 ):
     return _validate_provider_transition_plan(
         payload,
         consumed_at=consumed_at,
         expected_max_evidence_age_seconds=expected_max_evidence_age_seconds,
+        expected_transition_plan_digest=(
+            expected_transition_plan_digest
+            if expected_transition_plan_digest is not None
+            else provider_transition_plan_digest(payload)
+        ),
     )
 
 
@@ -295,6 +302,33 @@ class ProviderTransitionTests(unittest.TestCase):
                 widened,
                 consumed_at="2026-09-28T00:01:00Z",
                 expected_max_evidence_age_seconds=0,
+            )
+
+    def test_serialized_transition_cannot_shift_freshness_window_with_trusted_digest(self) -> None:
+        result = _plan_transition(
+            _candidates(),
+            required_capability="CODE_REVIEW",
+            current_route_id="codex-primary",
+            failure_reason="QUOTA_EXHAUSTED",
+        )
+        trusted_digest = provider_transition_plan_digest(result)
+
+        shifted = deepcopy(result)
+        remaining = shifted["remaining_plan"]
+        remaining["evaluated_at"] = "2026-09-28T00:01:00Z"
+        remaining["evidence_fresh_until"] = "2026-09-28T00:01:00Z"
+        for route in remaining["eligible_routes"]:
+            route["observed_at"] = "2026-09-28T00:01:00Z"
+            route["fresh_until"] = "2026-09-28T00:01:00Z"
+
+        with self.assertRaisesRegex(
+            ValidationError, "digest does not match trusted identity"
+        ):
+            validate_provider_transition_plan(
+                shifted,
+                consumed_at="2026-09-28T00:01:00Z",
+                expected_max_evidence_age_seconds=0,
+                expected_transition_plan_digest=trusted_digest,
             )
 
     def test_current_route_must_be_selected_and_not_already_failed(self) -> None:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,7 @@ from atlas.provider_broker import (
     _route_id as _broker_route_id,
     _utc_instant,
     plan_provider_routes,
+    provider_broker_plan_digest,
     validate_provider_broker_plan,
     validate_provider_route_candidate,
 )
@@ -40,6 +43,7 @@ DECISION_REASONS = frozenset(
 )
 _MAX_ROUTES = 32
 _MAX_INPUT_BYTES = 1024 * 1024
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _KEYS = frozenset(
     {
         "schema_version",
@@ -63,6 +67,33 @@ _KEYS = frozenset(
 
 def _reject(message: str) -> None:
     raise ValidationError(message)
+
+
+def provider_transition_plan_digest(payload: object) -> str:
+    """Return a deterministic content digest for out-of-band transition identity."""
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("provider transition plan is not canonical JSON") from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _require_trusted_transition_digest(
+    payload: object, expected_transition_plan_digest: str
+) -> None:
+    if (
+        not isinstance(expected_transition_plan_digest, str)
+        or _DIGEST_RE.fullmatch(expected_transition_plan_digest) is None
+    ):
+        _reject("expected provider transition plan digest is invalid")
+    if provider_transition_plan_digest(payload) != expected_transition_plan_digest:
+        _reject("provider transition plan digest does not match trusted identity")
 
 
 def _positive_int(value: object, *, label: str) -> int:
@@ -200,8 +231,7 @@ def plan_provider_transition(
         decision_reason = "ELIGIBLE_FALLBACK"
         to_route = remaining_plan["selected_route_id"]
 
-    return validate_provider_transition_plan(
-        {
+    plan = {
             "schema_version": SCHEMA_VERSION,
             "kind": KIND,
             "authority": AUTHORITY,
@@ -217,9 +247,12 @@ def plan_provider_transition(
             "attempt": attempt,
             "max_attempts": maximum,
             "remaining_plan": remaining_plan,
-        },
+        }
+    return validate_provider_transition_plan(
+        plan,
         consumed_at=evaluated_at,
         expected_max_evidence_age_seconds=max_evidence_age_seconds,
+        expected_transition_plan_digest=provider_transition_plan_digest(plan),
     )
 
 
@@ -228,15 +261,17 @@ def validate_provider_transition_plan(
     *,
     consumed_at: str,
     expected_max_evidence_age_seconds: int,
+    expected_transition_plan_digest: str,
 ) -> dict[str, Any]:
-    """Validate one content-free advisory transition plan.
+    """Validate one transition plan against trusted policy and plan identity.
 
-    ``consumed_at`` and the trusted maximum evidence age are forwarded to
-    the embedded broker plan. This validator does not read a wall clock.
+    The trusted transition digest binds the embedded broker plan as well as the
+    transition metadata. This validator does not read a wall clock.
     """
     _utc_instant(consumed_at, label="consumed_at")
     if not isinstance(payload, dict) or set(payload) != _KEYS:
         _reject("provider transition plan schema is invalid")
+    _require_trusted_transition_digest(payload, expected_transition_plan_digest)
     version = payload.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int) or version != 1:
         _reject("provider transition schema_version is unsupported")
@@ -302,6 +337,7 @@ def validate_provider_transition_plan(
             remaining_raw,
             consumed_at=consumed_at,
             expected_max_evidence_age_seconds=expected_max_evidence_age_seconds,
+            expected_plan_digest=provider_broker_plan_digest(remaining_raw),
         )
     )
     if remaining is not None:
