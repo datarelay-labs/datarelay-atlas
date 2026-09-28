@@ -967,26 +967,63 @@ def sanitize_rework_findings(
 
 
 def _flatten_paginated_issue_pages(raw: object) -> list[dict]:
-    """Flatten ``gh api --paginate --slurp`` issue pages.
-
-    Fail closed unless every page is a JSON array of objects, so a partial
-    window cannot be treated as the full open-issue set.
-    """
+    """Flatten a slurped list of GitHub API pages."""
     if not isinstance(raw, list):
-        raise ValidationError("gh api issues --slurp returned non-array")
+        raise ValidationError("gh api paginated response returned non-array")
     flat: list[dict] = []
     for page_idx, page in enumerate(raw):
         if not isinstance(page, list):
             raise ValidationError(
-                f"gh api issues --slurp page {page_idx} is not a JSON array"
+                f"gh api paginated page {page_idx} is not a JSON array"
             )
         for item in page:
             if not isinstance(item, dict):
                 raise ValidationError(
-                    f"gh api issues page {page_idx} returned non-object entry"
+                    f"gh api paginated page {page_idx} returned non-object entry"
                 )
             flat.append(item)
     return flat
+
+
+def _parse_paginated_json_stream(text: str) -> list[dict]:
+    """Parse either --slurp output or the JSON document stream from --paginate.
+
+    Older GitHub CLI releases support --paginate but not --slurp. Without
+    --slurp, gh writes one complete JSON array per page consecutively. Parse
+    every document and fail closed on trailing/malformed content.
+    """
+    raw = str(text or "")
+    decoder = json.JSONDecoder()
+    documents: list[object] = []
+    offset = 0
+    length = len(raw)
+    while True:
+        while offset < length and raw[offset].isspace():
+            offset += 1
+        if offset >= length:
+            break
+        try:
+            value, end = decoder.raw_decode(raw, offset)
+        except json.JSONDecodeError as exc:
+            raise ValidationError("gh api paginated response returned non-JSON") from exc
+        documents.append(value)
+        offset = end
+    if not documents:
+        raise ValidationError("gh api paginated response was empty")
+
+    if len(documents) == 1:
+        only = documents[0]
+        if not isinstance(only, list):
+            raise ValidationError("gh api paginated response returned non-array")
+        # --slurp yields [[page1...], [page2...]]. A single-page stream yields
+        # [{...}, {...}]. Normalize both to a list of pages.
+        if not only or all(isinstance(item, dict) for item in only):
+            pages: object = [only]
+        else:
+            pages = only
+    else:
+        pages = documents
+    return _flatten_paginated_issue_pages(pages)
 
 
 _TRUSTED_WORK_PACKET_AUTHOR_PERMISSIONS = frozenset({"write", "maintain", "admin"})
@@ -3310,6 +3347,30 @@ class GitHubWorkPacketAdapter:
             raise ValidationError("gh issue view returned non-object JSON")
         return payload
 
+    def _run_paginated_api(self, path: str, *, label: str) -> list[dict]:
+        """Run a complete GitHub REST listing across old and new gh releases."""
+        listed = self._run(["gh", "api", "--paginate", "--slurp", path])
+        if listed.returncode != 0:
+            detail = (listed.stderr or listed.stdout or "").strip()
+            lowered = detail.lower()
+            unsupported_slurp = "--slurp" in lowered and any(
+                marker in lowered
+                for marker in (
+                    "unknown flag",
+                    "unknown option",
+                    "flag provided but not defined",
+                )
+            )
+            if unsupported_slurp:
+                listed = self._run(["gh", "api", "--paginate", path])
+        if listed.returncode != 0:
+            detail = (listed.stderr or listed.stdout or "").strip()
+            raise ValidationError(
+                detail[:500]
+                or f"gh api {label} failed with exit {listed.returncode}"
+            )
+        return _parse_paginated_json_stream(listed.stdout or "")
+
     def _list_ai_work_issues(
         self, repository: str, *, state: str = "open"
     ) -> list[dict]:
@@ -3323,19 +3384,8 @@ class GitHubWorkPacketAdapter:
         if state not in {"open", "closed", "all"}:
             raise ValidationError(f"unsupported GitHub issue state: {state}")
         path = f"repos/{repository}/issues?state={state}&per_page=100"
-        listed = self._run(["gh", "api", "--paginate", "--slurp", path])
-        if listed.returncode != 0:
-            detail = (listed.stderr or listed.stdout or "").strip()
-            raise ValidationError(
-                detail[:500]
-                or f"gh api issues failed with exit {listed.returncode}"
-            )
-        try:
-            payload = json.loads(listed.stdout or "")
-        except json.JSONDecodeError as exc:
-            raise ValidationError("gh api issues returned non-JSON") from exc
         issues: list[dict] = []
-        for item in _flatten_paginated_issue_pages(payload):
+        for item in self._run_paginated_api(path, label="issues"):
             if "pull_request" in item:
                 continue
             title = str(item.get("title") or "")
@@ -3349,18 +3399,7 @@ class GitHubWorkPacketAdapter:
     def _list_pull_requests(self, repository: str) -> list[dict]:
         """List all pull requests for read-only packet/head reconciliation."""
         path = f"repos/{repository}/pulls?state=all&per_page=100"
-        listed = self._run(["gh", "api", "--paginate", "--slurp", path])
-        if listed.returncode != 0:
-            detail = (listed.stderr or listed.stdout or "").strip()
-            raise ValidationError(
-                detail[:500]
-                or f"gh api pulls failed with exit {listed.returncode}"
-            )
-        try:
-            payload = json.loads(listed.stdout or "")
-        except json.JSONDecodeError as exc:
-            raise ValidationError("gh api pulls returned non-JSON") from exc
-        return _flatten_paginated_issue_pages(payload)
+        return self._run_paginated_api(path, label="pulls")
 
     @staticmethod
     def _repository_active_packet(body: str, *, repository: str) -> bool:
