@@ -69,6 +69,29 @@ The route configuration therefore cannot turn `UNKNOWN` or `DENY` into
 facts remain Atlas-owned evidence and retain the semantics of the existing
 Provider Capacity Broker.
 
+## Registered live-adapter materialization
+
+`materialize_registered_provider_route_candidate()` is the canonical v1 path
+for turning an approved route into a candidate for a real registered Atlas
+adapter. It accepts no caller-supplied capability descriptor and no rank
+override.
+
+The function:
+
+1. validates the same approved route set;
+2. requires the route to exist and be enabled;
+3. requires its configured adapter to be one of the registered real v1
+   adapters: `CodexAuditProvider` or `BoundedResponsesAuditProvider`;
+4. derives the capability descriptor with the existing adapter registry;
+5. delegates to `bind_configured_provider_route()`, which rechecks configured
+   provider/runtime/usage-mode/adapter identity, capability allowlisting,
+   provider-matched capacity evidence, dynamic gates, and configured ranks.
+
+A generic `AuditPort` route may still exist in static configuration for
+testing or caller-supplied abstractions, but it cannot use the registered-live
+materialization path. Future real adapters must be added explicitly rather than
+being accepted because a caller supplied a syntactically valid descriptor.
+
 ## Safety boundary
 
 - `CONFIGURATION_ONLY` never becomes `ADVISORY_ONLY` or execution authority

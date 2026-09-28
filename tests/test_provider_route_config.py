@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import tempfile
 import unittest
@@ -12,9 +13,14 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
 from atlas.provider_broker import plan_provider_routes
+from atlas.provider_capability import (
+    codex_cli_capability_descriptor,
+    openai_responses_capability_descriptor,
+)
 from atlas.provider_route_config import (
     bind_configured_provider_route,
     load_provider_route_set,
+    materialize_registered_provider_route_candidate,
     validate_provider_route_set,
 )
 from atlas.provenance import ValidationError
@@ -369,6 +375,95 @@ class ProviderRouteConfigTests(unittest.TestCase):
         nonfinite.close()
         with self.assertRaisesRegex(ValidationError, "non-finite number"):
             load_provider_route_set(Path(nonfinite.name))
+
+    def test_registered_live_materialization_derives_canonical_descriptor(self) -> None:
+        codex = materialize_registered_provider_route_candidate(
+            _route_set(),
+            route_id="codex-primary",
+            capacity_input=_capacity("codex"),
+            gates=_gates(),
+            required_capability="CODE_REVIEW",
+        )
+        self.assertEqual(
+            codex["capability_descriptor"],
+            codex_cli_capability_descriptor(),
+        )
+        self.assertEqual(
+            codex["ranks"],
+            {
+                "capability_preference": 0,
+                "stewardship_preference": 10,
+            },
+        )
+
+        openai = materialize_registered_provider_route_candidate(
+            _route_set(),
+            route_id="openai-fallback",
+            capacity_input=_capacity("openai"),
+            gates=_gates(),
+            required_capability="CODE_REVIEW",
+        )
+        self.assertEqual(
+            openai["capability_descriptor"],
+            openai_responses_capability_descriptor(),
+        )
+
+    def test_registered_live_materialization_rejects_config_identity_drift(self) -> None:
+        route_set = _route_set()
+        route_set["routes"][0]["provider"] = "openai"
+        with self.assertRaisesRegex(
+            ValidationError,
+            "descriptor identity mismatch",
+        ):
+            materialize_registered_provider_route_candidate(
+                route_set,
+                route_id="codex-primary",
+                capacity_input=_capacity("codex"),
+                gates=_gates(),
+                required_capability="CODE_REVIEW",
+            )
+
+    def test_generic_adapter_can_exist_in_static_config_but_not_live_materialization(self) -> None:
+        route_set = _route_set()
+        route_set["routes"][0].update(
+            provider="generic",
+            runtime="audit_port",
+            usage_mode="caller_supplied",
+            adapter="AuditPort",
+        )
+        self.assertEqual(
+            validate_provider_route_set(route_set)["routes"][0]["adapter"],
+            "AuditPort",
+        )
+        with self.assertRaisesRegex(
+            ValidationError,
+            "adapter is not live-configurable",
+        ):
+            materialize_registered_provider_route_candidate(
+                route_set,
+                route_id="codex-primary",
+                capacity_input=_capacity("generic"),
+                gates=_gates(),
+                required_capability="CODE_REVIEW",
+            )
+
+    def test_live_materialization_accepts_no_descriptor_or_rank_override(self) -> None:
+        parameters = inspect.signature(
+            materialize_registered_provider_route_candidate
+        ).parameters
+        self.assertNotIn("capability_descriptor", parameters)
+        self.assertNotIn("ranks", parameters)
+
+        disabled = _route_set()
+        disabled["routes"][0]["enabled"] = False
+        with self.assertRaisesRegex(ValidationError, "route is disabled"):
+            materialize_registered_provider_route_candidate(
+                disabled,
+                route_id="codex-primary",
+                capacity_input=_capacity("codex"),
+                gates=_gates(),
+                required_capability="CODE_REVIEW",
+            )
 
     def test_module_has_no_provider_transport_or_execution_dependency(self) -> None:
         source = (ROOT / "atlas/provider_route_config.py").read_text(

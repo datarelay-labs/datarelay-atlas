@@ -14,6 +14,7 @@ from typing import Any
 from atlas.provider_broker import GATE_STATES, validate_provider_route_candidate
 from atlas.provider_capability import (
     CAPABILITY_NAMES,
+    descriptor_for_adapter,
     validate_provider_capability_descriptor,
 )
 from atlas.provider_capacity import validate_provider_capacity_input
@@ -22,6 +23,12 @@ from atlas.provenance import ValidationError
 SCHEMA_VERSION = 1
 KIND = "approved_provider_route_set"
 AUTHORITY = "CONFIGURATION_ONLY"
+CONFIGURABLE_LIVE_ADAPTERS = frozenset(
+    {
+        "CodexAuditProvider",
+        "BoundedResponsesAuditProvider",
+    }
+)
 
 _ROUTE_SET_KEYS = frozenset({"schema_version", "kind", "authority", "routes"})
 _ROUTE_KEYS = frozenset(
@@ -260,6 +267,34 @@ def bind_configured_provider_route(
             "gates": normalized_gates,
             "ranks": dict(route["ranks"]),
         }
+    )
+
+
+def materialize_registered_provider_route_candidate(
+    route_set: object,
+    *,
+    route_id: str,
+    capacity_input: object,
+    gates: object,
+    required_capability: str,
+) -> dict[str, Any]:
+    """Materialize one configured live route from its registered adapter."""
+    normalized_set = validate_provider_route_set(route_set)
+    configured_id = _identity(route_id, label="route_id", route=True)
+    route = _configured_route(normalized_set, configured_id)
+    if route["enabled"] is not True:
+        _reject("provider route config route is disabled")
+    adapter = route["adapter"]
+    if adapter not in CONFIGURABLE_LIVE_ADAPTERS:
+        _reject("provider route config adapter is not live-configurable")
+    descriptor = descriptor_for_adapter(adapter)
+    return bind_configured_provider_route(
+        normalized_set,
+        route_id=configured_id,
+        capability_descriptor=descriptor,
+        capacity_input=capacity_input,
+        gates=gates,
+        required_capability=required_capability,
     )
 
 
