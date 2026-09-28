@@ -58,6 +58,7 @@ from atlas.ops import (
     validate_prod_deployment_env,
 )
 from atlas.provenance import ValidationError
+from atlas.readiness_graph import plan_readiness_file
 from atlas.semantic_retrieval import embedding_config_from_cli
 from atlas.service import AtlasService
 from atlas.work_controller import (
@@ -1055,6 +1056,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     usage_report.set_defaults(func=cmd_usage_report)
 
+    readiness = sub.add_parser(
+        "readiness",
+        help="Read-only dependency/readiness graph planning",
+    )
+    readiness_sub = readiness.add_subparsers(
+        dest="readiness_command", required=True
+    )
+    readiness_plan = readiness_sub.add_parser(
+        "plan",
+        help="Evaluate one bounded readiness graph without dispatch",
+    )
+    readiness_plan.add_argument("--graph", required=True)
+    readiness_plan.set_defaults(func=cmd_readiness_plan)
+
     ops = sub.add_parser("ops", help="Service configuration and health")
     ops_sub = ops.add_subparsers(dest="ops_command", required=True)
     ops_check = ops_sub.add_parser(
@@ -1262,6 +1277,11 @@ def cmd_usage_capacity_input(args: argparse.Namespace) -> int:
 
 def cmd_usage_report(args: argparse.Namespace) -> int:
     _print_json(_usage_inputs(args, kind="cursor_usage_report"))
+    return 0
+
+
+def cmd_readiness_plan(args: argparse.Namespace) -> int:
+    _print_json(plan_readiness_file(Path(args.graph)))
     return 0
 
 

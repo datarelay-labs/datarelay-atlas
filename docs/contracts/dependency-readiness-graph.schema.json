@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datarelay.local/contracts/dependency-readiness-graph.schema.json",
+  "title": "DataRelay Atlas Dependency Readiness Graph v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "max_wip",
+    "nodes"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "dependency_readiness_graph" },
+    "max_wip": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 32
+    },
+    "nodes": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/node" }
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "issue_number",
+        "repository",
+        "branch",
+        "head",
+        "packet_status",
+        "queue_state",
+        "dependencies",
+        "resources",
+        "authority_state",
+        "owner_gate",
+        "human_required",
+        "priority"
+      ],
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,127}$"
+        },
+        "issue_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "branch": {
+          "type": "string",
+          "pattern": "^(?!.*(?:\\.\\.|//|@\\{))(?!.*(?:/|\\.|\\.lock)$)[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$"
+        },
+        "head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "packet_status": {
+          "type": "string",
+          "enum": ["ACTIVE", "PAUSED", "BLOCKED", "COMPLETE"]
+        },
+        "queue_state": {
+          "type": "string",
+          "enum": ["NONE", "QUEUED"]
+        },
+        "dependencies": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["node_id", "relation"],
+            "properties": {
+              "node_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,127}$"
+              },
+              "relation": {
+                "type": "string",
+                "enum": ["REQUIRES_COMPLETE"]
+              }
+            }
+          }
+        },
+        "resources": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,127}$"
+          }
+        },
+        "authority_state": {
+          "type": "string",
+          "enum": ["TRUSTED", "STALE", "AMBIGUOUS", "UNTRUSTED"]
+        },
+        "owner_gate": { "type": "boolean" },
+        "human_required": { "type": "boolean" },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    }
+  }
+}
