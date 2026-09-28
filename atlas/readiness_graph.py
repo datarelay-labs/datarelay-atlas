@@ -21,6 +21,7 @@ MAX_DEPENDENCIES = 64
 MAX_RESOURCES = 32
 MAX_WIP = 32
 MAX_PRIORITY = 1_000_000
+MAX_PACKET_SELECTOR_CHARS = 320
 _PACKET_STATUSES = frozenset({"ACTIVE", "PAUSED", "BLOCKED", "COMPLETE"})
 _QUEUE_STATES = frozenset({"NONE", "QUEUED"})
 _AUTHORITY_STATES = frozenset({"TRUSTED", "STALE", "AMBIGUOUS", "UNTRUSTED"})
@@ -28,7 +29,7 @@ _DEPENDENCY_RELATIONS = frozenset({"REQUIRES_COMPLETE"})
 _READINESS_STATES = frozenset(
     {"ACTIVE", "COMPLETE", "READY", "BLOCKED", "HUMAN_REQUIRED"}
 )
-_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,127}$")
+_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,254}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 _HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -80,6 +81,124 @@ class ReadinessNode:
     def effective_resources(self) -> tuple[str, ...]:
         implicit = f"repo_branch:{self.repository}@{self.branch}"
         return tuple(sorted(set(self.resources + (implicit,))))
+
+
+@dataclass(frozen=True)
+class PacketSelector:
+    repository: str
+    issue_number: int
+
+    @property
+    def node_id(self) -> str:
+        return f"{self.repository}#{self.issue_number}"
+
+
+_SELECTED_PACKET_PROJECTION_KEYS = frozenset(
+    {
+        "repository",
+        "issue_number",
+        "packet_status",
+        "queue_state",
+        "branch",
+        "head",
+        "after_issue",
+    }
+)
+
+
+def parse_packet_selector(value: object) -> PacketSelector:
+    """Parse one canonical owner/repo#issue selector."""
+    if not isinstance(value, str) or len(value) > MAX_PACKET_SELECTOR_CHARS:
+        _reject("packet selector must be a bounded string")
+    repository, separator, issue_text = value.rpartition("#")
+    if not separator or not repository or not re.fullmatch(r"[0-9]+", issue_text):
+        _reject("packet selector must use owner/repo#issue")
+    repository = _bounded_label(
+        repository, label="packet selector repository", pattern=_REPOSITORY_RE
+    )
+    try:
+        parsed_issue = int(issue_text)
+    except ValueError as exc:
+        raise ValidationError("packet selector issue_number is invalid") from exc
+    issue_number = _positive_int(
+        parsed_issue, label="packet selector issue_number"
+    )
+    selector = PacketSelector(repository=repository, issue_number=issue_number)
+    _bounded_label(selector.node_id, label="packet selector node_id", pattern=_NODE_ID_RE)
+    return selector
+
+
+def plan_selected_packet_projections(
+    projections: object,
+    *,
+    max_wip: int,
+) -> dict:
+    """Plan trusted selected GitHub packet projections without new inference."""
+    bounded_wip = _positive_int(max_wip, label="max_wip", maximum=MAX_WIP)
+    if not isinstance(projections, list) or len(projections) > MAX_NODES:
+        _reject("selected packet projections must be a bounded list")
+    if not projections:
+        _reject("selected packet projections must not be empty")
+
+    nodes: list[dict] = []
+    seen: set[tuple[str, int]] = set()
+    for raw in projections:
+        if not isinstance(raw, dict) or set(raw) != _SELECTED_PACKET_PROJECTION_KEYS:
+            _reject("selected packet projection schema is invalid")
+        repository = _bounded_label(
+            raw["repository"], label="repository", pattern=_REPOSITORY_RE
+        )
+        issue_number = _positive_int(raw["issue_number"], label="issue_number")
+        key = (repository, issue_number)
+        if key in seen:
+            _reject("selected packet projection contains duplicate packet")
+        seen.add(key)
+        selector = PacketSelector(repository=repository, issue_number=issue_number)
+        node_id = _bounded_label(
+            selector.node_id, label="node_id", pattern=_NODE_ID_RE
+        )
+
+        after_issue = raw["after_issue"]
+        dependencies: list[dict[str, str]] = []
+        if after_issue is not None:
+            after_number = _positive_int(after_issue, label="after_issue")
+            dependency_id = _bounded_label(
+                f"{repository}#{after_number}",
+                label="dependency node_id",
+                pattern=_NODE_ID_RE,
+            )
+            dependencies.append(
+                {"node_id": dependency_id, "relation": "REQUIRES_COMPLETE"}
+            )
+        if raw["queue_state"] == "QUEUED" and after_issue is None:
+            _reject("queued selected packet projection requires after_issue")
+
+        nodes.append(
+            {
+                "node_id": node_id,
+                "issue_number": issue_number,
+                "repository": repository,
+                "branch": raw["branch"],
+                "head": raw["head"],
+                "packet_status": raw["packet_status"],
+                "queue_state": raw["queue_state"],
+                "dependencies": dependencies,
+                "resources": [],
+                "authority_state": "TRUSTED",
+                "owner_gate": False,
+                "human_required": False,
+                "priority": 0,
+            }
+        )
+
+    return plan_readiness(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "dependency_readiness_graph",
+            "max_wip": bounded_wip,
+            "nodes": nodes,
+        }
+    )
 
 
 def _reject(message: str) -> None:

@@ -12,7 +12,13 @@ from unittest.mock import patch
 from jsonschema import Draft202012Validator
 
 from atlas.provenance import ValidationError
-from atlas.readiness_graph import MAX_GRAPH_BYTES, plan_readiness, plan_readiness_file
+from atlas.readiness_graph import (
+    MAX_GRAPH_BYTES,
+    parse_packet_selector,
+    plan_readiness,
+    plan_readiness_file,
+    plan_selected_packet_projections,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "docs/contracts/dependency-readiness-graph.schema.json"
@@ -65,6 +71,26 @@ def graph(*nodes: dict, max_wip: int = 2) -> dict:
 
 def indexed(plan: dict) -> dict[str, dict]:
     return {item["node_id"]: item for item in plan["nodes"]}
+
+
+def projection(
+    repository: str,
+    issue_number: int,
+    *,
+    packet_status: str = "PAUSED",
+    queue_state: str = "NONE",
+    after_issue: int | None = None,
+    branch: str | None = None,
+) -> dict:
+    return {
+        "repository": repository,
+        "issue_number": issue_number,
+        "packet_status": packet_status,
+        "queue_state": queue_state,
+        "branch": branch or f"feature/packet-{issue_number}",
+        "head": f"{issue_number:040x}"[-40:],
+        "after_issue": after_issue,
+    }
 
 
 class ReadinessGraphTests(unittest.TestCase):
@@ -348,6 +374,119 @@ class ReadinessGraphTests(unittest.TestCase):
         self.assertEqual(first, plan_readiness(deepcopy(first_payload)))
         self.assertEqual(first, plan_readiness(second_payload))
 
+    def test_packet_selector_is_canonical_and_bounded(self) -> None:
+        selector = parse_packet_selector("datarelay-labs/datarelay-atlas#97")
+        self.assertEqual(selector.repository, "datarelay-labs/datarelay-atlas")
+        self.assertEqual(selector.issue_number, 97)
+        self.assertEqual(selector.node_id, "datarelay-labs/datarelay-atlas#97")
+        for value in (
+            "datarelay-labs/datarelay-atlas",
+            "https://github.com/datarelay-labs/datarelay-atlas#97",
+            "datarelay-labs/datarelay-atlas#0",
+            "datarelay-labs/datarelay-atlas#x",
+            "datarelay-labs/datarelay-atlas#" + ("9" * 5000),
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(ValidationError):
+                    parse_packet_selector(value)
+
+    def test_selected_packet_projection_maps_after_issue_dependency(self) -> None:
+        repository = "datarelay-labs/datarelay-atlas"
+        plan = plan_selected_packet_projections(
+            [
+                projection(
+                    repository,
+                    10,
+                    packet_status="COMPLETE",
+                    queue_state="NONE",
+                ),
+                projection(
+                    repository,
+                    11,
+                    packet_status="PAUSED",
+                    queue_state="QUEUED",
+                    after_issue=10,
+                ),
+            ],
+            max_wip=2,
+        )
+        states = indexed(plan)
+        predecessor = states[f"{repository}#10"]
+        successor = states[f"{repository}#11"]
+        self.assertEqual(predecessor["readiness"], "COMPLETE")
+        self.assertEqual(successor["readiness"], "READY")
+        self.assertTrue(successor["selected"])
+        self.assertEqual(successor["blocked_by"], [])
+        self.assertEqual(successor["repository"], repository)
+        self.assertEqual(successor["issue_number"], 11)
+
+    def test_selected_packet_projection_missing_dependency_fails_closed(self) -> None:
+        repository = "datarelay-labs/datarelay-atlas"
+        plan = plan_selected_packet_projections(
+            [
+                projection(
+                    repository,
+                    11,
+                    packet_status="PAUSED",
+                    queue_state="QUEUED",
+                    after_issue=10,
+                )
+            ],
+            max_wip=1,
+        )
+        item = indexed(plan)[f"{repository}#11"]
+        self.assertEqual(plan["graph_state"], "HUMAN_REQUIRED")
+        self.assertIn("UNKNOWN_DEPENDENCY", plan["graph_reasons"])
+        self.assertEqual(item["readiness"], "HUMAN_REQUIRED")
+        self.assertEqual(item["blocked_by"], [f"{repository}#10"])
+
+    def test_selected_packet_projection_disambiguates_multi_repo_issue_numbers(self) -> None:
+        plan = plan_selected_packet_projections(
+            [
+                projection(
+                    "datarelay-labs/left",
+                    7,
+                    packet_status="COMPLETE",
+                    queue_state="NONE",
+                ),
+                projection(
+                    "datarelay-labs/right",
+                    7,
+                    packet_status="COMPLETE",
+                    queue_state="NONE",
+                ),
+            ],
+            max_wip=2,
+        )
+        self.assertEqual(
+            [item["node_id"] for item in plan["nodes"]],
+            ["datarelay-labs/left#7", "datarelay-labs/right#7"],
+        )
+        self.assertEqual(
+            {item["repository"] for item in plan["nodes"]},
+            {"datarelay-labs/left", "datarelay-labs/right"},
+        )
+
+    def test_selected_packet_projection_rejects_inferred_or_malformed_fields(self) -> None:
+        valid = projection(
+            "datarelay-labs/datarelay-atlas",
+            11,
+            packet_status="PAUSED",
+            queue_state="QUEUED",
+            after_issue=10,
+        )
+        with_priority = deepcopy(valid)
+        with_priority["priority"] = "P0"
+        invalid_after = deepcopy(valid)
+        invalid_after["after_issue"] = True
+        queued_without_after = deepcopy(valid)
+        queued_without_after["after_issue"] = None
+        duplicate = [deepcopy(valid), deepcopy(valid)]
+        for payload in ([with_priority], [invalid_after], [queued_without_after], duplicate):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValidationError):
+                    plan_selected_packet_projections(payload, max_wip=1)
+
     def test_schema_validation_rejects_ambiguous_inputs(self) -> None:
         valid = graph(node("candidate", 1))
         cases: list[dict] = []
@@ -463,6 +602,83 @@ class ReadinessGraphTests(unittest.TestCase):
                     plan_readiness_file(numeric_path)
         finally:
             numeric_path.unlink(missing_ok=True)
+
+    def test_cli_github_plan_reads_only_explicit_grouped_packets(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        from atlas import cli as atlas_cli
+
+        calls: list[tuple[str, tuple[int, ...]]] = []
+
+        class FakeAdapter:
+            def read_selected_packet_projections(
+                self, repository: str, issue_numbers: list[int]
+            ) -> list[dict]:
+                calls.append((repository, tuple(issue_numbers)))
+                return [
+                    projection(
+                        repository,
+                        issue_number,
+                        packet_status="COMPLETE",
+                        queue_state="NONE",
+                    )
+                    for issue_number in issue_numbers
+                ]
+
+        parser = atlas_cli.build_parser()
+        args = parser.parse_args(
+            [
+                "readiness",
+                "github-packets",
+                "--packet",
+                "datarelay-labs/right#7",
+                "--packet",
+                "datarelay-labs/left#7",
+                "--max-wip",
+                "2",
+            ]
+        )
+        output = io.StringIO()
+        with mock.patch.object(atlas_cli, "GitHubWorkPacketAdapter", FakeAdapter):
+            with redirect_stdout(output):
+                self.assertEqual(args.func(args), 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(
+            calls,
+            [
+                ("datarelay-labs/left", (7,)),
+                ("datarelay-labs/right", (7,)),
+            ],
+        )
+        self.assertEqual(
+            [item["node_id"] for item in payload["nodes"]],
+            ["datarelay-labs/left#7", "datarelay-labs/right#7"],
+        )
+
+    def test_cli_github_plan_bounds_selection_before_github_io(self) -> None:
+        from unittest import mock
+
+        from atlas import cli as atlas_cli
+
+        parser = atlas_cli.build_parser()
+        argv = ["readiness", "github-packets"]
+        for issue_number in range(1, 258):
+            argv.extend(
+                [
+                    "--packet",
+                    f"datarelay-labs/datarelay-atlas#{issue_number}",
+                ]
+            )
+        args = parser.parse_args(argv)
+        with mock.patch.object(
+            atlas_cli,
+            "GitHubWorkPacketAdapter",
+            side_effect=AssertionError("GitHub adapter must not be constructed"),
+        ):
+            with self.assertRaisesRegex(ValidationError, "bounded node count"):
+                args.func(args)
 
     def test_cli_plan_is_read_only_and_machine_parseable(self) -> None:
         result = subprocess.run(

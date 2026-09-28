@@ -1643,6 +1643,279 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
         self.assertLess(elapsed, 1.0, f"secret scan took {elapsed:.3f}s")
 
 
+
+
+class SelectedPacketProjectionTests(unittest.TestCase):
+    REPO = "datarelay-labs/datarelay-atlas"
+
+    @staticmethod
+    def _body(
+        *,
+        status: str,
+        branch: str,
+        head: str,
+        queue_state: str = "NONE",
+        after_issue: int | None = None,
+    ) -> str:
+        after = f"AFTER_ISSUE={after_issue}\n" if after_issue is not None else ""
+        return (
+            "PACKET_VERSION=2\n"
+            f"TARGET_REPO={SelectedPacketProjectionTests.REPO}\n"
+            "WORKSTREAM=readiness-projection-test\n"
+            f"STATUS={status}\n"
+            f"QUEUE_STATE={queue_state}\n"
+            f"{after}"
+            f"BRANCH={branch}\n"
+            "TASK_KIND=IMPLEMENTATION_AND_TEST\n"
+            "OWNER_INTENT=Exercise selected readiness projection.\n"
+            f"LAST_VERIFIED_HEAD={head}\n\n"
+            "## Goal\n\nTest.\n"
+        )
+
+    def _adapter(
+        self,
+        issues: dict[int, dict],
+        *,
+        pulls: list[dict] | None = None,
+        permissions: dict[str, str] | None = None,
+        change_on_second_view: int | None = None,
+    ) -> tuple[GitHubWorkPacketAdapter, list[list[str]]]:
+        calls: list[list[str]] = []
+        views: dict[int, int] = {}
+        permission_map = permissions or {}
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            calls.append(list(argv))
+            if (
+                len(argv) >= 5
+                and argv[:4] == ["gh", "api", "--paginate", "--slurp"]
+                and "/pulls?" in argv[4]
+            ):
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps([pulls or []]), stderr=""
+                )
+            if argv[:3] == ["gh", "issue", "view"]:
+                number = int(argv[3])
+                views[number] = views.get(number, 0) + 1
+                payload = dict(issues[number])
+                if number == change_on_second_view and views[number] >= 2:
+                    payload["updatedAt"] = "2026-09-28T00:00:01Z"
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
+            if (
+                len(argv) == 3
+                and argv[:2] == ["gh", "api"]
+                and argv[2].endswith("/permission")
+            ):
+                login = argv[2].split("/collaborators/", 1)[1].split("/permission", 1)[0]
+                permission = permission_map.get(login, "write")
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout=json.dumps({"permission": permission}),
+                    stderr="",
+                )
+            self.fail(f"unexpected argv: {argv}")
+
+        return GitHubWorkPacketAdapter(command_runner=runner), calls
+
+    def _issue(self, number: int, *, state: str, body: str, login: str = "owner") -> dict:
+        return {
+            "number": number,
+            "title": f"[AI Work] selected {number}",
+            "state": state,
+            "body": body,
+            "updatedAt": "2026-09-28T00:00:00Z",
+            "author": {"login": login},
+        }
+
+    def test_selected_projection_reads_only_explicit_packets(self) -> None:
+        complete = self._issue(
+            10,
+            state="CLOSED",
+            body=self._body(
+                status="COMPLETE",
+                branch="feature/base",
+                head="a" * 40,
+            ),
+        )
+        queued = self._issue(
+            11,
+            state="OPEN",
+            body=self._body(
+                status="PAUSED",
+                queue_state="QUEUED",
+                after_issue=10,
+                branch="feature/next",
+                head="b" * 40,
+            ),
+        )
+        adapter, calls = self._adapter({10: complete, 11: queued})
+        facts = adapter.read_selected_packet_projections(self.REPO, [11, 10])
+        self.assertEqual(
+            facts,
+            [
+                {
+                    "repository": self.REPO,
+                    "issue_number": 10,
+                    "packet_status": "COMPLETE",
+                    "queue_state": "NONE",
+                    "branch": "feature/base",
+                    "head": "a" * 40,
+                    "after_issue": None,
+                },
+                {
+                    "repository": self.REPO,
+                    "issue_number": 11,
+                    "packet_status": "PAUSED",
+                    "queue_state": "QUEUED",
+                    "branch": "feature/next",
+                    "head": "b" * 40,
+                    "after_issue": 10,
+                },
+            ],
+        )
+        self.assertFalse(any("/issues?" in " ".join(argv) for argv in calls))
+        encoded = json.dumps(facts)
+        self.assertNotIn("OWNER_INTENT", encoded)
+        self.assertNotIn("Exercise selected readiness projection", encoded)
+
+    def test_selected_projection_rejects_untrusted_and_stale_pr(self) -> None:
+        issue = self._issue(
+            11,
+            state="OPEN",
+            body=self._body(
+                status="PAUSED",
+                queue_state="QUEUED",
+                after_issue=10,
+                branch="feature/next",
+                head="b" * 40,
+            ),
+            login="outsider",
+        )
+        untrusted, _ = self._adapter(
+            {11: issue}, permissions={"outsider": "read"}
+        )
+        with self.assertRaisesRegex(ValidationError, "untrusted"):
+            untrusted.read_selected_packet_projections(self.REPO, [11])
+
+        trusted_issue = dict(issue)
+        trusted_issue["author"] = {"login": "owner"}
+        stale_pull = {
+            "number": 50,
+            "state": "open",
+            "merged_at": None,
+            "head": {
+                "ref": "feature/next",
+                "sha": "c" * 40,
+                "repo": {"full_name": self.REPO},
+            },
+        }
+        stale, _ = self._adapter({11: trusted_issue}, pulls=[stale_pull])
+        with self.assertRaisesRegex(ValidationError, "PR HEAD is stale"):
+            stale.read_selected_packet_projections(self.REPO, [11])
+
+    def test_selected_projection_accepts_exact_postmerge_head(self) -> None:
+        merge_head = "d" * 40
+        issue = self._issue(
+            10,
+            state="CLOSED",
+            body=self._body(
+                status="COMPLETE",
+                branch="feature/base",
+                head=merge_head,
+            ),
+        )
+        merged_pull = {
+            "number": 50,
+            "state": "closed",
+            "merged_at": "2026-09-28T00:00:00Z",
+            "merge_commit_sha": merge_head,
+            "head": {
+                "ref": "feature/base",
+                "sha": "a" * 40,
+                "repo": {"full_name": self.REPO},
+            },
+        }
+        adapter, _ = self._adapter({10: issue}, pulls=[merged_pull])
+        facts = adapter.read_selected_packet_projections(self.REPO, [10])
+        self.assertEqual(facts[0]["head"], merge_head)
+        self.assertEqual(facts[0]["packet_status"], "COMPLETE")
+
+    def test_selected_projection_rejects_midread_change_and_bad_queue(self) -> None:
+        issue = self._issue(
+            11,
+            state="OPEN",
+            body=self._body(
+                status="PAUSED",
+                queue_state="QUEUED",
+                after_issue=10,
+                branch="feature/next",
+                head="b" * 40,
+            ),
+        )
+        changed, _ = self._adapter({11: issue}, change_on_second_view=11)
+        with self.assertRaisesRegex(ValidationError, "changed during projection"):
+            changed.read_selected_packet_projections(self.REPO, [11])
+
+        malformed = dict(issue)
+        malformed["body"] = self._body(
+            status="PAUSED",
+            queue_state="QUEUED",
+            branch="feature/next",
+            head="b" * 40,
+        )
+        invalid_queue, _ = self._adapter({11: malformed})
+        with self.assertRaisesRegex(ValidationError, "queued without AFTER_ISSUE"):
+            invalid_queue.read_selected_packet_projections(self.REPO, [11])
+
+
+    def test_selected_projection_rejects_invalid_ref_queue_status_and_pathological_after(self) -> None:
+        invalid_ref = self._issue(
+            11,
+            state="OPEN",
+            body=self._body(
+                status="PAUSED",
+                branch="feature/.hidden",
+                head="b" * 40,
+            ),
+        )
+        invalid_adapter, _ = self._adapter({11: invalid_ref})
+        with self.assertRaisesRegex(ValidationError, "branch is invalid"):
+            invalid_adapter.read_selected_packet_projections(self.REPO, [11])
+
+        queue_conflict = self._issue(
+            11,
+            state="OPEN",
+            body=self._body(
+                status="ACTIVE",
+                queue_state="QUEUED",
+                after_issue=10,
+                branch="feature/next",
+                head="b" * 40,
+            ),
+        )
+        queue_adapter, _ = self._adapter({11: queue_conflict})
+        with self.assertRaisesRegex(ValidationError, "QUEUE_STATE/status conflict"):
+            queue_adapter.read_selected_packet_projections(self.REPO, [11])
+
+        pathological = self._issue(
+            11,
+            state="OPEN",
+            body=self._body(
+                status="PAUSED",
+                queue_state="QUEUED",
+                after_issue="9" * 5000,
+                branch="feature/next",
+                head="b" * 40,
+            ),
+        )
+        pathological_adapter, _ = self._adapter({11: pathological})
+        with self.assertRaisesRegex(ValidationError, "AFTER_ISSUE is invalid"):
+            pathological_adapter.read_selected_packet_projections(self.REPO, [11])
+
+
 class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
     def test_fixed_defaults_to_recording_adapter(self):
         from atlas import cli as atlas_cli
