@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datarelay.local/contracts/readiness-single-effect-authorization.schema.json",
+  "title": "DataRelay Atlas Readiness Single-Effect Authorization v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "decision",
+    "reasons",
+    "plan_digest",
+    "selected_node"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": {
+      "type": "string",
+      "const": "readiness_single_effect_authorization"
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["ALLOW", "DENY"]
+    },
+    "reasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+      }
+    },
+    "plan_digest": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "selected_node": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/selectedNode" }
+      ]
+    }
+  },
+  "$defs": {
+    "selectedNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "repository",
+        "issue_number",
+        "branch",
+        "head"
+      ],
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,254}$"
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "issue_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "branch": {
+          "type": "string",
+          "pattern": "^(?!.*(?:\\.\\.|//|@\\{|/\\.))(?!.*\\.lock(?:/|$))(?!.*(?:/|\\.)$)[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$"
+        },
+        "head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "decision": { "const": "ALLOW" } },
+        "required": ["decision"]
+      },
+      "then": {
+        "properties": {
+          "reasons": { "maxItems": 0 },
+          "plan_digest": { "type": "string" },
+          "selected_node": { "$ref": "#/$defs/selectedNode" }
+        }
+      },
+      "else": {
+        "properties": {
+          "reasons": { "minItems": 1 },
+          "selected_node": { "type": "null" }
+        }
+      }
+    }
+  ]
+}
