@@ -56,11 +56,13 @@ existing dynamic contracts:
 4. validate the provider capability descriptor;
 5. require provider/runtime/usage-mode/adapter identity to exactly match the
    configured route;
-6. require the descriptor to report the requested capability as `SUPPORTED`;
-7. validate provider capacity evidence and require its provider to match;
-8. accept the six existing dynamic broker gates without changing their values;
-9. use only the configured preference ranks;
-10. construct and revalidate the existing `provider_route_candidate`.
+6. require every descriptor capability reported as `SUPPORTED` to be inside
+   the configured capability allowlist;
+7. require the requested capability to be both allowed and `SUPPORTED`;
+8. validate provider capacity evidence and require its provider to match;
+9. accept the six existing dynamic broker gates without changing their values;
+10. use only the configured preference ranks;
+11. construct and revalidate the existing `provider_route_candidate`.
 
 The route configuration therefore cannot turn `UNKNOWN` or `DENY` into
 `ALLOW`. Dynamic policy, trust, budget, usage-mode, blast-radius, and WIP gate

@@ -209,6 +209,45 @@ class ProviderRouteConfigTests(unittest.TestCase):
                 required_capability="CODE_REVIEW",
             )
 
+    def test_descriptor_cannot_smuggle_unapproved_supported_capability(self) -> None:
+        descriptor = _descriptor("codex")
+        descriptor["capabilities"].append(
+            {
+                "name": "USAGE_INSIGHTS",
+                "status": "SUPPORTED",
+                "result_contract": None,
+            }
+        )
+        with self.assertRaisesRegex(
+            ValidationError,
+            "unapproved supported capability",
+        ):
+            bind_configured_provider_route(
+                _route_set(),
+                route_id="codex-primary",
+                capability_descriptor=descriptor,
+                capacity_input=_capacity("codex"),
+                gates=_gates(),
+                required_capability="CODE_REVIEW",
+            )
+
+        approved = _route_set()
+        approved["routes"][0]["allowed_capabilities"].append(
+            "USAGE_INSIGHTS"
+        )
+        candidate = bind_configured_provider_route(
+            approved,
+            route_id="codex-primary",
+            capability_descriptor=descriptor,
+            capacity_input=_capacity("codex"),
+            gates=_gates(),
+            required_capability="CODE_REVIEW",
+        )
+        self.assertEqual(
+            [item["name"] for item in candidate["capability_descriptor"]["capabilities"]],
+            ["CODE_REVIEW", "USAGE_INSIGHTS"],
+        )
+
     def test_capacity_provider_and_gate_contract_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValidationError, "capacity provider mismatch"):
             bind_configured_provider_route(

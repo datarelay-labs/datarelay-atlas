@@ -225,6 +225,15 @@ def bind_configured_provider_route(
     )
     if actual_identity != expected_identity:
         _reject("provider route config descriptor identity mismatch")
+    supported_capabilities = {
+        item["name"]
+        for item in descriptor["capabilities"]
+        if item["status"] == "SUPPORTED"
+    }
+    if not supported_capabilities.issubset(set(route["allowed_capabilities"])):
+        _reject(
+            "provider route config descriptor exposes an unapproved supported capability"
+        )
     if not _supported_capability(descriptor, required_capability):
         _reject("provider route config required capability is not supported")
 
