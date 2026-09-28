@@ -7,7 +7,10 @@ provider execution, credential, session, or mutation authority.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from atlas.provider_capability import (
@@ -50,6 +53,9 @@ _PLAN_KEYS = frozenset(
         "strategy",
         "required_capability",
         "authority",
+        "evaluated_at",
+        "max_evidence_age_seconds",
+        "evidence_fresh_until",
         "selected_route_id",
         "fallback_route_ids",
         "eligible_routes",
@@ -82,12 +88,45 @@ _INELIGIBLE_REASONS = (
     "CAPABILITY_UNKNOWN",
     "REMAINING_CAPACITY_UNKNOWN",
     "REMAINING_CAPACITY_EXHAUSTED",
+    "REMAINING_CAPACITY_UNBOUND",
+    "REMAINING_CAPACITY_FUTURE",
+    "REMAINING_CAPACITY_STALE",
 )
+_UTC_TIMESTAMP_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$"
+)
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_MAX_EVIDENCE_AGE_SECONDS = 366 * 24 * 60 * 60
 _REASON_ORDER = {value: index for index, value in enumerate(_INELIGIBLE_REASONS)}
 
 
 def _reject(message: str) -> None:
     raise ValidationError(message)
+
+
+def provider_broker_plan_digest(payload: object) -> str:
+    """Return a deterministic content digest for out-of-band plan identity."""
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("provider broker plan is not canonical JSON") from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _require_trusted_plan_digest(payload: object, expected_plan_digest: str) -> None:
+    if (
+        not isinstance(expected_plan_digest, str)
+        or _DIGEST_RE.fullmatch(expected_plan_digest) is None
+    ):
+        _reject("expected provider broker plan digest is invalid")
+    if provider_broker_plan_digest(payload) != expected_plan_digest:
+        _reject("provider broker plan digest does not match trusted identity")
 
 
 def _route_id(value: object) -> str:
@@ -184,7 +223,121 @@ def _capability_status(descriptor: dict, required: str) -> str | None:
         if capability["name"] == required:
             return capability["status"]
     return None
-def _eligibility_reasons(candidate: dict, required: str) -> list[str]:
+def _utc_instant(value: object, *, label: str) -> datetime:
+    if not isinstance(value, str) or _UTC_TIMESTAMP_RE.fullmatch(value) is None:
+        _reject(f"{label} must be a UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValidationError(f"{label} must be a UTC timestamp") from exc
+    if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
+        _reject(f"{label} must be a UTC timestamp")
+    return parsed
+
+
+def _max_evidence_age_seconds(value: object) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > _MAX_EVIDENCE_AGE_SECONDS
+    ):
+        _reject(
+            "max_evidence_age_seconds must be an integer from 0 to "
+            f"{_MAX_EVIDENCE_AGE_SECONDS}"
+        )
+    return value
+
+
+def _format_utc(value: datetime) -> str:
+    text = value.strftime("%Y-%m-%dT%H:%M:%S")
+    if value.microsecond:
+        fraction = f"{value.microsecond:06d}".rstrip("0")
+        text = f"{text}.{fraction}"
+    return f"{text}Z"
+
+
+def _evidence_expiry(observed: datetime, max_age: timedelta) -> datetime:
+    """Derive a bounded expiry without leaking datetime arithmetic errors."""
+    try:
+        return observed + max_age
+    except OverflowError as exc:
+        raise ValidationError(
+            "provider broker evidence expiry is out of range"
+        ) from exc
+
+
+def _validated_plan_freshness(
+    payload: dict,
+    *,
+    eligible: list[dict],
+    expected_max_evidence_age_seconds: int,
+) -> tuple[str, int, str | None, datetime, datetime | None]:
+    """Recompute plan expiry from each eligible route's retained observation.
+
+    ``evidence_fresh_until`` is accepted only when it equals the earliest
+    ``observed_at + max_evidence_age_seconds``. A later declared expiry is
+    rejected even when it is still within ``evaluated_at + max_age``.
+    """
+    evaluated = _utc_instant(payload.get("evaluated_at"), label="evaluated_at")
+    max_age = _max_evidence_age_seconds(payload.get("max_evidence_age_seconds"))
+    expected_max_age = _max_evidence_age_seconds(expected_max_evidence_age_seconds)
+    if max_age != expected_max_age:
+        _reject("provider broker plan max evidence age does not match trusted policy")
+    raw_until = payload.get("evidence_fresh_until")
+    if not eligible:
+        if raw_until is not None:
+            _reject("provider broker plan evidence boundary is inconsistent")
+        return _format_utc(evaluated), max_age, None, evaluated, None
+    if raw_until is None:
+        _reject("provider broker plan evidence boundary is missing")
+    declared = _utc_instant(raw_until, label="evidence_fresh_until")
+    limit = timedelta(seconds=max_age)
+    expiries: list[datetime] = []
+    for route in eligible:
+        observed = _utc_instant(route.get("observed_at"), label="observed_at")
+        if observed > evaluated or evaluated - observed > limit:
+            _reject("provider broker plan evidence boundary is inconsistent")
+        expiry = _evidence_expiry(observed, limit)
+        route_expiry = _utc_instant(route.get("fresh_until"), label="fresh_until")
+        if route_expiry != expiry:
+            _reject("provider broker plan evidence boundary is inconsistent")
+        route["observed_at"] = _format_utc(observed)
+        route["fresh_until"] = _format_utc(expiry)
+        expiries.append(expiry)
+    expected = min(expiries)
+    if declared != expected:
+        _reject("provider broker plan evidence boundary is inconsistent")
+    return (
+        _format_utc(evaluated),
+        max_age,
+        _format_utc(expected),
+        evaluated,
+        expected,
+    )
+
+
+def _require_plan_consumption(
+    consumed_at: str,
+    *,
+    evaluated_at: datetime,
+    fresh_until: datetime | None,
+) -> None:
+    """Reject eligible-plan replay outside the recorded evidence window."""
+    consumed = _utc_instant(consumed_at, label="consumed_at")
+    if fresh_until is None:
+        return
+    if consumed < evaluated_at or consumed > fresh_until:
+        _reject("provider broker plan evidence is stale")
+
+
+def _eligibility_reasons(
+    candidate: dict,
+    required: str,
+    *,
+    evaluated_at: datetime,
+    max_evidence_age: timedelta,
+) -> list[str]:
     reasons: list[str] = []
     for name in _GATE_KEYS:
         state = candidate["gates"][name]
@@ -202,6 +355,16 @@ def _eligibility_reasons(candidate: dict, required: str) -> list[str]:
         reasons.append("REMAINING_CAPACITY_UNKNOWN")
     elif Decimal(remaining["value"]) == 0:
         reasons.append("REMAINING_CAPACITY_EXHAUSTED")
+    else:
+        observed_at = candidate["capacity_input"]["evidence"]["window_end"]
+        if observed_at is None:
+            reasons.append("REMAINING_CAPACITY_UNBOUND")
+        else:
+            observed = _utc_instant(observed_at, label="window_end")
+            if observed > evaluated_at:
+                reasons.append("REMAINING_CAPACITY_FUTURE")
+            elif evaluated_at - observed > max_evidence_age:
+                reasons.append("REMAINING_CAPACITY_STALE")
     return reasons
 
 
@@ -220,7 +383,14 @@ def _strategy_rank(candidate: dict, strategy: str) -> tuple[int, int, str]:
             candidate["route_id"],
         )
     _reject("provider broker strategy is unsupported")
-def _route_summary(candidate: dict, *, reasons: list[str], rank: list[int] | None = None) -> dict:
+def _route_summary(
+    candidate: dict,
+    *,
+    reasons: list[str],
+    rank: list[int] | None = None,
+    observed_at: str | None = None,
+    fresh_until: str | None = None,
+) -> dict:
     descriptor = candidate["capability_descriptor"]
     summary = {
         "route_id": candidate["route_id"],
@@ -231,6 +401,8 @@ def _route_summary(candidate: dict, *, reasons: list[str], rank: list[int] | Non
     }
     if rank is not None:
         summary["rank"] = rank
+        summary["observed_at"] = observed_at
+        summary["fresh_until"] = fresh_until
     return summary
 
 
@@ -239,11 +411,16 @@ def plan_provider_routes(
     *,
     required_capability: str,
     strategy: str = "CAPABILITY_FIRST",
+    evaluated_at: str,
+    max_evidence_age_seconds: int,
 ) -> dict:
     """Create a deterministic advisory provider-route plan."""
     required = _capability_name(required_capability)
     if strategy not in STRATEGIES:
         _reject("provider broker strategy is unsupported")
+    evaluation_instant = _utc_instant(evaluated_at, label="evaluated_at")
+    evidence_age_seconds = _max_evidence_age_seconds(max_evidence_age_seconds)
+    evidence_age_limit = timedelta(seconds=evidence_age_seconds)
     if (
         not isinstance(candidates, list)
         or not candidates
@@ -259,7 +436,12 @@ def plan_provider_routes(
     ineligible: list[dict] = []
     sortable: list[tuple[tuple[int, int, str], dict]] = []
     for candidate in sorted(normalized, key=lambda item: item["route_id"]):
-        reasons = _eligibility_reasons(candidate, required)
+        reasons = _eligibility_reasons(
+            candidate,
+            required,
+            evaluated_at=evaluation_instant,
+            max_evidence_age=evidence_age_limit,
+        )
         if reasons:
             ineligible.append(_route_summary(candidate, reasons=reasons))
             continue
@@ -267,32 +449,50 @@ def plan_provider_routes(
         sortable.append((rank_key, candidate))
 
     sortable.sort(key=lambda item: item[0])
+    expiries: list[datetime] = []
     for rank_key, candidate in sortable:
+        observed = _utc_instant(
+            candidate["capacity_input"]["evidence"]["window_end"],
+            label="window_end",
+        )
+        expiry = _evidence_expiry(observed, evidence_age_limit)
+        expiries.append(expiry)
         eligible.append(
             _route_summary(
                 candidate,
                 reasons=["ELIGIBLE"],
                 rank=[rank_key[0], rank_key[1]],
+                observed_at=_format_utc(observed),
+                fresh_until=_format_utc(expiry),
             )
         )
 
     selected = eligible[0]["route_id"] if eligible else None
+    fresh_until = _format_utc(min(expiries)) if expiries else None
     plan = {
         "schema_version": SCHEMA_VERSION,
         "kind": PLAN_KIND,
         "strategy": strategy,
         "required_capability": required,
         "authority": AUTHORITY,
+        "evaluated_at": _format_utc(evaluation_instant),
+        "max_evidence_age_seconds": evidence_age_seconds,
+        "evidence_fresh_until": fresh_until,
         "selected_route_id": selected,
         "fallback_route_ids": [item["route_id"] for item in eligible[1:]],
         "eligible_routes": eligible,
         "ineligible_routes": ineligible,
     }
-    return validate_provider_broker_plan(plan)
+    return validate_provider_broker_plan(
+        plan,
+        consumed_at=evaluated_at,
+        expected_max_evidence_age_seconds=evidence_age_seconds,
+        expected_plan_digest=provider_broker_plan_digest(plan),
+    )
 def _validate_summary(item: object, *, eligible: bool) -> dict:
     expected = {"route_id", "provider", "runtime", "usage_mode", "reasons"}
     if eligible:
-        expected.add("rank")
+        expected.update({"rank", "observed_at", "fresh_until"})
     if not isinstance(item, dict) or set(item) != expected:
         _reject("provider broker route summary schema is invalid")
 
@@ -326,16 +526,31 @@ def _validate_summary(item: object, *, eligible: bool) -> dict:
         ]
         if reasons != ["ELIGIBLE"]:
             _reject("eligible route reasons must be ELIGIBLE")
+        normalized["observed_at"] = item.get("observed_at")
+        normalized["fresh_until"] = item.get("fresh_until")
     else:
         if not all(reason in _REASON_ORDER for reason in reasons):
             _reject("provider broker ineligible reason is unsupported")
         if reasons != sorted(reasons, key=_REASON_ORDER.__getitem__):
             _reject("provider broker ineligible reasons are not deterministic")
     return normalized
-def validate_provider_broker_plan(payload: object) -> dict:
-    """Validate a content-free advisory broker plan."""
+def validate_provider_broker_plan(
+    payload: object,
+    *,
+    consumed_at: str,
+    expected_max_evidence_age_seconds: int,
+    expected_plan_digest: str,
+) -> dict:
+    """Validate a broker plan against trusted policy and out-of-band identity.
+
+    ``consumed_at``, ``expected_max_evidence_age_seconds``, and
+    ``expected_plan_digest`` are caller-supplied. The digest binds the full
+    serialized plan so coordinated timestamp edits cannot mint a new freshness
+    window. This validator does not read a wall clock.
+    """
     if not isinstance(payload, dict) or set(payload) != _PLAN_KEYS:
         _reject("provider broker plan schema is invalid")
+    _require_trusted_plan_digest(payload, expected_plan_digest)
     version = payload.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION:
         _reject("provider broker plan schema_version is unsupported")
@@ -385,12 +600,32 @@ def validate_provider_broker_plan(payload: object) -> dict:
     if normalized_fallback != expected_fallback:
         _reject("provider broker fallback order is inconsistent")
 
+    (
+        evaluated_at,
+        max_evidence_age_seconds,
+        evidence_fresh_until,
+        evaluated_instant,
+        fresh_until,
+    ) = _validated_plan_freshness(
+        payload,
+        eligible=eligible,
+        expected_max_evidence_age_seconds=expected_max_evidence_age_seconds,
+    )
+    _require_plan_consumption(
+        consumed_at,
+        evaluated_at=evaluated_instant,
+        fresh_until=fresh_until,
+    )
+
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": PLAN_KIND,
         "strategy": strategy,
         "required_capability": required,
         "authority": AUTHORITY,
+        "evaluated_at": evaluated_at,
+        "max_evidence_age_seconds": max_evidence_age_seconds,
+        "evidence_fresh_until": evidence_fresh_until,
         "selected_route_id": selected,
         "fallback_route_ids": normalized_fallback,
         "eligible_routes": eligible,

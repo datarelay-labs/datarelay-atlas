@@ -131,6 +131,8 @@ class ProviderRouteConfigTests(unittest.TestCase):
         plan = plan_provider_routes(
             [candidate],
             required_capability="CODE_REVIEW",
+            evaluated_at="2026-09-28T00:00:00Z",
+            max_evidence_age_seconds=0,
         )
         self.assertIsNone(plan["selected_route_id"])
         self.assertEqual(

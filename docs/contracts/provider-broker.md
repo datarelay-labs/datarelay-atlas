@@ -35,6 +35,48 @@ required capability is absent, `UNSUPPORTED`, or `UNKNOWN`, when provider
 identity differs between capability and capacity evidence, or when remaining
 capacity is `UNKNOWN` or observed as zero.
 
+A positive `OBSERVED` `remaining_capacity` is also ineligible unless the
+capacity evidence window can prove freshness. The observation instant is
+`evidence.window_end`. Planning takes an explicit `evaluated_at` UTC timestamp
+and a `max_evidence_age_seconds` integer from 0 through 366 days. The planner
+does not read a wall clock. A missing window is `REMAINING_CAPACITY_UNBOUND`.
+A `window_end` after `evaluated_at` is `REMAINING_CAPACITY_FUTURE`. A positive
+age greater than `max_evidence_age_seconds` is `REMAINING_CAPACITY_STALE`.
+An age equal to the maximum remains eligible when every other gate passes.
+`UNKNOWN` and zero remaining capacity keep their existing reasons and do not
+gain a freshness reason.
+
+The emitted plan records `evaluated_at`, `max_evidence_age_seconds`, and
+`evidence_fresh_until`. Each eligible route retains its observation instant
+as `observed_at` (the capacity `window_end`) and its derived `fresh_until`,
+which must equal `observed_at + max_evidence_age_seconds`. The plan expiry
+must equal the earliest retained route `fresh_until`, and is null when no
+route is eligible. Validation recomputes that expiry from the retained
+observations. A serialized plan that moves `evidence_fresh_until` later than
+that minimum is rejected, including when the new value is still at or before
+`evaluated_at + max_evidence_age_seconds`. Consumption passes an explicit
+`consumed_at` UTC timestamp and a trusted
+`expected_max_evidence_age_seconds` policy value; neither comes from the
+serialized plan. Validation requires the plan's recorded maximum age to equal
+that trusted consumer policy before recomputing any expiry. A coordinated
+payload edit that widens both `max_evidence_age_seconds` and the route/plan
+expiry fields therefore fails closed. The validator does not read a wall clock.
+An eligible plan remains acceptable only while
+`evaluated_at <= consumed_at <= evidence_fresh_until`. A later serialized or
+cached replay fails closed, and the consumer must replan from the candidates.
+The transition validator forwards the same consumption instant and trusted
+maximum-age policy to its embedded broker plan.
+
+Serialized consumption also requires an out-of-band trusted SHA-256 identity.
+`provider_broker_plan_digest(plan)` computes the canonical broker-plan digest,
+and `provider_transition_plan_digest(plan)` does the same for the entire
+transition plan. Consumers must preserve the expected digest separately from
+the modifiable serialized payload and provide it during validation. A transition
+digest binds its embedded broker plan as part of the outer object. Changing
+`evaluated_at`, retained `observed_at`, route expiry, and plan expiry together
+therefore cannot mint a replacement freshness window: the trusted digest no
+longer matches. The digest is identity evidence, not execution authority.
+
 Capacity facts are never estimated. Unknown capacity stays `UNKNOWN` and cannot
 be made eligible by an attractive preference rank.
 
@@ -60,9 +102,10 @@ failure. Reaching or exceeding `max_attempts` is evidence for
 `HUMAN_REQUIRED`, never permission for another transition.
 
 Before recommending anything, Atlas removes only the previously failed routes
-and reruns the canonical broker. The declared current route must be that fresh
-plan's selected eligible route. Atlas then marks the current route failed and
-reruns the same broker over the remaining candidates.
+and reruns the canonical broker with the same explicit freshness boundary.
+The declared current route must be that plan's selected eligible route. Atlas
+then marks the current route failed and reruns the same broker over the
+remaining candidates. A stale or future fallback cannot be recommended.
 
 The result is one of:
 
@@ -98,7 +141,9 @@ PYTHONPATH=. python3 -m atlas usage provider-transition-plan \
   --required-capability CODE_REVIEW \
   --current-route codex-primary \
   --failure-reason QUOTA_EXHAUSTED \
-  --max-attempts 3
+  --max-attempts 3 \
+  --evaluated-at 2026-09-28T00:00:00Z \
+  --max-evidence-age-seconds 0
 ```
 
 ## Safety

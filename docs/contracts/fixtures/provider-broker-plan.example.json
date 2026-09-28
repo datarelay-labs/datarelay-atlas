@@ -4,6 +4,9 @@
   "strategy": "CAPABILITY_FIRST",
   "required_capability": "CODE_REVIEW",
   "authority": "ADVISORY_ONLY",
+  "evaluated_at": "2026-09-28T00:00:00Z",
+  "max_evidence_age_seconds": 0,
+  "evidence_fresh_until": "2026-09-28T00:00:00Z",
   "selected_route_id": "codex-primary",
   "fallback_route_ids": [],
   "eligible_routes": [
@@ -13,7 +16,9 @@
       "runtime": "codex_cli",
       "usage_mode": "chatgpt_plan",
       "reasons": ["ELIGIBLE"],
-      "rank": [0, 10]
+      "rank": [0, 10],
+      "observed_at": "2026-09-28T00:00:00Z",
+      "fresh_until": "2026-09-28T00:00:00Z"
     }
   ],
   "ineligible_routes": []

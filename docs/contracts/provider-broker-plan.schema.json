@@ -10,6 +10,9 @@
     "strategy",
     "required_capability",
     "authority",
+    "evaluated_at",
+    "max_evidence_age_seconds",
+    "evidence_fresh_until",
     "selected_route_id",
     "fallback_route_ids",
     "eligible_routes",
@@ -34,6 +37,16 @@
     },
     "required_capability": { "$ref": "#/$defs/capability" },
     "authority": { "type": "string", "const": "ADVISORY_ONLY" },
+    "evaluated_at": { "$ref": "#/$defs/utcTimestamp" },
+    "max_evidence_age_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 31622400
+    },
+    "evidence_fresh_until": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
     "selected_route_id": {
       "oneOf": [{ "$ref": "#/$defs/routeId" }, { "type": "null" }]
     },
@@ -54,7 +67,25 @@
       "items": { "$ref": "#/$defs/ineligibleRoute" }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "eligible_routes": { "minItems": 1 } },
+        "required": ["eligible_routes"]
+      },
+      "then": {
+        "properties": { "evidence_fresh_until": { "type": "string" } }
+      },
+      "else": {
+        "properties": { "evidence_fresh_until": { "type": "null" } }
+      }
+    }
+  ],
   "$defs": {
+    "utcTimestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
     "routeId": {
       "type": "string",
       "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[a-z0-9][a-z0-9._-]{0,63}$"
@@ -112,7 +143,10 @@
         "CAPABILITY_UNSUPPORTED",
         "CAPABILITY_UNKNOWN",
         "REMAINING_CAPACITY_UNKNOWN",
-        "REMAINING_CAPACITY_EXHAUSTED"
+        "REMAINING_CAPACITY_EXHAUSTED",
+        "REMAINING_CAPACITY_UNBOUND",
+        "REMAINING_CAPACITY_FUTURE",
+        "REMAINING_CAPACITY_STALE"
       ]
     },
     "eligibleRoute": {
@@ -124,7 +158,9 @@
         "runtime",
         "usage_mode",
         "reasons",
-        "rank"
+        "rank",
+        "observed_at",
+        "fresh_until"
       ],
       "properties": {
         "route_id": { "$ref": "#/$defs/routeId" },
@@ -147,7 +183,9 @@
           "items": false,
           "minItems": 2,
           "maxItems": 2
-        }
+        },
+        "observed_at": { "$ref": "#/$defs/utcTimestamp" },
+        "fresh_until": { "$ref": "#/$defs/utcTimestamp" }
       }
     },
     "ineligibleRoute": {

@@ -36,7 +36,9 @@ Top-level fields:
 Evidence fields:
 
 - `source_kind`: bounded source identifier such as `usage_events_csv`;
-- `window_start` / `window_end`: UTC observation range, or null for zero events;
+- `window_start` / `window_end`: UTC observation range, or null for zero events.
+  The broker treats `window_end` as the observation instant for a positive
+  `OBSERVED` `remaining_capacity`. A null window cannot prove freshness.
 - `event_count`: exact imported provider event count;
 - `total_tokens`: exact sum of provider-exposed token parts.
 

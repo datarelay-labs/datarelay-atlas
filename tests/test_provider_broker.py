@@ -13,7 +13,8 @@ from referencing import Registry, Resource
 
 from atlas.provider_broker import (
     plan_provider_routes,
-    validate_provider_broker_plan,
+    provider_broker_plan_digest,
+    validate_provider_broker_plan as _validate_provider_broker_plan,
     validate_provider_route_candidate,
 )
 from atlas.provider_capacity import (
@@ -37,14 +38,53 @@ def _descriptor(provider: str) -> dict:
     )
 
 
-def _capacity(provider: str, remaining: str | None = "100") -> dict:
+FRESH_EVALUATED_AT = "2026-09-28T00:00:00Z"
+FRESH_MAX_EVIDENCE_AGE_SECONDS = 0
+
+
+def validate_provider_broker_plan(
+    payload: object,
+    *,
+    consumed_at: str,
+    expected_max_evidence_age_seconds: int = FRESH_MAX_EVIDENCE_AGE_SECONDS,
+    expected_plan_digest: str | None = None,
+):
+    return _validate_provider_broker_plan(
+        payload,
+        consumed_at=consumed_at,
+        expected_max_evidence_age_seconds=expected_max_evidence_age_seconds,
+        expected_plan_digest=(
+            expected_plan_digest
+            if expected_plan_digest is not None
+            else provider_broker_plan_digest(payload)
+        ),
+    )
+
+
+def plan_fresh_routes(candidates: object, **kwargs: object):
+    kwargs.setdefault("evaluated_at", FRESH_EVALUATED_AT)
+    kwargs.setdefault(
+        "max_evidence_age_seconds", FRESH_MAX_EVIDENCE_AGE_SECONDS
+    )
+    return plan_provider_routes(candidates, **kwargs)
+
+
+def _capacity(
+    provider: str,
+    remaining: str | None = "100",
+    *,
+    window_start: str | None = "2026-09-28T00:00:00Z",
+    window_end: str | None = "2026-09-28T00:00:00Z",
+    event_count: int = 1,
+    total_tokens: int = 1,
+) -> dict:
     payload = build_provider_capacity_input(
         provider=provider,
         source_kind="synthetic_test",
-        window_start="2026-09-28T00:00:00Z",
-        window_end="2026-09-28T00:00:00Z",
-        event_count=1,
-        total_tokens=1,
+        window_start=window_start,
+        window_end=window_end,
+        event_count=event_count,
+        total_tokens=total_tokens,
     )
     if remaining is not None:
         payload["signals"]["remaining_capacity"] = {
@@ -67,6 +107,10 @@ def _candidate(
     stewardship_rank: int,
     remaining: str | None = "100",
     gate_overrides: dict[str, str] | None = None,
+    window_start: str | None = "2026-09-28T00:00:00Z",
+    window_end: str | None = "2026-09-28T00:00:00Z",
+    event_count: int = 1,
+    total_tokens: int = 1,
 ) -> dict:
     gates = {
         "policy": "ALLOW",
@@ -83,7 +127,14 @@ def _candidate(
         "kind": "provider_route_candidate",
         "route_id": route_id,
         "capability_descriptor": _descriptor(provider),
-        "capacity_input": _capacity(provider, remaining),
+        "capacity_input": _capacity(
+            provider,
+            remaining,
+            window_start=window_start,
+            window_end=window_end,
+            event_count=event_count,
+            total_tokens=total_tokens,
+        ),
         "gates": gates,
         "ranks": {
             "capability_preference": capability_rank,
@@ -133,7 +184,7 @@ class ProviderBrokerTests(unittest.TestCase):
 
         plan = _json(FIXTURES / "provider-broker-plan.example.json")
         Draft202012Validator(plan_schema).validate(plan)
-        self.assertEqual(validate_provider_broker_plan(plan), plan)
+        self.assertEqual(validate_provider_broker_plan(plan, consumed_at=FRESH_EVALUATED_AT), plan)
 
         secret_candidate = deepcopy(candidate)
         secret_candidate["route_id"] = "ghp_secretlike"
@@ -149,7 +200,7 @@ class ProviderBrokerTests(unittest.TestCase):
         with self.assertRaises(JsonSchemaValidationError):
             Draft202012Validator(plan_schema).validate(secret_plan)
         with self.assertRaises(ValidationError):
-            validate_provider_broker_plan(secret_plan)
+            validate_provider_broker_plan(secret_plan, consumed_at=FRESH_EVALUATED_AT)
 
     def test_primary_and_fallback_are_strategy_specific(self):
         codex = _candidate(
@@ -164,7 +215,7 @@ class ProviderBrokerTests(unittest.TestCase):
             capability_rank=5,
             stewardship_rank=0,
         )
-        capability_first = plan_provider_routes(
+        capability_first = plan_fresh_routes(
             [openai, codex],
             required_capability="CODE_REVIEW",
             strategy="CAPABILITY_FIRST",
@@ -182,7 +233,7 @@ class ProviderBrokerTests(unittest.TestCase):
             [[0, 10], [5, 0]],
         )
 
-        stewardship = plan_provider_routes(
+        stewardship = plan_fresh_routes(
             [codex, openai],
             required_capability="CODE_REVIEW",
             strategy="STEWARDSHIP",
@@ -211,11 +262,11 @@ class ProviderBrokerTests(unittest.TestCase):
                 stewardship_rank=0,
             ),
         ]
-        forward = plan_provider_routes(
+        forward = plan_fresh_routes(
             candidates,
             required_capability="CODE_REVIEW",
         )
-        reverse = plan_provider_routes(
+        reverse = plan_fresh_routes(
             list(reversed(candidates)),
             required_capability="CODE_REVIEW",
         )
@@ -232,7 +283,7 @@ class ProviderBrokerTests(unittest.TestCase):
                 "budget": "DENY",
             },
         )
-        plan = plan_provider_routes(
+        plan = plan_fresh_routes(
             [candidate],
             required_capability="CODE_REVIEW",
         )
@@ -259,7 +310,7 @@ class ProviderBrokerTests(unittest.TestCase):
             stewardship_rank=0,
             remaining="0",
         )
-        plan = plan_provider_routes(
+        plan = plan_fresh_routes(
             [unknown, exhausted],
             required_capability="CODE_REVIEW",
         )
@@ -293,7 +344,7 @@ class ProviderBrokerTests(unittest.TestCase):
             capability_rank=0,
             stewardship_rank=0,
         )
-        plan = plan_provider_routes(
+        plan = plan_fresh_routes(
             [candidate],
             required_capability="PLAN",
         )
@@ -316,7 +367,7 @@ class ProviderBrokerTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     validate_provider_route_candidate(broken)
 
-        plan = plan_provider_routes(
+        plan = plan_fresh_routes(
             [candidate],
             required_capability="CODE_REVIEW",
         )
@@ -325,7 +376,7 @@ class ProviderBrokerTests(unittest.TestCase):
             broken["schema_version"] = value
             with self.subTest(plan_version=value):
                 with self.assertRaises(ValidationError):
-                    validate_provider_broker_plan(broken)
+                    validate_provider_broker_plan(broken, consumed_at=FRESH_EVALUATED_AT)
 
     def test_duplicate_routes_and_invalid_strategy_fail_closed(self):
         candidate = _candidate(
@@ -335,12 +386,12 @@ class ProviderBrokerTests(unittest.TestCase):
             stewardship_rank=0,
         )
         with self.assertRaises(ValidationError):
-            plan_provider_routes(
+            plan_fresh_routes(
                 [candidate, deepcopy(candidate)],
                 required_capability="CODE_REVIEW",
             )
         with self.assertRaises(ValidationError):
-            plan_provider_routes(
+            plan_fresh_routes(
                 [candidate],
                 required_capability="CODE_REVIEW",
                 strategy="COST_FIRST",
@@ -357,14 +408,14 @@ class ProviderBrokerTests(unittest.TestCase):
             capability_rank=0,
             stewardship_rank=0,
         )
-        plan = plan_provider_routes(
+        plan = plan_fresh_routes(
             [candidate],
             required_capability="CODE_REVIEW",
         )
         wrong_selected = deepcopy(plan)
         wrong_selected["selected_route_id"] = None
         with self.assertRaises(ValidationError):
-            validate_provider_broker_plan(wrong_selected)
+            validate_provider_broker_plan(wrong_selected, consumed_at=FRESH_EVALUATED_AT)
 
         empty = deepcopy(plan)
         empty["selected_route_id"] = None
@@ -372,7 +423,7 @@ class ProviderBrokerTests(unittest.TestCase):
         empty["eligible_routes"] = []
         empty["ineligible_routes"] = []
         with self.assertRaises(ValidationError):
-            validate_provider_broker_plan(empty)
+            validate_provider_broker_plan(empty, consumed_at=FRESH_EVALUATED_AT)
         plan_schema = _json(CONTRACTS / "provider-broker-plan.schema.json")
         with self.assertRaises(JsonSchemaValidationError):
             Draft202012Validator(plan_schema).validate(empty)
@@ -380,17 +431,54 @@ class ProviderBrokerTests(unittest.TestCase):
         wrong_authority = deepcopy(plan)
         wrong_authority["authority"] = "EXECUTION"
         with self.assertRaises(ValidationError):
-            validate_provider_broker_plan(wrong_authority)
+            validate_provider_broker_plan(wrong_authority, consumed_at=FRESH_EVALUATED_AT)
 
         secret_identity = deepcopy(plan)
         secret_identity["eligible_routes"][0]["runtime"] = "ghp_secret"
         with self.assertRaises(ValidationError):
-            validate_provider_broker_plan(secret_identity)
+            validate_provider_broker_plan(secret_identity, consumed_at=FRESH_EVALUATED_AT)
 
         wrong_fallback = deepcopy(plan)
         wrong_fallback["fallback_route_ids"] = ["made-up-route"]
         with self.assertRaises(ValidationError):
-            validate_provider_broker_plan(wrong_fallback)
+            validate_provider_broker_plan(wrong_fallback, consumed_at=FRESH_EVALUATED_AT)
+
+    def test_evidence_expiry_overflow_fails_closed(self):
+        near_max = _candidate(
+            "codex",
+            "codex-near-max",
+            capability_rank=0,
+            stewardship_rank=0,
+            window_start="9999-12-31T23:59:59Z",
+            window_end="9999-12-31T23:59:59Z",
+        )
+        with self.assertRaisesRegex(
+            ValidationError, "evidence expiry is out of range"
+        ):
+            plan_provider_routes(
+                [near_max],
+                required_capability="CODE_REVIEW",
+                evaluated_at="9999-12-31T23:59:59Z",
+                max_evidence_age_seconds=1,
+            )
+
+        plan = plan_provider_routes(
+            [near_max],
+            required_capability="CODE_REVIEW",
+            evaluated_at="9999-12-31T23:59:59Z",
+            max_evidence_age_seconds=0,
+        )
+        tampered = deepcopy(plan)
+        tampered["max_evidence_age_seconds"] = 1
+        with self.assertRaisesRegex(
+            ValidationError, "evidence expiry is out of range"
+        ):
+            validate_provider_broker_plan(
+                tampered,
+                consumed_at="9999-12-31T23:59:59Z",
+                expected_max_evidence_age_seconds=1,
+            )
+
     def test_output_is_content_free_and_has_no_effect_authority(self):
         candidate = _candidate(
             "codex",
@@ -398,7 +486,7 @@ class ProviderBrokerTests(unittest.TestCase):
             capability_rank=0,
             stewardship_rank=0,
         )
-        plan = plan_provider_routes(
+        plan = plan_fresh_routes(
             [candidate],
             required_capability="CODE_REVIEW",
         )
@@ -415,6 +503,363 @@ class ProviderBrokerTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, rendered)
 
+    def test_positive_capacity_freshness_fails_closed(self):
+        fresh = _candidate(
+            "codex",
+            "codex-boundary",
+            capability_rank=0,
+            stewardship_rank=0,
+            window_start="2026-09-28T00:00:00Z",
+            window_end="2026-09-28T00:00:01Z",
+        )
+        stale = _candidate(
+            "openai",
+            "openai-stale",
+            capability_rank=0,
+            stewardship_rank=0,
+            window_start="2026-09-27T00:00:00Z",
+            window_end="2026-09-27T00:00:00Z",
+        )
+        future = _candidate(
+            "generic",
+            "generic-future",
+            capability_rank=0,
+            stewardship_rank=0,
+            window_start="2026-09-28T00:00:02Z",
+            window_end="2026-09-28T00:00:02Z",
+        )
+        unbound = _candidate(
+            "codex",
+            "codex-unbound",
+            capability_rank=1,
+            stewardship_rank=0,
+            window_start=None,
+            window_end=None,
+            event_count=0,
+            total_tokens=0,
+        )
+        plan = plan_provider_routes(
+            [future, unbound, stale, fresh],
+            required_capability="CODE_REVIEW",
+            evaluated_at="2026-09-28T00:00:01Z",
+            max_evidence_age_seconds=1,
+        )
+        self.assertEqual(plan["selected_route_id"], "codex-boundary")
+        self.assertEqual(plan["eligible_routes"][0]["reasons"], ["ELIGIBLE"])
+        reasons = {
+            item["route_id"]: item["reasons"]
+            for item in plan["ineligible_routes"]
+        }
+        self.assertEqual(reasons["openai-stale"], ["REMAINING_CAPACITY_STALE"])
+        self.assertEqual(reasons["generic-future"], ["REMAINING_CAPACITY_FUTURE"])
+        self.assertEqual(reasons["codex-unbound"], ["REMAINING_CAPACITY_UNBOUND"])
+
+        exact_age = _candidate(
+            "codex",
+            "codex-exact-age",
+            capability_rank=0,
+            stewardship_rank=0,
+            window_start="2026-09-28T00:00:00Z",
+            window_end="2026-09-28T00:00:00Z",
+        )
+        at_limit = plan_provider_routes(
+            [exact_age],
+            required_capability="CODE_REVIEW",
+            evaluated_at="2026-09-28T00:00:01Z",
+            max_evidence_age_seconds=1,
+        )
+        self.assertEqual(at_limit["selected_route_id"], "codex-exact-age")
+        just_over = plan_provider_routes(
+            [exact_age],
+            required_capability="CODE_REVIEW",
+            evaluated_at="2026-09-28T00:00:02Z",
+            max_evidence_age_seconds=1,
+        )
+        self.assertEqual(
+            just_over["ineligible_routes"][0]["reasons"],
+            ["REMAINING_CAPACITY_STALE"],
+        )
+
+        unknown = _candidate(
+            "codex",
+            "codex-unknown",
+            capability_rank=0,
+            stewardship_rank=0,
+            remaining=None,
+            window_start="2026-09-27T00:00:00Z",
+            window_end="2026-09-27T00:00:00Z",
+        )
+        exhausted = _candidate(
+            "openai",
+            "openai-exhausted",
+            capability_rank=0,
+            stewardship_rank=0,
+            remaining="0",
+            window_start="2026-09-28T00:00:02Z",
+            window_end="2026-09-28T00:00:02Z",
+        )
+        unchanged = plan_provider_routes(
+            [unknown, exhausted],
+            required_capability="CODE_REVIEW",
+            evaluated_at="2026-09-28T00:00:01Z",
+            max_evidence_age_seconds=0,
+        )
+        unchanged_reasons = {
+            item["route_id"]: item["reasons"]
+            for item in unchanged["ineligible_routes"]
+        }
+        self.assertEqual(
+            unchanged_reasons["codex-unknown"],
+            ["REMAINING_CAPACITY_UNKNOWN"],
+        )
+        self.assertEqual(
+            unchanged_reasons["openai-exhausted"],
+            ["REMAINING_CAPACITY_EXHAUSTED"],
+        )
+
+        with self.assertRaisesRegex(ValidationError, "evaluated_at"):
+            plan_provider_routes(
+                [fresh],
+                required_capability="CODE_REVIEW",
+                evaluated_at="now",
+                max_evidence_age_seconds=0,
+            )
+        with self.assertRaisesRegex(ValidationError, "max_evidence_age_seconds"):
+            plan_provider_routes(
+                [fresh],
+                required_capability="CODE_REVIEW",
+                evaluated_at="2026-09-28T00:00:01Z",
+                max_evidence_age_seconds=True,
+            )
+
+    def test_serialized_eligible_plan_replay_fails_closed_without_wall_clock(self):
+        candidate = _candidate(
+            "codex",
+            "codex-primary",
+            capability_rank=0,
+            stewardship_rank=0,
+        )
+        plan = plan_fresh_routes(
+            [candidate],
+            required_capability="CODE_REVIEW",
+        )
+        self.assertEqual(plan["evaluated_at"], FRESH_EVALUATED_AT)
+        self.assertEqual(plan["max_evidence_age_seconds"], 0)
+        self.assertEqual(plan["evidence_fresh_until"], FRESH_EVALUATED_AT)
+        self.assertEqual(
+            validate_provider_broker_plan(
+                plan, consumed_at=FRESH_EVALUATED_AT
+            ),
+            plan,
+        )
+        with self.assertRaisesRegex(ValidationError, "evidence is stale"):
+            validate_provider_broker_plan(
+                plan,
+                consumed_at="2026-09-28T00:00:01Z",
+            )
+        with self.assertRaisesRegex(ValidationError, "evidence is stale"):
+            validate_provider_broker_plan(
+                plan,
+                consumed_at="2026-09-27T23:59:59Z",
+            )
+
+        earlier = _candidate(
+            "codex",
+            "codex-earlier",
+            capability_rank=0,
+            stewardship_rank=0,
+            window_start="2026-09-28T00:00:00Z",
+            window_end="2026-09-28T00:00:00Z",
+        )
+        later = _candidate(
+            "openai",
+            "openai-later",
+            capability_rank=1,
+            stewardship_rank=0,
+            window_start="2026-09-28T00:00:01Z",
+            window_end="2026-09-28T00:00:01Z",
+        )
+        bounded = plan_provider_routes(
+            [later, earlier],
+            required_capability="CODE_REVIEW",
+            evaluated_at="2026-09-28T00:00:01Z",
+            max_evidence_age_seconds=1,
+        )
+        self.assertEqual(
+            [item["route_id"] for item in bounded["eligible_routes"]],
+            ["codex-earlier", "openai-later"],
+        )
+        self.assertEqual(bounded["evidence_fresh_until"], "2026-09-28T00:00:01Z")
+        self.assertEqual(
+            validate_provider_broker_plan(
+                bounded,
+                consumed_at="2026-09-28T00:00:01Z",
+                expected_max_evidence_age_seconds=1,
+            )["selected_route_id"],
+            "codex-earlier",
+        )
+        with self.assertRaisesRegex(ValidationError, "evidence is stale"):
+            validate_provider_broker_plan(
+                bounded,
+                consumed_at="2026-09-28T00:00:02Z",
+                expected_max_evidence_age_seconds=1,
+            )
+        extended = deepcopy(bounded)
+        extended["evidence_fresh_until"] = "2026-09-28T00:00:03Z"
+        with self.assertRaisesRegex(ValidationError, "boundary is inconsistent"):
+            validate_provider_broker_plan(
+                extended,
+                consumed_at="2026-09-28T00:00:01Z",
+                expected_max_evidence_age_seconds=1,
+            )
+        missing = deepcopy(plan)
+        del missing["evidence_fresh_until"]
+        with self.assertRaisesRegex(ValidationError, "schema is invalid"):
+            validate_provider_broker_plan(
+                missing,
+                consumed_at=FRESH_EVALUATED_AT,
+            )
+
+        stale = _candidate(
+            "openai",
+            "openai-stale",
+            capability_rank=0,
+            stewardship_rank=0,
+            window_start="2026-09-27T00:00:00Z",
+            window_end="2026-09-27T00:00:00Z",
+        )
+        ineligible = plan_provider_routes(
+            [stale],
+            required_capability="CODE_REVIEW",
+            evaluated_at=FRESH_EVALUATED_AT,
+            max_evidence_age_seconds=0,
+        )
+        self.assertIsNone(ineligible["selected_route_id"])
+        self.assertIsNone(ineligible["evidence_fresh_until"])
+        self.assertIsNone(
+            validate_provider_broker_plan(
+                ineligible,
+                consumed_at="2026-09-29T00:00:00Z",
+            )["selected_route_id"]
+        )
+
+    def test_tampered_expiry_extension_fails_against_retained_observations(self):
+        earlier = _candidate(
+            "codex",
+            "codex-earlier",
+            capability_rank=0,
+            stewardship_rank=0,
+            window_start="2026-09-28T00:00:00Z",
+            window_end="2026-09-28T00:00:00Z",
+        )
+        later = _candidate(
+            "openai",
+            "openai-later",
+            capability_rank=1,
+            stewardship_rank=0,
+            window_start="2026-09-28T00:00:01Z",
+            window_end="2026-09-28T00:00:01Z",
+        )
+        plan = plan_provider_routes(
+            [later, earlier],
+            required_capability="CODE_REVIEW",
+            evaluated_at="2026-09-28T00:00:01Z",
+            max_evidence_age_seconds=1,
+        )
+        self.assertEqual(
+            plan["eligible_routes"][0]["observed_at"],
+            "2026-09-28T00:00:00Z",
+        )
+        self.assertEqual(
+            plan["eligible_routes"][0]["fresh_until"],
+            "2026-09-28T00:00:01Z",
+        )
+        self.assertEqual(
+            plan["eligible_routes"][1]["fresh_until"],
+            "2026-09-28T00:00:02Z",
+        )
+        self.assertEqual(plan["evidence_fresh_until"], "2026-09-28T00:00:01Z")
+        self.assertEqual(
+            validate_provider_broker_plan(
+                plan,
+                consumed_at="2026-09-28T00:00:01Z",
+                expected_max_evidence_age_seconds=1,
+            ),
+            plan,
+        )
+
+        extended = deepcopy(plan)
+        extended["evidence_fresh_until"] = "2026-09-28T00:00:02Z"
+        with self.assertRaisesRegex(ValidationError, "boundary is inconsistent"):
+            validate_provider_broker_plan(
+                extended,
+                consumed_at="2026-09-28T00:00:01Z",
+                expected_max_evidence_age_seconds=1,
+            )
+
+        shifted_route = deepcopy(plan)
+        shifted_route["eligible_routes"][0]["fresh_until"] = "2026-09-28T00:00:02Z"
+        with self.assertRaisesRegex(ValidationError, "boundary is inconsistent"):
+            validate_provider_broker_plan(
+                shifted_route,
+                consumed_at="2026-09-28T00:00:01Z",
+                expected_max_evidence_age_seconds=1,
+            )
+
+    def test_serialized_plan_cannot_widen_trusted_max_age(self):
+        candidate = _candidate(
+            "codex",
+            "codex-primary",
+            capability_rank=0,
+            stewardship_rank=0,
+        )
+        plan = plan_fresh_routes(
+            [candidate],
+            required_capability="CODE_REVIEW",
+        )
+        widened = deepcopy(plan)
+        widened["max_evidence_age_seconds"] = 3600
+        widened["evidence_fresh_until"] = "2026-09-28T01:00:00Z"
+        widened["eligible_routes"][0]["fresh_until"] = "2026-09-28T01:00:00Z"
+
+        with self.assertRaisesRegex(
+            ValidationError, "max evidence age does not match trusted policy"
+        ):
+            validate_provider_broker_plan(
+                widened,
+                consumed_at="2026-09-28T00:01:00Z",
+                expected_max_evidence_age_seconds=0,
+            )
+
+    def test_serialized_plan_cannot_shift_freshness_window_with_trusted_digest(self):
+        candidate = _candidate(
+            "codex",
+            "codex-primary",
+            capability_rank=0,
+            stewardship_rank=0,
+        )
+        plan = plan_fresh_routes(
+            [candidate],
+            required_capability="CODE_REVIEW",
+        )
+        trusted_digest = provider_broker_plan_digest(plan)
+
+        shifted = deepcopy(plan)
+        shifted["evaluated_at"] = "2026-09-28T00:01:00Z"
+        shifted["evidence_fresh_until"] = "2026-09-28T00:01:00Z"
+        shifted["eligible_routes"][0]["observed_at"] = "2026-09-28T00:01:00Z"
+        shifted["eligible_routes"][0]["fresh_until"] = "2026-09-28T00:01:00Z"
+
+        with self.assertRaisesRegex(
+            ValidationError, "digest does not match trusted identity"
+        ):
+            validate_provider_broker_plan(
+                shifted,
+                consumed_at="2026-09-28T00:01:00Z",
+                expected_max_evidence_age_seconds=0,
+                expected_plan_digest=trusted_digest,
+            )
+
     def test_module_has_no_execution_or_provider_transport_dependency(self):
         source = (
             ROOT / "atlas" / "provider_broker.py"
@@ -428,6 +873,8 @@ class ProviderBrokerTests(unittest.TestCase):
             "CodexAuditProvider",
             "BoundedResponsesAuditProvider",
             "cursor_agent",
+            "datetime.now",
+            "time.time",
         ):
             self.assertNotIn(forbidden, source)
 
