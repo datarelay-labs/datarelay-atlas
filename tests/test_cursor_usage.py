@@ -206,6 +206,24 @@ class CursorUsageCsvTests(unittest.TestCase):
         self.assertEqual(event.input_tokens, 2)
         self.assertEqual(event.total_tokens, 9)
 
+    def test_real_cursor_cost_labels_and_included_free_blank_bundle(self):
+        text = "\n".join(
+            [
+                HEADER,
+                "2026-09-27T05:15:58.910Z,Free,auto,No,0,24063,5248,503,29814,Free,,",
+                "2026-09-27T04:58:47.181Z,Free,auto,No,0,335213,15824640,53052,16212905,-,,",
+                "2026-09-26T11:12:00.000Z,Included,auto,No,0,100,200,10,310,Included,,",
+                "2026-09-26T11:11:59.836Z,Included,auto,No,,,,,,Free,,",
+            ]
+        )
+        events = parse_usage_csv(_write_csv(text))
+        self.assertEqual([item.cost for item in events], ["Free", "-", "Included", "Free"])
+        self.assertEqual(events[-1].total_tokens, 0)
+        self.assertEqual(events[-1].input_tokens, 0)
+        summary = summarize_usage(events)
+        self.assertEqual(summary["event_count"], 4)
+        self.assertEqual(summary["total_tokens"], 16243029)
+
     def test_schema_and_type_errors_fail_closed(self):
         cases = [
             HEADER + "\n2026-09-22T00:00:00Z,Included,m,No,0,1,1,1,4,not-a-cost,,\n",

@@ -212,13 +212,18 @@ def _require_token_count(value: str | None, *, label: str, row_number: int) -> i
 
 
 def _optional_cost(value: str | None, *, label: str, row_number: int) -> str | None:
+    """Preserve bounded provider cost labels; cost never drives control."""
     if value is None:
         return None
     text = value.strip()
     if not text:
         return None
+    if text in {"Free", "Included", "-"}:
+        return text
     if not _COST_PATTERN.fullmatch(text):
-        _reject(f"row {row_number}: {label} is not a non-negative decimal")
+        _reject(
+            f"row {row_number}: {label} is not a supported provider cost label"
+        )
     return text
 
 
@@ -287,31 +292,49 @@ def parse_usage_csv(path: Path) -> list[UsageEvent]:
         normalized = {
             (key.strip() if key is not None else ""): value for key, value in row.items()
         }
-        cache_write = _require_token_count(
-            normalized.get("Input (w/ Cache Write)"),
-            label="cache_write_tokens",
-            row_number=row_number,
+        token_columns = (
+            "Input (w/ Cache Write)",
+            "Input (w/o Cache Write)",
+            "Cache Read",
+            "Output Tokens",
+            "Total Tokens",
         )
-        fresh_input = _require_token_count(
-            normalized.get("Input (w/o Cache Write)"),
-            label="input_tokens",
-            row_number=row_number,
-        )
-        cache_read = _require_token_count(
-            normalized.get("Cache Read"),
-            label="cache_read_tokens",
-            row_number=row_number,
-        )
-        output = _require_token_count(
-            normalized.get("Output Tokens"),
-            label="output_tokens",
-            row_number=row_number,
-        )
-        total = _require_token_count(
-            normalized.get("Total Tokens"),
-            label="total_tokens",
-            row_number=row_number,
-        )
+        raw_tokens = [normalized.get(name) for name in token_columns]
+        all_blank = all(value is None or not value.strip() for value in raw_tokens)
+        if all_blank:
+            kind_label = (normalized.get("Kind") or "").strip()
+            cost_label = (normalized.get("Cost") or "").strip()
+            if kind_label != "Included" or cost_label != "Free":
+                _reject(
+                    f"row {row_number}: blank token bundle is not an Included/Free event"
+                )
+            cache_write = fresh_input = cache_read = output = total = 0
+        else:
+            cache_write = _require_token_count(
+                normalized.get("Input (w/ Cache Write)"),
+                label="cache_write_tokens",
+                row_number=row_number,
+            )
+            fresh_input = _require_token_count(
+                normalized.get("Input (w/o Cache Write)"),
+                label="input_tokens",
+                row_number=row_number,
+            )
+            cache_read = _require_token_count(
+                normalized.get("Cache Read"),
+                label="cache_read_tokens",
+                row_number=row_number,
+            )
+            output = _require_token_count(
+                normalized.get("Output Tokens"),
+                label="output_tokens",
+                row_number=row_number,
+            )
+            total = _require_token_count(
+                normalized.get("Total Tokens"),
+                label="total_tokens",
+                row_number=row_number,
+            )
         if total != fresh_input + cache_write + cache_read + output:
             _reject(f"row {row_number}: total_tokens does not match the token parts")
         events.append(
