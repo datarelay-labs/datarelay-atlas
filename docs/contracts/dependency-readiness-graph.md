@@ -1,6 +1,6 @@
 # Dependency / Readiness Graph v1
 
-Status: #53 Slice A read-only planner
+Status: #53 Slice A/B read-only planner + selected GitHub projection
 Authority: canonical GitHub/Engineering System state must be normalized before input
 
 Machine-checkable schema:
@@ -82,6 +82,45 @@ that was already non-`TRUSTED` in the graph is never promoted by a later read.
 Issue title/body, prompts, transcripts, and other free-form content are parsed
 only as needed for trust/metadata verification and are never emitted as facts
 or plan output.
+
+## Selected GitHub projection
+
+Slice B also provides an explicit, bounded GitHub read path. The caller names
+each packet as `owner/repo#issue`; Atlas does not discover or schedule a
+repository-wide graph.
+
+For each selected packet Atlas transiently reads the GitHub Issue and PR state,
+requires a trusted `[AI Work]` packet with `PACKET_VERSION>=2`, canonical
+`TARGET_REPO`, lifecycle status, Git-ref-safe branch, and exact HEAD, then
+discards the Issue body. The projection emits only:
+
+- repository and issue number;
+- packet status and queue state;
+- branch and exact HEAD;
+- optional `AFTER_ISSUE`.
+
+`AFTER_ISSUE` is projected as a same-repository
+`REQUIRES_COMPLETE` edge. A queued packet without `AFTER_ISSUE`, an
+untrusted/malformed packet, a stale PR HEAD, or a packet that changes while it
+is read fails closed. For a merged PR, an exact `merge_commit_sha` is also a
+valid post-merge HEAD.
+
+Free-form Work Packet `PRIORITY` text is not converted to graph priority.
+Selected packet projections use neutral numeric priority and no inferred
+resource or owner-gate metadata; the planner still reserves its implicit
+repository/branch resource.
+
+The selected-packet command is deliberately separate from graph reconciliation:
+
+```bash
+PYTHONPATH=. python3 -m atlas readiness github-packets \
+  --packet datarelay-labs/datarelay-atlas#91 \
+  --packet datarelay-labs/datarelay-atlas#97 \
+  --max-wip 2
+```
+
+Both GitHub commands perform reads only. They never edit Issues/PRs or start,
+stop, resume, or dispatch Cursor sessions.
 
 ## Safety boundary
 

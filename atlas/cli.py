@@ -58,7 +58,12 @@ from atlas.ops import (
     validate_prod_deployment_env,
 )
 from atlas.provenance import ValidationError
-from atlas.readiness_graph import plan_readiness_file
+from atlas.readiness_graph import (
+    MAX_NODES,
+    parse_packet_selector,
+    plan_readiness_file,
+    plan_selected_packet_projections,
+)
 from atlas.readiness_github import plan_github_reconciled_readiness_file
 from atlas.semantic_retrieval import embedding_config_from_cli
 from atlas.service import AtlasService
@@ -1076,6 +1081,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     readiness_github_plan.add_argument("--graph", required=True)
     readiness_github_plan.set_defaults(func=cmd_readiness_github_plan)
+    readiness_github_packets = readiness_sub.add_parser(
+        "github-packets",
+        help="Plan an explicit bounded set of canonical GitHub AI Work Packets",
+    )
+    readiness_github_packets.add_argument(
+        "--packet",
+        action="append",
+        required=True,
+        help="Canonical owner/repo#issue selector; may be repeated.",
+    )
+    readiness_github_packets.add_argument("--max-wip", type=int, default=1)
+    readiness_github_packets.set_defaults(func=cmd_readiness_github_packets)
 
     ops = sub.add_parser("ops", help="Service configuration and health")
     ops_sub = ops.add_subparsers(dest="ops_command", required=True)
@@ -1298,6 +1315,30 @@ def cmd_readiness_github_plan(args: argparse.Namespace) -> int:
         plan_github_reconciled_readiness_file(
             Path(args.graph), adapter.read_readiness_packet_fact
         )
+    )
+    return 0
+
+
+def cmd_readiness_github_packets(args: argparse.Namespace) -> int:
+    if len(args.packet) > MAX_NODES:
+        raise ValidationError("selected packet list exceeds bounded node count")
+    selectors = [parse_packet_selector(value) for value in args.packet]
+    identities = [(item.repository, item.issue_number) for item in selectors]
+    if len(identities) != len(set(identities)):
+        raise ValidationError("duplicate --packet selector")
+    grouped: dict[str, list[int]] = {}
+    for selector in selectors:
+        grouped.setdefault(selector.repository, []).append(selector.issue_number)
+    reader = GitHubWorkPacketAdapter()
+    projections: list[dict] = []
+    for repository in sorted(grouped):
+        projections.extend(
+            reader.read_selected_packet_projections(
+                repository, sorted(grouped[repository])
+            )
+        )
+    _print_json(
+        plan_selected_packet_projections(projections, max_wip=args.max_wip)
     )
     return 0
 

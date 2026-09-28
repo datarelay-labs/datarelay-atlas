@@ -63,6 +63,7 @@ ALLOWED_STATES = frozenset(
 )
 TERMINAL_STATES = frozenset({"PASSED", "HUMAN_REQUIRED"})
 AUDIT_VERDICTS = frozenset({"PASS", "REWORK", "HUMAN_REQUIRED"})
+MAX_SELECTED_PACKET_PROJECTIONS = 256
 
 
 @dataclass(frozen=True)
@@ -1630,11 +1631,32 @@ def _resume_branch_disposition(
     return "match"
 
 
+def _valid_git_branch_ref(raw: object) -> bool:
+    if not isinstance(raw, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", raw
+    ):
+        return False
+    components = raw.split("/")
+    return not (
+        ".." in raw
+        or "//" in raw
+        or "@{" in raw
+        or raw.endswith(("/", "."))
+        or any(
+            component.startswith(".") or component.endswith(".lock")
+            for component in components
+        )
+    )
+
+
 def _after_issue_number(raw: str | None) -> int | None:
     text = (raw or "").strip()
     if not re.fullmatch(r"[0-9]+", text):
         return None
-    value = int(text)
+    try:
+        value = int(text)
+    except ValueError:
+        return None
     return value if value >= 1 else None
 
 
@@ -3319,6 +3341,211 @@ class GitHubWorkPacketAdapter:
             )
         observations.sort(key=lambda item: int(item["issue_number"]))
         return observations
+
+    def read_selected_packet_projections(
+        self,
+        repository: str,
+        issue_numbers: list[int],
+    ) -> list[dict[str, Any]]:
+        """Read an explicit bounded packet set for readiness planning.
+
+        Issue bodies are parsed transiently. Returned projections contain only
+        the canonical machine facts needed by the read-only planner.
+        """
+        repo = normalize_github_repository(repository)
+        if not isinstance(issue_numbers, list) or not issue_numbers:
+            raise ValidationError("selected packet projection requires issue numbers")
+        if len(issue_numbers) > MAX_SELECTED_PACKET_PROJECTIONS:
+            raise ValidationError("selected packet projection exceeds bounded issue count")
+        normalized_numbers: list[int] = []
+        for value in issue_numbers:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValidationError("selected packet issue number is invalid")
+            normalized_numbers.append(value)
+        if len(normalized_numbers) != len(set(normalized_numbers)):
+            raise ValidationError("selected packet issue numbers contain duplicates")
+
+        pulls_by_branch: dict[str, list[dict[str, Any]]] = {}
+        for pull in self._list_pull_requests(repo):
+            try:
+                pr_number = int(pull.get("number"))
+            except (TypeError, ValueError):
+                continue
+            head = pull.get("head")
+            if not isinstance(head, dict):
+                continue
+            branch = str(head.get("ref") or "").strip()
+            sha = str(head.get("sha") or "").strip().lower()
+            head_repo = head.get("repo")
+            head_repo_name = (
+                str(head_repo.get("full_name") or "").strip()
+                if isinstance(head_repo, dict)
+                else ""
+            )
+            try:
+                normalized_head_repo = normalize_github_repository(head_repo_name)
+            except ValidationError:
+                continue
+            if (
+                normalized_head_repo != repo
+                or not _valid_git_branch_ref(branch)
+                or not re.fullmatch(r"[0-9a-f]{40}", sha)
+            ):
+                continue
+            state = str(pull.get("state") or "").strip().lower()
+            if state not in {"open", "closed"}:
+                continue
+            merged = bool(pull.get("merged_at"))
+            merge_head = str(pull.get("merge_commit_sha") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", merge_head):
+                merge_head = ""
+            pulls_by_branch.setdefault(branch, []).append(
+                {
+                    "number": pr_number,
+                    "state": "MERGED" if merged else state.upper(),
+                    "head": sha,
+                    "merge_head": merge_head or None,
+                }
+            )
+
+        projections: list[dict[str, Any]] = []
+        allowed_statuses = {"ACTIVE", "PAUSED", "BLOCKED", "COMPLETE"}
+        for issue_number in sorted(normalized_numbers):
+            payload = self._view_issue(repo, issue_number)
+            payload_number = payload.get("number")
+            if (
+                isinstance(payload_number, bool)
+                or not isinstance(payload_number, int)
+                or payload_number != issue_number
+            ):
+                raise ValidationError(
+                    f"selected work packet #{issue_number} identity mismatch"
+                )
+            title = str(payload.get("title") or "")
+            if not title.startswith("[AI Work]"):
+                raise ValidationError(
+                    f"issue #{issue_number} is not an [AI Work] packet"
+                )
+            if self._lookup_author_trust(repo, payload) != "trusted":
+                raise ValidationError(
+                    f"selected work packet #{issue_number} author is untrusted"
+                )
+            issue_state = str(payload.get("state") or "").strip().lower()
+            if issue_state not in {"open", "closed"}:
+                raise ValidationError(
+                    f"selected work packet #{issue_number} has invalid issue state"
+                )
+            body = str(payload.get("body") or "")
+            meta = _parse_leading_packet_metadata(body)
+            version_text = str(meta.get("PACKET_VERSION") or "").strip()
+            if not re.fullmatch(r"[1-9][0-9]{0,2}", version_text):
+                raise ValidationError(
+                    f"selected work packet #{issue_number} PACKET_VERSION is invalid"
+                )
+            if int(version_text) < 2:
+                raise ValidationError(
+                    f"selected work packet #{issue_number} requires PACKET_VERSION>=2"
+                )
+            _require_v2_packet_metadata(body)
+            require_canonical_target_repo(meta.get("TARGET_REPO") or "", repo)
+
+            status = str(meta.get("STATUS") or "").strip()
+            if status not in allowed_statuses:
+                raise ValidationError(
+                    f"selected work packet #{issue_number} has noncanonical STATUS"
+                )
+            if issue_state == "closed" and status != "COMPLETE":
+                raise ValidationError(
+                    f"selected work packet #{issue_number} issue/status conflict"
+                )
+
+            branch = str(meta.get("BRANCH") or "").strip()
+            if not _valid_git_branch_ref(branch):
+                raise ValidationError(
+                    f"selected work packet #{issue_number} branch is invalid"
+                )
+            head = str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", head):
+                raise ValidationError(
+                    f"selected work packet #{issue_number} HEAD is invalid"
+                )
+
+            queue_state = str(meta.get("QUEUE_STATE") or "NONE").strip() or "NONE"
+            if queue_state not in {"NONE", "QUEUED"}:
+                raise ValidationError(
+                    f"selected work packet #{issue_number} QUEUE_STATE is invalid"
+                )
+            if queue_state == "QUEUED" and status != "PAUSED":
+                raise ValidationError(
+                    f"selected work packet #{issue_number} QUEUE_STATE/status conflict"
+                )
+            after_issue: int | None = None
+            if "AFTER_ISSUE" in meta:
+                after_issue = _after_issue_number(meta.get("AFTER_ISSUE"))
+                if after_issue is None:
+                    raise ValidationError(
+                        f"selected work packet #{issue_number} AFTER_ISSUE is invalid"
+                    )
+            if queue_state == "QUEUED" and after_issue is None:
+                raise ValidationError(
+                    f"selected work packet #{issue_number} queued without AFTER_ISSUE"
+                )
+
+            branch_pulls = pulls_by_branch.get(branch, [])
+            exact = [
+                item
+                for item in branch_pulls
+                if item["head"] == head
+                or (item["state"] == "MERGED" and item["merge_head"] == head)
+            ]
+            if len(exact) > 1:
+                raise ValidationError(
+                    f"selected work packet #{issue_number} PR state is ambiguous"
+                )
+            if not exact and branch_pulls:
+                raise ValidationError(
+                    f"selected work packet #{issue_number} PR HEAD is stale"
+                )
+            if exact:
+                pr_state = str(exact[0]["state"])
+                if status == "ACTIVE" and pr_state == "MERGED":
+                    raise ValidationError(
+                        f"selected work packet #{issue_number} ACTIVE after PR merge"
+                    )
+                if status == "COMPLETE" and pr_state == "OPEN":
+                    raise ValidationError(
+                        f"selected work packet #{issue_number} COMPLETE with open PR"
+                    )
+
+            confirmed = self._view_issue(repo, issue_number)
+            if (
+                confirmed.get("number") != issue_number
+                or str(confirmed.get("title") or "") != title
+                or str(confirmed.get("body") or "") != body
+                or str(confirmed.get("state") or "").strip().lower() != issue_state
+                or str(confirmed.get("updatedAt") or confirmed.get("updated_at") or "")
+                != str(payload.get("updatedAt") or payload.get("updated_at") or "")
+            ):
+                raise ValidationError(
+                    f"selected work packet #{issue_number} changed during projection"
+                )
+            if self._lookup_author_trust(repo, confirmed) != "trusted":
+                raise ValidationError(
+                    f"selected work packet #{issue_number} author trust changed"
+                )
+
+            projections.append(
+                {
+                    "repository": repo,
+                    "issue_number": issue_number,
+                    "packet_status": status,
+                    "queue_state": queue_state,
+                    "branch": branch,
+                    "head": head,
+                    "after_issue": after_issue,
+                }
+            )
+        return projections
 
     def _view_issue(self, repository: str, issue_number: int) -> dict:
         view = self._run(
