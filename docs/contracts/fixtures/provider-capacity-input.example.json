@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "kind": "provider_capacity_input",
+  "provider": "cursor",
+  "scope": "ACCOUNT_AGGREGATE",
+  "evidence": {
+    "source_kind": "usage_events_csv",
+    "window_start": "2026-09-22T00:00:00.000000Z",
+    "window_end": "2026-09-22T00:10:00.000000Z",
+    "event_count": 2,
+    "total_tokens": 300
+  },
+  "signals": {
+    "remaining_capacity": {
+      "status": "UNKNOWN"
+    },
+    "reset_at": {
+      "status": "UNKNOWN"
+    },
+    "capacity_pool": {
+      "status": "UNKNOWN"
+    },
+    "active_inference_wip": {
+      "status": "UNKNOWN"
+    }
+  }
+}

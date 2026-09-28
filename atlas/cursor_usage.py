@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
 from atlas.provenance import ValidationError
+from atlas.provider_capacity import build_provider_capacity_input
 from atlas.work_controller import (
     GitHubWorkPacketAdapter,
     GitRunner,
@@ -519,6 +520,26 @@ def summarize_usage(events: Iterable[UsageEvent]) -> dict:
         "burst_windows_ge_5000000": burst_windows_ge_5m,
         "cache_read_ratio": _share(cache_read, total_tokens),
     }
+
+
+def cursor_capacity_input(events: Iterable[UsageEvent]) -> dict:
+    """Normalize authoritative Cursor CSV usage into provider-neutral evidence.
+
+    The Usage Events CSV proves aggregate usage facts only. Remaining quota,
+    reset timing, pool state, and active inference WIP therefore stay UNKNOWN.
+    """
+    rows = list(events)
+    summary = summarize_usage(rows)
+    timestamps = sorted(item.timestamp for item in rows)
+    return build_provider_capacity_input(
+        provider="cursor",
+        scope="ACCOUNT_AGGREGATE",
+        source_kind="usage_events_csv",
+        window_start=timestamps[0] if timestamps else None,
+        window_end=timestamps[-1] if timestamps else None,
+        event_count=summary["event_count"],
+        total_tokens=summary["total_tokens"],
+    )
 
 
 def canonical_workspace(path: str | None) -> str | None:

@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datarelay.local/contracts/provider-capacity-input.schema.json",
+  "title": "DataRelay Atlas Provider Capacity Input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "provider",
+    "scope",
+    "evidence",
+    "signals"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "provider_capacity_input" },
+    "provider": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "scope": {
+      "type": "string",
+      "const": "ACCOUNT_AGGREGATE"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_kind",
+        "window_start",
+        "window_end",
+        "event_count",
+        "total_tokens"
+      ],
+      "properties": {
+        "source_kind": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+        },
+        "window_start": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+        },
+        "window_end": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+        },
+        "event_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_tokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "event_count": { "const": 0 } },
+            "required": ["event_count"]
+          },
+          "then": {
+            "properties": {
+              "window_start": { "type": "null" },
+              "window_end": { "type": "null" },
+              "total_tokens": { "const": 0 }
+            }
+          },
+          "else": {
+            "properties": {
+              "window_start": { "type": "string" },
+              "window_end": { "type": "string" }
+            }
+          }
+        }
+      ]
+    },
+    "signals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "remaining_capacity",
+        "reset_at",
+        "capacity_pool",
+        "active_inference_wip"
+      ],
+      "properties": {
+        "remaining_capacity": {
+          "oneOf": [
+            { "$ref": "#/$defs/unknownSignal" },
+            { "$ref": "#/$defs/observedRemaining" }
+          ]
+        },
+        "reset_at": {
+          "oneOf": [
+            { "$ref": "#/$defs/unknownSignal" },
+            { "$ref": "#/$defs/observedTimestamp" }
+          ]
+        },
+        "capacity_pool": {
+          "oneOf": [
+            { "$ref": "#/$defs/unknownSignal" },
+            { "$ref": "#/$defs/observedLabel" }
+          ]
+        },
+        "active_inference_wip": {
+          "oneOf": [
+            { "$ref": "#/$defs/unknownSignal" },
+            { "$ref": "#/$defs/observedInteger" }
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "unknownSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string", "const": "UNKNOWN" }
+      }
+    },
+    "observedRemaining": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value", "unit"],
+      "properties": {
+        "status": { "type": "string", "const": "OBSERVED" },
+        "value": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        "unit": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+        }
+      }
+    },
+    "observedTimestamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value"],
+      "properties": {
+        "status": { "type": "string", "const": "OBSERVED" },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+        }
+      }
+    },
+    "observedLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value"],
+      "properties": {
+        "status": { "type": "string", "const": "OBSERVED" },
+        "value": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+        }
+      }
+    },
+    "observedInteger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value"],
+      "properties": {
+        "status": { "type": "string", "const": "OBSERVED" },
+        "value": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
