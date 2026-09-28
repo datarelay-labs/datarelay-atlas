@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 from jsonschema import Draft202012Validator
 
@@ -446,11 +447,20 @@ class ReadinessGraphTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", suffix=".json", delete=False
         ) as handle:
-            handle.write('{"schema_version":' + ("9" * 5000) + "}")
+            handle.write(
+                '{"schema_version":1,"kind":"dependency_readiness_graph",'
+                '"max_wip":1,"nodes":[]}'
+            )
             numeric_path = Path(handle.name)
         try:
-            with self.assertRaisesRegex(ValidationError, "supported UTF-8 JSON"):
-                plan_readiness_file(numeric_path)
+            with patch(
+                "atlas.readiness_graph.json.loads",
+                side_effect=ValueError("integer string conversion exceeds configured limit"),
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, "supported UTF-8 JSON"
+                ):
+                    plan_readiness_file(numeric_path)
         finally:
             numeric_path.unlink(missing_ok=True)
 
