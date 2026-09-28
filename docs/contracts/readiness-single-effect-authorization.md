@@ -87,8 +87,9 @@ selected canonical packet and requires all of the following again:
 - `STATUS=PAUSED` and `QUEUE_STATE=QUEUED`.
 
 The mutation is best-effort CAS-protected using the existing issue body and
-`updatedAt` recheck immediately before edit, with author trust checked again
-at that boundary. It changes only the two lifecycle metadata fields to
+`updatedAt` recheck immediately before edit, with issue-number identity, OPEN
+`[AI Work]` state, and author trust checked again at that boundary. It changes only
+the two lifecycle metadata fields to
 `STATUS=ACTIVE` and `QUEUE_STATE=NONE`, adds no new Work Packet metadata,
 and then performs a fresh canonical read to confirm the landed state.
 
