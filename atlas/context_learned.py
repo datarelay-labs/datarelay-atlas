@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from copy import deepcopy
@@ -16,6 +17,9 @@ LEARNED_KIND = "context-learned-canary-admission-report"
 LEARNED_SOURCE_KIND = "engineering_system_context_learned_canary_v1"
 DATA_EGRESS_READY = "LOCAL_CANARY_EGRESS_DENY_VERIFIED"
 RUNTIME_READY = "LEARNED_COMPRESSOR_LOCAL_CANARY_READY"
+ENGINEERING_SYSTEM_REPO = "datarelay-labs/engineering-system"
+ENGINEERING_SYSTEM_ADMISSION_HEAD = "67e44dc4c92e81ba89657fab81770b81b6eaa93f"
+TRUST_BOUNDARY_KIND = "trusted_learned_canary_boundary"
 
 _CANDIDATE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _SOURCE_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -97,6 +101,31 @@ _TRUST_BLOCKERS = frozenset(
 _ALLOWED_BLOCKERS = frozenset(
     {code for _field, code in _REQUIREMENT_BLOCKERS}
 ) | _TRUST_BLOCKERS
+_BOUNDARY_KEYS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "producer_repo",
+        "producer_head",
+        "report_digest",
+    }
+)
+
+
+class TrustedLearnedAdmissionBoundary:
+    """Opaque in-process coordinator precondition for CANARY_READY promotion."""
+
+    __slots__ = ("_payload",)
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        if type(payload) is not dict:
+            raise ValidationError(
+                "trusted learned-canary boundary payload must be a dict"
+            )
+        self._payload = deepcopy(payload)
+
+    def payload(self) -> dict[str, Any]:
+        return deepcopy(self._payload)
 
 
 def _reject(message: str) -> None:
@@ -272,13 +301,58 @@ def _revalidate_context_input(value: object) -> dict[str, Any]:
     return rebound
 
 
+def learned_canary_report_digest(report: object) -> str:
+    """Return the canonical content-free digest of a normalized admission report."""
+    normalized = normalize_learned_canary_report(report)
+    encoded = json.dumps(
+        normalized,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_trusted_boundary(
+    boundary: object,
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    if type(boundary) is not TrustedLearnedAdmissionBoundary:
+        _reject("trusted learned-canary boundary is required")
+    payload = boundary.payload()
+    if not isinstance(payload, dict) or set(payload) != _BOUNDARY_KEYS:
+        _reject("trusted learned-canary boundary schema is invalid")
+    if payload.get("schema_version") != 1:
+        _reject("trusted learned-canary boundary schema_version is unsupported")
+    if payload.get("kind") != TRUST_BOUNDARY_KIND:
+        _reject("trusted learned-canary boundary kind is invalid")
+    if payload.get("producer_repo") != ENGINEERING_SYSTEM_REPO:
+        _reject("trusted learned-canary producer repository is invalid")
+    if payload.get("producer_head") != ENGINEERING_SYSTEM_ADMISSION_HEAD:
+        _reject("trusted learned-canary producer head is invalid")
+    digest = payload.get("report_digest")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+    ):
+        _reject("trusted learned-canary report digest is invalid")
+    if digest != learned_canary_report_digest(report):
+        _reject("trusted learned-canary report digest mismatch")
+    return payload
+
+
 def bind_learned_canary_admission(
     context_input: object,
     admission_report: object,
+    boundary: object = None,
 ) -> dict[str, Any]:
     """Attach bounded local-canary evidence without granting active control."""
     base = _revalidate_context_input(context_input)
     report = normalize_learned_canary_report(admission_report)
+    trusted_source: dict[str, Any] | None = None
+    if report["canary_ready"] or boundary is not None:
+        trusted_source = _validate_trusted_boundary(boundary, report)
 
     result = deepcopy(base)
     result["learned_canary_evidence"] = {
@@ -291,6 +365,12 @@ def bind_learned_canary_admission(
         "requirements": deepcopy(report["requirements"]),
         "blockers": list(report["blockers"]),
     }
+    if trusted_source is not None:
+        result["learned_canary_evidence"]["trusted_source"] = {
+            "producer_repo": trusted_source["producer_repo"],
+            "producer_head": trusted_source["producer_head"],
+            "report_digest": trusted_source["report_digest"],
+        }
     if report["canary_ready"]:
         result["gates"]["data_egress_eligibility"] = DATA_EGRESS_READY
         result["gates"]["runtime_capability"] = RUNTIME_READY
