@@ -78,13 +78,17 @@
         "active_control"
       ],
       "properties": {
-        "quality_noninferiority": { "type": "string", "const": "UNKNOWN" },
+        "quality_noninferiority": {
+          "type": "string",
+          "enum": ["UNKNOWN", "SHADOW_ACTION_EQUIVALENT"]
+        },
         "data_egress_eligibility": { "type": "string", "const": "UNKNOWN" },
         "runtime_capability": { "type": "string", "const": "UNKNOWN" },
         "active_control": { "type": "string", "const": "NOT_ELIGIBLE_FOR_ACTIVE_CONTROL" }
       }
     },
     "control_mode": { "type": "string", "const": "OBSERVE_ONLY" },
+    "quality_evidence": { "$ref": "#/$defs/shadowQuality" },
     "arms": {
       "type": "array",
       "minItems": 2,
@@ -92,6 +96,36 @@
       "items": { "$ref": "#/$defs/arm" }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "gates": {
+            "properties": {
+              "quality_noninferiority": {
+                "const": "SHADOW_ACTION_EQUIVALENT"
+              }
+            }
+          }
+        }
+      },
+      "then": { "required": ["quality_evidence"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "gates": {
+            "properties": {
+              "quality_noninferiority": { "const": "UNKNOWN" }
+            }
+          }
+        }
+      },
+      "then": {
+        "not": { "required": ["quality_evidence"] }
+      }
+    }
+  ],
   "$defs": {
     "head": {
       "type": "string",
@@ -135,6 +169,60 @@
       "type": "string",
       "maxLength": 64,
       "pattern": "^(0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    },
+    "shadowArm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["arm_id", "run_count", "material_action_count"],
+      "properties": {
+        "arm_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "run_count": { "$ref": "#/$defs/runCount" },
+        "material_action_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        }
+      }
+    },
+    "shadowQuality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_kind",
+        "source_schema_version",
+        "decision",
+        "control_arm_id",
+        "system_head",
+        "case_count",
+        "arm_count",
+        "observation_count",
+        "arms"
+      ],
+      "properties": {
+        "source_kind": {
+          "type": "string",
+          "const": "engineering_system_context_shadow_v1"
+        },
+        "source_schema_version": { "type": "integer", "const": 1 },
+        "decision": { "type": "string", "const": "EQUIVALENT" },
+        "control_arm_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "system_head": { "$ref": "#/$defs/head" },
+        "case_count": { "$ref": "#/$defs/runCount" },
+        "arm_count": { "type": "integer", "minimum": 2, "maximum": 256 },
+        "observation_count": { "$ref": "#/$defs/recordCount" },
+        "arms": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/shadowArm" }
+        }
+      }
     },
     "arm": {
       "type": "object",
