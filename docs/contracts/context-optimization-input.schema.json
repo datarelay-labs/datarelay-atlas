@@ -114,13 +114,20 @@
           "type": "string",
           "enum": ["UNKNOWN", "SHADOW_ACTION_EQUIVALENT"]
         },
-        "data_egress_eligibility": { "type": "string", "const": "UNKNOWN" },
-        "runtime_capability": { "type": "string", "const": "UNKNOWN" },
+        "data_egress_eligibility": {
+          "type": "string",
+          "enum": ["UNKNOWN", "LOCAL_CANARY_EGRESS_DENY_VERIFIED"]
+        },
+        "runtime_capability": {
+          "type": "string",
+          "enum": ["UNKNOWN", "LEARNED_COMPRESSOR_LOCAL_CANARY_READY"]
+        },
         "active_control": { "type": "string", "const": "NOT_ELIGIBLE_FOR_ACTIVE_CONTROL" }
       }
     },
     "control_mode": { "type": "string", "const": "OBSERVE_ONLY" },
     "quality_evidence": { "$ref": "#/$defs/shadowQuality" },
+    "learned_canary_evidence": { "$ref": "#/$defs/learnedCanaryEvidence" },
     "arms": {
       "type": "array",
       "minItems": 2,
@@ -155,6 +162,119 @@
       },
       "then": {
         "not": { "required": ["quality_evidence"] }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "gates": {
+            "properties": {
+              "data_egress_eligibility": {
+                "const": "LOCAL_CANARY_EGRESS_DENY_VERIFIED"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": ["learned_canary_evidence"],
+        "properties": {
+          "gates": {
+            "properties": {
+              "runtime_capability": {
+                "const": "LEARNED_COMPRESSOR_LOCAL_CANARY_READY"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "gates": {
+            "properties": {
+              "runtime_capability": {
+                "const": "LEARNED_COMPRESSOR_LOCAL_CANARY_READY"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": ["learned_canary_evidence"],
+        "properties": {
+          "gates": {
+            "properties": {
+              "data_egress_eligibility": {
+                "const": "LOCAL_CANARY_EGRESS_DENY_VERIFIED"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["learned_canary_evidence"],
+        "properties": {
+          "learned_canary_evidence": {
+            "properties": {
+              "decision": { "const": "CANARY_READY" }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "gates": {
+            "properties": {
+              "data_egress_eligibility": {
+                "const": "LOCAL_CANARY_EGRESS_DENY_VERIFIED"
+              },
+              "runtime_capability": {
+                "const": "LEARNED_COMPRESSOR_LOCAL_CANARY_READY"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["learned_canary_evidence"],
+        "properties": {
+          "learned_canary_evidence": {
+            "properties": {
+              "decision": { "const": "SETUP_ALLOWED" }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "gates": {
+            "properties": {
+              "data_egress_eligibility": { "const": "UNKNOWN" },
+              "runtime_capability": { "const": "UNKNOWN" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "not": { "required": ["learned_canary_evidence"] }
+      },
+      "then": {
+        "properties": {
+          "gates": {
+            "properties": {
+              "data_egress_eligibility": { "const": "UNKNOWN" },
+              "runtime_capability": { "const": "UNKNOWN" }
+            }
+          }
+        }
       }
     }
   ],
@@ -274,6 +394,182 @@
           "items": { "$ref": "#/$defs/shadowArm" }
         }
       }
+    },
+    "learnedCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "source_repo",
+        "source_commit",
+        "package_version",
+        "license",
+        "integration_mode"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "source_repo": {
+          "type": "string",
+          "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "source_commit": { "$ref": "#/$defs/head" },
+        "package_version": {
+          "type": "string",
+          "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[A-Za-z0-9_.+-]{1,40}$"
+        },
+        "license": {
+          "type": "string",
+          "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[A-Za-z0-9.-]{1,40}$"
+        },
+        "integration_mode": {
+          "type": "string",
+          "const": "LOCAL_SELF_HOST"
+        }
+      }
+    },
+    "learnedRequirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_mode",
+        "endpoint_class",
+        "external_egress",
+        "protected_state_route",
+        "deterministic_bypass",
+        "exact_original_recovery_verified",
+        "identifier_preservation_verified",
+        "cache_behavior_verified",
+        "provider_usage_capture_ready",
+        "live_comparability_gate_available",
+        "shadow_equivalence_gate_available",
+        "trusted_runtime_evidence"
+      ],
+      "properties": {
+        "execution_mode": { "type": "boolean" },
+        "endpoint_class": { "type": "boolean" },
+        "external_egress": { "type": "boolean" },
+        "protected_state_route": { "type": "boolean" },
+        "deterministic_bypass": { "type": "boolean" },
+        "exact_original_recovery_verified": { "type": "boolean" },
+        "identifier_preservation_verified": { "type": "boolean" },
+        "cache_behavior_verified": { "type": "boolean" },
+        "provider_usage_capture_ready": { "type": "boolean" },
+        "live_comparability_gate_available": { "type": "boolean" },
+        "shadow_equivalence_gate_available": { "type": "boolean" },
+        "trusted_runtime_evidence": { "type": "boolean" }
+      }
+    },
+    "learnedCanaryEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_kind",
+        "source_schema_version",
+        "decision",
+        "setup_allowed",
+        "canary_ready",
+        "candidate",
+        "requirements",
+        "blockers"
+      ],
+      "properties": {
+        "source_kind": {
+          "type": "string",
+          "const": "engineering_system_context_learned_canary_v1"
+        },
+        "source_schema_version": { "type": "integer", "const": 1 },
+        "decision": {
+          "type": "string",
+          "enum": ["SETUP_ALLOWED", "CANARY_READY"]
+        },
+        "setup_allowed": { "type": "boolean", "const": true },
+        "canary_ready": { "type": "boolean" },
+        "candidate": { "$ref": "#/$defs/learnedCandidate" },
+        "requirements": { "$ref": "#/$defs/learnedRequirements" },
+        "blockers": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "EXECUTION_MODE_NOT_LOCAL",
+              "ENDPOINT_NOT_LOOPBACK",
+              "EXTERNAL_EGRESS_NOT_DENIED",
+              "PROTECTED_STATE_NOT_BYPASSED",
+              "DETERMINISTIC_BYPASS_UNVERIFIED",
+              "EXACT_RECOVERY_UNVERIFIED",
+              "IDENTIFIER_PRESERVATION_UNVERIFIED",
+              "CACHE_BEHAVIOR_UNVERIFIED",
+              "PROVIDER_USAGE_CAPTURE_NOT_READY",
+              "LIVE_COMPARABILITY_GATE_UNAVAILABLE",
+              "SHADOW_EQUIVALENCE_GATE_UNAVAILABLE",
+              "RUNTIME_BINDING_REQUIRED",
+              "TRUST_BOUNDARY_REQUIRED",
+              "TRUST_BOUNDARY_UNTRUSTED",
+              "TRUST_BOUNDARY_INVALID",
+              "TRUST_REPO_MISMATCH",
+              "TRUST_WORKSTREAM_MISMATCH",
+              "TRUST_REVISION_MISMATCH",
+              "TRUST_SUBJECT_HEAD_MISMATCH",
+              "TRUST_RUNTIME_SUBJECT_MISMATCH",
+              "TRUST_EVIDENCE_STALE_HEAD",
+              "TRUST_EVIDENCE_STALE_REVISION",
+              "TRUST_EVIDENCE_DUPLICATE",
+              "TRUST_EVIDENCE_UNKNOWN",
+              "TRUST_EVIDENCE_MISSING",
+              "TRUST_EVIDENCE_NOT_PASS"
+            ]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "decision": { "const": "CANARY_READY" }
+            }
+          },
+          "then": {
+            "properties": {
+              "canary_ready": { "const": true },
+              "blockers": { "maxItems": 0 },
+              "requirements": {
+                "properties": {
+                  "execution_mode": { "const": true },
+                  "endpoint_class": { "const": true },
+                  "external_egress": { "const": true },
+                  "protected_state_route": { "const": true },
+                  "deterministic_bypass": { "const": true },
+                  "exact_original_recovery_verified": { "const": true },
+                  "identifier_preservation_verified": { "const": true },
+                  "cache_behavior_verified": { "const": true },
+                  "provider_usage_capture_ready": { "const": true },
+                  "live_comparability_gate_available": { "const": true },
+                  "shadow_equivalence_gate_available": { "const": true },
+                  "trusted_runtime_evidence": { "const": true }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "decision": { "const": "SETUP_ALLOWED" }
+            }
+          },
+          "then": {
+            "properties": {
+              "canary_ready": { "const": false },
+              "blockers": { "minItems": 1 }
+            }
+          }
+        }
+      ]
     },
     "arm": {
       "type": "object",

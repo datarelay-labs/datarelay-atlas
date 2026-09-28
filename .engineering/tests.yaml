@@ -90,6 +90,7 @@ scenarios:
       - "Cursor usage Phase 0 inventory classifies workers without retaining prompts and summarizes usage CSV fixtures"
       - "context-canary intake strictly preserves measured comparable optimizer facts while remaining OBSERVE_ONLY with quality/security/runtime gates UNKNOWN"
       - "context-shadow quality binding may advance only quality_noninferiority to SHADOW_ACTION_EQUIVALENT on v2 repository/task/head/profile/run-set digest identity plus control-consistent action counts; active control, egress, and runtime gates remain blocked/UNKNOWN"
+      - "learned-canary binding accepts only internally consistent Engineering System admission evidence; SETUP_ALLOWED leaves egress/runtime UNKNOWN while CANARY_READY advances only local-canary scoped egress/runtime states and never active control"
       - "provider capability descriptors are EVIDENCE_ONLY; Codex CLI, OpenAI Responses, and generic AuditPort CODE_REVIEW paths normalize the same AuditResult semantics without provider selection or execution authority"
       - "provider capacity broker planning is deterministic and fail-closed; denied/unknown gates or unusable capacity cannot become eligible, and advisory selection grants no provider execution authority"
       - "dependency/readiness graph planning is deterministic, fail-closed, resource/WIP gated, and read-only"

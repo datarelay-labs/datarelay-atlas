@@ -80,6 +80,24 @@ promotion certificate. Deployment security and runtime support remain
 independent `UNKNOWN` gates, and active control remains
 `NOT_ELIGIBLE_FOR_ACTIVE_CONTROL`.
 
+A third read-only binding may consume the final Engineering System P1-A
+`context-learned-canary-admission-report` v1. Atlas strictly revalidates the
+bounded candidate identity, the exact requirement-key set, and the deterministic
+requirement/blocker relationship. It does not repeat Engineering System's
+trusted runtime-evidence verification.
+
+For `SETUP_ALLOWED`, Atlas records `learned_canary_evidence` but leaves
+`data_egress_eligibility=UNKNOWN` and `runtime_capability=UNKNOWN`. For
+`CANARY_READY` only, Atlas may emit the deliberately narrow states:
+
+- `data_egress_eligibility=LOCAL_CANARY_EGRESS_DENY_VERIFIED`;
+- `runtime_capability=LEARNED_COMPRESSOR_LOCAL_CANARY_READY`.
+
+These states describe only the admitted local learned-compressor canary. They
+are not production eligibility and do not select or execute a compressor. If
+shadow-quality evidence is already present, Atlas reconstructs and revalidates
+the exact #119 binding before preserving `SHADOW_ACTION_EQUIVALENT`.
+
 Atlas therefore does not emit a winner, rank, score, or recommendation and
 does not choose COMPRESS, CLEAR, YIELD, ROUTE, or any session/model action.
 
@@ -97,6 +115,14 @@ PYTHONPATH=. python3 -m atlas usage context-shadow-bind \
   --shadow-report shadow-report.json
 ```
 
-Both commands read only bounded local JSON and print normalized content-free
-evidence. They perform no network, provider, GitHub, model, or session
-mutation.
+To bind final Engineering System P1-A learned-canary admission evidence:
+
+```bash
+PYTHONPATH=. python3 -m atlas usage context-learned-bind \
+  --context-input context-input.json \
+  --admission-report learned-canary-report.json
+```
+
+All commands read only bounded local JSON and print normalized content-free
+evidence. They perform no network, provider, GitHub, model, compressor, or
+session mutation.

@@ -49,6 +49,7 @@ from atlas.cursor_usage import (
 )
 from atlas.context_optimization import load_context_canary_report
 from atlas.context_shadow import load_shadow_quality_binding
+from atlas.context_learned import load_learned_canary_binding
 from atlas.host_worker import load_host_worker_config, run_once
 from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
@@ -1033,6 +1034,13 @@ def build_parser() -> argparse.ArgumentParser:
     usage_context_shadow.add_argument("--context-input", required=True)
     usage_context_shadow.add_argument("--shadow-report", required=True)
     usage_context_shadow.set_defaults(func=cmd_usage_context_shadow_bind)
+    usage_context_learned = usage_sub.add_parser(
+        "context-learned-bind",
+        help="Bind Engineering System learned-canary admission to an observation-only context input",
+    )
+    usage_context_learned.add_argument("--context-input", required=True)
+    usage_context_learned.add_argument("--admission-report", required=True)
+    usage_context_learned.set_defaults(func=cmd_usage_context_learned_bind)
     usage_report = usage_sub.add_parser(
         "report",
         help="Inventory plus optional CSV summary and a warning advisor",
@@ -1331,6 +1339,16 @@ def cmd_usage_context_shadow_bind(args: argparse.Namespace) -> int:
         load_shadow_quality_binding(
             Path(args.context_input),
             Path(args.shadow_report),
+        )
+    )
+    return 0
+
+
+def cmd_usage_context_learned_bind(args: argparse.Namespace) -> int:
+    _print_json(
+        load_learned_canary_binding(
+            Path(args.context_input),
+            Path(args.admission_report),
         )
     )
     return 0
