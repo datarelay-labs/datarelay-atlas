@@ -351,7 +351,9 @@ def bind_learned_canary_admission(
     base = _revalidate_context_input(context_input)
     report = normalize_learned_canary_report(admission_report)
     trusted_source: dict[str, Any] | None = None
-    if report["canary_ready"] or boundary is not None:
+    if not report["canary_ready"] and boundary is not None:
+        _reject("trusted learned-canary boundary is invalid for SETUP_ALLOWED")
+    if report["canary_ready"]:
         trusted_source = _validate_trusted_boundary(boundary, report)
 
     result = deepcopy(base)
