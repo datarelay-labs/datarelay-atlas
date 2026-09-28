@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "kind": "approved_provider_route_set",
+  "authority": "CONFIGURATION_ONLY",
+  "routes": [
+    {
+      "route_id": "codex-primary",
+      "enabled": true,
+      "provider": "codex",
+      "runtime": "codex_cli",
+      "usage_mode": "chatgpt_plan",
+      "adapter": "CodexAuditProvider",
+      "allowed_capabilities": ["CODE_REVIEW"],
+      "ranks": {
+        "capability_preference": 0,
+        "stewardship_preference": 10
+      }
+    },
+    {
+      "route_id": "openai-fallback",
+      "enabled": true,
+      "provider": "openai",
+      "runtime": "responses_api",
+      "usage_mode": "api",
+      "adapter": "BoundedResponsesAuditProvider",
+      "allowed_capabilities": ["CODE_REVIEW"],
+      "ranks": {
+        "capability_preference": 10,
+        "stewardship_preference": 0
+      }
+    }
+  ]
+}

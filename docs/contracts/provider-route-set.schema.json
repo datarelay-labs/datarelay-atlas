@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datarelay.local/contracts/provider-route-set.schema.json",
+  "title": "DataRelay Atlas Approved Provider Route Set v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "authority", "routes"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "approved_provider_route_set" },
+    "authority": { "type": "string", "const": "CONFIGURATION_ONLY" },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/route" }
+    }
+  },
+  "$defs": {
+    "routeId": {
+      "type": "string",
+      "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "providerIdentity": {
+      "type": "string",
+      "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "identity": {
+      "type": "string",
+      "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}$"
+    },
+    "capability": {
+      "type": "string",
+      "enum": [
+        "PLAN",
+        "EFFORT_CONTROL",
+        "COMPLETION_LOOP",
+        "RUNTIME_VERIFY",
+        "CODE_REVIEW",
+        "SECOND_MODEL_ADVISOR",
+        "PARALLEL_WORKERS",
+        "PERIODIC_REENTRY",
+        "PR_REWORK",
+        "CONTEXT_USAGE",
+        "CHECKPOINT_COMPACT",
+        "SESSION_RESUME_RESET",
+        "HARNESS_HEALTH_AUDIT",
+        "PROMPT_INSTRUCTION_AUDIT",
+        "SKILL_COST_AUDIT",
+        "USAGE_INSIGHTS"
+      ]
+    },
+    "rank": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "route_id",
+        "enabled",
+        "provider",
+        "runtime",
+        "usage_mode",
+        "adapter",
+        "allowed_capabilities",
+        "ranks"
+      ],
+      "properties": {
+        "route_id": { "$ref": "#/$defs/routeId" },
+        "enabled": { "type": "boolean" },
+        "provider": { "$ref": "#/$defs/providerIdentity" },
+        "runtime": { "$ref": "#/$defs/identity" },
+        "usage_mode": { "$ref": "#/$defs/identity" },
+        "adapter": { "$ref": "#/$defs/identity" },
+        "allowed_capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/capability" }
+        },
+        "ranks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["capability_preference", "stewardship_preference"],
+          "properties": {
+            "capability_preference": { "$ref": "#/$defs/rank" },
+            "stewardship_preference": { "$ref": "#/$defs/rank" }
+          }
+        }
+      }
+    }
+  }
+}
