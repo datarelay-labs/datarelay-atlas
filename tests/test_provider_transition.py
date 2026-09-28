@@ -18,15 +18,24 @@ from atlas.cli import main
 from atlas.provider_broker import plan_provider_routes
 from atlas.provider_transition import (
     load_provider_transition_candidates,
-    plan_provider_transition,
+    plan_provider_transition as _plan_provider_transition,
     validate_provider_transition_plan,
 )
+from tests.test_provider_broker import FRESH_EVALUATED_AT, FRESH_MAX_EVIDENCE_AGE_SECONDS
 from atlas.provenance import ValidationError
 from tests.test_provider_broker import CONTRACTS, _candidate, _json
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = CONTRACTS / "provider-transition-plan.schema.json"
 BROKER_SCHEMA = CONTRACTS / "provider-broker-plan.schema.json"
+
+
+def _plan_transition(*args: object, **kwargs: object):
+    kwargs.setdefault("evaluated_at", FRESH_EVALUATED_AT)
+    kwargs.setdefault(
+        "max_evidence_age_seconds", FRESH_MAX_EVIDENCE_AGE_SECONDS
+    )
+    return _plan_provider_transition(*args, **kwargs)
 
 
 def _candidates() -> list[dict]:
@@ -66,7 +75,7 @@ def _write_json(payload: object) -> Path:
 
 class ProviderTransitionTests(unittest.TestCase):
     def test_primary_failure_recommends_fresh_eligible_fallback(self) -> None:
-        result = plan_provider_transition(
+        result = _plan_transition(
             _candidates(),
             required_capability="CODE_REVIEW",
             current_route_id="codex-primary",
@@ -92,7 +101,7 @@ class ProviderTransitionTests(unittest.TestCase):
         )
 
     def test_second_failure_uses_prior_failure_and_replans(self) -> None:
-        result = plan_provider_transition(
+        result = _plan_transition(
             list(reversed(_candidates())),
             required_capability="CODE_REVIEW",
             current_route_id="codex-secondary",
@@ -114,7 +123,7 @@ class ProviderTransitionTests(unittest.TestCase):
         self.assertEqual(result["attempt"], 2)
 
     def test_attempt_ceiling_requires_human_even_with_fallback(self) -> None:
-        result = plan_provider_transition(
+        result = _plan_transition(
             _candidates(),
             required_capability="CODE_REVIEW",
             current_route_id="codex-secondary",
@@ -135,7 +144,7 @@ class ProviderTransitionTests(unittest.TestCase):
             ValidationError,
             "prior failures already reached max_attempts",
         ):
-            plan_provider_transition(
+            _plan_transition(
                 _candidates(),
                 required_capability="CODE_REVIEW",
                 current_route_id="codex-secondary",
@@ -146,7 +155,7 @@ class ProviderTransitionTests(unittest.TestCase):
 
     def test_no_remaining_route_requires_human(self) -> None:
         candidates = [_candidates()[0]]
-        result = plan_provider_transition(
+        result = _plan_transition(
             candidates,
             required_capability="CODE_REVIEW",
             current_route_id="codex-primary",
@@ -168,7 +177,7 @@ class ProviderTransitionTests(unittest.TestCase):
             stewardship_rank=0,
             remaining=None,
         )
-        result = plan_provider_transition(
+        result = _plan_transition(
             [blocked, primary],
             required_capability="CODE_REVIEW",
             current_route_id="codex-primary",
@@ -185,9 +194,51 @@ class ProviderTransitionTests(unittest.TestCase):
             ["REMAINING_CAPACITY_UNKNOWN"],
         )
 
+    def test_stale_or_future_fallback_is_not_recommended(self) -> None:
+        primary = _candidates()[0]
+        stale = _candidate(
+            "openai",
+            "openai-stale",
+            capability_rank=1,
+            stewardship_rank=0,
+            window_start="2026-09-27T00:00:00Z",
+            window_end="2026-09-27T00:00:00Z",
+        )
+        future = _candidate(
+            "generic",
+            "generic-future",
+            capability_rank=1,
+            stewardship_rank=0,
+            window_start="2026-09-28T00:00:01Z",
+            window_end="2026-09-28T00:00:01Z",
+        )
+        fresh = _candidate(
+            "codex",
+            "codex-fresh",
+            capability_rank=5,
+            stewardship_rank=0,
+        )
+        result = _plan_transition(
+            [future, stale, fresh, primary],
+            required_capability="CODE_REVIEW",
+            current_route_id="codex-primary",
+            failure_reason="QUOTA_EXHAUSTED",
+            evaluated_at=FRESH_EVALUATED_AT,
+            max_evidence_age_seconds=FRESH_MAX_EVIDENCE_AGE_SECONDS,
+        )
+
+        self.assertEqual(result["decision"], "TRANSITION_RECOMMENDED")
+        self.assertEqual(result["to_route_id"], "codex-fresh")
+        reasons = {
+            item["route_id"]: item["reasons"]
+            for item in result["remaining_plan"]["ineligible_routes"]
+        }
+        self.assertEqual(reasons["openai-stale"], ["REMAINING_CAPACITY_STALE"])
+        self.assertEqual(reasons["generic-future"], ["REMAINING_CAPACITY_FUTURE"])
+
     def test_current_route_must_be_selected_and_not_already_failed(self) -> None:
         with self.assertRaisesRegex(ValidationError, "selected eligible route"):
-            plan_provider_transition(
+            _plan_transition(
                 _candidates(),
                 required_capability="CODE_REVIEW",
                 current_route_id="codex-secondary",
@@ -195,7 +246,7 @@ class ProviderTransitionTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(ValidationError, "already failed"):
-            plan_provider_transition(
+            _plan_transition(
                 _candidates(),
                 required_capability="CODE_REVIEW",
                 current_route_id="codex-primary",
@@ -205,7 +256,7 @@ class ProviderTransitionTests(unittest.TestCase):
 
     def test_prior_failed_order_and_candidate_order_do_not_change_output(self) -> None:
         candidates = _candidates()
-        forward = plan_provider_transition(
+        forward = _plan_transition(
             candidates,
             required_capability="CODE_REVIEW",
             current_route_id="openai-fallback",
@@ -213,7 +264,7 @@ class ProviderTransitionTests(unittest.TestCase):
             prior_failed_route_ids=["codex-secondary", "codex-primary"],
             max_attempts=4,
         )
-        reverse = plan_provider_transition(
+        reverse = _plan_transition(
             list(reversed(candidates)),
             required_capability="CODE_REVIEW",
             current_route_id="openai-fallback",
@@ -240,10 +291,10 @@ class ProviderTransitionTests(unittest.TestCase):
             kwargs.update(overrides)
             with self.subTest(overrides=overrides):
                 with self.assertRaises(ValidationError):
-                    plan_provider_transition(_candidates(), **kwargs)
+                    _plan_transition(_candidates(), **kwargs)
 
         with self.assertRaises(ValidationError):
-            plan_provider_transition(
+            _plan_transition(
                 _candidates(),
                 required_capability="CODE_REVIEW",
                 current_route_id="codex-primary",
@@ -252,7 +303,7 @@ class ProviderTransitionTests(unittest.TestCase):
             )
 
         with self.assertRaises(ValidationError):
-            plan_provider_transition(
+            _plan_transition(
                 _candidates(),
                 required_capability="CODE_REVIEW",
                 current_route_id="missing-route",
@@ -263,7 +314,7 @@ class ProviderTransitionTests(unittest.TestCase):
             ValidationError,
             "prior failures already reached max_attempts",
         ):
-            plan_provider_transition(
+            _plan_transition(
                 _candidates(),
                 required_capability="CODE_REVIEW",
                 current_route_id="openai-fallback",
@@ -282,13 +333,13 @@ class ProviderTransitionTests(unittest.TestCase):
         )
         validator = Draft202012Validator(schema, registry=registry)
 
-        recommended = plan_provider_transition(
+        recommended = _plan_transition(
             _candidates(),
             required_capability="CODE_REVIEW",
             current_route_id="codex-primary",
             failure_reason="QUOTA_EXHAUSTED",
         )
-        human = plan_provider_transition(
+        human = _plan_transition(
             [_candidates()[0]],
             required_capability="CODE_REVIEW",
             current_route_id="codex-primary",
@@ -347,6 +398,8 @@ class ProviderTransitionTests(unittest.TestCase):
         stale_remaining = plan_provider_routes(
             [stale_primary, _candidates()[1], _candidates()[2]],
             required_capability="CODE_REVIEW",
+            evaluated_at=FRESH_EVALUATED_AT,
+            max_evidence_age_seconds=FRESH_MAX_EVIDENCE_AGE_SECONDS,
         )
         self.assertEqual(
             stale_remaining["selected_route_id"],
@@ -357,7 +410,7 @@ class ProviderTransitionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "contains a failed route"):
             validate_provider_transition_plan(leaked_failed)
 
-        over_limit = plan_provider_transition(
+        over_limit = _plan_transition(
             _candidates(),
             required_capability="CODE_REVIEW",
             current_route_id="codex-secondary",
@@ -388,6 +441,10 @@ class ProviderTransitionTests(unittest.TestCase):
                     "QUOTA_EXHAUSTED",
                     "--max-attempts",
                     "3",
+                    "--evaluated-at",
+                    "2026-09-28T00:00:00Z",
+                    "--max-evidence-age-seconds",
+                    "0",
                 ]
             )
 
@@ -446,6 +503,8 @@ class ProviderTransitionTests(unittest.TestCase):
             "cursor_agent",
             "CodexAuditProvider",
             "BoundedResponsesAuditProvider",
+            "datetime.now",
+            "time.time",
         ):
             self.assertNotIn(forbidden, source)
 

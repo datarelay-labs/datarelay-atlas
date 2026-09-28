@@ -1044,6 +1044,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="CAPABILITY_FIRST",
     )
     usage_transition.add_argument("--max-attempts", type=int, default=3)
+    usage_transition.add_argument("--evaluated-at", required=True)
+    usage_transition.add_argument(
+        "--max-evidence-age-seconds",
+        type=int,
+        required=True,
+    )
     usage_transition.set_defaults(func=cmd_usage_provider_transition_plan)
     usage_context_canary = usage_sub.add_parser(
         "context-canary-input",
@@ -1363,6 +1369,8 @@ def cmd_usage_provider_transition_plan(args: argparse.Namespace) -> int:
             prior_failed_route_ids=args.prior_failed_route,
             strategy=args.strategy,
             max_attempts=args.max_attempts,
+            evaluated_at=args.evaluated_at,
+            max_evidence_age_seconds=args.max_evidence_age_seconds,
         )
     )
     return 0

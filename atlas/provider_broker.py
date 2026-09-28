@@ -8,6 +8,7 @@ provider execution, credential, session, or mutation authority.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from atlas.provider_capability import (
@@ -82,7 +83,14 @@ _INELIGIBLE_REASONS = (
     "CAPABILITY_UNKNOWN",
     "REMAINING_CAPACITY_UNKNOWN",
     "REMAINING_CAPACITY_EXHAUSTED",
+    "REMAINING_CAPACITY_UNBOUND",
+    "REMAINING_CAPACITY_FUTURE",
+    "REMAINING_CAPACITY_STALE",
 )
+_UTC_TIMESTAMP_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$"
+)
+_MAX_EVIDENCE_AGE_SECONDS = 366 * 24 * 60 * 60
 _REASON_ORDER = {value: index for index, value in enumerate(_INELIGIBLE_REASONS)}
 
 
@@ -184,7 +192,39 @@ def _capability_status(descriptor: dict, required: str) -> str | None:
         if capability["name"] == required:
             return capability["status"]
     return None
-def _eligibility_reasons(candidate: dict, required: str) -> list[str]:
+def _utc_instant(value: object, *, label: str) -> datetime:
+    if not isinstance(value, str) or _UTC_TIMESTAMP_RE.fullmatch(value) is None:
+        _reject(f"{label} must be a UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValidationError(f"{label} must be a UTC timestamp") from exc
+    if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
+        _reject(f"{label} must be a UTC timestamp")
+    return parsed
+
+
+def _max_evidence_age_seconds(value: object) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > _MAX_EVIDENCE_AGE_SECONDS
+    ):
+        _reject(
+            "max_evidence_age_seconds must be an integer from 0 to "
+            f"{_MAX_EVIDENCE_AGE_SECONDS}"
+        )
+    return value
+
+
+def _eligibility_reasons(
+    candidate: dict,
+    required: str,
+    *,
+    evaluated_at: datetime,
+    max_evidence_age: timedelta,
+) -> list[str]:
     reasons: list[str] = []
     for name in _GATE_KEYS:
         state = candidate["gates"][name]
@@ -202,6 +242,16 @@ def _eligibility_reasons(candidate: dict, required: str) -> list[str]:
         reasons.append("REMAINING_CAPACITY_UNKNOWN")
     elif Decimal(remaining["value"]) == 0:
         reasons.append("REMAINING_CAPACITY_EXHAUSTED")
+    else:
+        observed_at = candidate["capacity_input"]["evidence"]["window_end"]
+        if observed_at is None:
+            reasons.append("REMAINING_CAPACITY_UNBOUND")
+        else:
+            observed = _utc_instant(observed_at, label="window_end")
+            if observed > evaluated_at:
+                reasons.append("REMAINING_CAPACITY_FUTURE")
+            elif evaluated_at - observed > max_evidence_age:
+                reasons.append("REMAINING_CAPACITY_STALE")
     return reasons
 
 
@@ -239,11 +289,17 @@ def plan_provider_routes(
     *,
     required_capability: str,
     strategy: str = "CAPABILITY_FIRST",
+    evaluated_at: str,
+    max_evidence_age_seconds: int,
 ) -> dict:
     """Create a deterministic advisory provider-route plan."""
     required = _capability_name(required_capability)
     if strategy not in STRATEGIES:
         _reject("provider broker strategy is unsupported")
+    evaluation_instant = _utc_instant(evaluated_at, label="evaluated_at")
+    evidence_age_limit = timedelta(
+        seconds=_max_evidence_age_seconds(max_evidence_age_seconds)
+    )
     if (
         not isinstance(candidates, list)
         or not candidates
@@ -259,7 +315,12 @@ def plan_provider_routes(
     ineligible: list[dict] = []
     sortable: list[tuple[tuple[int, int, str], dict]] = []
     for candidate in sorted(normalized, key=lambda item: item["route_id"]):
-        reasons = _eligibility_reasons(candidate, required)
+        reasons = _eligibility_reasons(
+            candidate,
+            required,
+            evaluated_at=evaluation_instant,
+            max_evidence_age=evidence_age_limit,
+        )
         if reasons:
             ineligible.append(_route_summary(candidate, reasons=reasons))
             continue

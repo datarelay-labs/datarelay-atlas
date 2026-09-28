@@ -35,6 +35,17 @@ required capability is absent, `UNSUPPORTED`, or `UNKNOWN`, when provider
 identity differs between capability and capacity evidence, or when remaining
 capacity is `UNKNOWN` or observed as zero.
 
+A positive `OBSERVED` `remaining_capacity` is also ineligible unless the
+capacity evidence window can prove freshness. The observation instant is
+`evidence.window_end`. Planning takes an explicit `evaluated_at` UTC timestamp
+and a `max_evidence_age_seconds` integer from 0 through 366 days. The planner
+does not read a wall clock. A missing window is `REMAINING_CAPACITY_UNBOUND`.
+A `window_end` after `evaluated_at` is `REMAINING_CAPACITY_FUTURE`. A positive
+age greater than `max_evidence_age_seconds` is `REMAINING_CAPACITY_STALE`.
+An age equal to the maximum remains eligible when every other gate passes.
+`UNKNOWN` and zero remaining capacity keep their existing reasons and do not
+gain a freshness reason.
+
 Capacity facts are never estimated. Unknown capacity stays `UNKNOWN` and cannot
 be made eligible by an attractive preference rank.
 
@@ -60,9 +71,10 @@ failure. Reaching or exceeding `max_attempts` is evidence for
 `HUMAN_REQUIRED`, never permission for another transition.
 
 Before recommending anything, Atlas removes only the previously failed routes
-and reruns the canonical broker. The declared current route must be that fresh
-plan's selected eligible route. Atlas then marks the current route failed and
-reruns the same broker over the remaining candidates.
+and reruns the canonical broker with the same explicit freshness boundary.
+The declared current route must be that plan's selected eligible route. Atlas
+then marks the current route failed and reruns the same broker over the
+remaining candidates. A stale or future fallback cannot be recommended.
 
 The result is one of:
 
@@ -98,7 +110,9 @@ PYTHONPATH=. python3 -m atlas usage provider-transition-plan \
   --required-capability CODE_REVIEW \
   --current-route codex-primary \
   --failure-reason QUOTA_EXHAUSTED \
-  --max-attempts 3
+  --max-attempts 3 \
+  --evaluated-at 2026-09-28T00:00:00Z \
+  --max-evidence-age-seconds 0
 ```
 
 ## Safety

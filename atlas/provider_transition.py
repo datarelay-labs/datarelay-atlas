@@ -115,6 +115,8 @@ def _remaining_plan(
     *,
     required_capability: str,
     strategy: str,
+    evaluated_at: str,
+    max_evidence_age_seconds: int,
 ) -> dict[str, Any] | None:
     remaining = [
         item for item in candidates if item["route_id"] not in failed
@@ -125,6 +127,8 @@ def _remaining_plan(
         remaining,
         required_capability=required_capability,
         strategy=strategy,
+        evaluated_at=evaluated_at,
+        max_evidence_age_seconds=max_evidence_age_seconds,
     )
 
 
@@ -137,6 +141,8 @@ def plan_provider_transition(
     prior_failed_route_ids: object = None,
     strategy: str = "CAPABILITY_FIRST",
     max_attempts: int = 3,
+    evaluated_at: str,
+    max_evidence_age_seconds: int,
 ) -> dict[str, Any]:
     """Plan one attributable failover without granting execution authority."""
     normalized = _normalize_candidates(candidates)
@@ -160,6 +166,8 @@ def plan_provider_transition(
         set(prior_failed),
         required_capability=required_capability,
         strategy=strategy,
+        evaluated_at=evaluated_at,
+        max_evidence_age_seconds=max_evidence_age_seconds,
     )
     if current_plan is None or current_plan["selected_route_id"] != current:
         _reject("current route is not the selected eligible route")
@@ -170,6 +178,8 @@ def plan_provider_transition(
         set(failed),
         required_capability=required_capability,
         strategy=strategy,
+        evaluated_at=evaluated_at,
+        max_evidence_age_seconds=max_evidence_age_seconds,
     )
 
     if attempt >= maximum:
