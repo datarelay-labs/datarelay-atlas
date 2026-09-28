@@ -10,7 +10,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
-from atlas.cli import main
+from atlas.cli import build_parser, main
 from atlas.cursor_usage import (
     GitIdentity,
     PacketFact,
@@ -19,7 +19,9 @@ from atlas.cursor_usage import (
     canonical_workspace,
     classify_workers,
     collect_process_facts,
+    load_context_advice,
     load_packet_facts,
+    load_worker_snapshot,
     parse_usage_csv,
     read_git_identity,
     recommend,
@@ -381,7 +383,7 @@ class CursorUsageWorkerTests(unittest.TestCase):
             {"CHECKPOINT_CLEAR_RECOMMENDED", "YIELD_BUDGET", "SUMMARIZE_RECOMMENDED"},
         )
 
-    def test_stale_packet_head_does_not_mark_terminal(self):
+    def test_stale_packet_head_fails_closed_for_same_branch(self):
         report = build_report(
             [self._session("sess-done-02", self.workspace)],
             [ProcessFact("sess-done-02", self.workspace, False, "quiescent")],
@@ -396,9 +398,32 @@ class CursorUsageWorkerTests(unittest.TestCase):
             ],
         )
         worker = report["workers"][0]
-        self.assertEqual(worker["state"], "IDLE_REUSABLE")
+        self.assertEqual(worker["state"], "ORPHAN_OR_UNKNOWN")
         self.assertIsNone(worker["packet_status"])
-        self.assertEqual(report["advisor"]["recommendation"], "CONTINUE")
+        self.assertEqual(report["advisor"]["recommendation"], "HUMAN_REQUIRED")
+
+    def test_noncanonical_reconciliation_on_worker_branch_fails_closed(self):
+        report = build_report(
+            [self._session("sess-reconcile", self.workspace)],
+            [ProcessFact("sess-reconcile", self.workspace, False, "quiescent")],
+            self.identities,
+            [],
+            packet_observations=[
+                {
+                    "repository": "datarelay-labs/datarelay-atlas",
+                    "issue_number": 80,
+                    "branch": "feature/cursor-usage-phase0-worker-inventory",
+                    "canonical_fact": False,
+                    "reasons": ["PR_HEAD_MISMATCH"],
+                }
+            ],
+        )
+        worker = report["workers"][0]
+        self.assertEqual(worker["state"], "ORPHAN_OR_UNKNOWN")
+        self.assertEqual(report["advisor"]["recommendation"], "HUMAN_REQUIRED")
+        self.assertEqual(
+            report["reconciliation"][0]["reasons"], ["PR_HEAD_MISMATCH"]
+        )
 
     def test_packet_fact_without_exact_head_is_rejected(self):
         path = _write_csv("")
@@ -720,6 +745,193 @@ class CursorUsageGitTests(unittest.TestCase):
         self.assertTrue(identity.dirty)
         self.assertEqual(identity.repository, "datarelay-labs/datarelay-atlas")
         self.assertNotIn(SECRET, repr(identity))
+
+
+class CursorUsageSnapshotTests(unittest.TestCase):
+    def _worker(self, *, head: str = HEAD, state: str = "IDLE_REUSABLE") -> dict:
+        return {
+            "session_id": "cursor-snapshot-0123456789-1-abcdef",
+            "workspace": "/srv/worker",
+            "resident": True,
+            "attachment": "detached",
+            "inference_activity": "UNKNOWN",
+            "runtime": "quiescent",
+            "state": state,
+            "repository": "datarelay-labs/datarelay-atlas",
+            "branch": "feature/cursor-usage-phase0-worker-inventory",
+            "head": head,
+            "dirty": False,
+            "packet_status": None,
+            "host_id": "dev-atlas",
+        }
+
+    def _snapshot(self, worker: dict) -> Path:
+        path = _write_csv("")
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "cursor_worker_inventory",
+                    "host_id": "dev-atlas",
+                    "observed_at": "2026-09-28T00:00:00Z",
+                    "workers": [worker],
+                    "advisor": {"recommendation": "CONTINUE", "reasons": []},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_snapshot_is_bounded_and_central_reconciliation_reclassifies_worker(self):
+        workers, summary = load_worker_snapshot(self._snapshot(self._worker()))
+        self.assertEqual(summary["host_id"], "dev-atlas")
+        self.assertEqual(summary["worker_count"], 1)
+        self.assertEqual(workers[0]["host_id"], "dev-atlas")
+
+        report = build_report(
+            [],
+            [],
+            {},
+            [
+                PacketFact(
+                    repository="datarelay-labs/datarelay-atlas",
+                    branch="feature/cursor-usage-phase0-worker-inventory",
+                    status="COMPLETE",
+                    head=HEAD,
+                    issue_number=78,
+                )
+            ],
+            imported_workers=workers,
+            snapshot_summaries=[summary],
+        )
+        self.assertEqual(report["workers"][0]["state"], "TERMINAL_WORK_SURVIVOR")
+        self.assertEqual(report["workers"][0]["packet_status"], "COMPLETE")
+        self.assertEqual(report["snapshots"][0]["host_id"], "dev-atlas")
+
+    def test_snapshot_rejects_invented_inference_and_raw_content(self):
+        worker = self._worker()
+        worker["inference_activity"] = "ACTIVE"
+        with self.assertRaises(ValidationError):
+            load_worker_snapshot(self._snapshot(worker))
+
+        worker = self._worker()
+        path = self._snapshot(worker)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["prompt"] = SECRET
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaises(ValidationError):
+            load_worker_snapshot(path)
+
+    def test_reconciliation_output_is_relevant_and_summarized(self):
+        worker = self._worker()
+        observations = [
+            {
+                "repository": "datarelay-labs/datarelay-atlas",
+                "issue_number": 78,
+                "issue_state": "CLOSED",
+                "branch": "feature/cursor-usage-phase0-worker-inventory",
+                "canonical_fact": True,
+                "packet_status": "COMPLETE",
+                "head": HEAD,
+                "reasons": [],
+            },
+            {
+                "repository": "datarelay-labs/datarelay-atlas",
+                "issue_number": 80,
+                "issue_state": "OPEN",
+                "branch": "feature/prod-usage-control-plane-dogfood",
+                "canonical_fact": True,
+                "packet_status": "ACTIVE",
+                "head": HEAD,
+                "reasons": [],
+            },
+            {
+                "repository": "datarelay-labs/datarelay-atlas",
+                "issue_number": 2,
+                "issue_state": "CLOSED",
+                "branch": "old-unrelated-branch",
+                "canonical_fact": False,
+                "packet_status": None,
+                "head": None,
+                "reasons": ["PACKET_METADATA_INVALID"],
+            },
+        ]
+        report = build_report(
+            [],
+            [],
+            {},
+            packet_observations=observations,
+            imported_workers=[worker],
+        )
+        self.assertEqual(len(report["reconciliation"]), 2)
+        self.assertEqual(
+            report["reconciliation_summary"],
+            {
+                "observed_count": 3,
+                "canonical_count": 2,
+                "noncanonical_count": 1,
+                "returned_count": 2,
+            },
+        )
+
+
+class CursorUsageContextTests(unittest.TestCase):
+    def test_context_advice_is_bounded_and_clear_is_recommendation_only(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".json", delete=False
+        ) as handle:
+            json.dump(
+                {
+                    "durable_checkpoint": True,
+                    "logical_boundary": True,
+                },
+                handle,
+            )
+            path = Path(handle.name)
+        advice = load_context_advice(path)
+        self.assertEqual(advice["recommendation"], "CLEAR_RECOMMENDED")
+        self.assertEqual(advice["reasons"], ["SEMANTIC_BOUNDARY"])
+        self.assertEqual(advice["source"], "ENGINEERING_SYSTEM_CONTEXT_EPOCH")
+
+        path.write_text(
+            json.dumps(
+                {
+                    "durable_checkpoint": True,
+                    "logical_boundary": True,
+                    "prompt": SECRET,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValidationError):
+            load_context_advice(path)
+
+    def test_usage_report_parser_exposes_read_only_reconciliation_options(self):
+        args = build_parser().parse_args(
+            [
+                "usage",
+                "report",
+                "--github-reconcile",
+                "--repository",
+                "datarelay-labs/datarelay-atlas",
+                "--context-facts",
+                "/tmp/context.json",
+                "--host-id",
+                "prod-atlas",
+                "--worker-snapshot",
+                "/tmp/dev-atlas.json",
+                "--worker-snapshot",
+                "/tmp/dev-control.json",
+            ]
+        )
+        self.assertTrue(args.github_reconcile)
+        self.assertEqual(args.repository, ["datarelay-labs/datarelay-atlas"])
+        self.assertEqual(args.context_facts, "/tmp/context.json")
+        self.assertEqual(args.host_id, "prod-atlas")
+        self.assertEqual(
+            args.worker_snapshot,
+            ["/tmp/dev-atlas.json", "/tmp/dev-control.json"],
+        )
 
 
 class CursorUsageCliTests(unittest.TestCase):

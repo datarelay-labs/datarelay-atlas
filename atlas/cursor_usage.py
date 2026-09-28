@@ -19,6 +19,7 @@ from typing import Callable, Iterable, Mapping
 
 from atlas.provenance import ValidationError
 from atlas.work_controller import (
+    GitHubWorkPacketAdapter,
     GitRunner,
     PersistSession,
     default_list_persist_sessions,
@@ -34,6 +35,8 @@ HEAVY_EVENT_TOKENS = 5_000_000
 EXTREME_EVENT_TOKENS = 10_000_000
 MAX_TOKEN_DIGITS = 18
 MAX_PROCESS_SCAN = 20000
+MAX_SNAPSHOT_BYTES = 1024 * 1024
+MAX_SNAPSHOT_WORKERS = 100
 
 WORKER_STATES = frozenset(
     {
@@ -47,6 +50,10 @@ WORKER_STATES = frozenset(
 RECOMMENDATIONS = frozenset(
     {
         "CONTINUE",
+        "CHECKPOINT",
+        "SUMMARIZE",
+        "CLEAR_RECOMMENDED",
+        "YIELD",
         "HUMAN_REQUIRED",
         "UNKNOWN",
     }
@@ -72,6 +79,36 @@ _OPTIONAL_COLUMNS = (
 )
 _ALLOWED_COLUMNS = frozenset(_REQUIRED_COLUMNS + _OPTIONAL_COLUMNS)
 _PACKET_KEYS = frozenset({"repository", "branch", "status", "head", "issue_number"})
+_SNAPSHOT_TOP_KEYS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "host_id",
+        "observed_at",
+        "workers",
+        "advisor",
+        "reconciliation",
+        "reconciliation_summary",
+        "snapshots",
+    }
+)
+_SNAPSHOT_WORKER_KEYS = frozenset(
+    {
+        "session_id",
+        "workspace",
+        "resident",
+        "attachment",
+        "inference_activity",
+        "runtime",
+        "state",
+        "repository",
+        "branch",
+        "head",
+        "dirty",
+        "packet_status",
+        "host_id",
+    }
+)
 _TOKEN_RE = r"^(0|[1-9][0-9]*)$"
 _COST_RE = r"^(0|[1-9][0-9]*)(\.[0-9]+)?$"
 _HEAD_RE_TEXT = r"^[0-9a-f]{40}$"
@@ -81,12 +118,14 @@ _RESTORE_TOKEN_RE_TEXT = r"^[0-9a-f]{32}$"
 _CURSOR_SESSION_ID_RE_TEXT = (
     r"^cursor-(?:[A-Za-z0-9]+-)+[0-9a-f]{10}-[0-9a-f]-[0-9a-f]{6}$"
 )
+_HOST_ID_RE_TEXT = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"
 
 _TOKEN_PATTERN = re.compile(_TOKEN_RE)
 _COST_PATTERN = re.compile(_COST_RE)
 _HEAD_PATTERN = re.compile(_HEAD_RE_TEXT)
 _RESTORE_TOKEN_PATTERN = re.compile(_RESTORE_TOKEN_RE_TEXT)
 _CURSOR_SESSION_ID_PATTERN = re.compile(_CURSOR_SESSION_ID_RE_TEXT)
+_HOST_ID_PATTERN = re.compile(_HOST_ID_RE_TEXT)
 _MAX_MODE_TRUE = frozenset({"yes", "true"})
 _MAX_MODE_FALSE = frozenset({"no", "false"})
 
@@ -514,7 +553,12 @@ def classify_workers(
     for _session, workspace in prepared:
         if workspace is not None:
             counts[workspace] = counts.get(workspace, 0) + 1
-    packets = _packet_index(packet_facts or [])
+    packet_list = list(packet_facts or [])
+    packets = _packet_index(packet_list)
+    packet_branches = {
+        (normalize_github_repository(fact.repository), fact.branch)
+        for fact in packet_list
+    }
     by_session: dict[str, list[ProcessFact]] = {}
     unbound: list[ProcessFact] = []
     session_ids = {session.session_id for session, _workspace in prepared if session.session_id}
@@ -578,6 +622,11 @@ def classify_workers(
                 packet_ambiguous = True
             elif observed is not None:
                 packet_status = observed
+            elif (identity.repository, identity.branch) in packet_branches:
+                # A canonical packet exists for this repo/branch but not this
+                # worker HEAD. Treat stale exact-head evidence as uncertainty,
+                # never as an implicitly reusable idle worker.
+                packet_ambiguous = True
         duplicate = workspace is not None and counts.get(workspace, 0) > 1
         if not session.session_id or workspace is None:
             state = "ORPHAN_OR_UNKNOWN"
@@ -652,21 +701,174 @@ def recommend(workers: Iterable[dict], *, current_observed: bool) -> dict:
     return {"recommendation": recommendation, "reasons": sorted(set(reasons))}
 
 
+def _apply_reconciliation_uncertainty(
+    workers: list[dict], observations: Iterable[dict]
+) -> None:
+    """Fail closed only for noncanonical observations relevant to a worker branch."""
+    uncertain: set[tuple[str, str]] = set()
+    for item in observations:
+        if not isinstance(item, dict) or item.get("canonical_fact") is True:
+            continue
+        repository = str(item.get("repository") or "").strip()
+        branch = str(item.get("branch") or "").strip()
+        if not repository or not branch:
+            continue
+        try:
+            normalized = normalize_github_repository(repository)
+        except ValidationError:
+            continue
+        uncertain.add((normalized, branch))
+    for worker in workers:
+        repository = worker.get("repository")
+        branch = worker.get("branch")
+        if not isinstance(repository, str) or not isinstance(branch, str):
+            continue
+        if (repository, branch) in uncertain:
+            worker["state"] = "ORPHAN_OR_UNKNOWN"
+            worker["packet_status"] = None
+
+
+def _reconcile_imported_workers(
+    workers: list[dict], packet_facts: Iterable[PacketFact]
+) -> None:
+    """Re-evaluate imported lifecycle facts against current canonical GitHub facts."""
+    facts = list(packet_facts)
+    packets = _packet_index(facts)
+    packet_branches = {
+        (normalize_github_repository(fact.repository), fact.branch) for fact in facts
+    }
+    packet_repositories = {
+        normalize_github_repository(fact.repository) for fact in facts
+    }
+    for worker in workers:
+        repository = worker.get("repository")
+        branch = worker.get("branch")
+        head = worker.get("head")
+        if (
+            not isinstance(repository, str)
+            or not isinstance(branch, str)
+            or not isinstance(head, str)
+            or repository not in packet_repositories
+        ):
+            continue
+        structural = worker.get("state") in {
+            "DUPLICATE_WORKTREE",
+            "ORPHAN_OR_UNKNOWN",
+        }
+        observed = packets.get((repository, branch, head))
+        if observed == "AMBIGUOUS" or (
+            observed is None and (repository, branch) in packet_branches
+        ):
+            worker["state"] = "ORPHAN_OR_UNKNOWN"
+            worker["packet_status"] = None
+        elif observed is not None:
+            worker["packet_status"] = observed
+            if not structural:
+                worker["state"] = (
+                    "TERMINAL_WORK_SURVIVOR"
+                    if observed == "COMPLETE"
+                    else "IDLE_REUSABLE"
+                )
+        else:
+            worker["packet_status"] = None
+            if worker.get("state") == "TERMINAL_WORK_SURVIVOR":
+                worker["state"] = "IDLE_REUSABLE"
+
+
+def _select_reconciliation(
+    observations: list[dict], workers: Iterable[dict]
+) -> tuple[list[dict], dict]:
+    """Keep open packets and observations relevant to current worker branches."""
+    relevant: set[tuple[str, str]] = set()
+    for worker in workers:
+        repository = worker.get("repository")
+        branch = worker.get("branch")
+        if isinstance(repository, str) and isinstance(branch, str):
+            relevant.add((repository, branch))
+    selected: list[dict] = []
+    for item in observations:
+        repository = item.get("repository")
+        branch = item.get("branch")
+        issue_state = item.get("issue_state")
+        if issue_state == "OPEN" or (
+            isinstance(repository, str)
+            and isinstance(branch, str)
+            and (repository, branch) in relevant
+        ):
+            selected.append(dict(item))
+    summary = {
+        "observed_count": len(observations),
+        "canonical_count": sum(
+            1 for item in observations if item.get("canonical_fact") is True
+        ),
+        "noncanonical_count": sum(
+            1 for item in observations if item.get("canonical_fact") is not True
+        ),
+        "returned_count": len(selected),
+    }
+    return selected, summary
+
+
 def build_report(
     sessions: Iterable[PersistSession],
     processes: Iterable[ProcessFact],
     identities: Mapping[str, GitIdentity | None],
     packet_facts: Iterable[PacketFact] | None = None,
     summary: dict | None = None,
+    *,
+    packet_observations: Iterable[dict] | None = None,
+    context_advice: dict | None = None,
+    local_host_id: str | None = None,
+    imported_workers: Iterable[dict] | None = None,
+    snapshot_summaries: Iterable[dict] | None = None,
 ) -> dict:
-    workers = classify_workers(sessions, processes, identities, packet_facts)
+    packet_list = list(packet_facts or [])
+    workers = classify_workers(sessions, processes, identities, packet_list)
+    if local_host_id is not None:
+        if not _HOST_ID_PATTERN.fullmatch(local_host_id):
+            _reject("local host_id is invalid")
+        for worker in workers:
+            worker["host_id"] = local_host_id
+
+    imported = [dict(item) for item in (imported_workers or [])]
+    _reconcile_imported_workers(imported, packet_list)
+    workers.extend(imported)
+
+    observations = (
+        None if packet_observations is None else [dict(item) for item in packet_observations]
+    )
+    reconciliation = None
+    reconciliation_summary = None
+    if observations is not None:
+        _apply_reconciliation_uncertainty(workers, observations)
+        reconciliation, reconciliation_summary = _select_reconciliation(
+            observations, workers
+        )
+
+    workers.sort(
+        key=lambda item: (
+            str(item.get("host_id") or ""),
+            str(item.get("workspace") or ""),
+            str(item.get("session_id") or ""),
+        )
+    )
     usage = None if summary is None else dict(summary)
+    context = None if context_advice is None else dict(context_advice)
+    snapshots = [dict(item) for item in (snapshot_summaries or [])]
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": "cursor_usage_report",
         "workers": workers,
         "usage": usage,
-        "advisor": recommend(workers, current_observed=True),
+        "reconciliation": reconciliation,
+        "reconciliation_summary": reconciliation_summary,
+        "context_epoch": context,
+        "snapshots": snapshots,
+        "advisor": control_advisor(
+            workers,
+            current_observed=True,
+            context_advice=context,
+        ),
     }
     assert_content_free(report)
     return report
@@ -722,6 +924,338 @@ def load_packet_facts(path: Path) -> list[PacketFact]:
             )
         )
     return facts
+
+
+def _bounded_snapshot_text(
+    value: object, *, label: str, max_chars: int
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        _reject(f"snapshot {label} must be a string or null")
+    text = value.strip()
+    if (
+        not text
+        or len(text) > max_chars
+        or any(ord(char) < 32 or ord(char) == 127 for char in text)
+    ):
+        _reject(f"snapshot {label} is not bounded")
+    return text
+
+
+def _snapshot_observed_at(value: object) -> str:
+    text = _bounded_snapshot_text(value, label="observed_at", max_chars=64)
+    assert text is not None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValidationError("snapshot observed_at is not ISO-8601") from exc
+    if parsed.tzinfo is None:
+        _reject("snapshot observed_at must be timezone-aware")
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def load_worker_snapshot(path: Path) -> tuple[list[dict], dict]:
+    """Load one content-free host inventory for central read-only aggregation."""
+    import json
+
+    source = Path(path)
+    try:
+        size = source.stat().st_size
+    except OSError as exc:
+        raise ValidationError("worker snapshot is not readable") from exc
+    if size > MAX_SNAPSHOT_BYTES:
+        _reject("worker snapshot exceeds the bounded import size")
+    try:
+        raw = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValidationError("worker snapshot is not JSON") from exc
+    if not isinstance(raw, dict):
+        _reject("worker snapshot must be a JSON object")
+    assert_content_free(raw)
+    unknown = sorted(set(raw).difference(_SNAPSHOT_TOP_KEYS))
+    if unknown:
+        _reject("unknown worker snapshot field: " + ", ".join(unknown))
+    if raw.get("schema_version") != SCHEMA_VERSION:
+        _reject("worker snapshot schema_version is unsupported")
+    if raw.get("kind") != "cursor_worker_inventory":
+        _reject("worker snapshot kind is not cursor_worker_inventory")
+    host_id = _bounded_snapshot_text(raw.get("host_id"), label="host_id", max_chars=63)
+    if host_id is None or not _HOST_ID_PATTERN.fullmatch(host_id):
+        _reject("worker snapshot host_id is invalid")
+    observed_at = _snapshot_observed_at(raw.get("observed_at"))
+    raw_workers = raw.get("workers")
+    if not isinstance(raw_workers, list):
+        _reject("worker snapshot workers must be a list")
+    if len(raw_workers) > MAX_SNAPSHOT_WORKERS:
+        _reject("worker snapshot exceeds the bounded worker count")
+
+    workers: list[dict] = []
+    for index, item in enumerate(raw_workers):
+        if not isinstance(item, dict):
+            _reject(f"worker snapshot workers[{index}] must be an object")
+        unknown_worker = sorted(set(item).difference(_SNAPSHOT_WORKER_KEYS))
+        missing_worker = sorted(_SNAPSHOT_WORKER_KEYS.difference(item))
+        if unknown_worker or missing_worker:
+            _reject(f"worker snapshot workers[{index}] schema is invalid")
+        worker_host_id = _bounded_snapshot_text(
+            item.get("host_id"), label="host_id", max_chars=63
+        )
+        if worker_host_id != host_id:
+            _reject(f"worker snapshot workers[{index}] host_id is inconsistent")
+        session_id = _bounded_snapshot_text(
+            item.get("session_id"), label="session_id", max_chars=255
+        )
+        workspace = _bounded_snapshot_text(
+            item.get("workspace"), label="workspace", max_chars=4096
+        )
+        if workspace is not None and not workspace.startswith("/"):
+            _reject(f"worker snapshot workers[{index}] workspace is not absolute")
+        resident = item.get("resident")
+        if not isinstance(resident, bool):
+            _reject(f"worker snapshot workers[{index}] resident is invalid")
+        attachment = item.get("attachment")
+        if attachment not in {"attached", "detached", "unknown"}:
+            _reject(f"worker snapshot workers[{index}] attachment is invalid")
+        if item.get("inference_activity") != "UNKNOWN":
+            _reject(
+                f"worker snapshot workers[{index}] inference_activity is not UNKNOWN"
+            )
+        runtime = item.get("runtime")
+        if runtime not in {"busy", "quiescent", "unknown"}:
+            _reject(f"worker snapshot workers[{index}] runtime is invalid")
+        state = item.get("state")
+        if state not in WORKER_STATES:
+            _reject(f"worker snapshot workers[{index}] state is invalid")
+
+        repository = item.get("repository")
+        branch = item.get("branch")
+        head = item.get("head")
+        dirty = item.get("dirty")
+        if repository is None:
+            if branch is not None or head is not None or dirty is not None:
+                _reject(
+                    f"worker snapshot workers[{index}] git identity is inconsistent"
+                )
+            normalized_repository = None
+            normalized_branch = None
+            normalized_head = None
+        else:
+            if not isinstance(repository, str):
+                _reject(f"worker snapshot workers[{index}] repository is invalid")
+            normalized_repository = normalize_github_repository(repository)
+            normalized_branch = _bounded_snapshot_text(
+                branch, label="branch", max_chars=255
+            )
+            normalized_head = _bounded_snapshot_text(
+                head, label="head", max_chars=40
+            )
+            if (
+                normalized_branch is None
+                or normalized_head is None
+                or not _HEAD_PATTERN.fullmatch(normalized_head)
+                or not isinstance(dirty, bool)
+            ):
+                _reject(
+                    f"worker snapshot workers[{index}] git identity is invalid"
+                )
+
+        packet_status = item.get("packet_status")
+        if packet_status is not None and packet_status not in PACKET_STATUSES:
+            _reject(f"worker snapshot workers[{index}] packet_status is invalid")
+        workers.append(
+            {
+                "session_id": session_id,
+                "workspace": workspace,
+                "resident": resident,
+                "attachment": attachment,
+                "inference_activity": "UNKNOWN",
+                "runtime": runtime,
+                "state": state,
+                "repository": normalized_repository,
+                "branch": normalized_branch,
+                "head": normalized_head,
+                "dirty": dirty,
+                "packet_status": packet_status,
+                "host_id": host_id,
+            }
+        )
+
+    return workers, {
+        "host_id": host_id,
+        "observed_at": observed_at,
+        "worker_count": len(workers),
+    }
+
+
+def packet_facts_from_observations(observations: Iterable[dict]) -> list[PacketFact]:
+    """Promote only fully reconciled GitHub observations into worker facts."""
+    facts: list[PacketFact] = []
+    for item in observations:
+        if not isinstance(item, dict) or item.get("canonical_fact") is not True:
+            continue
+        repository = str(item.get("repository") or "").strip()
+        branch = str(item.get("branch") or "").strip()
+        status = str(item.get("packet_status") or "").strip()
+        head = str(item.get("head") or "").strip().lower()
+        number = item.get("issue_number")
+        if (
+            not repository
+            or not branch
+            or status not in PACKET_STATUSES
+            or not _HEAD_PATTERN.fullmatch(head)
+            or isinstance(number, bool)
+            or not isinstance(number, int)
+            or number < 1
+        ):
+            _reject("canonical GitHub packet observation is malformed")
+        facts.append(
+            PacketFact(
+                repository=normalize_github_repository(repository),
+                branch=branch,
+                status=status,
+                head=head,
+                issue_number=number,
+            )
+        )
+    return facts
+
+
+def collect_github_packet_observations(
+    repositories: Iterable[str],
+    *,
+    adapter: GitHubWorkPacketAdapter | None = None,
+) -> tuple[list[PacketFact], list[dict]]:
+    """Read canonical GitHub packet/PR state without retaining Issue bodies."""
+    reader = adapter or GitHubWorkPacketAdapter()
+    observations: list[dict] = []
+    normalized: set[str] = set()
+    for repository in repositories:
+        normalized.add(normalize_github_repository(str(repository)))
+    for repository in sorted(normalized):
+        observations.extend(reader.read_packet_observations(repository))
+    observations.sort(
+        key=lambda item: (
+            str(item.get("repository") or ""),
+            int(item.get("issue_number") or 0),
+        )
+    )
+    facts = packet_facts_from_observations(observations)
+    assert_content_free(observations)
+    return facts, observations
+
+
+def load_context_advice(path: Path) -> dict:
+    """Evaluate bounded Engineering System context facts without executing control."""
+    import json
+
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValidationError("context facts file is not JSON") from exc
+    if not isinstance(raw, dict):
+        _reject("context facts file must be a JSON object")
+    allowed = {
+        "in_flight",
+        "unreconciled_mutation",
+        "durable_checkpoint",
+        "same_atomic_task",
+        "logical_boundary",
+        "workstream_changed",
+        "next_action_changed",
+        "profile_change_pending",
+        "repeated_failure",
+        "precompact",
+    }
+    unknown = sorted(set(raw).difference(allowed))
+    if unknown:
+        _reject("unknown context fact field: " + ", ".join(unknown))
+    precompact = raw.get("precompact")
+    if precompact is not None:
+        if not isinstance(precompact, dict):
+            _reject("precompact context fact must be an object")
+        precompact_allowed = {
+            "context_tokens",
+            "context_window_size",
+            "message_count",
+            "messages_to_compact",
+            "context_usage_percent",
+            "trigger",
+            "is_first_compaction",
+        }
+        precompact_unknown = sorted(set(precompact).difference(precompact_allowed))
+        if precompact_unknown:
+            _reject(
+                "unknown precompact context fact field: "
+                + ", ".join(precompact_unknown)
+            )
+
+    try:
+        from tools.context_epoch import ContextError, decide_epoch
+    except (ImportError, OSError) as exc:
+        raise ValidationError(
+            "managed context_epoch helper is unavailable"
+        ) from exc
+    try:
+        decision = decide_epoch(raw)
+    except ContextError as exc:
+        raise ValidationError(f"context facts rejected: {exc}") from exc
+    if not isinstance(decision, dict):
+        _reject("context epoch decision is malformed")
+    source_action = str(decision.get("action") or "")
+    reason = str(decision.get("reason") or "")
+    action_map = {
+        "CONTINUE": "CONTINUE",
+        "CHECKPOINT_REQUIRED": "CHECKPOINT",
+        "SUMMARIZE": "SUMMARIZE",
+        "CLEAR": "CLEAR_RECOMMENDED",
+    }
+    recommendation = action_map.get(source_action)
+    if recommendation not in RECOMMENDATIONS:
+        _reject("context epoch action is not allowlisted")
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", reason):
+        _reject("context epoch reason is not a bounded label")
+    return {
+        "recommendation": recommendation,
+        "reasons": [reason],
+        "source": "ENGINEERING_SYSTEM_CONTEXT_EPOCH",
+        "source_action": source_action,
+    }
+
+
+def control_advisor(
+    workers: Iterable[dict],
+    *,
+    current_observed: bool,
+    context_advice: dict | None = None,
+) -> dict:
+    """Combine worker safety with a bounded context recommendation.
+
+    Worker ambiguity always wins. Context CLEAR is recommendation-only; this
+    module never runs destructive context commands, stop, kill, or session mutation.
+    """
+    base = recommend(workers, current_observed=current_observed)
+    if base["recommendation"] == "HUMAN_REQUIRED" or context_advice is None:
+        return base
+    recommendation = str(context_advice.get("recommendation") or "")
+    reasons = context_advice.get("reasons")
+    if recommendation not in RECOMMENDATIONS or not isinstance(reasons, list):
+        _reject("context advice is malformed")
+    if recommendation == "UNKNOWN":
+        return base
+    bounded_reasons: list[str] = []
+    for reason in reasons:
+        text = str(reason)
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", text):
+            _reject("context advice reason is not a bounded label")
+        bounded_reasons.append(text)
+    return {
+        "recommendation": recommendation,
+        "reasons": sorted(set(bounded_reasons)),
+        "source": str(context_advice.get("source") or "CONTEXT"),
+        "source_action": str(context_advice.get("source_action") or ""),
+    }
 
 
 def read_git_identity(workspace: str, git_runner: GitRunner | None = None) -> GitIdentity | None:

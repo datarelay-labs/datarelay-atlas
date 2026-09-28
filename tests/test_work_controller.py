@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ from atlas.work_controller import (
     DispatchSpawnedButUnobservedError,
     DispatchSpawnCleanupUncertainError,
     FixedAuditAdapter,
+    GitHubWorkPacketAdapter,
     RecordingCursorDispatcher,
     RecordingObserver,
     RecordingWorkPacketAdapter,
@@ -952,6 +954,96 @@ class WorkControllerTests(unittest.TestCase):
                 self.assertEqual(outcome["cycle"], "no_successor")
                 self.assertEqual(dispatcher.requests, [])
                 self.assertEqual(packets.updates, [])
+
+
+class GitHubPacketObservationTests(unittest.TestCase):
+    def _body(self, *, status: str, head: str = HEAD_A) -> str:
+        return "\n".join(
+            [
+                "PACKET_VERSION=2",
+                "TARGET_REPO=datarelay-labs/datarelay-atlas",
+                "WORKSTREAM=usage-dogfood",
+                f"STATUS={status}",
+                "BRANCH=feature/usage-dogfood",
+                f"LAST_VERIFIED_HEAD={head}",
+                "TASK_KIND=IMPLEMENTATION",
+                "OWNER_INTENT=read-only reconciliation",
+                "",
+                "## Goal",
+                "fixture body must never be returned",
+            ]
+        )
+
+    def _adapter(
+        self,
+        *,
+        issue_state: str,
+        packet_status: str,
+        packet_head: str = HEAD_A,
+        pr_head: str = HEAD_A,
+        pr_state: str = "closed",
+        merged: bool = True,
+    ) -> GitHubWorkPacketAdapter:
+        issue = {
+            "number": 80,
+            "title": "[AI Work] usage dogfood",
+            "state": issue_state,
+            "body": self._body(status=packet_status, head=packet_head),
+            "updated_at": "2026-09-28T00:00:00Z",
+            "user": {"login": "trusted-user"},
+        }
+        pull = {
+            "number": 84,
+            "state": pr_state,
+            "merged_at": "2026-09-28T00:01:00Z" if merged else None,
+            "head": {"ref": "feature/usage-dogfood", "sha": pr_head},
+        }
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            del cwd
+            joined = " ".join(argv)
+            if "issues?state=all&per_page=100" in joined:
+                payload = [[issue]]
+            elif "pulls?state=all&per_page=100" in joined:
+                payload = [[pull]]
+            elif "collaborators/trusted-user/permission" in joined:
+                payload = {"permission": "admin"}
+            else:
+                return subprocess.CompletedProcess(argv, 1, "", f"unexpected: {joined}")
+            return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+
+        return GitHubWorkPacketAdapter(command_runner=runner)
+
+    def test_closed_complete_exact_merged_head_is_canonical_and_content_free(self):
+        observed = self._adapter(
+            issue_state="closed", packet_status="COMPLETE"
+        ).read_packet_observations("datarelay-labs/datarelay-atlas")
+        self.assertEqual(len(observed), 1)
+        row = observed[0]
+        self.assertTrue(row["canonical_fact"])
+        self.assertEqual(row["pr_state"], "MERGED")
+        self.assertEqual(row["pr_head"], HEAD_A)
+        encoded = json.dumps(row)
+        self.assertNotIn("fixture body", encoded)
+        self.assertNotIn("OWNER_INTENT", encoded)
+
+    def test_open_complete_packet_fails_closed(self):
+        row = self._adapter(
+            issue_state="open", packet_status="COMPLETE", pr_state="closed"
+        ).read_packet_observations("datarelay-labs/datarelay-atlas")[0]
+        self.assertFalse(row["canonical_fact"])
+        self.assertIn("ISSUE_STATE_STATUS_CONFLICT", row["reasons"])
+
+    def test_merged_pr_head_mismatch_fails_closed(self):
+        row = self._adapter(
+            issue_state="closed",
+            packet_status="COMPLETE",
+            packet_head=HEAD_A,
+            pr_head=HEAD_B,
+        ).read_packet_observations("datarelay-labs/datarelay-atlas")[0]
+        self.assertFalse(row["canonical_fact"])
+        self.assertEqual(row["pr_head"], HEAD_B)
+        self.assertIn("PR_HEAD_MISMATCH", row["reasons"])
 
 
 if __name__ == "__main__":
