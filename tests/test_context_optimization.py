@@ -111,7 +111,7 @@ class ContextOptimizationInputTests(unittest.TestCase):
                 "quality_noninferiority": "UNKNOWN",
                 "data_egress_eligibility": "UNKNOWN",
                 "runtime_capability": "UNKNOWN",
-                "active_control": "NOT_ELIGIBLE",
+                "active_control": "NOT_ELIGIBLE_FOR_ACTIVE_CONTROL",
             },
         )
         self.assertEqual(
@@ -143,8 +143,68 @@ class ContextOptimizationInputTests(unittest.TestCase):
         Draft202012Validator(schema).validate(generated)
         self.assertEqual(generated, fixture)
 
+    def test_accepts_engineering_system_multi_run_report_shape(self) -> None:
+        report = _report()
+        report["record_count"] = 4
+        for arm in report["arms"]:
+            arm["run_count"] = 2
+            arm["verified_solved_count"] = 2
+            arm["original_context_bytes"] = 2000
+            if arm["arm_id"] == "baseline":
+                arm["kept_context_bytes"] = 2000
+                arm["reduction_ratio"] = 0.0
+                arm["provider_cost_total"] = "3"
+                arm["cost_per_verified_solved_task"] = "1.5"
+                arm["input_tokens_total"] = 2200
+                arm["output_tokens_total"] = 220
+                arm["cache_read_tokens_total"] = 650
+                arm["cache_write_tokens_total"] = 90
+                arm["tool_turns_total"] = 9
+                arm["rereads_total"] = 1
+                arm["pr_rework_total"] = 1
+                arm["ci_rework_total"] = 1
+                arm["review_rework_total"] = 1
+                arm["rework_total"] = 3
+            else:
+                arm["kept_context_bytes"] = 1000
+                arm["reduction_ratio"] = 0.5
+                arm["provider_cost_total"] = "2"
+                arm["cost_per_verified_solved_task"] = "1"
+                arm["input_tokens_total"] = 1500
+                arm["output_tokens_total"] = 185
+                arm["cache_read_tokens_total"] = 1050
+                arm["cache_write_tokens_total"] = 45
+                arm["tool_turns_total"] = 7
+                arm["rereads_total"] = 1
+
+        normalized = normalize_context_canary_report(report)
+        by_arm = {item["arm_id"]: item for item in normalized["arms"]}
+        self.assertEqual(by_arm["baseline"]["provider_cost_total"], "3")
+        self.assertEqual(
+            by_arm["baseline"]["cost_per_verified_solved_task"], "1.5"
+        )
+        self.assertEqual(by_arm["baseline"]["input_tokens_total"], 2200)
+        self.assertEqual(by_arm["compiler"]["provider_cost_total"], "2")
+
+    def test_source_bound_accepts_more_than_64_valid_arms(self) -> None:
+        report = _report()
+        report["arms"] = [
+            _arm(f"arm{index:03d}", kept=1000, cost="1")
+            for index in range(65)
+        ]
+        report["arm_count"] = 65
+        report["record_count"] = 65
+        normalized = normalize_context_canary_report(report)
+        self.assertEqual(len(normalized["arms"]), 65)
+        schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+        Draft202012Validator(schema).validate(normalized)
+
     def test_source_identity_profile_and_unknown_fields_fail_closed(self) -> None:
         cases: list[dict] = []
+
+        bool_schema = deepcopy(_report())
+        bool_schema["schema_version"] = True
+        cases.append(bool_schema)
 
         wrong_kind = deepcopy(_report())
         wrong_kind["kind"] = "context-optimization-score-report"
@@ -191,12 +251,28 @@ class ContextOptimizationInputTests(unittest.TestCase):
         incomplete = deepcopy(_report())
         incomplete["arms"][0]["verified_solved_count"] = 0
 
+        uneven_runs = deepcopy(_report())
+        uneven_runs["arms"][0]["run_count"] = 2
+        uneven_runs["arms"][0]["verified_solved_count"] = 2
+        uneven_runs["arms"][0]["provider_cost_total"] = "1.5"
+        uneven_runs["arms"][0]["cost_per_verified_solved_task"] = "0.75"
+        uneven_runs["record_count"] = 3
+
+        oversized_record_set = deepcopy(_report())
+        oversized_record_set["record_count"] = 257
+
+        credential_arm = deepcopy(_report())
+        credential_arm["arms"][0]["arm_id"] = "ghp_secretlike"
+
         for payload in (
             duplicate,
             wrong_head,
             wrong_arm_count,
             wrong_record_count,
             incomplete,
+            uneven_runs,
+            oversized_record_set,
+            credential_arm,
         ):
             with self.assertRaises(ValidationError):
                 normalize_context_canary_report(payload)
@@ -214,6 +290,10 @@ class ContextOptimizationInputTests(unittest.TestCase):
         invented_cost = deepcopy(_report())
         invented_cost["arms"][0]["provider_cost_total"] = "UNKNOWN"
 
+        noncanonical_cost = deepcopy(_report())
+        noncanonical_cost["arms"][0]["provider_cost_total"] = "0.750"
+        noncanonical_cost["arms"][0]["cost_per_verified_solved_task"] = "0.750"
+
         oversized_cost = deepcopy(_report())
         oversized_cost["arms"][0]["provider_cost_total"] = "9" * 129
 
@@ -223,14 +303,30 @@ class ContextOptimizationInputTests(unittest.TestCase):
         negative_count = deepcopy(_report())
         negative_count["arms"][0]["input_tokens_total"] = -1
 
+        impossible_usage_total = deepcopy(_report())
+        impossible_usage_total["arms"][0]["input_tokens_total"] = 100_000_001
+
+        impossible_effort_total = deepcopy(_report())
+        impossible_effort_total["arms"][0]["tool_turns_total"] = 1_000_001
+
+        impossible_cost_total = deepcopy(_report())
+        impossible_cost_total["arms"][0]["provider_cost_total"] = "1000000.01"
+        impossible_cost_total["arms"][0][
+            "cost_per_verified_solved_task"
+        ] = "1000000.01"
+
         for payload in (
             kept_over_original,
             wrong_reduction,
             wrong_cost,
             invented_cost,
+            noncanonical_cost,
             oversized_cost,
             wrong_rework,
             negative_count,
+            impossible_usage_total,
+            impossible_effort_total,
+            impossible_cost_total,
         ):
             with self.assertRaises(ValidationError):
                 normalize_context_canary_report(payload)
@@ -282,7 +378,7 @@ class ContextOptimizationInputTests(unittest.TestCase):
         self.assertEqual(payload["control_mode"], "OBSERVE_ONLY")
         self.assertEqual(
             payload["gates"]["active_control"],
-            "NOT_ELIGIBLE",
+            "NOT_ELIGIBLE_FOR_ACTIVE_CONTROL",
         )
 
     def test_output_schema_rejects_active_control_or_extra_rank(self) -> None:

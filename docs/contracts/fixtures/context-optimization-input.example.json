@@ -23,7 +23,7 @@
     "quality_noninferiority": "UNKNOWN",
     "data_egress_eligibility": "UNKNOWN",
     "runtime_capability": "UNKNOWN",
-    "active_control": "NOT_ELIGIBLE"
+    "active_control": "NOT_ELIGIBLE_FOR_ACTIVE_CONTROL"
   },
   "control_mode": "OBSERVE_ONLY",
   "arms": [

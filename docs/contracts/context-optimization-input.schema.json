@@ -64,8 +64,8 @@
         "source_schema_version": { "type": "integer", "const": 1 },
         "system_head": { "$ref": "#/$defs/head" },
         "comparability": { "type": "string", "const": "ELIGIBLE" },
-        "record_count": { "$ref": "#/$defs/count" },
-        "arm_count": { "type": "integer", "minimum": 2, "maximum": 64 }
+        "record_count": { "$ref": "#/$defs/recordCount" },
+        "arm_count": { "type": "integer", "minimum": 2, "maximum": 256 }
       }
     },
     "gates": {
@@ -81,14 +81,14 @@
         "quality_noninferiority": { "type": "string", "const": "UNKNOWN" },
         "data_egress_eligibility": { "type": "string", "const": "UNKNOWN" },
         "runtime_capability": { "type": "string", "const": "UNKNOWN" },
-        "active_control": { "type": "string", "const": "NOT_ELIGIBLE" }
+        "active_control": { "type": "string", "const": "NOT_ELIGIBLE_FOR_ACTIVE_CONTROL" }
       }
     },
     "control_mode": { "type": "string", "const": "OBSERVE_ONLY" },
     "arms": {
       "type": "array",
       "minItems": 2,
-      "maxItems": 64,
+      "maxItems": 256,
       "items": { "$ref": "#/$defs/arm" }
     }
   },
@@ -106,8 +106,34 @@
       "minimum": 0,
       "maximum": 1000000000000
     },
+    "recordCount": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 256
+    },
+    "runCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 256
+    },
+    "usageTotal": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 25600000000
+    },
+    "effortTotal": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 256000000
+    },
+    "reworkTotal": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 768000000
+    },
     "decimal": {
       "type": "string",
+      "maxLength": 64,
       "pattern": "^(0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
     },
     "arm": {
@@ -143,26 +169,26 @@
           "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
         },
         "system_head": { "$ref": "#/$defs/head" },
-        "run_count": { "type": "integer", "minimum": 1, "maximum": 1000000000000 },
-        "verified_solved_count": { "$ref": "#/$defs/count" },
+        "run_count": { "$ref": "#/$defs/runCount" },
+        "verified_solved_count": { "$ref": "#/$defs/recordCount" },
         "original_context_bytes": { "$ref": "#/$defs/count" },
         "kept_context_bytes": { "$ref": "#/$defs/count" },
         "reduction_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
         "provider_cost_total": { "$ref": "#/$defs/decimal" },
         "cost_per_verified_solved_task": { "$ref": "#/$defs/decimal" },
-        "rework_total": { "$ref": "#/$defs/count" },
-        "input_tokens_total": { "$ref": "#/$defs/count" },
-        "output_tokens_total": { "$ref": "#/$defs/count" },
-        "cache_read_tokens_total": { "$ref": "#/$defs/count" },
-        "cache_write_tokens_total": { "$ref": "#/$defs/count" },
-        "tool_turns_total": { "$ref": "#/$defs/count" },
-        "retries_total": { "$ref": "#/$defs/count" },
-        "rereads_total": { "$ref": "#/$defs/count" },
-        "compactions_total": { "$ref": "#/$defs/count" },
-        "pr_rework_total": { "$ref": "#/$defs/count" },
-        "ci_rework_total": { "$ref": "#/$defs/count" },
-        "review_rework_total": { "$ref": "#/$defs/count" },
-        "human_interventions_total": { "$ref": "#/$defs/count" }
+        "rework_total": { "$ref": "#/$defs/reworkTotal" },
+        "input_tokens_total": { "$ref": "#/$defs/usageTotal" },
+        "output_tokens_total": { "$ref": "#/$defs/usageTotal" },
+        "cache_read_tokens_total": { "$ref": "#/$defs/usageTotal" },
+        "cache_write_tokens_total": { "$ref": "#/$defs/usageTotal" },
+        "tool_turns_total": { "$ref": "#/$defs/effortTotal" },
+        "retries_total": { "$ref": "#/$defs/effortTotal" },
+        "rereads_total": { "$ref": "#/$defs/effortTotal" },
+        "compactions_total": { "$ref": "#/$defs/effortTotal" },
+        "pr_rework_total": { "$ref": "#/$defs/effortTotal" },
+        "ci_rework_total": { "$ref": "#/$defs/effortTotal" },
+        "review_rework_total": { "$ref": "#/$defs/effortTotal" },
+        "human_interventions_total": { "$ref": "#/$defs/effortTotal" }
       }
     }
   }
