@@ -59,6 +59,7 @@ from atlas.ops import (
 )
 from atlas.provenance import ValidationError
 from atlas.readiness_graph import plan_readiness_file
+from atlas.readiness_github import plan_github_reconciled_readiness_file
 from atlas.semantic_retrieval import embedding_config_from_cli
 from atlas.service import AtlasService
 from atlas.work_controller import (
@@ -1069,6 +1070,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     readiness_plan.add_argument("--graph", required=True)
     readiness_plan.set_defaults(func=cmd_readiness_plan)
+    readiness_github_plan = readiness_sub.add_parser(
+        "github-plan",
+        help="Reconcile graph nodes with trusted GitHub Work Packets, then plan",
+    )
+    readiness_github_plan.add_argument("--graph", required=True)
+    readiness_github_plan.set_defaults(func=cmd_readiness_github_plan)
 
     ops = sub.add_parser("ops", help="Service configuration and health")
     ops_sub = ops.add_subparsers(dest="ops_command", required=True)
@@ -1282,6 +1289,16 @@ def cmd_usage_report(args: argparse.Namespace) -> int:
 
 def cmd_readiness_plan(args: argparse.Namespace) -> int:
     _print_json(plan_readiness_file(Path(args.graph)))
+    return 0
+
+
+def cmd_readiness_github_plan(args: argparse.Namespace) -> int:
+    adapter = GitHubWorkPacketAdapter(command_runner=_subprocess_runner)
+    _print_json(
+        plan_github_reconciled_readiness_file(
+            Path(args.graph), adapter.read_readiness_packet_fact
+        )
+    )
     return 0
 
 
