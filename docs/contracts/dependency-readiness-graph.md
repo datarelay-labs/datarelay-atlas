@@ -57,6 +57,13 @@ Selection reserves each node's resources immediately, so same-batch conflicts
 serialize deterministically. Independent nodes may be selected together only
 while explicit WIP slots remain.
 
+## Plan provenance
+
+Every output node preserves the input `repository`, `branch`, and exact `head`
+alongside `node_id` and `issue_number`. This keeps multi-repository plans
+attributable even when different repositories use the same issue number.
+Titles, issue bodies, source text, and conversation content are not emitted.
+
 ## Safety boundary
 
 Slice A is pure planning:
