@@ -1825,6 +1825,64 @@ def render_cycle_predecessor_complete_body(
     return updated.rstrip() + "\n"
 
 
+def render_readiness_packet_active_body(
+    body: str,
+    *,
+    repository: str,
+    branch: str,
+    head: str,
+) -> str:
+    """Activate one graph-selected queued packet without adding new metadata."""
+    raw = body or ""
+    if not raw.strip():
+        raise ValidationError("work packet body is empty")
+    _require_unique_managed_sections(raw)
+    meta = _parse_leading_packet_metadata(raw)
+    version_text = str(meta.get("PACKET_VERSION") or "").strip()
+    if not re.fullmatch(r"[1-9][0-9]{0,2}", version_text):
+        raise ValidationError(
+            "readiness activation PACKET_VERSION is invalid"
+        )
+    if int(version_text) < 2:
+        raise ValidationError(
+            "readiness activation requires PACKET_VERSION>=2"
+        )
+    _require_v2_packet_metadata(raw)
+    require_canonical_target_repo(
+        _packet_metadata_value(raw, "TARGET_REPO") or "",
+        repository,
+    )
+    workstream = str(meta.get("WORKSTREAM") or "").strip()
+    if not WORKSTREAM_RE.fullmatch(workstream):
+        raise ValidationError("readiness activation WORKSTREAM is invalid")
+    if _packet_metadata_value(raw, "STATUS") != "PAUSED":
+        raise ValidationError(
+            "readiness activation requires STATUS=PAUSED"
+        )
+    if _packet_metadata_value(raw, "QUEUE_STATE") != "QUEUED":
+        raise ValidationError(
+            "readiness activation requires QUEUE_STATE=QUEUED"
+        )
+    expected_branch = branch.strip()
+    if not expected_branch:
+        raise ValidationError("branch is required for readiness activation")
+    if _packet_metadata_value(raw, "BRANCH") != expected_branch:
+        raise ValidationError("readiness activation branch changed")
+
+    expected_head = head.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+        raise ValidationError("readiness activation head is invalid")
+    packet_head = str(
+        _packet_metadata_value(raw, "LAST_VERIFIED_HEAD") or ""
+    ).strip().lower()
+    if packet_head != expected_head:
+        raise ValidationError("readiness activation HEAD changed")
+
+    updated = _set_packet_metadata_line(raw, "STATUS", "ACTIVE")
+    updated = _set_packet_metadata_line(updated, "QUEUE_STATE", "NONE")
+    return updated
+
+
 def _split_cycle_transition(transition_id: str) -> tuple[int, str, str]:
     issue_text, separator, rest = (transition_id or "").partition(":")
     head, separator_2, event = rest.partition(":")
@@ -3056,8 +3114,23 @@ class GitHubWorkPacketAdapter:
         original_body: str,
         original_updated_at: str,
         new_body: str,
+        require_trusted_author: bool = False,
+        require_open_ai_work: bool = False,
     ) -> None:
         recheck = self._view_issue(repository, issue_number)
+        if require_open_ai_work:
+            recheck_number = recheck.get("number")
+            if (
+                isinstance(recheck_number, bool)
+                or not isinstance(recheck_number, int)
+                or recheck_number != int(issue_number)
+            ):
+                raise ValidationError(
+                    "work packet issue identity changed during mutation"
+                )
+            self._assert_ai_work_issue(recheck, issue_number=issue_number)
+        if require_trusted_author:
+            self._require_trusted_issue_author(repository, recheck)
         recheck_body = str(recheck.get("body") or "")
         recheck_updated_at = str(
             recheck.get("updatedAt") or recheck.get("updated_at") or ""
@@ -3842,6 +3915,15 @@ class GitHubWorkPacketAdapter:
         ):
             raise ValidationError("invalid issue_number for readiness fact")
         payload = self._view_issue(repo, issue_number)
+        payload_number = payload.get("number")
+        if (
+            isinstance(payload_number, bool)
+            or not isinstance(payload_number, int)
+            or payload_number != issue_number
+        ):
+            raise ValidationError(
+                "readiness packet issue identity mismatch"
+            )
         title = str(payload.get("title") or "")
         if not title.startswith("[AI Work]"):
             raise ValidationError(
@@ -3852,9 +3934,21 @@ class GitHubWorkPacketAdapter:
         if issue_state not in {"OPEN", "CLOSED"}:
             raise ValidationError("readiness packet GitHub state is invalid")
         body = str(payload.get("body") or "")
-        _require_v2_packet_metadata(body)
         meta = _parse_leading_packet_metadata(body)
+        version_text = str(meta.get("PACKET_VERSION") or "").strip()
+        if not re.fullmatch(r"[1-9][0-9]{0,2}", version_text):
+            raise ValidationError(
+                "readiness packet PACKET_VERSION is invalid"
+            )
+        if int(version_text) < 2:
+            raise ValidationError(
+                "readiness packet requires PACKET_VERSION>=2"
+            )
+        _require_v2_packet_metadata(body)
         require_canonical_target_repo(str(meta.get("TARGET_REPO") or ""), repo)
+        workstream = str(meta.get("WORKSTREAM") or "").strip()
+        if not WORKSTREAM_RE.fullmatch(workstream):
+            raise ValidationError("readiness packet WORKSTREAM is invalid")
 
         branch = str(meta.get("BRANCH") or "").strip()
         if (
@@ -3888,6 +3982,116 @@ class GitHubWorkPacketAdapter:
             "head": head,
             "packet_status": packet_status,
             "queue_state": queue_state,
+        }
+
+    def activate_authorized_readiness_packet(
+        self,
+        graph_path: Path,
+    ) -> dict[str, Any]:
+        """Authorize and CAS-activate exactly one graph-selected packet.
+
+        This performs the GitHub packet mutation only. It never starts or
+        resumes a worker/session.
+        """
+        from atlas.readiness_authorization import (
+            authorize_github_single_effect_file,
+        )
+
+        authorization = authorize_github_single_effect_file(
+            Path(graph_path),
+            self.read_readiness_packet_fact,
+        )
+        if authorization.get("decision") != "ALLOW":
+            return {
+                "action": "denied",
+                "authorization": authorization,
+            }
+
+        selected = authorization.get("selected_node")
+        if not isinstance(selected, dict) or set(selected) != {
+            "node_id",
+            "repository",
+            "issue_number",
+            "branch",
+            "head",
+        }:
+            raise ValidationError(
+                "readiness activation authorization selection is invalid"
+            )
+        repo = normalize_github_repository(str(selected["repository"]))
+        issue_number = selected["issue_number"]
+        if (
+            isinstance(issue_number, bool)
+            or not isinstance(issue_number, int)
+            or issue_number < 1
+        ):
+            raise ValidationError(
+                "readiness activation authorization issue_number is invalid"
+            )
+        branch = str(selected["branch"])
+        head = str(selected["head"]).lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", head):
+            raise ValidationError(
+                "readiness activation authorization head is invalid"
+            )
+
+        expected_queued_fact = {
+            "repository": repo,
+            "issue_number": issue_number,
+            "branch": branch,
+            "head": head,
+            "packet_status": "PAUSED",
+            "queue_state": "QUEUED",
+        }
+        if self.read_readiness_packet_fact(repo, issue_number) != expected_queued_fact:
+            raise ValidationError(
+                "readiness selected packet changed before activation"
+            )
+
+        payload = self._view_issue(repo, issue_number)
+        payload_number = payload.get("number")
+        if (
+            isinstance(payload_number, bool)
+            or not isinstance(payload_number, int)
+            or payload_number != issue_number
+        ):
+            raise ValidationError(
+                "readiness activation issue identity changed"
+            )
+        self._assert_ai_work_issue(payload, issue_number=issue_number)
+        self._require_trusted_issue_author(repo, payload)
+        original_body = str(payload.get("body") or "")
+        original_updated_at = str(
+            payload.get("updatedAt") or payload.get("updated_at") or ""
+        )
+        new_body = render_readiness_packet_active_body(
+            original_body,
+            repository=repo,
+            branch=branch,
+            head=head,
+        )
+        self._cas_replace_issue_body(
+            repo,
+            issue_number,
+            original_body=original_body,
+            original_updated_at=original_updated_at,
+            new_body=new_body,
+            require_trusted_author=True,
+            require_open_ai_work=True,
+        )
+
+        expected_active_fact = dict(expected_queued_fact)
+        expected_active_fact["packet_status"] = "ACTIVE"
+        expected_active_fact["queue_state"] = "NONE"
+        if self.read_readiness_packet_fact(repo, issue_number) != expected_active_fact:
+            raise ValidationError(
+                "readiness packet activation was not confirmed"
+            )
+
+        return {
+            "action": "activated",
+            "plan_digest": authorization.get("plan_digest"),
+            "selected_node": dict(selected),
         }
 
     def _scan_trusted_active_packets(

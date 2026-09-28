@@ -73,10 +73,35 @@ PYTHONPATH=. python3 -m atlas readiness github-authorize --graph graph.json
 This command is read-only. It does not activate, resume, stop, dispatch, edit,
 or otherwise mutate the selected work.
 
+## Authorized GitHub activation
+
+The library-level activation primitive is the first effect boundary. It is not
+exposed as a mutation CLI in this slice.
+
+Before editing GitHub it recomputes this authorization, then re-reads the
+selected canonical packet and requires all of the following again:
+
+- trusted `[AI Work]` author and `PACKET_VERSION>=2`;
+- canonical `TARGET_REPO` and valid `WORKSTREAM`;
+- exact repository, issue number, branch, and 40-hex HEAD;
+- `STATUS=PAUSED` and `QUEUE_STATE=QUEUED`.
+
+The mutation is best-effort CAS-protected using the existing issue body and
+`updatedAt` recheck immediately before edit, with issue-number identity, OPEN
+`[AI Work]` state, and author trust checked again at that boundary. It changes
+only the two lifecycle metadata fields to
+`STATUS=ACTIVE` and `QUEUE_STATE=NONE`, adds no new Work Packet metadata,
+and then performs a fresh canonical read to confirm the landed state.
+
+GitHub Issues do not provide a conditional body update primitive through the
+current `gh issue edit` path, so a residual server-side race remains between
+the final recheck and the edit. This slice therefore does not dispatch a worker
+and does not treat activation as replayable authority.
+
 ## Non-goals
 
 - multi-worker effect authorization (#58);
-- automatic activation or dispatch;
+- a public mutation CLI or automatic worker dispatch;
 - stored/replayable capability tokens;
 - provider/model routing;
 - quota or billing inference;

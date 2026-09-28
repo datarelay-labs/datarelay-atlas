@@ -53,11 +53,13 @@ class FakeGitHubRunner:
         state: str = "OPEN",
         title: str = "[AI Work] readiness",
         permission: str = "write",
+        issue_number: int | None = None,
     ) -> None:
         self.body = body
         self.state = state
         self.title = title
         self.permission = permission
+        self.issue_number = issue_number
         self.calls: list[list[str]] = []
 
     def __call__(
@@ -66,7 +68,11 @@ class FakeGitHubRunner:
         self.calls.append(list(argv))
         if argv[:3] == ["gh", "issue", "view"]:
             payload = {
-                "number": int(argv[3]),
+                "number": (
+                    int(argv[3])
+                    if self.issue_number is None
+                    else self.issue_number
+                ),
                 "title": self.title,
                 "state": self.state,
                 "body": self.body,
@@ -190,6 +196,14 @@ class GitHubReadinessFactTests(unittest.TestCase):
             untrusted.read_readiness_packet_fact(REPO, 98)
 
     def test_non_packet_and_malformed_identity_fail_closed(self) -> None:
+        mismatched_issue = GitHubWorkPacketAdapter(
+            command_runner=FakeGitHubRunner(
+                body=packet_body(), issue_number=99
+            )
+        )
+        with self.assertRaises(ValidationError):
+            mismatched_issue.read_readiness_packet_fact(REPO, 98)
+
         bad_title = GitHubWorkPacketAdapter(
             command_runner=FakeGitHubRunner(
                 body=packet_body(), title="ordinary issue"
@@ -223,6 +237,26 @@ class GitHubReadinessFactTests(unittest.TestCase):
         )
         with self.assertRaises(ValidationError):
             lowercase_queue.read_readiness_packet_fact(REPO, 98)
+
+        legacy_packet = GitHubWorkPacketAdapter(
+            command_runner=FakeGitHubRunner(
+                body=packet_body().replace("PACKET_VERSION=2\n", "", 1)
+            )
+        )
+        with self.assertRaises(ValidationError):
+            legacy_packet.read_readiness_packet_fact(REPO, 98)
+
+        invalid_workstream = GitHubWorkPacketAdapter(
+            command_runner=FakeGitHubRunner(
+                body=packet_body().replace(
+                    "WORKSTREAM=readiness-test",
+                    "WORKSTREAM=invalid workstream",
+                    1,
+                )
+            )
+        )
+        with self.assertRaises(ValidationError):
+            invalid_workstream.read_readiness_packet_fact(REPO, 98)
 
 
 class GitHubReadinessReconciliationTests(unittest.TestCase):

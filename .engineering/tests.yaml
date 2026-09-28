@@ -89,6 +89,7 @@ scenarios:
       - "Cursor usage Phase 0 inventory classifies workers without retaining prompts and summarizes usage CSV fixtures"
       - "dependency/readiness graph planning is deterministic, fail-closed, resource/WIP gated, and read-only"
       - "single-effect authorization requires max_wip=1, stable double GitHub reconciliation, exactly one selected node, and remains read-only"
+      - "authorized readiness activation reauthorizes at the effect boundary and CAS-transitions only trusted PAUSED+QUEUED packets to ACTIVE+NONE without dispatch"
     release_gate: true
 
   - id: ATLAS-INDEPENDENCE-001
