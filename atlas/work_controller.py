@@ -1554,6 +1554,36 @@ def _target_repo_matches(target: str, repository: str) -> bool:
     return True
 
 
+def _active_repository_disposition(
+    body: str,
+    *,
+    repository: str,
+) -> str:
+    """Classify an open packet as ACTIVE for one repository.
+
+    Malformed metadata that still visibly carries STATUS=ACTIVE and the same
+    canonical TARGET_REPO is unclassifiable and must fail closed for trusted
+    authors.
+    """
+    try:
+        meta = _parse_leading_packet_metadata(body)
+    except ValidationError:
+        grouped = _leading_metadata_groups(body)
+        if "ACTIVE" not in grouped.get("STATUS", []):
+            return "other"
+        if not any(
+            _target_repo_matches(target, repository)
+            for target in grouped.get("TARGET_REPO", [])
+        ):
+            return "other"
+        return "unclassifiable"
+    if meta.get("STATUS") != "ACTIVE":
+        return "other"
+    if not _target_repo_matches(meta.get("TARGET_REPO") or "", repository):
+        return "other"
+    return "match"
+
+
 def _active_workstream_disposition(
     body: str,
     *,
@@ -3116,6 +3146,7 @@ class GitHubWorkPacketAdapter:
         new_body: str,
         require_trusted_author: bool = False,
         require_open_ai_work: bool = False,
+        before_edit: Callable[[], None] | None = None,
     ) -> None:
         recheck = self._view_issue(repository, issue_number)
         if require_open_ai_work:
@@ -3143,6 +3174,8 @@ class GitHubWorkPacketAdapter:
             raise ValidationError(
                 "work packet changed during mutation; refusing overwrite"
             )
+        if before_edit is not None:
+            before_edit()
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -3818,6 +3851,50 @@ class GitHubWorkPacketAdapter:
             return False
         return True
 
+    def _trusted_repository_active_issue_numbers(
+        self,
+        repository: str,
+    ) -> list[int]:
+        """Return trusted ACTIVE issue numbers for one repository.
+
+        Trusted malformed ACTIVE-looking packets fail closed instead of being
+        excluded from occupancy.
+        """
+        repo = normalize_github_repository(repository)
+        active: list[int] = []
+        for issue in self._list_open_ai_work_issues(repo):
+            disposition = _active_repository_disposition(
+                str(issue.get("body") or ""),
+                repository=repo,
+            )
+            if disposition == "other":
+                continue
+            number = issue.get("number")
+            if (
+                isinstance(number, bool)
+                or not isinstance(number, int)
+                or number < 1
+            ):
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: candidate issue number invalid"
+                )
+            number_i = number
+            try:
+                trust = self._lookup_author_trust(repo, issue)
+            except ValidationError as exc:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                    f"candidate #{number_i} unverifiable ({exc})"
+                ) from exc
+            if trust != "trusted":
+                continue
+            if disposition == "unclassifiable":
+                raise ValidationError(
+                    f"trusted ACTIVE packet #{number_i} is malformed"
+                )
+            active.append(number_i)
+        return sorted(active)
+
     def discover_trusted_active_packets(self, repository: str) -> list[dict[str, Any]]:
         """Trusted ACTIVE packets for one repository. Branch is derived, not supplied.
 
@@ -3996,6 +4073,7 @@ class GitHubWorkPacketAdapter:
         from atlas.readiness_authorization import (
             authorize_github_single_effect_file,
         )
+        from atlas.readiness_graph import load_readiness_graph
 
         authorization = authorize_github_single_effect_file(
             Path(graph_path),
@@ -4035,6 +4113,24 @@ class GitHubWorkPacketAdapter:
                 "readiness activation authorization head is invalid"
             )
 
+        current_max_wip, graph_nodes = load_readiness_graph(Path(graph_path))
+        if current_max_wip != 1:
+            raise ValidationError(
+                "readiness activation graph max_wip changed"
+            )
+        graph_index = {node.node_id: node for node in graph_nodes}
+        selected_graph_node = graph_index.get(str(selected["node_id"]))
+        if (
+            selected_graph_node is None
+            or selected_graph_node.repository != repo
+            or selected_graph_node.issue_number != issue_number
+            or selected_graph_node.branch != branch
+            or selected_graph_node.head != head
+        ):
+            raise ValidationError(
+                "readiness activation selected graph node changed"
+            )
+
         expected_queued_fact = {
             "repository": repo,
             "issue_number": issue_number,
@@ -4064,12 +4160,87 @@ class GitHubWorkPacketAdapter:
         original_updated_at = str(
             payload.get("updatedAt") or payload.get("updated_at") or ""
         )
+        selected_meta = _parse_leading_packet_metadata(original_body)
+        canonical_after_issue = _after_issue_number(
+            selected_meta.get("AFTER_ISSUE")
+        )
+        if canonical_after_issue is None:
+            raise ValidationError(
+                "readiness activation canonical AFTER_ISSUE is invalid"
+            )
+        predecessor_matches = []
+        for dependency in selected_graph_node.dependencies:
+            if dependency.relation != "REQUIRES_COMPLETE":
+                continue
+            predecessor = graph_index.get(dependency.node_id)
+            if (
+                predecessor is not None
+                and predecessor.repository == repo
+                and predecessor.issue_number == canonical_after_issue
+            ):
+                predecessor_matches.append(predecessor)
+        if len(predecessor_matches) != 1:
+            raise ValidationError(
+                "readiness activation graph omits canonical predecessor"
+            )
+        predecessor = predecessor_matches[0]
+        expected_predecessor_fact = {
+            "repository": repo,
+            "issue_number": canonical_after_issue,
+            "branch": predecessor.branch,
+            "head": predecessor.head,
+            "packet_status": "COMPLETE",
+            "queue_state": "NONE",
+        }
+        if (
+            self.read_readiness_packet_fact(repo, canonical_after_issue)
+            != expected_predecessor_fact
+        ):
+            raise ValidationError(
+                "readiness activation canonical predecessor is not complete"
+            )
+        active_issues = self._trusted_repository_active_issue_numbers(repo)
+        if active_issues:
+            listed = ", ".join(
+                f"#{number}" for number in active_issues[:20]
+            )
+            raise ValidationError(
+                "readiness activation repository already has trusted ACTIVE "
+                f"packet(s): {listed}"
+            )
         new_body = render_readiness_packet_active_body(
             original_body,
             repository=repo,
             branch=branch,
             head=head,
         )
+
+        def _assert_pre_edit_readiness() -> None:
+            repeated = authorize_github_single_effect_file(
+                Path(graph_path),
+                self.read_readiness_packet_fact,
+            )
+            if repeated != authorization or repeated.get("decision") != "ALLOW":
+                raise ValidationError(
+                    "readiness authorization changed before activation edit"
+                )
+            if (
+                self.read_readiness_packet_fact(repo, canonical_after_issue)
+                != expected_predecessor_fact
+            ):
+                raise ValidationError(
+                    "readiness activation canonical predecessor changed before edit"
+                )
+            refreshed_active = self._trusted_repository_active_issue_numbers(repo)
+            if refreshed_active:
+                listed = ", ".join(
+                    f"#{number}" for number in refreshed_active[:20]
+                )
+                raise ValidationError(
+                    "readiness activation repository became ACTIVE before edit: "
+                    f"{listed}"
+                )
+
         self._cas_replace_issue_body(
             repo,
             issue_number,
@@ -4078,6 +4249,7 @@ class GitHubWorkPacketAdapter:
             new_body=new_body,
             require_trusted_author=True,
             require_open_ai_work=True,
+            before_edit=_assert_pre_edit_readiness,
         )
 
         expected_active_fact = dict(expected_queued_fact)
@@ -4086,6 +4258,22 @@ class GitHubWorkPacketAdapter:
         if self.read_readiness_packet_fact(repo, issue_number) != expected_active_fact:
             raise ValidationError(
                 "readiness packet activation was not confirmed"
+            )
+        if (
+            self.read_readiness_packet_fact(repo, canonical_after_issue)
+            != expected_predecessor_fact
+        ):
+            raise ValidationError(
+                "readiness activation predecessor changed after edit"
+            )
+        landed_active = self._trusted_repository_active_issue_numbers(repo)
+        if landed_active != [issue_number]:
+            listed = ", ".join(
+                f"#{number}" for number in landed_active[:20]
+            ) or "none"
+            raise ValidationError(
+                "readiness activation post-write ACTIVE occupancy is not unique: "
+                f"{listed}"
             )
 
         return {
