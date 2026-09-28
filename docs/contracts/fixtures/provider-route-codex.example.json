@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "kind": "provider_route_candidate",
+  "route_id": "codex-primary",
+  "capability_descriptor": {
+    "schema_version": 1,
+    "kind": "provider_capability_descriptor",
+    "provider": "codex",
+    "runtime": "codex_cli",
+    "usage_mode": "chatgpt_plan",
+    "adapter": "CodexAuditProvider",
+    "capabilities": [
+      {
+        "name": "CODE_REVIEW",
+        "status": "SUPPORTED",
+        "result_contract": "audit_result_v1"
+      }
+    ],
+    "authority": "EVIDENCE_ONLY"
+  },
+  "capacity_input": {
+    "schema_version": 1,
+    "kind": "provider_capacity_input",
+    "provider": "codex",
+    "scope": "ACCOUNT_AGGREGATE",
+    "evidence": {
+      "source_kind": "synthetic_test",
+      "window_start": "2026-09-28T00:00:00Z",
+      "window_end": "2026-09-28T00:00:00Z",
+      "event_count": 1,
+      "total_tokens": 1
+    },
+    "signals": {
+      "remaining_capacity": {
+        "status": "OBSERVED",
+        "value": "100",
+        "unit": "credits"
+      },
+      "reset_at": { "status": "UNKNOWN" },
+      "capacity_pool": { "status": "UNKNOWN" },
+      "active_inference_wip": {
+        "status": "OBSERVED",
+        "value": 0
+      }
+    }
+  },
+  "gates": {
+    "policy": "ALLOW",
+    "trust": "ALLOW",
+    "budget": "ALLOW",
+    "usage_mode": "ALLOW",
+    "blast_radius": "ALLOW",
+    "wip": "ALLOW"
+  },
+  "ranks": {
+    "capability_preference": 0,
+    "stewardship_preference": 10
+  }
+}

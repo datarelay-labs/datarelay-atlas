@@ -94,6 +94,23 @@ class ProviderCapacityContractTests(unittest.TestCase):
         }
         with self.assertRaises(ValidationError):
             validate_provider_capacity_input(payload)
+
+    def test_non_integer_schema_versions_fail_closed(self):
+        payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+        for value in (True, 1.0, "1", 2):
+            broken = deepcopy(payload)
+            broken["schema_version"] = value
+            with self.subTest(runtime_schema_version=value):
+                with self.assertRaises(ValidationError):
+                    validate_provider_capacity_input(broken)
+        for value in (True, "1", 2):
+            broken = deepcopy(payload)
+            broken["schema_version"] = value
+            with self.subTest(json_schema_version=value):
+                with self.assertRaises(JsonSchemaValidationError):
+                    Draft202012Validator(schema).validate(broken)
+
     def test_scope_and_observation_window_fail_closed(self):
         payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
 
