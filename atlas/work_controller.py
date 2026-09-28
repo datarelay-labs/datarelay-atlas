@@ -3976,6 +3976,61 @@ class GitHubWorkPacketAdapter:
             ),
         }
 
+    def reread_trusted_active_readiness_packet(
+        self, repository: str, issue_number: int
+    ) -> dict[str, Any]:
+        """Strict single-view ACTIVE+NONE fact for graph-driven dispatch."""
+        repo = normalize_github_repository(repository)
+        number = int(issue_number)
+        payload = self._view_issue(repo, number)
+        payload_number = payload.get("number")
+        if (
+            isinstance(payload_number, bool)
+            or not isinstance(payload_number, int)
+            or payload_number != number
+        ):
+            raise ValidationError("canonical readiness packet issue identity mismatch")
+        self._assert_ai_work_issue(payload, issue_number=number)
+        self._require_trusted_issue_author(repo, payload)
+        body = str(payload.get("body") or "")
+        meta = _parse_leading_packet_metadata(body)
+        version_text = str(meta.get("PACKET_VERSION") or "").strip()
+        if not re.fullmatch(r"[1-9][0-9]{0,2}", version_text):
+            raise ValidationError("canonical readiness PACKET_VERSION is invalid")
+        if int(version_text) < 2:
+            raise ValidationError("canonical readiness packet requires PACKET_VERSION>=2")
+        _require_v2_packet_metadata(body)
+        if meta.get("STATUS") != "ACTIVE":
+            raise ValidationError("canonical readiness packet is not ACTIVE")
+        if str(meta.get("QUEUE_STATE") or "NONE").strip() != "NONE":
+            raise ValidationError(
+                "canonical readiness ACTIVE packet must have QUEUE_STATE=NONE"
+            )
+        require_canonical_target_repo(str(meta.get("TARGET_REPO") or ""), repo)
+        branch = str(meta.get("BRANCH") or "").strip()
+        workstream = str(meta.get("WORKSTREAM") or "").strip()
+        head_raw = str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower()
+        if (
+            not _valid_git_branch_ref(branch)
+            or not WORKSTREAM_RE.fullmatch(workstream)
+            or not re.fullmatch(r"[0-9a-f]{40}", head_raw)
+        ):
+            raise ValidationError(
+                "canonical readiness packet has invalid branch, workstream, or head"
+            )
+        return {
+            "repository": repo,
+            "issue_number": number,
+            "branch": branch,
+            "workstream": workstream,
+            "head": head_raw,
+            "status": "ACTIVE",
+            "queue_state": "NONE",
+            "updated_at": str(
+                payload.get("updatedAt") or payload.get("updated_at") or ""
+            ),
+        }
+
     def read_readiness_packet_fact(
         self, repository: str, issue_number: int
     ) -> dict[str, Any]:
