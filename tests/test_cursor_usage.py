@@ -9,17 +9,20 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
+from unittest.mock import patch
 
 from atlas.cli import build_parser, main
 from atlas.cursor_usage import (
     GitIdentity,
     PacketFact,
     ProcessFact,
+    build_github_reconciliation_snapshot,
     build_report,
     canonical_workspace,
     classify_workers,
     collect_process_facts,
     load_context_advice,
+    load_github_reconciliation_snapshot,
     load_packet_facts,
     load_worker_snapshot,
     parse_usage_csv,
@@ -937,6 +940,280 @@ class CursorUsageSnapshotTests(unittest.TestCase):
                 "returned_count": 2,
             },
         )
+
+
+
+class CursorUsageGitHubSnapshotTests(unittest.TestCase):
+    class _Adapter:
+        def read_packet_observations(self, repository: str) -> list[dict]:
+            return [
+                {
+                    "repository": repository,
+                    "issue_number": 78,
+                    "issue_state": "OPEN",
+                    "issue_updated_at": "2026-09-28T00:00:00Z",
+                    "author_trust": "trusted",
+                    "packet_status": "COMPLETE",
+                    "branch": "feature/cursor-usage-phase0-worker-inventory",
+                    "head": HEAD,
+                    "pr_number": 79,
+                    "pr_state": "MERGED",
+                    "pr_head": HEAD,
+                    "canonical_fact": True,
+                    "reasons": [],
+                }
+            ]
+
+    def _snapshot_path(self) -> Path:
+        payload = build_github_reconciliation_snapshot(
+            ["datarelay-labs/datarelay-atlas"],
+            adapter=self._Adapter(),
+        )
+        path = _write_csv("")
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_github_snapshot_round_trip_is_content_free_and_exact(self):
+        path = self._snapshot_path()
+        facts, observations, metadata = load_github_reconciliation_snapshot(path)
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0].status, "COMPLETE")
+        self.assertEqual(facts[0].head, HEAD)
+        self.assertEqual(observations[0]["pr_state"], "MERGED")
+        self.assertEqual(
+            metadata["repositories"], ["datarelay-labs/datarelay-atlas"]
+        )
+        encoded = path.read_text(encoding="utf-8")
+        self.assertNotIn("body", encoded)
+        self.assertNotIn("title", encoded)
+        self.assertNotIn(SECRET, encoded)
+
+    def test_github_snapshot_rejects_raw_content_summary_drift_and_bad_canonical(self):
+        path = self._snapshot_path()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+
+        payload["prompt"] = SECRET
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaises(ValidationError):
+            load_github_reconciliation_snapshot(path)
+
+        payload.pop("prompt")
+        payload["summary"]["canonical_count"] = 0
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaises(ValidationError):
+            load_github_reconciliation_snapshot(path)
+
+        payload["summary"]["canonical_count"] = 1
+        payload["observations"][0]["author_trust"] = "untrusted"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaises(ValidationError):
+            load_github_reconciliation_snapshot(path)
+
+    def test_canonical_snapshot_recomputes_pr_and_head_consistency(self):
+        path = self._snapshot_path()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        row = payload["observations"][0]
+
+        row["packet_status"] = "ACTIVE"
+        row["pr_state"] = "MERGED"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaises(ValidationError):
+            load_github_reconciliation_snapshot(path)
+
+        payload = json.loads(self._snapshot_path().read_text(encoding="utf-8"))
+        payload["observations"][0]["pr_head"] = "b" * 40
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaises(ValidationError):
+            load_github_reconciliation_snapshot(path)
+
+    def test_noncanonical_legacy_status_round_trips_but_cannot_be_canonical(self):
+        path = self._snapshot_path()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        row = payload["observations"][0]
+        row["packet_status"] = "QUEUED"
+        row["canonical_fact"] = False
+        row["reasons"] = ["NONCANONICAL_STATUS"]
+        payload["summary"] = {
+            "observed_count": 1,
+            "canonical_count": 0,
+            "noncanonical_count": 1,
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        facts, observations, _ = load_github_reconciliation_snapshot(path)
+        self.assertEqual(facts, [])
+        self.assertEqual(observations[0]["packet_status"], "QUEUED")
+
+        row["canonical_fact"] = True
+        row["reasons"] = []
+        payload["summary"] = {
+            "observed_count": 1,
+            "canonical_count": 1,
+            "noncanonical_count": 0,
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaises(ValidationError):
+            load_github_reconciliation_snapshot(path)
+
+    def test_declared_repository_without_canonical_facts_clears_stale_lifecycle(self):
+        worker = CursorUsageSnapshotTests()._worker(state="TERMINAL_WORK_SURVIVOR")
+        worker["packet_status"] = "COMPLETE"
+        worker_path = CursorUsageSnapshotTests()._snapshot(worker)
+
+        github_path = _write_csv("")
+        github_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "cursor_github_reconciliation",
+                    "observed_at": "2026-09-28T00:00:00Z",
+                    "repositories": ["datarelay-labs/datarelay-atlas"],
+                    "observations": [],
+                    "summary": {
+                        "observed_count": 0,
+                        "canonical_count": 0,
+                        "noncanonical_count": 0,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            patch(
+                "atlas.cli.live_sessions",
+                side_effect=AssertionError("local worker discovery was invoked"),
+            ),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            rc = main(
+                [
+                    "usage",
+                    "report",
+                    "--no-local-workers",
+                    "--worker-snapshot",
+                    str(worker_path),
+                    "--github-snapshot",
+                    str(github_path),
+                ]
+            )
+        self.assertEqual(rc, 0, stderr.getvalue())
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(report["workers"][0]["state"], "IDLE_REUSABLE")
+        self.assertIsNone(report["workers"][0]["packet_status"])
+        self.assertEqual(report["github_snapshot"]["canonical_count"], 0)
+
+    def test_central_mode_uses_snapshots_without_local_agent_discovery(self):
+        worker = CursorUsageSnapshotTests()._worker()
+        worker_path = CursorUsageSnapshotTests()._snapshot(worker)
+        github_path = self._snapshot_path()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            patch(
+                "atlas.cli.live_sessions",
+                side_effect=AssertionError("local worker discovery was invoked"),
+            ),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            rc = main(
+                [
+                    "usage",
+                    "report",
+                    "--no-local-workers",
+                    "--worker-snapshot",
+                    str(worker_path),
+                    "--github-snapshot",
+                    str(github_path),
+                ]
+            )
+        self.assertEqual(rc, 0, stderr.getvalue())
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(len(report["workers"]), 1)
+        self.assertEqual(report["workers"][0]["state"], "TERMINAL_WORK_SURVIVOR")
+        self.assertEqual(report["workers"][0]["packet_status"], "COMPLETE")
+        self.assertEqual(
+            report["github_snapshot"]["repositories"],
+            ["datarelay-labs/datarelay-atlas"],
+        )
+        self.assertEqual(report["github_snapshot"]["canonical_count"], 1)
+        self.assertEqual(report["advisor"]["recommendation"], "HUMAN_REQUIRED")
+
+    def test_central_mode_requires_snapshot_and_rejects_local_host_id(self):
+        stderr = io.StringIO()
+        with (
+            patch(
+                "atlas.cli.live_sessions",
+                side_effect=AssertionError("local worker discovery was invoked"),
+            ),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(
+                main(["usage", "report", "--no-local-workers"]),
+                1,
+            )
+        self.assertIn("requires at least one --worker-snapshot", stderr.getvalue())
+
+        worker_path = CursorUsageSnapshotTests()._snapshot(
+            CursorUsageSnapshotTests()._worker()
+        )
+        stderr = io.StringIO()
+        with (
+            patch(
+                "atlas.cli.live_sessions",
+                side_effect=AssertionError("local worker discovery was invoked"),
+            ),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(
+                main(
+                    [
+                        "usage",
+                        "report",
+                        "--no-local-workers",
+                        "--host-id",
+                        "prod-atlas",
+                        "--worker-snapshot",
+                        str(worker_path),
+                    ]
+                ),
+                1,
+            )
+        self.assertIn("--host-id is invalid", stderr.getvalue())
+
+    def test_parser_exposes_github_snapshot_export_and_import(self):
+        export = build_parser().parse_args(
+            [
+                "usage",
+                "github-snapshot",
+                "--repository",
+                "datarelay-labs/datarelay-atlas",
+                "--repository",
+                "datarelay-labs/engineering-system",
+            ]
+        )
+        self.assertEqual(
+            export.repository,
+            [
+                "datarelay-labs/datarelay-atlas",
+                "datarelay-labs/engineering-system",
+            ],
+        )
+        report = build_parser().parse_args(
+            [
+                "usage",
+                "report",
+                "--no-local-workers",
+                "--worker-snapshot",
+                "/tmp/dev-atlas.json",
+                "--github-snapshot",
+                "/tmp/github.json",
+            ]
+        )
+        self.assertTrue(report.no_local_workers)
+        self.assertEqual(report.github_snapshot, "/tmp/github.json")
 
 
 class CursorUsageContextTests(unittest.TestCase):

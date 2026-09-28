@@ -32,12 +32,14 @@ from atlas.audit_disposition import run_completed_audit_disposition
 from atlas.final_audit import AuditBudget, BoundedResponsesAuditProvider
 from atlas.cursor_usage import (
     assert_content_free,
+    build_github_reconciliation_snapshot,
     build_report,
     collect_github_packet_observations,
     collect_process_facts,
     identities_for_workspaces,
     live_sessions,
     load_context_advice,
+    load_github_reconciliation_snapshot,
     load_packet_facts,
     load_worker_snapshot,
     parse_usage_csv,
@@ -984,6 +986,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bounded source host label for exporting a worker snapshot.",
     )
     usage_inventory.set_defaults(func=cmd_usage_inventory)
+    usage_github_snapshot = usage_sub.add_parser(
+        "github-snapshot",
+        help="Export bounded content-free GitHub lifecycle facts for central reporting",
+    )
+    usage_github_snapshot.add_argument(
+        "--repository",
+        action="append",
+        required=True,
+        help="Repository to reconcile; may be repeated.",
+    )
+    usage_github_snapshot.set_defaults(func=cmd_usage_github_snapshot)
     usage_summarize = usage_sub.add_parser(
         "summarize",
         help="Summarize one Cursor Usage Events CSV",
@@ -1022,6 +1035,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Content-free host inventory JSON to aggregate; may be repeated.",
+    )
+    usage_report.add_argument(
+        "--github-snapshot",
+        default=None,
+        help="Bounded content-free GitHub reconciliation JSON from an authenticated host.",
+    )
+    usage_report.add_argument(
+        "--no-local-workers",
+        action="store_true",
+        help="Central mode: do not require local agent/process discovery; use worker snapshots only.",
     )
     usage_report.set_defaults(func=cmd_usage_report)
 
@@ -1085,39 +1108,65 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _usage_inputs(args: argparse.Namespace, *, kind: str) -> dict:
-    sessions = live_sessions()
-    processes = collect_process_facts(
-        known_session_ids={session.session_id for session in sessions}
-    )
-    identities = identities_for_workspaces(
-        workspace
-        for workspace in (session.workspace for session in sessions)
-        if workspace
-    )
+    no_local_workers = bool(getattr(args, "no_local_workers", False))
+    local_host_id = getattr(args, "host_id", None)
+    worker_snapshot_paths = list(getattr(args, "worker_snapshot", []) or [])
+    if no_local_workers:
+        if local_host_id is not None:
+            raise ValidationError("--host-id is invalid with --no-local-workers")
+        if not worker_snapshot_paths:
+            raise ValidationError(
+                "--no-local-workers requires at least one --worker-snapshot"
+            )
+        sessions = []
+        processes = []
+        identities = {}
+    else:
+        sessions = live_sessions()
+        processes = collect_process_facts(
+            known_session_ids={session.session_id for session in sessions}
+        )
+        identities = identities_for_workspaces(
+            workspace
+            for workspace in (session.workspace for session in sessions)
+            if workspace
+        )
+
     imported_workers: list[dict] = []
     snapshot_summaries: list[dict] = []
     seen_snapshot_hosts: set[str] = set()
-    for snapshot_path in list(getattr(args, "worker_snapshot", []) or []):
+    for snapshot_path in worker_snapshot_paths:
         snapshot_workers, snapshot_summary = load_worker_snapshot(
             Path(snapshot_path)
         )
-        host_id = str(snapshot_summary["host_id"])
-        if host_id in seen_snapshot_hosts:
-            raise ValidationError(f"duplicate worker snapshot host_id: {host_id}")
-        seen_snapshot_hosts.add(host_id)
+        snapshot_host_id = str(snapshot_summary["host_id"])
+        if snapshot_host_id in seen_snapshot_hosts:
+            raise ValidationError(
+                f"duplicate worker snapshot host_id: {snapshot_host_id}"
+            )
+        seen_snapshot_hosts.add(snapshot_host_id)
         imported_workers.extend(snapshot_workers)
         snapshot_summaries.append(snapshot_summary)
 
     packet_path = getattr(args, "packet_facts", None)
     github_reconcile = bool(getattr(args, "github_reconcile", False))
+    github_snapshot_path = getattr(args, "github_snapshot", None)
     requested_repositories = list(getattr(args, "repository", []) or [])
-    if packet_path and github_reconcile:
+    authority_inputs = sum(
+        bool(value)
+        for value in (packet_path, github_reconcile, github_snapshot_path)
+    )
+    if authority_inputs > 1:
         raise ValidationError(
-            "--packet-facts and --github-reconcile are mutually exclusive"
+            "--packet-facts, --github-reconcile, and --github-snapshot "
+            "are mutually exclusive"
         )
     if requested_repositories and not github_reconcile:
         raise ValidationError("--repository requires --github-reconcile")
+
     packet_observations = None
+    github_snapshot_summary = None
+    reconciled_repositories = None
     if github_reconcile:
         repositories = {
             identity.repository
@@ -1130,9 +1179,17 @@ def _usage_inputs(args: argparse.Namespace, *, kind: str) -> dict:
             if isinstance(worker.get("repository"), str)
         )
         repositories.update(requested_repositories)
+        reconciled_repositories = sorted(repositories)
         packets, packet_observations = collect_github_packet_observations(
-            sorted(repositories)
+            reconciled_repositories
         )
+    elif github_snapshot_path:
+        (
+            packets,
+            packet_observations,
+            github_snapshot_summary,
+        ) = load_github_reconciliation_snapshot(Path(github_snapshot_path))
+        reconciled_repositories = list(github_snapshot_summary["repositories"])
     else:
         packets = load_packet_facts(Path(packet_path)) if packet_path else None
 
@@ -1150,15 +1207,16 @@ def _usage_inputs(args: argparse.Namespace, *, kind: str) -> dict:
         summary,
         packet_observations=packet_observations,
         context_advice=context_advice,
-        local_host_id=getattr(args, "host_id", None),
+        local_host_id=local_host_id,
         imported_workers=imported_workers,
         snapshot_summaries=snapshot_summaries,
+        github_snapshot_summary=github_snapshot_summary,
+        reconciled_repositories=reconciled_repositories,
     )
     report["kind"] = kind
     report["observed_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    host_id = getattr(args, "host_id", None)
-    if host_id is not None:
-        report["host_id"] = host_id
+    if local_host_id is not None:
+        report["host_id"] = local_host_id
     if kind == "cursor_worker_inventory":
         report.pop("usage", None)
         if report.get("context_epoch") is None:
@@ -1169,12 +1227,19 @@ def _usage_inputs(args: argparse.Namespace, *, kind: str) -> dict:
         report.pop("reconciliation_summary", None)
     if not report.get("snapshots"):
         report.pop("snapshots", None)
+    if report.get("github_snapshot") is None:
+        report.pop("github_snapshot", None)
     assert_content_free(report)
     return report
 
 
 def cmd_usage_inventory(args: argparse.Namespace) -> int:
     _print_json(_usage_inputs(args, kind="cursor_worker_inventory"))
+    return 0
+
+
+def cmd_usage_github_snapshot(args: argparse.Namespace) -> int:
+    _print_json(build_github_reconciliation_snapshot(args.repository))
     return 0
 
 

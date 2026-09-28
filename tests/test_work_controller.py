@@ -1072,6 +1072,62 @@ class GitHubPacketObservationTests(unittest.TestCase):
         self.assertEqual(row["pr_state"], "NONE")
         self.assertIsNone(row["pr_head"])
 
+    def test_paginated_api_falls_back_when_gh_does_not_support_slurp(self):
+        calls: list[list[str]] = []
+
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            del cwd
+            calls.append(list(argv))
+            if "--slurp" in argv:
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    "",
+                    "unknown flag: --slurp",
+                )
+            if argv[:3] == ["gh", "api", "--paginate"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    '[{"number":1}]\n[{"number":2}]\n',
+                    "",
+                )
+            return subprocess.CompletedProcess(argv, 1, "", "unexpected")
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        rows = adapter._run_paginated_api(
+            "repos/datarelay-labs/datarelay-atlas/issues?state=all&per_page=100",
+            label="issues",
+        )
+        self.assertEqual([row["number"] for row in rows], [1, 2])
+        self.assertEqual(calls[0][:4], ["gh", "api", "--paginate", "--slurp"])
+        self.assertEqual(calls[1][:3], ["gh", "api", "--paginate"])
+        self.assertNotIn("--slurp", calls[1])
+
+    def test_paginated_api_stream_fails_closed_on_trailing_garbage(self):
+        def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+            del cwd
+            if "--slurp" in argv:
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    "",
+                    "unknown flag: --slurp",
+                )
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                '[{"number":1}]\nnot-json',
+                "",
+            )
+
+        adapter = GitHubWorkPacketAdapter(command_runner=runner)
+        with self.assertRaises(ValidationError):
+            adapter._run_paginated_api(
+                "repos/datarelay-labs/datarelay-atlas/issues?state=all&per_page=100",
+                label="issues",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
