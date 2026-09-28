@@ -14,13 +14,15 @@ from atlas.context_optimization import (
     normalize_context_canary_report,
 )
 from atlas.provenance import ValidationError
+from atlas.work_controller import normalize_github_repository
 
 SHADOW_KIND = "context-shadow-equivalence-report"
 QUALITY_STATE = "SHADOW_ACTION_EQUIVALENT"
-QUALITY_SOURCE_KIND = "engineering_system_context_shadow_v1"
+QUALITY_SOURCE_KIND = "engineering_system_context_shadow_v2"
 MAX_ACTIONS_PER_RUN = 16
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _ARM_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _PROFILE_RE = re.compile(r"^[A-Za-z0-9_.:@\[\]=,+-]{1,80}$")
 _SECRET_RE = re.compile(
@@ -34,6 +36,9 @@ _SHADOW_KEYS = frozenset(
         "decision",
         "control_arm_id",
         "system_head",
+        "repo",
+        "task_kind",
+        "run_set_digest",
         "profile",
         "case_count",
         "arm_count",
@@ -56,6 +61,20 @@ _CONTEXT_KEYS = frozenset(
     }
 )
 _PROFILE_KEYS = frozenset({"provider", "model", "reasoning", "toolset"})
+_TASK_KINDS = frozenset(
+    {
+        "DESIGN",
+        "DEVELOPMENT",
+        "TEST",
+        "REVIEW",
+        "RELEASE",
+        "OPERATIONS",
+        "ADOPTION",
+        "DOCUMENTATION",
+        "CLEANUP",
+        "MIXED",
+    }
+)
 
 
 def _reject(message: str) -> None:
@@ -137,7 +156,7 @@ def normalize_shadow_report(payload: object) -> dict[str, Any]:
     if not isinstance(payload, dict) or set(payload) != _SHADOW_KEYS:
         _reject("context shadow report schema is invalid")
     version = payload.get("schema_version")
-    if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+    if isinstance(version, bool) or not isinstance(version, int) or version != 2:
         _reject("context shadow schema_version is unsupported")
     if payload.get("kind") != SHADOW_KIND:
         _reject("context shadow report kind is invalid")
@@ -155,6 +174,24 @@ def normalize_shadow_report(payload: object) -> dict[str, Any]:
     system_head = payload.get("system_head")
     if not isinstance(system_head, str) or _SHA_RE.fullmatch(system_head) is None:
         _reject("context shadow system_head is invalid")
+
+    repo_raw = payload.get("repo")
+    if not isinstance(repo_raw, str):
+        _reject("context shadow repo is invalid")
+    repo = normalize_github_repository(repo_raw)
+    if repo != repo_raw or _SECRET_RE.search(repo):
+        _reject("context shadow repo must be canonical and credential-free")
+
+    task_kind = payload.get("task_kind")
+    if not isinstance(task_kind, str) or task_kind not in _TASK_KINDS:
+        _reject("context shadow task_kind is invalid")
+
+    run_set_digest = payload.get("run_set_digest")
+    if (
+        not isinstance(run_set_digest, str)
+        or _DIGEST_RE.fullmatch(run_set_digest) is None
+    ):
+        _reject("context shadow run_set_digest is invalid")
 
     profile = _profile(payload.get("profile"))
     case_count = _bounded_int(
@@ -195,13 +232,26 @@ def normalize_shadow_report(payload: object) -> dict[str, Any]:
         _reject("context shadow arm run_count does not match case_count")
     if observation_count != arm_count * case_count:
         _reject("context shadow observation_count mismatch")
+    control_action_count = next(
+        item["material_action_count"]
+        for item in arms
+        if item["arm_id"] == control_arm
+    )
+    if any(
+        item["material_action_count"] != control_action_count
+        for item in arms
+    ):
+        _reject("context shadow material action counts contradict equivalence")
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": SHADOW_KIND,
         "decision": "EQUIVALENT",
         "control_arm_id": control_arm,
         "system_head": system_head,
+        "repo": repo,
+        "task_kind": task_kind,
+        "run_set_digest": run_set_digest,
         "profile": profile,
         "case_count": case_count,
         "arm_count": arm_count,
@@ -231,13 +281,18 @@ def _revalidate_base_context(value: object) -> dict[str, Any]:
         "active_control": "NOT_ELIGIBLE_FOR_ACTIVE_CONTROL",
     }:
         _reject("context optimization input gates are not a #117 base input")
-    if evidence.get("source_kind") != "engineering_system_context_canary_v1":
+    source_version = evidence.get("source_schema_version")
+    expected_source_kind = {
+        1: "engineering_system_context_canary_v1",
+        2: "engineering_system_context_canary_v2",
+    }.get(source_version)
+    if evidence.get("source_kind") != expected_source_kind:
         _reject("context optimization input source kind is invalid")
     if evidence.get("comparability") != "ELIGIBLE":
         _reject("context optimization input is not comparable")
 
     source = {
-        "schema_version": evidence.get("source_schema_version"),
+        "schema_version": source_version,
         "kind": "context-canary-eligibility-report",
         "decision": "ELIGIBLE",
         "system_head": evidence.get("system_head"),
@@ -248,6 +303,8 @@ def _revalidate_base_context(value: object) -> dict[str, Any]:
         "arm_count": evidence.get("arm_count"),
         "arms": arms,
     }
+    if source_version == 2:
+        source["run_set_digest"] = evidence.get("run_set_digest")
     normalized = normalize_context_canary_report(source)
     if normalized != value:
         _reject("context optimization input is not canonical")
@@ -264,8 +321,16 @@ def bind_shadow_quality(
 
     evidence = base["source_evidence"]
     scope = base["scope"]
+    if evidence.get("source_schema_version") != 2:
+        _reject("context optimization input lacks exact run-set binding")
     if shadow["system_head"] != evidence["system_head"]:
         _reject("context shadow system_head does not match context input")
+    if shadow["repo"] != scope["repository"]:
+        _reject("context shadow repository does not match context input")
+    if shadow["task_kind"] != scope["task_kind"]:
+        _reject("context shadow task_kind does not match context input")
+    if shadow["run_set_digest"] != evidence.get("run_set_digest"):
+        _reject("context shadow run_set_digest does not match context input")
     if shadow["profile"] != scope["profile"]:
         _reject("context shadow profile does not match context input")
     if shadow["arm_count"] != evidence["arm_count"]:
@@ -290,10 +355,13 @@ def bind_shadow_quality(
     result["gates"]["quality_noninferiority"] = QUALITY_STATE
     result["quality_evidence"] = {
         "source_kind": QUALITY_SOURCE_KIND,
-        "source_schema_version": 1,
+        "source_schema_version": 2,
         "decision": "EQUIVALENT",
         "control_arm_id": shadow["control_arm_id"],
         "system_head": shadow["system_head"],
+        "repository": shadow["repo"],
+        "task_kind": shadow["task_kind"],
+        "run_set_digest": shadow["run_set_digest"],
         "case_count": shadow["case_count"],
         "arm_count": shadow["arm_count"],
         "observation_count": shadow["observation_count"],

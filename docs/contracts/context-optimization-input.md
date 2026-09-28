@@ -21,8 +21,10 @@ selection or control authorization.
 
 ## Trust boundary
 
-The accepted source is `context-canary-eligibility-report` v1 with
-`decision=ELIGIBLE`. Atlas requires:
+The accepted source is `context-canary-eligibility-report` v1 or v2 with
+`decision=ELIGIBLE`. v1 remains a backward-compatible comparability-only
+source. v2 additionally carries a content-free `run_set_digest` that binds the
+exact measured experiment identity. Atlas requires:
 
 - one exact 40-hex Engineering System head across the report and every arm;
 - a fully known provider/model/reasoning/toolset profile;
@@ -34,7 +36,9 @@ The accepted source is `context-canary-eligibility-report` v1 with
 - usage, effort, rework, and cost aggregates stay within the upstream
   per-record telemetry bounds multiplied by each arm's run count;
 - rework totals agree with PR/CI/review rework counters;
-- report-level arm and record counts agree with the arm records.
+- report-level arm and record counts agree with the arm records;
+- v2 reports carry a 64-hex `run_set_digest` produced from repository,
+  task kind, exact source head, and the sorted arm/case/telemetry-run identities.
 
 Unknown fields, duplicate JSON keys, oversized inputs, malformed numbers,
 credential-shaped labels, and unsupported source identities fail closed.
@@ -50,18 +54,24 @@ Atlas emits `context_optimization_input` with:
 - `active_control=NOT_ELIGIBLE_FOR_ACTIVE_CONTROL`;
 - `control_mode=OBSERVE_ONLY`.
 
-This distinction is intentional. The base v1 path consumes Engineering System
-P0.75-A comparability evidence and therefore leaves quality non-inferiority
-`UNKNOWN`.
+This distinction is intentional. Both the legacy v1 and exact-bound v2 base
+paths consume Engineering System P0.75-A comparability evidence and therefore
+leave quality non-inferiority `UNKNOWN`.
 
 A second read-only binding may consume the bounded Engineering System P0.75-B
-`context-shadow-equivalence-report`. Atlas revalidates the base input and then
-requires exact agreement on Engineering System head, provider/model/reasoning/
-toolset profile, arm IDs, per-arm run counts, arm count, observation count, and
-control-arm membership. Only then does it emit:
+`context-shadow-equivalence-report` **v2**. Atlas revalidates the base input
+and requires the base to have v2 exact-run evidence. It then requires exact
+agreement on repository, task kind, Engineering System head,
+provider/model/reasoning/toolset profile, `run_set_digest`, arm IDs, per-arm
+run counts, arm count, observation count, and control-arm membership. It also
+requires every arm's material-action total to equal the declared control arm's
+total, as an additional consistency check on the upstream equivalence claim.
+A legacy v1 canary input or shadow report cannot advance the quality gate.
+Only after these checks does Atlas emit:
 
 - `quality_noninferiority=SHADOW_ACTION_EQUIVALENT`;
-- bounded `quality_evidence` identifying the P0.75-B report facts.
+- bounded `quality_evidence` identifying the P0.75-B v2 report facts,
+  including repository, task kind, source head, and `run_set_digest`.
 
 `SHADOW_ACTION_EQUIVALENT` means only that the measured verified-solved
 canary cases followed the same bounded material action/target trace as the
