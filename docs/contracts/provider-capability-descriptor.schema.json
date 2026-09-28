@@ -1,0 +1,421 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datarelay.local/contracts/provider-capability-descriptor.schema.json",
+  "title": "DataRelay Atlas Provider Capability Descriptor v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "provider",
+    "runtime",
+    "usage_mode",
+    "adapter",
+    "capabilities",
+    "authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "type": "string",
+      "const": "provider_capability_descriptor"
+    },
+    "provider": {
+      "type": "string",
+      "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "runtime": {
+      "$ref": "#/$defs/identity"
+    },
+    "usage_mode": {
+      "$ref": "#/$defs/identity"
+    },
+    "adapter": {
+      "$ref": "#/$defs/identity"
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/capability"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "PLAN"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "EFFORT_CONTROL"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "COMPLETION_LOOP"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "RUNTIME_VERIFY"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "CODE_REVIEW"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "SECOND_MODEL_ADVISOR"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "PARALLEL_WORKERS"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "PERIODIC_REENTRY"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "PR_REWORK"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "CONTEXT_USAGE"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "CHECKPOINT_COMPACT"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "SESSION_RESUME_RESET"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "HARNESS_HEALTH_AUDIT"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "PROMPT_INSTRUCTION_AUDIT"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "SKILL_COST_AUDIT"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "USAGE_INSIGHTS"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        }
+      ]
+    },
+    "authority": {
+      "type": "string",
+      "const": "EVIDENCE_ONLY"
+    }
+  },
+  "$defs": {
+    "identity": {
+      "type": "string",
+      "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}$"
+    },
+    "capabilityName": {
+      "type": "string",
+      "enum": [
+        "PLAN",
+        "EFFORT_CONTROL",
+        "COMPLETION_LOOP",
+        "RUNTIME_VERIFY",
+        "CODE_REVIEW",
+        "SECOND_MODEL_ADVISOR",
+        "PARALLEL_WORKERS",
+        "PERIODIC_REENTRY",
+        "PR_REWORK",
+        "CONTEXT_USAGE",
+        "CHECKPOINT_COMPACT",
+        "SESSION_RESUME_RESET",
+        "HARNESS_HEALTH_AUDIT",
+        "PROMPT_INSTRUCTION_AUDIT",
+        "SKILL_COST_AUDIT",
+        "USAGE_INSIGHTS"
+      ]
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "status",
+        "result_contract"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/capabilityName"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "SUPPORTED",
+            "UNSUPPORTED",
+            "UNKNOWN"
+          ]
+        },
+        "result_contract": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "audit_result_v1",
+            null
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "CODE_REVIEW"
+              },
+              "status": {
+                "const": "SUPPORTED"
+              }
+            },
+            "required": [
+              "name",
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "result_contract": {
+                "const": "audit_result_v1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "UNSUPPORTED",
+                  "UNKNOWN"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "result_contract": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "not": {
+                  "const": "CODE_REVIEW"
+                }
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "result_contract": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
