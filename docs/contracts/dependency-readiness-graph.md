@@ -100,10 +100,17 @@ discards the Issue body. The projection emits only:
 - optional `AFTER_ISSUE`.
 
 `AFTER_ISSUE` is projected as a same-repository
-`REQUIRES_COMPLETE` edge. A queued packet without `AFTER_ISSUE`, an
-untrusted/malformed packet, a stale PR HEAD, or a packet that changes while it
-is read fails closed. For a merged PR, an exact `merge_commit_sha` is also a
-valid post-merge HEAD.
+`REQUIRES_COMPLETE` edge. When the selected predecessor is present, a queued
+successor must also match its branch and `WORKSTREAM`; mismatches fail closed
+before planning. A queued packet without `AFTER_ISSUE`, an untrusted or
+malformed packet, a stale PR HEAD, or a packet that changes while it is read
+also fails closed. For a merged PR, an exact `merge_commit_sha` is a valid
+post-merge HEAD.
+
+PR reconciliation is bounded to the explicitly selected branches. Atlas makes
+one same-repository head-filtered PR query per distinct selected branch, asks
+for at most 33 rows, and fails closed if more than 32 PR records are returned.
+It does not paginate repository-wide PR history for this path.
 
 Free-form Work Packet `PRIORITY` text is not converted to graph priority.
 Selected packet projections use neutral numeric priority and no inferred

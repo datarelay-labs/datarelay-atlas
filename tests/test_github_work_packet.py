@@ -1655,13 +1655,14 @@ class SelectedPacketProjectionTests(unittest.TestCase):
         branch: str,
         head: str,
         queue_state: str = "NONE",
-        after_issue: int | None = None,
+        after_issue: int | str | None = None,
+        workstream: str = "readiness-projection-test",
     ) -> str:
         after = f"AFTER_ISSUE={after_issue}\n" if after_issue is not None else ""
         return (
             "PACKET_VERSION=2\n"
             f"TARGET_REPO={SelectedPacketProjectionTests.REPO}\n"
-            "WORKSTREAM=readiness-projection-test\n"
+            f"WORKSTREAM={workstream}\n"
             f"STATUS={status}\n"
             f"QUEUE_STATE={queue_state}\n"
             f"{after}"
@@ -1687,12 +1688,12 @@ class SelectedPacketProjectionTests(unittest.TestCase):
         def runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
             calls.append(list(argv))
             if (
-                len(argv) >= 5
-                and argv[:4] == ["gh", "api", "--paginate", "--slurp"]
-                and "/pulls?" in argv[4]
+                len(argv) == 3
+                and argv[:2] == ["gh", "api"]
+                and "/pulls?" in argv[2]
             ):
                 return subprocess.CompletedProcess(
-                    argv, 0, stdout=json.dumps([pulls or []]), stderr=""
+                    argv, 0, stdout=json.dumps(pulls or []), stderr=""
                 )
             if argv[:3] == ["gh", "issue", "view"]:
                 number = int(argv[3])
@@ -1747,7 +1748,7 @@ class SelectedPacketProjectionTests(unittest.TestCase):
                 status="PAUSED",
                 queue_state="QUEUED",
                 after_issue=10,
-                branch="feature/next",
+                branch="feature/base",
                 head="b" * 40,
             ),
         )
@@ -1770,16 +1771,100 @@ class SelectedPacketProjectionTests(unittest.TestCase):
                     "issue_number": 11,
                     "packet_status": "PAUSED",
                     "queue_state": "QUEUED",
-                    "branch": "feature/next",
+                    "branch": "feature/base",
                     "head": "b" * 40,
                     "after_issue": 10,
                 },
             ],
         )
         self.assertFalse(any("/issues?" in " ".join(argv) for argv in calls))
+        pull_calls = [
+            argv
+            for argv in calls
+            if len(argv) == 3
+            and argv[:2] == ["gh", "api"]
+            and "/pulls?" in argv[2]
+        ]
+        self.assertEqual(len(pull_calls), 1)
+        self.assertIn("head=datarelay-labs%3Afeature%2Fbase", pull_calls[0][2])
+        self.assertIn("per_page=33", pull_calls[0][2])
+        self.assertNotIn("--paginate", pull_calls[0])
         encoded = json.dumps(facts)
         self.assertNotIn("OWNER_INTENT", encoded)
         self.assertNotIn("Exercise selected readiness projection", encoded)
+
+    def test_selected_projection_rejects_unbounded_branch_pr_history(self) -> None:
+        issue = self._issue(
+            10,
+            state="CLOSED",
+            body=self._body(
+                status="COMPLETE",
+                branch="feature/base",
+                head="a" * 40,
+            ),
+        )
+        pulls = [
+            {
+                "number": number,
+                "state": "closed",
+                "merged_at": None,
+                "merge_commit_sha": None,
+                "head": {
+                    "ref": "feature/base",
+                    "sha": f"{number:040x}"[-40:],
+                    "repo": {"full_name": self.REPO},
+                },
+            }
+            for number in range(1, 34)
+        ]
+        adapter, calls = self._adapter({10: issue}, pulls=pulls)
+        with self.assertRaisesRegex(ValidationError, "bounded result count"):
+            adapter.read_selected_packet_projections(self.REPO, [10])
+        pull_calls = [argv for argv in calls if "/pulls?" in " ".join(argv)]
+        self.assertEqual(len(pull_calls), 1)
+
+    def test_selected_projection_requires_queued_predecessor_identity(self) -> None:
+        predecessor = self._issue(
+            10,
+            state="CLOSED",
+            body=self._body(
+                status="COMPLETE",
+                branch="feature/shared",
+                head="a" * 40,
+                workstream="same-stream",
+            ),
+        )
+        branch_mismatch = self._issue(
+            11,
+            state="OPEN",
+            body=self._body(
+                status="PAUSED",
+                queue_state="QUEUED",
+                after_issue=10,
+                branch="feature/other",
+                head="b" * 40,
+                workstream="same-stream",
+            ),
+        )
+        adapter, _ = self._adapter({10: predecessor, 11: branch_mismatch})
+        with self.assertRaisesRegex(ValidationError, "branch does not match"):
+            adapter.read_selected_packet_projections(self.REPO, [10, 11])
+
+        workstream_mismatch = self._issue(
+            11,
+            state="OPEN",
+            body=self._body(
+                status="PAUSED",
+                queue_state="QUEUED",
+                after_issue=10,
+                branch="feature/shared",
+                head="b" * 40,
+                workstream="other-stream",
+            ),
+        )
+        adapter, _ = self._adapter({10: predecessor, 11: workstream_mismatch})
+        with self.assertRaisesRegex(ValidationError, "WORKSTREAM does not match"):
+            adapter.read_selected_packet_projections(self.REPO, [10, 11])
 
     def test_selected_projection_rejects_untrusted_and_stale_pr(self) -> None:
         issue = self._issue(
