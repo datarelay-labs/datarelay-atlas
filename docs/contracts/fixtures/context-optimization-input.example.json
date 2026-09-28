@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "kind": "context_optimization_input",
+  "scope": {
+    "repository": "datarelay-labs/datarelay-atlas",
+    "task_kind": "DEVELOPMENT",
+    "profile": {
+      "provider": "cursor",
+      "model": "composer-2.5",
+      "reasoning": "standard",
+      "toolset": "default"
+    }
+  },
+  "source_evidence": {
+    "source_kind": "engineering_system_context_canary_v1",
+    "source_schema_version": 1,
+    "system_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "comparability": "ELIGIBLE",
+    "record_count": 2,
+    "arm_count": 2
+  },
+  "gates": {
+    "quality_noninferiority": "UNKNOWN",
+    "data_egress_eligibility": "UNKNOWN",
+    "runtime_capability": "UNKNOWN",
+    "active_control": "NOT_ELIGIBLE_FOR_ACTIVE_CONTROL"
+  },
+  "control_mode": "OBSERVE_ONLY",
+  "arms": [
+    {
+      "arm_id": "baseline",
+      "system_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "run_count": 1,
+      "verified_solved_count": 1,
+      "original_context_bytes": 1000,
+      "kept_context_bytes": 1000,
+      "reduction_ratio": 0.0,
+      "provider_cost_total": "1.25",
+      "cost_per_verified_solved_task": "1.25",
+      "rework_total": 0,
+      "input_tokens_total": 100,
+      "output_tokens_total": 20,
+      "cache_read_tokens_total": 300,
+      "cache_write_tokens_total": 10,
+      "tool_turns_total": 8,
+      "retries_total": 0,
+      "rereads_total": 1,
+      "compactions_total": 0,
+      "pr_rework_total": 0,
+      "ci_rework_total": 0,
+      "review_rework_total": 0,
+      "human_interventions_total": 0
+    },
+    {
+      "arm_id": "compiler",
+      "system_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "run_count": 1,
+      "verified_solved_count": 1,
+      "original_context_bytes": 1000,
+      "kept_context_bytes": 500,
+      "reduction_ratio": 0.5,
+      "provider_cost_total": "0.75",
+      "cost_per_verified_solved_task": "0.75",
+      "rework_total": 0,
+      "input_tokens_total": 100,
+      "output_tokens_total": 20,
+      "cache_read_tokens_total": 300,
+      "cache_write_tokens_total": 10,
+      "tool_turns_total": 8,
+      "retries_total": 0,
+      "rereads_total": 1,
+      "compactions_total": 0,
+      "pr_rework_total": 0,
+      "ci_rework_total": 0,
+      "review_rework_total": 0,
+      "human_interventions_total": 0
+    }
+  ]
+}
