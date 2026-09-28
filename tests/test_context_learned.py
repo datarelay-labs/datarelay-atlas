@@ -250,7 +250,18 @@ class ContextLearnedCanaryTests(unittest.TestCase):
             )
 
     def test_setup_allowed_attaches_evidence_without_runtime_promotion(self) -> None:
-        bound = bind_learned_canary_admission(_context_input(), _setup_report())
+        report = _setup_report()
+        bound = bind_learned_canary_admission(_context_input(), report)
+
+        with self.assertRaisesRegex(
+            ValidationError,
+            "boundary is invalid for SETUP_ALLOWED",
+        ):
+            bind_learned_canary_admission(
+                _context_input(),
+                report,
+                _trusted_boundary(report),
+            )
 
         self.assertEqual(bound["gates"]["data_egress_eligibility"], "UNKNOWN")
         self.assertEqual(bound["gates"]["runtime_capability"], "UNKNOWN")
