@@ -281,6 +281,38 @@ class ReadinessAuthorizationTests(unittest.TestCase):
         self.assertEqual(result["decision"], "DENY")
         self.assertEqual(result["reasons"], ["PLAN_INVALID"])
 
+        active = node(
+            "active",
+            101,
+            repository="datarelay-labs/a",
+            branch="feature/active",
+            packet_status="ACTIVE",
+            queue_state="NONE",
+            priority=0,
+        )
+        candidate = node(
+            "candidate",
+            103,
+            repository="datarelay-labs/b",
+            branch="feature/candidate",
+            priority=1,
+        )
+        forged_hidden_active = plan_readiness(
+            graph(active, candidate, max_wip=2)
+        )
+        self.assertEqual(forged_hidden_active["active_count"], 1)
+        self.assertEqual(
+            forged_hidden_active["selected_node_ids"], ["candidate"]
+        )
+        forged_hidden_active["max_wip"] = 1
+        forged_hidden_active["active_count"] = 0
+        forged_hidden_active["available_slots"] = 1
+        result = authorize_single_effect(
+            lambda: deepcopy(forged_hidden_active)
+        )
+        self.assertEqual(result["decision"], "DENY")
+        self.assertEqual(result["reasons"], ["PLAN_INVALID"])
+
         forged_ready = plan_readiness(
             graph(
                 node(
