@@ -26,19 +26,25 @@ prompt, transcript, tool payload, environment, or credential content.
    clearing or summarization, model/provider switching, billing attribution,
    browser-cookie scraping, and a new monitoring/telemetry stack.
 3. **Public contract** — `atlas usage inventory` may emit a host-labelled
-   content-free snapshot. `atlas usage report` may import repeated
-   `--worker-snapshot` files, use `--github-reconcile`, explicitly add
-   `--repository` targets, and consume one `--context-facts` JSON document.
-   Existing CSV summarization remains unchanged.
+   content-free snapshot. On an authenticated development host,
+   `atlas usage github-snapshot` may emit bounded content-free lifecycle facts.
+   `atlas usage report` may import repeated `--worker-snapshot` files and one
+   `--github-snapshot`, or may perform live `--github-reconcile` where the
+   host already has the required read-only GitHub tooling. `--no-local-workers`
+   is the explicit central mode and must not invoke local Cursor discovery.
+   Existing CSV summarization and one `--context-facts` document remain optional.
 4. **Authority and reconciliation** — Only Work Packets authored by a GitHub
    collaborator with write/maintain/admin permission can become canonical facts.
    Repository, branch, packet status, issue open/closed state, LAST_VERIFIED_HEAD,
    PR state, and exact PR HEAD are reconciled. Contradiction, stale exact-head
    evidence, ambiguity, or malformed metadata never becomes an assumed match.
-5. **Snapshot contract** — Snapshot schema version 1 is JSON-only, bounded to
-   1 MiB and 100 workers, requires a bounded host identifier and timezone-aware
-   observation timestamp, and accepts only the published content-free worker
-   fields. Imported `inference_activity` must remain `UNKNOWN`.
+5. **Snapshot contract** — Worker snapshot schema version 1 is JSON-only,
+   bounded to 1 MiB and 100 workers, requires a bounded host identifier and
+   timezone-aware observation timestamp, and accepts only the published
+   content-free worker fields. Imported `inference_activity` must remain
+   `UNKNOWN`. GitHub snapshots are also bounded to 1 MiB, at most 100 declared
+   repositories and 2,000 observations; every observation has an exact allowlisted
+   schema and reason vocabulary, and its summary is recomputed on import.
 6. **Context contract** — Atlas accepts only the allowlisted provider-neutral
    context-epoch fact keys. Unknown fields, including raw content-like fields,
    fail closed. Engineering System decides the epoch action; Atlas maps CLEAR to
@@ -49,8 +55,10 @@ prompt, transcript, tool payload, environment, or credential content.
    control action.
 8. **State and operations** — This slice adds no persisted Atlas schema. Snapshot,
    GitHub, context, and usage inputs are read and discarded. Output carries the
-   current observation time and imported snapshot observation times so evidence
-   freshness is visible. GitHub reconciliation is read-only.
+   current observation time plus worker/GitHub snapshot observation times so
+   evidence freshness is visible. Production central reporting does not require
+   the `agent` binary, GitHub CLI, or GitHub credentials: collection remains on
+   already-authorized development hosts and prod performs bounded file import only.
 9. **Output compactness** — The report summarizes total canonical/noncanonical
    observations but returns detailed reconciliation rows only for open packets
    and branches relevant to observed workers. Historical unrelated rows do not
@@ -64,10 +72,12 @@ prompt, transcript, tool payload, environment, or credential content.
 ## Decision
 
 Use Atlas's existing CLI, Work Packet adapter, and Phase 0 worker classifier as
-the control-plane boundary. Development hosts export content-free snapshots;
-prod-atlas imports them and re-evaluates lifecycle against current GitHub facts.
-No SSH, Remote Desktop, Cursor control, or provider-private endpoint capability
-is added to the product.
+the control-plane boundary. Development hosts export content-free worker snapshots
+and, where already authenticated to GitHub, one bounded lifecycle snapshot.
+prod-atlas imports those files in `--no-local-workers` mode and re-evaluates
+worker lifecycle without needing Cursor host tooling or GitHub credentials.
+No SSH, Remote Desktop, Cursor control, credential relay, or provider-private
+endpoint capability is added to the product.
 
 A resident process remains only residency/runtime evidence. Busy scheduler state
 does not prove active inference. Imported snapshots cannot upgrade that claim.

@@ -37,6 +37,8 @@ MAX_TOKEN_DIGITS = 18
 MAX_PROCESS_SCAN = 20000
 MAX_SNAPSHOT_BYTES = 1024 * 1024
 MAX_SNAPSHOT_WORKERS = 100
+MAX_GITHUB_SNAPSHOT_REPOSITORIES = 100
+MAX_GITHUB_SNAPSHOT_OBSERVATIONS = 2000
 
 WORKER_STATES = frozenset(
     {
@@ -91,6 +93,50 @@ _SNAPSHOT_TOP_KEYS = frozenset(
         "reconciliation_summary",
         "snapshots",
     }
+)
+_GITHUB_SNAPSHOT_TOP_KEYS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "observed_at",
+        "repositories",
+        "observations",
+        "summary",
+    }
+)
+_GITHUB_OBSERVATION_KEYS = frozenset(
+    {
+        "repository",
+        "issue_number",
+        "issue_state",
+        "issue_updated_at",
+        "author_trust",
+        "packet_status",
+        "branch",
+        "head",
+        "pr_number",
+        "pr_state",
+        "pr_head",
+        "canonical_fact",
+        "reasons",
+    }
+)
+_GITHUB_OBSERVATION_REASONS = frozenset(
+    {
+        "AUTHOR_UNTRUSTED",
+        "PACKET_METADATA_INVALID",
+        "TARGET_REPO_MISMATCH",
+        "BRANCH_MISSING_OR_INVALID",
+        "NONCANONICAL_STATUS",
+        "HEAD_MISSING_OR_INVALID",
+        "ISSUE_STATE_STATUS_CONFLICT",
+        "PR_AMBIGUOUS",
+        "PR_HEAD_MISMATCH",
+        "PACKET_PR_STATE_CONFLICT",
+    }
+)
+_GITHUB_PR_STATES = frozenset(
+    {"NONE", "UNKNOWN", "OPEN", "CLOSED", "MERGED", "AMBIGUOUS"}
 )
 _SNAPSHOT_WORKER_KEYS = frozenset(
     {
@@ -854,6 +900,7 @@ def build_report(
     local_host_id: str | None = None,
     imported_workers: Iterable[dict] | None = None,
     snapshot_summaries: Iterable[dict] | None = None,
+    github_snapshot_summary: dict | None = None,
 ) -> dict:
     packet_list = list(packet_facts or [])
     workers = classify_workers(sessions, processes, identities, packet_list)
@@ -888,6 +935,9 @@ def build_report(
     usage = None if summary is None else dict(summary)
     context = None if context_advice is None else dict(context_advice)
     snapshots = [dict(item) for item in (snapshot_summaries or [])]
+    github_snapshot = (
+        None if github_snapshot_summary is None else dict(github_snapshot_summary)
+    )
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": "cursor_usage_report",
@@ -897,6 +947,7 @@ def build_report(
         "reconciliation_summary": reconciliation_summary,
         "context_epoch": context,
         "snapshots": snapshots,
+        "github_snapshot": github_snapshot,
         "advisor": control_advisor(
             workers,
             current_observed=True,
@@ -1177,6 +1228,248 @@ def collect_github_packet_observations(
     facts = packet_facts_from_observations(observations)
     assert_content_free(observations)
     return facts, observations
+
+
+
+def _github_snapshot_summary(observations: list[dict]) -> dict:
+    return {
+        "observed_count": len(observations),
+        "canonical_count": sum(
+            1 for item in observations if item.get("canonical_fact") is True
+        ),
+        "noncanonical_count": sum(
+            1 for item in observations if item.get("canonical_fact") is not True
+        ),
+    }
+
+
+def build_github_reconciliation_snapshot(
+    repositories: Iterable[str],
+    *,
+    adapter: GitHubWorkPacketAdapter | None = None,
+) -> dict:
+    """Capture bounded, content-free GitHub lifecycle facts on an authenticated host."""
+    normalized = sorted(
+        {normalize_github_repository(str(repository)) for repository in repositories}
+    )
+    if not normalized:
+        _reject("GitHub snapshot requires at least one repository")
+    if len(normalized) > MAX_GITHUB_SNAPSHOT_REPOSITORIES:
+        _reject("GitHub snapshot exceeds the bounded repository count")
+    _, observations = collect_github_packet_observations(
+        normalized, adapter=adapter
+    )
+    if len(observations) > MAX_GITHUB_SNAPSHOT_OBSERVATIONS:
+        _reject("GitHub snapshot exceeds the bounded observation count")
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "cursor_github_reconciliation",
+        "observed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "repositories": normalized,
+        "observations": observations,
+        "summary": _github_snapshot_summary(observations),
+    }
+    assert_content_free(payload)
+    return payload
+
+
+def _validate_github_observation(
+    item: object,
+    *,
+    index: int,
+    repositories: set[str],
+) -> dict:
+    if not isinstance(item, dict):
+        _reject(f"GitHub snapshot observations[{index}] must be an object")
+    unknown = sorted(set(item).difference(_GITHUB_OBSERVATION_KEYS))
+    missing = sorted(_GITHUB_OBSERVATION_KEYS.difference(item))
+    if unknown or missing:
+        _reject(f"GitHub snapshot observations[{index}] schema is invalid")
+
+    try:
+        repository = normalize_github_repository(str(item["repository"]))
+    except ValidationError as exc:
+        raise ValidationError(
+            f"GitHub snapshot observations[{index}] repository is invalid"
+        ) from exc
+    if repository not in repositories:
+        _reject(f"GitHub snapshot observations[{index}] repository is undeclared")
+
+    issue_number = item["issue_number"]
+    if (
+        isinstance(issue_number, bool)
+        or not isinstance(issue_number, int)
+        or issue_number < 1
+    ):
+        _reject(f"GitHub snapshot observations[{index}] issue_number is invalid")
+    issue_state = item["issue_state"]
+    if issue_state not in {"OPEN", "CLOSED"}:
+        _reject(f"GitHub snapshot observations[{index}] issue_state is invalid")
+
+    updated = item["issue_updated_at"]
+    if updated is not None:
+        updated = _bounded_snapshot_text(
+            updated, label="issue_updated_at", max_chars=64
+        )
+
+    author_trust = item["author_trust"]
+    if author_trust not in {"trusted", "untrusted"}:
+        _reject(f"GitHub snapshot observations[{index}] author_trust is invalid")
+
+    packet_status = item["packet_status"]
+    if packet_status is not None:
+        packet_status = _bounded_snapshot_text(
+            packet_status, label="packet_status", max_chars=64
+        )
+
+    branch = item["branch"]
+    if branch is not None:
+        branch = _bounded_snapshot_text(branch, label="branch", max_chars=255)
+
+    head = item["head"]
+    if head is not None:
+        head = _bounded_snapshot_text(head, label="head", max_chars=40)
+        if not _HEAD_PATTERN.fullmatch(head):
+            _reject(f"GitHub snapshot observations[{index}] head is invalid")
+
+    pr_number = item["pr_number"]
+    if pr_number is not None and (
+        isinstance(pr_number, bool)
+        or not isinstance(pr_number, int)
+        or pr_number < 1
+    ):
+        _reject(f"GitHub snapshot observations[{index}] pr_number is invalid")
+
+    pr_state = item["pr_state"]
+    if pr_state not in _GITHUB_PR_STATES:
+        _reject(f"GitHub snapshot observations[{index}] pr_state is invalid")
+
+    pr_head = item["pr_head"]
+    if pr_head is not None:
+        pr_head = _bounded_snapshot_text(pr_head, label="pr_head", max_chars=40)
+        if not _HEAD_PATTERN.fullmatch(pr_head):
+            _reject(f"GitHub snapshot observations[{index}] pr_head is invalid")
+
+    canonical = item["canonical_fact"]
+    if not isinstance(canonical, bool):
+        _reject(f"GitHub snapshot observations[{index}] canonical_fact is invalid")
+
+    reasons = item["reasons"]
+    if not isinstance(reasons, list) or len(reasons) > 16:
+        _reject(f"GitHub snapshot observations[{index}] reasons is invalid")
+    normalized_reasons: list[str] = []
+    for reason in reasons:
+        if not isinstance(reason, str) or reason not in _GITHUB_OBSERVATION_REASONS:
+            _reject(f"GitHub snapshot observations[{index}] reason is invalid")
+        normalized_reasons.append(reason)
+    if len(normalized_reasons) != len(set(normalized_reasons)):
+        _reject(f"GitHub snapshot observations[{index}] reasons are duplicated")
+    normalized_reasons.sort()
+
+    if canonical:
+        if (
+            normalized_reasons
+            or author_trust != "trusted"
+            or packet_status not in PACKET_STATUSES
+            or branch is None
+            or head is None
+        ):
+            _reject(
+                f"GitHub snapshot observations[{index}] canonical fact is inconsistent"
+            )
+
+    return {
+        "repository": repository,
+        "issue_number": issue_number,
+        "issue_state": issue_state,
+        "issue_updated_at": updated,
+        "author_trust": author_trust,
+        "packet_status": packet_status,
+        "branch": branch,
+        "head": head,
+        "pr_number": pr_number,
+        "pr_state": pr_state,
+        "pr_head": pr_head,
+        "canonical_fact": canonical,
+        "reasons": normalized_reasons,
+    }
+
+
+def load_github_reconciliation_snapshot(
+    path: Path,
+) -> tuple[list[PacketFact], list[dict], dict]:
+    """Load one bounded GitHub reconciliation snapshot without GitHub access."""
+    import json
+
+    source = Path(path)
+    try:
+        size = source.stat().st_size
+    except OSError as exc:
+        raise ValidationError("GitHub snapshot is not readable") from exc
+    if size > MAX_SNAPSHOT_BYTES:
+        _reject("GitHub snapshot exceeds the bounded import size")
+    try:
+        raw = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValidationError("GitHub snapshot is not JSON") from exc
+    if not isinstance(raw, dict):
+        _reject("GitHub snapshot must be a JSON object")
+    assert_content_free(raw)
+    unknown = sorted(set(raw).difference(_GITHUB_SNAPSHOT_TOP_KEYS))
+    missing = sorted(_GITHUB_SNAPSHOT_TOP_KEYS.difference(raw))
+    if unknown or missing:
+        _reject("GitHub snapshot schema is invalid")
+    if raw.get("schema_version") != SCHEMA_VERSION:
+        _reject("GitHub snapshot schema_version is unsupported")
+    if raw.get("kind") != "cursor_github_reconciliation":
+        _reject("GitHub snapshot kind is invalid")
+    observed_at = _snapshot_observed_at(raw.get("observed_at"))
+
+    raw_repositories = raw.get("repositories")
+    if not isinstance(raw_repositories, list) or not raw_repositories:
+        _reject("GitHub snapshot repositories must be a non-empty list")
+    if len(raw_repositories) > MAX_GITHUB_SNAPSHOT_REPOSITORIES:
+        _reject("GitHub snapshot exceeds the bounded repository count")
+    repositories: list[str] = []
+    for index, repository in enumerate(raw_repositories):
+        if not isinstance(repository, str):
+            _reject(f"GitHub snapshot repositories[{index}] is invalid")
+        repositories.append(normalize_github_repository(repository))
+    if repositories != sorted(set(repositories)):
+        _reject("GitHub snapshot repositories must be unique and sorted")
+    repository_set = set(repositories)
+
+    raw_observations = raw.get("observations")
+    if not isinstance(raw_observations, list):
+        _reject("GitHub snapshot observations must be a list")
+    if len(raw_observations) > MAX_GITHUB_SNAPSHOT_OBSERVATIONS:
+        _reject("GitHub snapshot exceeds the bounded observation count")
+    observations = [
+        _validate_github_observation(
+            item, index=index, repositories=repository_set
+        )
+        for index, item in enumerate(raw_observations)
+    ]
+    observations.sort(
+        key=lambda item: (
+            str(item["repository"]),
+            int(item["issue_number"]),
+        )
+    )
+
+    summary = raw.get("summary")
+    expected_summary = _github_snapshot_summary(observations)
+    if summary != expected_summary:
+        _reject("GitHub snapshot summary does not match observations")
+
+    facts = packet_facts_from_observations(observations)
+    metadata = {
+        "observed_at": observed_at,
+        "repositories": repositories,
+        **expected_summary,
+    }
+    assert_content_free(metadata)
+    return facts, observations, metadata
 
 
 def load_context_advice(path: Path) -> dict:
