@@ -131,21 +131,18 @@ class ProviderTransitionTests(unittest.TestCase):
             "openai-fallback",
         )
 
-        over_limit = plan_provider_transition(
-            _candidates(),
-            required_capability="CODE_REVIEW",
-            current_route_id="codex-secondary",
-            failure_reason="RATE_LIMITED",
-            prior_failed_route_ids=["codex-primary"],
-            max_attempts=1,
-        )
-        self.assertEqual(over_limit["decision"], "HUMAN_REQUIRED")
-        self.assertEqual(
-            over_limit["decision_reason"],
-            "ATTEMPT_LIMIT_REACHED",
-        )
-        self.assertEqual(over_limit["attempt"], 2)
-        self.assertEqual(over_limit["max_attempts"], 1)
+        with self.assertRaisesRegex(
+            ValidationError,
+            "prior failures already reached max_attempts",
+        ):
+            plan_provider_transition(
+                _candidates(),
+                required_capability="CODE_REVIEW",
+                current_route_id="codex-secondary",
+                failure_reason="RATE_LIMITED",
+                prior_failed_route_ids=["codex-primary"],
+                max_attempts=1,
+            )
 
     def test_no_remaining_route_requires_human(self) -> None:
         candidates = [_candidates()[0]]
@@ -262,6 +259,19 @@ class ProviderTransitionTests(unittest.TestCase):
                 failure_reason="RATE_LIMITED",
             )
 
+        with self.assertRaisesRegex(
+            ValidationError,
+            "prior failures already reached max_attempts",
+        ):
+            plan_provider_transition(
+                _candidates(),
+                required_capability="CODE_REVIEW",
+                current_route_id="openai-fallback",
+                failure_reason="RATE_LIMITED",
+                prior_failed_route_ids=["codex-primary", "codex-secondary"],
+                max_attempts=2,
+            )
+
     def test_schema_and_runtime_contract_match(self) -> None:
         schema = _json(SCHEMA)
         broker_schema = _json(BROKER_SCHEMA)
@@ -304,6 +314,16 @@ class ProviderTransitionTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             validate_provider_transition_plan(wrong_to)
 
+        wrong_strategy = deepcopy(recommended)
+        wrong_strategy["remaining_plan"]["strategy"] = "STEWARDSHIP"
+        with self.assertRaisesRegex(ValidationError, "strategy is inconsistent"):
+            validate_provider_transition_plan(wrong_strategy)
+
+        wrong_capability = deepcopy(recommended)
+        wrong_capability["remaining_plan"]["required_capability"] = "PLAN"
+        with self.assertRaisesRegex(ValidationError, "capability is inconsistent"):
+            validate_provider_transition_plan(wrong_capability)
+
         secret_failed = deepcopy(recommended)
         secret_failed["failed_route_ids"] = ["ghp_secretlike"]
         secret_failed["from_route_id"] = "ghp_secretlike"
@@ -336,6 +356,18 @@ class ProviderTransitionTests(unittest.TestCase):
         leaked_failed["remaining_plan"] = stale_remaining
         with self.assertRaisesRegex(ValidationError, "contains a failed route"):
             validate_provider_transition_plan(leaked_failed)
+
+        over_limit = plan_provider_transition(
+            _candidates(),
+            required_capability="CODE_REVIEW",
+            current_route_id="codex-secondary",
+            failure_reason="RATE_LIMITED",
+            prior_failed_route_ids=["codex-primary"],
+            max_attempts=2,
+        )
+        over_limit["max_attempts"] = 1
+        with self.assertRaisesRegex(ValidationError, "exceeds max_attempts"):
+            validate_provider_transition_plan(over_limit)
 
     def test_cli_is_read_only_and_content_free(self) -> None:
         path = _write_json(_candidates())
