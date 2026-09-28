@@ -82,8 +82,36 @@ class ReadinessGraphTests(unittest.TestCase):
             plan["selected_node_ids"], ["independent-a", "independent-b"]
         )
         states = indexed(plan)
+        source = {
+            item["node_id"]: item
+            for item in json.loads(FIXTURE.read_text(encoding="utf-8"))["nodes"]
+        }
         self.assertEqual(states["foundation"]["readiness"], "COMPLETE")
         self.assertEqual(states["current"]["readiness"], "ACTIVE")
+        for node_id, planned in states.items():
+            self.assertEqual(planned["repository"], source[node_id]["repository"])
+            self.assertEqual(planned["branch"], source[node_id]["branch"])
+            self.assertEqual(planned["head"], source[node_id]["head"])
+
+    def test_same_issue_number_across_repositories_keeps_provenance(self) -> None:
+        left = node(
+            "left", 7, repository="datarelay-labs/left", priority=10
+        )
+        right = node(
+            "right", 7, repository="datarelay-labs/right", priority=20
+        )
+        right["head"] = "b" * 40
+        plan = plan_readiness(graph(right, left, max_wip=2))
+        states = indexed(plan)
+        self.assertEqual(plan["selected_node_ids"], ["left", "right"])
+        self.assertEqual(states["left"]["issue_number"], 7)
+        self.assertEqual(states["right"]["issue_number"], 7)
+        self.assertEqual(states["left"]["repository"], "datarelay-labs/left")
+        self.assertEqual(states["right"]["repository"], "datarelay-labs/right")
+        self.assertEqual(states["left"]["branch"], "feature/left")
+        self.assertEqual(states["right"]["branch"], "feature/right")
+        self.assertEqual(states["left"]["head"], f"{7:040x}")
+        self.assertEqual(states["right"]["head"], "b" * 40)
 
     def test_unknown_dependency_fails_closed(self) -> None:
         plan = plan_readiness(

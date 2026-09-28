@@ -549,6 +549,9 @@ def plan_readiness(payload: object) -> dict:
             {
                 "node_id": node.node_id,
                 "issue_number": node.issue_number,
+                "repository": node.repository,
+                "branch": node.branch,
+                "head": node.head,
                 "readiness": readiness,
                 "selected": node.node_id in selected,
                 "reasons": sorted(reasons[node.node_id]),
