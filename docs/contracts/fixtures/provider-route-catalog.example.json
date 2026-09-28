@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "provider_route_catalog",
+  "authority": "CONFIGURATION_ONLY",
+  "routes": [
+    {
+      "route_id": "codex-review",
+      "adapter": "CodexAuditProvider",
+      "state": "ENABLED"
+    },
+    {
+      "route_id": "openai-review",
+      "adapter": "BoundedResponsesAuditProvider",
+      "state": "ENABLED"
+    }
+  ]
+}

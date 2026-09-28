@@ -54,6 +54,7 @@ from atlas.provider_transition import (
     load_provider_transition_candidates,
     plan_provider_transition,
 )
+from atlas.provider_routes import load_provider_route_catalog
 from atlas.host_worker import load_host_worker_config, run_once
 from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
@@ -1045,6 +1046,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     usage_transition.add_argument("--max-attempts", type=int, default=3)
     usage_transition.set_defaults(func=cmd_usage_provider_transition_plan)
+    usage_route_catalog = usage_sub.add_parser(
+        "provider-route-catalog",
+        help="Validate and normalize configured provider route metadata",
+    )
+    usage_route_catalog.add_argument("--input", required=True)
+    usage_route_catalog.set_defaults(func=cmd_usage_provider_route_catalog)
     usage_context_canary = usage_sub.add_parser(
         "context-canary-input",
         help="Normalize Engineering System context-canary evidence into observation-only governor input",
@@ -1365,6 +1372,11 @@ def cmd_usage_provider_transition_plan(args: argparse.Namespace) -> int:
             max_attempts=args.max_attempts,
         )
     )
+    return 0
+
+
+def cmd_usage_provider_route_catalog(args: argparse.Namespace) -> int:
+    _print_json(load_provider_route_catalog(Path(args.input)))
     return 0
 
 

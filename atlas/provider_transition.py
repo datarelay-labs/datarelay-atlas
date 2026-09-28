@@ -9,8 +9,8 @@ from typing import Any
 from atlas.provider_broker import (
     AUTHORITY,
     STRATEGIES,
-    _route_id as _broker_route_id,
     plan_provider_routes,
+    validate_provider_route_id,
     validate_provider_broker_plan,
     validate_provider_route_candidate,
 )
@@ -240,11 +240,11 @@ def validate_provider_transition_plan(payload: object) -> dict[str, Any]:
     prior_raw = payload.get("prior_failed_route_ids")
     if not isinstance(prior_raw, list) or len(prior_raw) >= _MAX_ROUTES:
         _reject("provider transition prior_failed_route_ids is invalid")
-    prior = [_broker_route_id(item) for item in prior_raw]
+    prior = [validate_provider_route_id(item) for item in prior_raw]
     if len(set(prior)) != len(prior) or prior != sorted(prior):
         _reject("provider transition prior_failed_route_ids is invalid")
 
-    from_route = _broker_route_id(payload.get("from_route_id"))
+    from_route = validate_provider_route_id(payload.get("from_route_id"))
     if from_route in set(prior):
         _reject("provider transition from_route_id is already failed")
 
@@ -255,7 +255,7 @@ def validate_provider_transition_plan(payload: object) -> dict[str, Any]:
         or len(failed_raw) > _MAX_ROUTES
     ):
         _reject("provider transition failed_route_ids is invalid")
-    failed = [_broker_route_id(item) for item in failed_raw]
+    failed = [validate_provider_route_id(item) for item in failed_raw]
     expected_failed = sorted([*prior, from_route])
     if (
         len(set(failed)) != len(failed)
@@ -294,7 +294,7 @@ def validate_provider_transition_plan(payload: object) -> dict[str, Any]:
         if remaining_ids & known:
             _reject("provider transition remaining plan contains a failed route")
     to_raw = payload.get("to_route_id")
-    to_route = None if to_raw is None else _broker_route_id(to_raw)
+    to_route = None if to_raw is None else validate_provider_route_id(to_raw)
     if to_route is not None and to_route in known:
         _reject("provider transition cannot select a failed route")
 

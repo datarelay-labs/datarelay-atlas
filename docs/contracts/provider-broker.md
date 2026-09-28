@@ -4,11 +4,13 @@ Status: read-only planning foundation for roadmap #55
 Authority: `ADVISORY_ONLY`
 
 Machine-checkable schemas:
+- [`provider-route-catalog.schema.json`](provider-route-catalog.schema.json)
 - [`provider-route-candidate.schema.json`](provider-route-candidate.schema.json)
 - [`provider-broker-plan.schema.json`](provider-broker-plan.schema.json)
 - [`provider-transition-plan.schema.json`](provider-transition-plan.schema.json)
 
 Example fixtures:
+- [`fixtures/provider-route-catalog.example.json`](fixtures/provider-route-catalog.example.json)
 - [`fixtures/provider-route-codex.example.json`](fixtures/provider-route-codex.example.json)
 - [`fixtures/provider-broker-plan.example.json`](fixtures/provider-broker-plan.example.json)
 
@@ -19,11 +21,19 @@ capacity-input contracts with explicit Atlas-owned eligibility gates. It emits
 a deterministic advisory plan only; it does not invoke a provider, switch a
 model, mutate a session, perform failover, or grant execution authority.
 
-## Candidate contract
+## Route configuration and candidate contract
 
-Each route has a bounded `route_id`, one validated capability descriptor, one
-validated capacity input for the same provider, six explicit gates, and two
-integer preference ranks. Lower rank values are preferred.
+Configured route identity is defined by
+[`provider-route-catalog.md`](provider-route-catalog.md). The catalog accepts
+only registered real Atlas adapters and derives their canonical capability
+descriptors; it cannot carry provider/runtime/capability claims, dynamic gates,
+capacity facts, endpoints, models, or credentials.
+
+A materialized candidate has a bounded `route_id`, the derived validated
+capability descriptor, one validated capacity input for the same provider, six
+explicit dynamic gates, and two integer preference ranks. Lower rank values are
+preferred. `CONFIGURATION_ONLY` catalog state does not grant broker
+eligibility or execution authority.
 
 The gates are `policy`, `trust`, `budget`, `usage_mode`, `blast_radius`, and
 `wip`. Each is exactly `ALLOW`, `DENY`, or `UNKNOWN`.

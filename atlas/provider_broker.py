@@ -100,6 +100,11 @@ def _route_id(value: object) -> str:
     return value
 
 
+def validate_provider_route_id(value: object) -> str:
+    """Validate one provider route identifier against the broker contract."""
+    return _route_id(value)
+
+
 def _summary_identity(value: object, *, label: str, provider: bool = False) -> str:
     pattern = _PROVIDER_RE if provider else _IDENTITY_RE
     if (
