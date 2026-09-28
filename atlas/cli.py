@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 from atlas.chat_audit import (
@@ -32,10 +33,13 @@ from atlas.final_audit import AuditBudget, BoundedResponsesAuditProvider
 from atlas.cursor_usage import (
     assert_content_free,
     build_report,
+    collect_github_packet_observations,
     collect_process_facts,
     identities_for_workspaces,
     live_sessions,
+    load_context_advice,
     load_packet_facts,
+    load_worker_snapshot,
     parse_usage_csv,
     summary_report,
     summarize_usage,
@@ -963,6 +967,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional JSON packet facts. Titles and bodies are not accepted.",
     )
+    usage_inventory.add_argument(
+        "--github-reconcile",
+        action="store_true",
+        help="Read trusted Work Packet and PR facts from GitHub without mutation.",
+    )
+    usage_inventory.add_argument(
+        "--repository",
+        action="append",
+        default=[],
+        help="Repository to reconcile even when no local resident worker identifies it.",
+    )
+    usage_inventory.add_argument(
+        "--host-id",
+        default=None,
+        help="Bounded source host label for exporting a worker snapshot.",
+    )
     usage_inventory.set_defaults(func=cmd_usage_inventory)
     usage_summarize = usage_sub.add_parser(
         "summarize",
@@ -976,6 +996,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     usage_report.add_argument("--csv", default=None)
     usage_report.add_argument("--packet-facts", default=None)
+    usage_report.add_argument(
+        "--github-reconcile",
+        action="store_true",
+        help="Read trusted Work Packet and PR facts from GitHub without mutation.",
+    )
+    usage_report.add_argument(
+        "--repository",
+        action="append",
+        default=[],
+        help="Repository to reconcile even when no local resident worker identifies it.",
+    )
+    usage_report.add_argument(
+        "--context-facts",
+        default=None,
+        help="Bounded Engineering System context-epoch facts JSON.",
+    )
+    usage_report.add_argument(
+        "--host-id",
+        default=None,
+        help="Bounded source host label for any local workers in this report.",
+    )
+    usage_report.add_argument(
+        "--worker-snapshot",
+        action="append",
+        default=[],
+        help="Content-free host inventory JSON to aggregate; may be repeated.",
+    )
     usage_report.set_defaults(func=cmd_usage_report)
 
     ops = sub.add_parser("ops", help="Service configuration and health")
@@ -1047,18 +1094,81 @@ def _usage_inputs(args: argparse.Namespace, *, kind: str) -> dict:
         for workspace in (session.workspace for session in sessions)
         if workspace
     )
-    packets = (
-        load_packet_facts(Path(args.packet_facts))
-        if getattr(args, "packet_facts", None)
-        else None
-    )
+    imported_workers: list[dict] = []
+    snapshot_summaries: list[dict] = []
+    seen_snapshot_hosts: set[str] = set()
+    for snapshot_path in list(getattr(args, "worker_snapshot", []) or []):
+        snapshot_workers, snapshot_summary = load_worker_snapshot(
+            Path(snapshot_path)
+        )
+        host_id = str(snapshot_summary["host_id"])
+        if host_id in seen_snapshot_hosts:
+            raise ValidationError(f"duplicate worker snapshot host_id: {host_id}")
+        seen_snapshot_hosts.add(host_id)
+        imported_workers.extend(snapshot_workers)
+        snapshot_summaries.append(snapshot_summary)
+
+    packet_path = getattr(args, "packet_facts", None)
+    github_reconcile = bool(getattr(args, "github_reconcile", False))
+    requested_repositories = list(getattr(args, "repository", []) or [])
+    if packet_path and github_reconcile:
+        raise ValidationError(
+            "--packet-facts and --github-reconcile are mutually exclusive"
+        )
+    if requested_repositories and not github_reconcile:
+        raise ValidationError("--repository requires --github-reconcile")
+    packet_observations = None
+    if github_reconcile:
+        repositories = {
+            identity.repository
+            for identity in identities.values()
+            if identity is not None
+        }
+        repositories.update(
+            worker["repository"]
+            for worker in imported_workers
+            if isinstance(worker.get("repository"), str)
+        )
+        repositories.update(requested_repositories)
+        packets, packet_observations = collect_github_packet_observations(
+            sorted(repositories)
+        )
+    else:
+        packets = load_packet_facts(Path(packet_path)) if packet_path else None
+
     summary = None
     if getattr(args, "csv", None):
         summary = summarize_usage(parse_usage_csv(Path(args.csv)))
-    report = build_report(sessions, processes, identities, packets, summary)
+    context_advice = None
+    if getattr(args, "context_facts", None):
+        context_advice = load_context_advice(Path(args.context_facts))
+    report = build_report(
+        sessions,
+        processes,
+        identities,
+        packets,
+        summary,
+        packet_observations=packet_observations,
+        context_advice=context_advice,
+        local_host_id=getattr(args, "host_id", None),
+        imported_workers=imported_workers,
+        snapshot_summaries=snapshot_summaries,
+    )
     report["kind"] = kind
+    report["observed_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    host_id = getattr(args, "host_id", None)
+    if host_id is not None:
+        report["host_id"] = host_id
     if kind == "cursor_worker_inventory":
         report.pop("usage", None)
+        if report.get("context_epoch") is None:
+            report.pop("context_epoch", None)
+    if report.get("reconciliation") is None:
+        report.pop("reconciliation", None)
+    if report.get("reconciliation_summary") is None:
+        report.pop("reconciliation_summary", None)
+    if not report.get("snapshots"):
+        report.pop("snapshots", None)
     assert_content_free(report)
     return report
 

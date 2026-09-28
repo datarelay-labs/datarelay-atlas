@@ -3079,6 +3079,210 @@ class GitHubWorkPacketAdapter:
                 "permission is not write, maintain, or admin"
             )
 
+    def read_packet_observations(self, repository: str) -> list[dict[str, Any]]:
+        """Read trusted, content-free packet/PR facts without mutating GitHub.
+
+        Issue bodies are parsed transiently and never returned. Only trusted
+        authors may contribute canonical facts. Noncanonical lifecycle values,
+        stale PR heads, and contradictory issue/PR state remain observations
+        with ``canonical_fact=false``; callers must not guess an alias.
+        """
+        repo = normalize_github_repository(repository)
+        allowed_statuses = {"ACTIVE", "PAUSED", "BLOCKED", "COMPLETE"}
+
+        pulls_by_branch: dict[str, list[dict[str, Any]]] = {}
+        for pull in self._list_pull_requests(repo):
+            try:
+                number = int(pull.get("number"))
+            except (TypeError, ValueError):
+                continue
+            head = pull.get("head")
+            if not isinstance(head, dict):
+                continue
+            branch = str(head.get("ref") or "").strip()
+            sha = str(head.get("sha") or "").strip().lower()
+            head_repo = head.get("repo")
+            head_repo_name = (
+                str(head_repo.get("full_name") or "").strip()
+                if isinstance(head_repo, dict)
+                else ""
+            )
+            try:
+                normalized_head_repo = normalize_github_repository(head_repo_name)
+            except ValidationError:
+                continue
+            if (
+                normalized_head_repo != repo
+                or not branch
+                or len(branch) > 255
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in branch)
+                or not re.fullmatch(r"[0-9a-f]{40}", sha)
+            ):
+                continue
+            state = str(pull.get("state") or "").strip().lower()
+            if state not in {"open", "closed"}:
+                continue
+            pr_state = "MERGED" if pull.get("merged_at") else state.upper()
+            pulls_by_branch.setdefault(branch, []).append(
+                {
+                    "number": number,
+                    "state": pr_state,
+                    "head": sha,
+                    "head_repo": normalized_head_repo,
+                }
+            )
+
+        observations: list[dict[str, Any]] = []
+        for issue in self._list_ai_work_issues(repo, state="all"):
+            try:
+                number = int(issue.get("number"))
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: candidate issue number missing"
+                ) from exc
+            issue_state = str(issue.get("state") or "").strip().lower()
+            if issue_state not in {"open", "closed"}:
+                raise ValidationError(
+                    f"work packet issue #{number} has unsupported GitHub state"
+                )
+            updated_at = str(
+                issue.get("updated_at") or issue.get("updatedAt") or ""
+            ).strip()
+            if len(updated_at) > 64 or any(
+                ord(ch) < 32 or ord(ch) == 127 for ch in updated_at
+            ):
+                updated_at = ""
+
+            try:
+                trust = self._lookup_author_trust(repo, issue)
+            except ValidationError as exc:
+                raise ValidationError(
+                    "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                    f"candidate #{number} unverifiable ({exc})"
+                ) from exc
+            if trust != "trusted":
+                observations.append(
+                    {
+                        "repository": repo,
+                        "issue_number": number,
+                        "issue_state": issue_state.upper(),
+                        "issue_updated_at": updated_at or None,
+                        "author_trust": "untrusted",
+                        "packet_status": None,
+                        "branch": None,
+                        "head": None,
+                        "pr_number": None,
+                        "pr_state": "UNKNOWN",
+                        "pr_head": None,
+                        "canonical_fact": False,
+                        "reasons": ["AUTHOR_UNTRUSTED"],
+                    }
+                )
+                continue
+
+            body = str(issue.get("body") or "")
+            try:
+                meta = _parse_leading_packet_metadata(body)
+                _require_v2_packet_metadata(body)
+            except ValidationError:
+                observations.append(
+                    {
+                        "repository": repo,
+                        "issue_number": number,
+                        "issue_state": issue_state.upper(),
+                        "issue_updated_at": updated_at or None,
+                        "author_trust": "trusted",
+                        "packet_status": None,
+                        "branch": None,
+                        "head": None,
+                        "pr_number": None,
+                        "pr_state": "UNKNOWN",
+                        "pr_head": None,
+                        "canonical_fact": False,
+                        "reasons": ["PACKET_METADATA_INVALID"],
+                    }
+                )
+                continue
+
+            reasons: list[str] = []
+            target = str(meta.get("TARGET_REPO") or "").strip()
+            try:
+                require_canonical_target_repo(target, repo)
+            except ValidationError:
+                reasons.append("TARGET_REPO_MISMATCH")
+
+            branch = str(meta.get("BRANCH") or "").strip()
+            if (
+                not branch
+                or len(branch) > 255
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in branch)
+            ):
+                reasons.append("BRANCH_MISSING_OR_INVALID")
+                branch = ""
+
+            raw_status = str(meta.get("STATUS") or "").strip()
+            if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", raw_status):
+                packet_status = raw_status
+            else:
+                packet_status = "INVALID"
+            if raw_status not in allowed_statuses:
+                reasons.append("NONCANONICAL_STATUS")
+
+            head = str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", head):
+                reasons.append("HEAD_MISSING_OR_INVALID")
+                head = ""
+
+            if issue_state == "closed" and raw_status != "COMPLETE":
+                reasons.append("ISSUE_STATE_STATUS_CONFLICT")
+
+            pr_number: int | None = None
+            pr_state = "NONE"
+            pr_head: str | None = None
+            if branch:
+                matches = pulls_by_branch.get(branch, [])
+                exact = [item for item in matches if item["head"] == head] if head else []
+                selected: dict[str, Any] | None = None
+                if len(exact) == 1:
+                    selected = exact[0]
+                elif len(exact) > 1:
+                    pr_state = "AMBIGUOUS"
+                    reasons.append("PR_AMBIGUOUS")
+                elif len(matches) == 1:
+                    selected = matches[0]
+                    reasons.append("PR_HEAD_MISMATCH")
+                elif len(matches) > 1:
+                    pr_state = "AMBIGUOUS"
+                    reasons.extend(["PR_AMBIGUOUS", "PR_HEAD_MISMATCH"])
+                if selected is not None:
+                    pr_number = int(selected["number"])
+                    pr_state = str(selected["state"])
+                    pr_head = str(selected["head"])
+                    if raw_status == "ACTIVE" and pr_state == "MERGED":
+                        reasons.append("PACKET_PR_STATE_CONFLICT")
+                    if raw_status == "COMPLETE" and pr_state == "OPEN":
+                        reasons.append("PACKET_PR_STATE_CONFLICT")
+
+            observations.append(
+                {
+                    "repository": repo,
+                    "issue_number": number,
+                    "issue_state": issue_state.upper(),
+                    "issue_updated_at": updated_at or None,
+                    "author_trust": "trusted",
+                    "packet_status": packet_status,
+                    "branch": branch or None,
+                    "head": head or None,
+                    "pr_number": pr_number,
+                    "pr_state": pr_state,
+                    "pr_head": pr_head,
+                    "canonical_fact": not reasons,
+                    "reasons": sorted(set(reasons)),
+                }
+            )
+        observations.sort(key=lambda item: int(item["issue_number"]))
+        return observations
+
     def _view_issue(self, repository: str, issue_number: int) -> dict:
         view = self._run(
             [
@@ -3106,15 +3310,19 @@ class GitHubWorkPacketAdapter:
             raise ValidationError("gh issue view returned non-object JSON")
         return payload
 
-    def _list_open_ai_work_issues(self, repository: str) -> list[dict]:
-        """List every open ``[AI Work]`` issue, following GitHub pagination.
+    def _list_ai_work_issues(
+        self, repository: str, *, state: str = "open"
+    ) -> list[dict]:
+        """List every ``[AI Work]`` issue for one GitHub issue state.
 
-        ``gh issue list --limit`` cannot prove repository-wide uniqueness: the
-        CLI cap hides older matches. ``gh api --paginate`` follows Link headers
-        until the set is complete; a truncated or malformed page fails closed.
-        The issues API also returns pull requests, which are excluded.
+        ``gh issue list --limit`` cannot prove repository-wide completeness:
+        the CLI cap hides older matches. ``gh api --paginate`` follows Link
+        headers until the set is complete; malformed or partial pages fail
+        closed. Pull requests returned by the issues API are excluded.
         """
-        path = f"repos/{repository}/issues?state=open&per_page=100"
+        if state not in {"open", "closed", "all"}:
+            raise ValidationError(f"unsupported GitHub issue state: {state}")
+        path = f"repos/{repository}/issues?state={state}&per_page=100"
         listed = self._run(["gh", "api", "--paginate", "--slurp", path])
         if listed.returncode != 0:
             detail = (listed.stderr or listed.stdout or "").strip()
@@ -3134,6 +3342,25 @@ class GitHubWorkPacketAdapter:
             if title.startswith("[AI Work]"):
                 issues.append(item)
         return issues
+
+    def _list_open_ai_work_issues(self, repository: str) -> list[dict]:
+        return self._list_ai_work_issues(repository, state="open")
+
+    def _list_pull_requests(self, repository: str) -> list[dict]:
+        """List all pull requests for read-only packet/head reconciliation."""
+        path = f"repos/{repository}/pulls?state=all&per_page=100"
+        listed = self._run(["gh", "api", "--paginate", "--slurp", path])
+        if listed.returncode != 0:
+            detail = (listed.stderr or listed.stdout or "").strip()
+            raise ValidationError(
+                detail[:500]
+                or f"gh api pulls failed with exit {listed.returncode}"
+            )
+        try:
+            payload = json.loads(listed.stdout or "")
+        except json.JSONDecodeError as exc:
+            raise ValidationError("gh api pulls returned non-JSON") from exc
+        return _flatten_paginated_issue_pages(payload)
 
     @staticmethod
     def _repository_active_packet(body: str, *, repository: str) -> bool:
