@@ -17,6 +17,8 @@ from atlas.cli import main
 from atlas.context_learned import (
     DATA_EGRESS_READY,
     RUNTIME_READY,
+    _REQUIREMENT_BLOCKERS,
+    _TRUST_BLOCKERS,
     bind_learned_canary_admission,
     load_learned_canary_binding,
     normalize_learned_canary_report,
@@ -292,6 +294,29 @@ class ContextLearnedCanaryTests(unittest.TestCase):
         )
         with self.assertRaises(ValidationError):
             normalize_learned_canary_report(reordered)
+
+    def test_upstream_blocker_vocabulary_matrix_is_exact(self) -> None:
+        for field, code in _REQUIREMENT_BLOCKERS:
+            report = _ready_report()
+            report["decision"] = "SETUP_ALLOWED"
+            report["canary_ready"] = False
+            report["requirements"][field] = False
+            report["blockers"] = [code]
+            self.assertEqual(
+                normalize_learned_canary_report(report)["blockers"],
+                [code],
+            )
+
+        for code in sorted(_TRUST_BLOCKERS):
+            report = _ready_report()
+            report["decision"] = "SETUP_ALLOWED"
+            report["canary_ready"] = False
+            report["requirements"]["trusted_runtime_evidence"] = False
+            report["blockers"] = [code]
+            self.assertEqual(
+                normalize_learned_canary_report(report)["blockers"],
+                [code],
+            )
 
     def test_base_or_shadow_input_must_be_canonical(self) -> None:
         active = _context_input()
