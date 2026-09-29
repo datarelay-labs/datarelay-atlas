@@ -4062,6 +4062,122 @@ class GitHubWorkPacketAdapter:
             ),
         }
 
+    def reread_trusted_active_execution_packet(
+        self, repository: str, issue_number: int
+    ) -> dict[str, Any]:
+        """Return bounded execution metadata after the strict readiness re-read.
+
+        Free-form body/sections are parsed transiently and never returned.
+        Provider identity is attribution only; it cannot bypass readiness,
+        author-permission, predecessor, or ACTIVE occupancy gates.
+        """
+        readiness = self.reread_trusted_active_readiness_packet(
+            repository, issue_number
+        )
+        repo = normalize_github_repository(repository)
+        number = int(issue_number)
+        payload = self._view_issue(repo, number)
+        payload_number = payload.get("number")
+        if (
+            isinstance(payload_number, bool)
+            or not isinstance(payload_number, int)
+            or payload_number != number
+        ):
+            raise ValidationError(
+                "canonical execution packet issue identity mismatch"
+            )
+        self._assert_ai_work_issue(payload, issue_number=number)
+
+        login = _github_login_from_issue(payload)
+        permission_result = self._run(
+            ["gh", "api", f"repos/{repo}/collaborators/{login}/permission"]
+        )
+        if permission_result.returncode != 0:
+            raise ValidationError(
+                "WORK_PACKET_AUTHOR_UNTRUSTED: permission lookup failed"
+            )
+        try:
+            permission_payload = json.loads(permission_result.stdout or "")
+        except json.JSONDecodeError as exc:
+            raise ValidationError(
+                "WORK_PACKET_AUTHOR_UNTRUSTED: permission lookup returned non-JSON"
+            ) from exc
+        if _classify_collaborator_permission(permission_payload) != "trusted":
+            raise ValidationError(
+                "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                "permission is not write, maintain, or admin"
+            )
+        author_permission = str(
+            permission_payload.get("permission") or ""
+        ).strip().lower()
+
+        body = str(payload.get("body") or "")
+        meta = _parse_leading_packet_metadata(body)
+        _require_v2_packet_metadata(body)
+        if meta.get("STATUS") != "ACTIVE":
+            raise ValidationError("canonical execution packet is not ACTIVE")
+        if str(meta.get("QUEUE_STATE") or "NONE").strip() != "NONE":
+            raise ValidationError(
+                "canonical execution ACTIVE packet must have QUEUE_STATE=NONE"
+            )
+        require_canonical_target_repo(
+            str(meta.get("TARGET_REPO") or ""), repo
+        )
+
+        branch = str(meta.get("BRANCH") or "").strip()
+        workstream = str(meta.get("WORKSTREAM") or "").strip()
+        head = str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower()
+        if (
+            not _valid_git_branch_ref(branch)
+            or not WORKSTREAM_RE.fullmatch(workstream)
+            or not re.fullmatch(r"[0-9a-f]{40}", head)
+        ):
+            raise ValidationError(
+                "canonical execution packet has invalid branch, workstream, or head"
+            )
+
+        implementer = str(meta.get("IMPLEMENTER") or "").strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", implementer):
+            raise ValidationError(
+                "canonical execution packet IMPLEMENTER is invalid"
+            )
+        change_risk = str(meta.get("CHANGE_RISK") or "").strip()
+        if change_risk not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+            raise ValidationError(
+                "canonical execution packet CHANGE_RISK is invalid"
+            )
+        revision_text = str(meta.get("INTENT_REVISION") or "").strip()
+        if not re.fullmatch(r"[1-9][0-9]{0,8}", revision_text):
+            raise ValidationError(
+                "canonical execution packet INTENT_REVISION is invalid"
+            )
+        intent_revision = int(revision_text)
+
+        expected_core = {
+            "repository": repo,
+            "issue_number": number,
+            "branch": branch,
+            "workstream": workstream,
+            "head": head,
+            "status": "ACTIVE",
+            "queue_state": "NONE",
+        }
+        if any(readiness.get(key) != value for key, value in expected_core.items()):
+            raise ValidationError(
+                "canonical execution packet changed during bounded re-read"
+            )
+
+        return {
+            **expected_core,
+            "implementer": implementer,
+            "change_risk": change_risk,
+            "intent_revision": intent_revision,
+            "author_permission": author_permission,
+            "updated_at": str(
+                payload.get("updatedAt") or payload.get("updated_at") or ""
+            ),
+        }
+
     def read_readiness_packet_fact(
         self, repository: str, issue_number: int
     ) -> dict[str, Any]:
