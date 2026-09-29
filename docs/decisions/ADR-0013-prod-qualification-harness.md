@@ -7,7 +7,7 @@ Date: 2026-09-26
 
 Issue #65 prepares public-smoke and operational-E2E machinery while Lane A
 activates the prod-atlas runtime. Atlas is pinned to Engineering System
-v1.6.5 baseline `f912e7a11dea9b289e50cdc530423cbc16b25f58`. At that baseline,
+v1.6.5 baseline `cf75b71264757b8cf5fc9614017f19c585183966`. At that baseline,
 `production_oriented: true` requires `operational_e2e_required`,
 `public_smoke_required`, and `full_e2e_passes>=1`, and a non-empty release
 command is executed by the pinned release contract. Those flags stay false
