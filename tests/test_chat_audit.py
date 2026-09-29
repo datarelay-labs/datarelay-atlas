@@ -207,7 +207,8 @@ class ChatAuditTests(unittest.TestCase):
             self.assertEqual(out["outcome"], "FINDING")
             self.assertEqual(len(handoff.handoffs), 1)
             self.assertIn("[AI Work]", handoff.handoffs[0]["title"])
-            self.assertIn("Cursor", handoff.handoffs[0]["next_action"])
+            self.assertIn("ChatGPT Chat", handoff.handoffs[0]["next_action"])
+            self.assertNotIn("Cursor", handoff.handoffs[0]["next_action"])
             self.assertEqual(len(out["packet"]["open_findings"]), 1)
 
     def test_09_fresh_chat_resume_uses_only_packet_state(self):
@@ -1171,6 +1172,7 @@ class ChatAuditTests(unittest.TestCase):
         state: dict[str, Any] = {"sha": None, "raw": None}
 
         claims: dict[str, dict] = {}
+        created_issue_bodies: list[str] = []
 
         def runner(argv: list[str], cwd: str):
             # Control-branch bootstrap metadata.
@@ -1278,6 +1280,8 @@ class ChatAuditTests(unittest.TestCase):
                     argv, 0, stdout="[]", stderr=""
                 )
             if argv[:3] == ["gh", "issue", "create"]:
+                body_path = Path(argv[argv.index("--body-file") + 1])
+                created_issue_bodies.append(body_path.read_text(encoding="utf-8"))
                 return subprocess.CompletedProcess(
                     argv,
                     0,
@@ -1336,6 +1340,20 @@ class ChatAuditTests(unittest.TestCase):
             record = handoff.upsert_implementation_packet(packet, finding)
             self.assertEqual(record["action"], "created")
             self.assertEqual(record["issue_number"], 321)
+            self.assertEqual(len(created_issue_bodies), 1)
+            created_body = created_issue_bodies[0]
+            self.assertIn("IMPLEMENTER=CHATGPT_CHAT", created_body)
+            self.assertIn("CHANGE_RISK=MEDIUM", created_body)
+            self.assertIn("INTENT_REVISION=1", created_body)
+            self.assertIn("QUEUE_STATE=NONE", created_body)
+            self.assertRegex(
+                created_body,
+                r"(?m)^WORKSTREAM=audit-finding-[0-9a-f]{24}$",
+            )
+            self.assertIn(
+                "authorized ChatGPT Chat Work Packet", created_body
+            )
+            self.assertNotIn("Implement the bounded audit finding in Cursor", created_body)
 
             def runner2(argv: list[str], cwd: str):
                 import subprocess

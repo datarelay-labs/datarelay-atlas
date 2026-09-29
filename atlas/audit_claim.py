@@ -179,6 +179,7 @@ class AuditClaim:
 
 
 _DISPOSITION_VERDICT = {
+    "rework_handoff": "REWORK",
     "redispatched": "REWORK",
     "dispatch_blocked": "HUMAN_REQUIRED",
     "pass_checkpoint": "PASS",

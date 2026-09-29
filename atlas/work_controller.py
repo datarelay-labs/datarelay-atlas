@@ -1288,6 +1288,37 @@ def render_rework_work_packet_body(
     return updated.rstrip() + "\n"
 
 
+def render_rework_handoff_work_packet_body(
+    body: str,
+    *,
+    repository: str,
+    branch: str,
+    workstream: str,
+    findings: str,
+    attempt: int,
+    head: str,
+) -> str:
+    # Render REWORK as an authorized provider-neutral implementation handoff.
+    rendered = render_rework_work_packet_body(
+        body,
+        repository=repository,
+        branch=branch,
+        workstream=workstream,
+        findings=findings,
+        attempt=attempt,
+        head=head,
+    )
+    rendered = rendered.replace(
+        "Canonical Work Packet mutated before `/work-resume` dispatch.",
+        "Canonical Work Packet updated for an authorized implementation handoff.",
+    )
+    rendered = rendered.replace(
+        "WORK_PACKET_MUTATION=PENDING_DISPATCH",
+        "WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF",
+    )
+    return rendered
+
+
 def render_dispatch_blocked_work_packet_body(
     body: str,
     *,
