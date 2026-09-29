@@ -71,12 +71,14 @@ class FakePacketAdapter(GitHubWorkPacketAdapter):
         activation_error: bool = False,
         fresh_error: bool = False,
         uniqueness_error: bool = False,
+        implementer: str = "CURSOR",
     ) -> None:
         self.activation = activated() if activation is None else activation
         self.fresh = active_fact() if fresh is None else fresh
         self.activation_error = activation_error
         self.fresh_error = fresh_error
         self.uniqueness_error = uniqueness_error
+        self.implementer = implementer
         self.activation_calls = 0
         self.fresh_calls = 0
         self.uniqueness_calls = 0
@@ -107,7 +109,7 @@ class FakePacketAdapter(GitHubWorkPacketAdapter):
         if not isinstance(base, dict):
             return base
         base.setdefault("queue_state", "NONE")
-        base["implementer"] = getattr(self, "implementer", "CHATGPT_CHAT")
+        base["implementer"] = self.implementer
         base["change_risk"] = getattr(self, "change_risk", "HIGH")
         base["intent_revision"] = getattr(self, "intent_revision", 3)
         base["author_permission"] = getattr(self, "author_permission", "write")
@@ -179,7 +181,7 @@ class SuccessfulPreflightDispatcher(PtyPersistCursorDispatcher):
 
 class ReadinessAuthorizedHandoffTests(unittest.TestCase):
     def test_chat_handoff_authorizes_without_cursor_dispatcher(self) -> None:
-        adapter = FakePacketAdapter()
+        adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
 
         result = activate_and_authorize_single_worker_handoff(
             graph_path=Path("/tmp/graph.json"),
@@ -247,7 +249,7 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
         )
 
     def test_chat_handoff_implementer_mismatch_fails_closed(self) -> None:
-        adapter = FakePacketAdapter()
+        adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
         adapter.implementer = "CURSOR"
 
         result = activate_and_authorize_single_worker_handoff(
@@ -262,7 +264,7 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
         self.assertEqual(result["reason"], "IMPLEMENTER_PROFILE_MISMATCH")
 
     def test_non_chat_profile_has_no_implicit_adapter(self) -> None:
-        adapter = FakePacketAdapter()
+        adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
 
         result = activate_and_authorize_single_worker_handoff(
             graph_path=Path("/tmp/graph.json"),
@@ -284,7 +286,7 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
             ("intent_revision", 0),
             ("author_permission", "read"),
         ):
-            adapter = FakePacketAdapter()
+            adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
             setattr(adapter, field, value)
             cases.append((adapter, "EXECUTION_PACKET_METADATA_INVALID"))
         cases.append(
@@ -311,13 +313,13 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
             graph_path=Path("/tmp/graph.json"),
             workstream=WORKSTREAM,
             worktree_path=WORKTREE,
-            packet_adapter=FakePacketAdapter(),
+            packet_adapter=FakePacketAdapter(implementer="CHATGPT_CHAT"),
         )
         second = activate_and_authorize_single_worker_handoff(
             graph_path=Path("/tmp/graph.json"),
             workstream=WORKSTREAM,
             worktree_path=WORKTREE,
-            packet_adapter=FakePacketAdapter(),
+            packet_adapter=FakePacketAdapter(implementer="CHATGPT_CHAT"),
         )
         self.assertEqual(
             first["authorization_digest"], second["authorization_digest"]
@@ -382,6 +384,10 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
         )
 
         self.assertEqual(result["action"], "dispatched")
+        self.assertEqual(result["result"], "DISPATCHED")
+        self.assertEqual(result["execution_profile"], "CURSOR")
+        self.assertEqual(result["adapter"], "PTY_PERSIST_CURSOR")
+        self.assertTrue(result["spawned"])
         self.assertEqual(result["session_id"], "ready-1")
         self.assertEqual(result["resume_prompt"], "/work-resume")
         self.assertEqual(adapter.activation_calls, 1)
@@ -403,6 +409,22 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
         encoded = json.dumps(result)
         for forbidden in ("body", "OWNER_INTENT", "prompt_text", "transcript"):
             self.assertNotIn(forbidden, encoded)
+
+    def test_chat_packet_cannot_enter_legacy_cursor_adapter(self) -> None:
+        adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
+        dispatcher = FakePersistentDispatcher()
+
+        result = activate_and_dispatch_single_worker(
+            graph_path=Path("/tmp/graph.json"),
+            workstream=WORKSTREAM,
+            worktree_path=WORKTREE,
+            packet_adapter=adapter,
+            dispatcher=dispatcher,
+        )
+
+        self.assertEqual(result["action"], "human_required")
+        self.assertEqual(result["reason"], "IMPLEMENTER_PROFILE_MISMATCH")
+        self.assertEqual(dispatcher.requests, [])
 
     def test_active_packet_drift_or_recheck_failure_never_dispatches(self) -> None:
         for adapter, expected_reason in (
@@ -591,6 +613,7 @@ class ActivePacketDispatchBoundaryTests(unittest.TestCase):
         version: str = "2",
         queue_state: str = "NONE",
         workstream: str = WORKSTREAM,
+        implementer: str = "CHATGPT_CHAT",
     ) -> str:
         return (
             f"PACKET_VERSION={version}\n"

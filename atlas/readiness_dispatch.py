@@ -1,4 +1,4 @@
-"""Single-worker graph activation and persistent Cursor dispatch boundary.
+"""Provider-neutral single-worker activation with an explicit legacy Cursor adapter.
 
 This module composes the existing readiness activation primitive with the
 existing exact-head persistent dispatcher.  It deliberately has no retry loop:
@@ -385,7 +385,7 @@ def activate_and_dispatch_single_worker(
         )
 
     try:
-        fresh = packet_adapter.reread_trusted_active_readiness_packet(
+        fresh = packet_adapter.reread_trusted_active_execution_packet(
             selected["repository"],
             selected["issue_number"],
         )
@@ -403,12 +403,19 @@ def activate_and_dispatch_single_worker(
         "workstream": expected_workstream,
         "head": selected["head"],
         "status": "ACTIVE",
+        "queue_state": "NONE",
     }
     if not isinstance(fresh, dict) or any(
         fresh.get(key) != value for key, value in expected_active.items()
     ):
         return _human_required(
             "ACTIVE_PACKET_DRIFT",
+            selected_node=selected,
+            plan_digest=plan_digest,
+        )
+    if fresh.get("implementer") != "CURSOR":
+        return _human_required(
+            "IMPLEMENTER_PROFILE_MISMATCH",
             selected_node=selected,
             plan_digest=plan_digest,
         )
@@ -475,9 +482,16 @@ def activate_and_dispatch_single_worker(
         )
 
     result: dict[str, Any] = {
+        "schema_version": _EXECUTION_RESULT_SCHEMA_VERSION,
+        "kind": "provider_neutral_execution_result",
+        "result": "DISPATCHED",
         "action": "dispatched",
         "plan_digest": plan_digest,
         "selected_node": selected,
+        "execution_profile": "CURSOR",
+        "provider_attribution": "CURSOR",
+        "adapter": "PTY_PERSIST_CURSOR",
+        "spawned": True,
         "session_id": dispatched.session_id.strip(),
         "resume_prompt": RESUME_PROMPT,
     }
