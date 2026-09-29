@@ -286,9 +286,10 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
             "--spawn-dispatch"
         )
     if packet_choice is None:
-        # Offline/fixed and metadata-only OpenAI default to recording so they
-        # do not mutate GitHub. Codex remains the production GitHub path.
-        packet_choice = "recording" if adapter in {"fixed", "openai"} else "github"
+        # ChatGPT-primary default is audit-only and must not mutate GitHub or
+        # spawn Cursor. An explicit --spawn-dispatch selects the GitHub packet
+        # path, where WorkController enforces IMPLEMENTER=CURSOR.
+        packet_choice = "github" if spawn else "recording"
     if packet_choice == "github" and not spawn:
         raise ValidationError(
             "GitHub Work Packet mutation requires --spawn-dispatch "

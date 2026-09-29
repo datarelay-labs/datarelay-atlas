@@ -190,6 +190,13 @@ def activate_and_dispatch_single_worker(
             plan_digest=plan_digest,
         )
 
+    if fresh.get("implementer") != "CURSOR":
+        return _human_required(
+            "CURSOR_OPT_IN_REQUIRED",
+            selected_node=selected,
+            plan_digest=plan_digest,
+        )
+
     try:
         packet_adapter.require_unique_active_readiness_packet(
             selected["repository"],
@@ -212,6 +219,7 @@ def activate_and_dispatch_single_worker(
         repository=selected["repository"],
         expected_head=selected["head"],
         resume_prompt=RESUME_PROMPT,
+        cursor_opt_in=True,
     )
     try:
         dispatched = dispatcher.start_resume(request)

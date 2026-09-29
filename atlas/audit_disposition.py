@@ -372,6 +372,33 @@ def apply_exact_head_disposition(
     if _packet_marker(body, target, "WORK_PACKET_MUTATION=DISPATCH_BLOCKED"):
         return _result("duplicate", verdict="REWORK", findings=findings)
 
+    if _packet_metadata_value(body, "IMPLEMENTER") != "CURSOR":
+        blocked_findings = _bounded_findings(
+            findings
+            + "\nCursor dispatch disabled: active Work Packet must explicitly set "
+            "IMPLEMENTER=CURSOR.",
+            chat_id=chat_id,
+            worktree=worktree_path,
+        )
+        _remember(
+            ledger,
+            claim_key=expected_key,
+            repository=repo,
+            issue_number=issue_number,
+            action="human_required",
+            verdict="HUMAN_REQUIRED",
+            target_sha=target,
+            findings=blocked_findings,
+            attempt=attempt,
+        )
+        claim_store.save(ledger, expected_sha=ledger_sha)
+        return _result(
+            "cursor_opt_in_required",
+            verdict="HUMAN_REQUIRED",
+            findings=blocked_findings,
+            packet_mutations=packet_store.mutations,
+        )
+
     collapsed = " ".join(findings.split())
     prompt = (
         "Address the exact-HEAD REWORK findings on this worktree. "
@@ -504,6 +531,7 @@ def apply_exact_head_disposition(
                 host_probe=probe,
                 list_sessions=list_sessions,
                 list_processes=list_processes,
+                cursor_opt_in=True,
             )
         except ValidationError as exc:
             return _compensate(str(exc))

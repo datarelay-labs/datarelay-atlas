@@ -1731,6 +1731,51 @@ class SelectedPacketProjectionTests(unittest.TestCase):
             "author": {"login": login},
         }
 
+    def test_cursor_dispatch_authorization_requires_explicit_implementer(self) -> None:
+        head = "c" * 40
+        branch = "feature/cursor-opt-in"
+        workstream = "cursor-opt-in-test"
+        base_body = self._body(
+            status="ACTIVE",
+            branch=branch,
+            head=head,
+            workstream=workstream,
+        )
+        cursor_body = base_body.replace(
+            f"LAST_VERIFIED_HEAD={head}\n\n",
+            f"IMPLEMENTER=CURSOR\nLAST_VERIFIED_HEAD={head}\n\n",
+        )
+        chat_body = cursor_body.replace("IMPLEMENTER=CURSOR", "IMPLEMENTER=CHATGPT_CHAT")
+
+        allowed, _calls = self._adapter(
+            {12: self._issue(12, state="OPEN", body=cursor_body)}
+        )
+        with mock.patch.object(
+            allowed, "_require_unique_active_packet", return_value=None
+        ):
+            allowed.assert_cursor_dispatch_authorized(
+                repository=self.REPO,
+                issue_number=12,
+                branch=branch,
+                workstream=workstream,
+                head=head,
+            )
+
+        denied, _calls = self._adapter(
+            {12: self._issue(12, state="OPEN", body=chat_body)}
+        )
+        with mock.patch.object(
+            denied, "_require_unique_active_packet", return_value=None
+        ):
+            with self.assertRaisesRegex(ValidationError, "IMPLEMENTER=CURSOR"):
+                denied.assert_cursor_dispatch_authorized(
+                    repository=self.REPO,
+                    issue_number=12,
+                    branch=branch,
+                    workstream=workstream,
+                    head=head,
+                )
+
     def test_selected_projection_reads_only_explicit_packets(self) -> None:
         complete = self._issue(
             10,
@@ -2024,8 +2069,8 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
             args.data_root = tmp
             args.spawn_dispatch = False
             ctl = atlas_cli._controller_from_args(args)
-            self.assertIsInstance(ctl.work_packet, RecordingWorkPacketAdapter)
-            self.assertIsInstance(ctl.dispatcher, AuditOnlyCursorDispatcher)
+            self.assertIsInstance(ctl.work_packet, atlas_cli.RecordingWorkPacketAdapter)
+            self.assertIsInstance(ctl.dispatcher, atlas_cli.AuditOnlyCursorDispatcher)
 
     def test_audit_only_rework_does_not_claim_dispatch(self):
         """Recording + AuditOnlyCursorDispatcher must not claim REWORK_DISPATCHED."""
@@ -2094,10 +2139,10 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             args.data_root = tmp
             ctl = atlas_cli._controller_from_args(args)
-            self.assertIsInstance(ctl.work_packet, GitHubWorkPacketAdapter)
-            self.assertIsInstance(ctl.dispatcher, PtyPersistCursorDispatcher)
+            self.assertIsInstance(ctl.work_packet, atlas_cli.GitHubWorkPacketAdapter)
+            self.assertIsInstance(ctl.dispatcher, atlas_cli.PtyPersistCursorDispatcher)
 
-    def test_github_without_spawn_fails_closed(self):
+    def test_codex_without_spawn_defaults_to_recording_audit_only(self):
         from atlas import cli as atlas_cli
 
         parser = build_parser()
@@ -2113,11 +2158,12 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             args.data_root = tmp
             args.spawn_dispatch = False
-            with self.assertRaises(ValidationError):
-                atlas_cli._controller_from_args(args)
+            ctl = atlas_cli._controller_from_args(args)
+            self.assertIsInstance(ctl.work_packet, atlas_cli.RecordingWorkPacketAdapter)
+            self.assertIsInstance(ctl.dispatcher, atlas_cli.AuditOnlyCursorDispatcher)
 
-    def test_fixed_recording_with_spawn_dispatch_fails_closed(self):
-        """Recording packet adapter must not pair with a real PTY dispatcher."""
+    def test_explicit_fixed_spawn_defaults_to_github_packet_gate(self):
+        """Explicit spawn selects GitHub; packet IMPLEMENTER gate still runs later."""
         from atlas import cli as atlas_cli
 
         parser = build_parser()
@@ -2135,10 +2181,9 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             args.data_root = tmp
-            with self.assertRaises(ValidationError) as ctx:
-                atlas_cli._controller_from_args(args)
-            self.assertIn("spawn-dispatch", str(ctx.exception).lower())
-            self.assertIn("github", str(ctx.exception).lower())
+            ctl = atlas_cli._controller_from_args(args)
+            self.assertIsInstance(ctl.work_packet, atlas_cli.GitHubWorkPacketAdapter)
+            self.assertIsInstance(ctl.dispatcher, atlas_cli.PtyPersistCursorDispatcher)
 
     def test_explicit_recording_with_spawn_dispatch_fails_closed(self):
         from atlas import cli as atlas_cli

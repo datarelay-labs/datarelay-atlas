@@ -65,10 +65,10 @@ if [[ "${AWC_DRAIN:-1}" == "1" ]]; then
       exit 1
       ;;
   esac
-  # Real spawn requires canonical GitHub Work Packet mutation. Fixed/offline
-  # defaults to recording and therefore must not pass --spawn-dispatch unless
-  # the operator explicitly selects github.
-  WANT_SPAWN="${AWC_SPAWN_DISPATCH:-1}"
+  # Cursor is disabled by default. Real spawn requires explicit operator
+  # opt-in plus canonical GitHub Work Packet mutation; WorkController then
+  # verifies IMPLEMENTER=CURSOR on that exact active packet before spawning.
+  WANT_SPAWN="${AWC_SPAWN_DISPATCH:-0}"
   # Metadata-only OpenAI must not spawn or mutate the canonical packet.
   if [[ "$ADAPTER" == "fixed" && "${AWC_WORK_PACKET_ADAPTER:-}" != "github" ]]; then
     WANT_SPAWN=0

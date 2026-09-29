@@ -85,9 +85,19 @@ exec "{real_python}" "$@"
             self.assertTrue(capture.is_file(), msg="drain-inbox was not invoked")
             return capture.read_text(encoding="utf-8")
 
-    def test_default_codex_passes_spawn_dispatch(self):
+    def test_default_codex_is_audit_only(self):
         argv = self._run_hook(spawn_dispatch=None, audit_adapter="codex")
+        self.assertNotIn("--spawn-dispatch", argv)
+        self.assertIn("--work-packet-adapter recording", argv)
+
+    def test_explicit_codex_spawn_uses_github_packet(self):
+        argv = self._run_hook(
+            spawn_dispatch="1",
+            audit_adapter="codex",
+            work_packet_adapter="github",
+        )
         self.assertIn("--spawn-dispatch", argv)
+        self.assertIn("--work-packet-adapter github", argv)
 
     def test_default_fixed_omits_spawn_without_github_packet(self):
         argv = self._run_hook(spawn_dispatch=None, audit_adapter="fixed")

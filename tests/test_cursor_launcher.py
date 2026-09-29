@@ -73,9 +73,22 @@ class CursorLauncherTests(unittest.TestCase):
             attempt=2,
             repository="datarelay-labs/datarelay-atlas",
             expected_head="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            cursor_opt_in=True,
         )
         base.update(overrides)
         return DispatchRequest(**base)
+
+    def test_dispatcher_rejects_missing_cursor_opt_in_before_spawn(self):
+        dispatcher = PtyPersistCursorDispatcher(
+            list_sessions=lambda: [],
+            spawn=lambda _argv, _cwd: self.fail("spawn must not run"),
+            list_target_procs=lambda _wt: [],
+            resource_preflight=lambda: (0, "RESULT=PASS\nEXIT_CODE=0\nREASON=ok\n"),
+        )
+        request = self._dispatch_request("/tmp", cursor_opt_in=False)
+        with self.assertRaisesRegex(ValidationError, "IMPLEMENTER=CURSOR"):
+            dispatcher.start_resume(request)
+        self.assertEqual(dispatcher.spawned_pids, [])
 
     def test_build_persist_resume_command_canonical_argv(self):
         req = self._dispatch_request("/tmp/wt")

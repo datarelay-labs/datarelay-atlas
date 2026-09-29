@@ -55,6 +55,7 @@ def _packet_body(
         f"BRANCH={branch}\n"
         "TASK_KIND=DEVELOPMENT\n"
         "OWNER_INTENT=Readiness multi-node deterministic E2E.\n"
+        "IMPLEMENTER=CURSOR\n"
         f"LAST_VERIFIED_HEAD={head}\n"
         f"{after}"
         "\n"

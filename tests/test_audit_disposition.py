@@ -38,8 +38,8 @@ HOST = "testhost"
 SECRET = "OPENAI_API_KEY=sk-fake-secret-1234567890"
 
 
-def _packet_body(head: str = HEAD) -> str:
-    return f"""PACKET_VERSION=1
+def _packet_body(head: str = HEAD, *, implementer: str = "CURSOR") -> str:
+    return f"""PACKET_VERSION=2
 TARGET_REPO={REPO}
 WORKSTREAM={WORKSTREAM}
 STATUS=ACTIVE
@@ -47,6 +47,9 @@ QUEUE_STATE=NONE
 BRANCH={BRANCH}
 TASK_KIND=DEVELOPMENT
 OWNER_INTENT=Replace unreliable scheduled-Chat orchestration.
+INTENT_REVISION=1
+CHANGE_RISK=HIGH
+IMPLEMENTER={implementer}
 LAST_VERIFIED_HEAD={head}
 GATE=IMPLEMENTATION
 NEXT_ACTION=CURSOR_IMPLEMENT_SLICE_D_AUTONOMOUS_REWORK_REDISPATCH
@@ -214,6 +217,17 @@ class SliceDDispositionTests(unittest.TestCase):
         }
         fields.update(overrides)
         return apply_exact_head_disposition(**fields)  # type: ignore[arg-type]
+
+    def test_rework_without_cursor_implementer_opt_in_never_resumes(self) -> None:
+        self.packet = MemoryPacketStore(_packet_body(implementer="CHATGPT_CHAT"))
+
+        result = self._apply()
+
+        self.assertEqual(result["action"], "cursor_opt_in_required")
+        self.assertEqual(result["verdict"], "HUMAN_REQUIRED")
+        self.assertEqual(result["cursor_calls"], 0)
+        self.assertEqual(result["packet_mutations"], 0)
+        self.assertEqual(self.spawned, [])
 
     def test_rework_mutates_once_and_resumes_the_same_chat(self) -> None:
         outcome = self._apply()
