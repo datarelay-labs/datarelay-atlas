@@ -4296,6 +4296,105 @@ class GitHubWorkPacketAdapter:
             "queue_state": queue_state,
         }
 
+    def authorize_readiness_single_effect(
+        self,
+        graph_path: Path,
+    ) -> dict[str, Any]:
+        """Return the read-only canonical readiness authorization."""
+        from atlas.readiness_authorization import (
+            authorize_github_single_effect_file,
+        )
+
+        return authorize_github_single_effect_file(
+            Path(graph_path),
+            self.read_readiness_packet_fact,
+        )
+
+    def reread_trusted_queued_execution_packet(
+        self, repository: str, issue_number: int
+    ) -> dict[str, Any]:
+        """Return bounded trusted PAUSED+QUEUED execution identity.
+
+        This is a read-only pre-activation gate used by executable adapters.
+        It prevents an adapter from causing readiness mutation unless the
+        canonical packet explicitly selects that implementer profile.
+        """
+        repo = normalize_github_repository(repository)
+        if (
+            isinstance(issue_number, bool)
+            or not isinstance(issue_number, int)
+            or issue_number < 1
+        ):
+            raise ValidationError(
+                "canonical queued execution issue_number is invalid"
+            )
+        number = issue_number
+        payload = self._view_issue(repo, number)
+        payload_number = payload.get("number")
+        if (
+            isinstance(payload_number, bool)
+            or not isinstance(payload_number, int)
+            or payload_number != number
+        ):
+            raise ValidationError(
+                "canonical queued execution packet issue identity mismatch"
+            )
+        self._assert_ai_work_issue(payload, issue_number=number)
+        self._require_trusted_issue_author(repo, payload)
+        body = str(payload.get("body") or "")
+        meta = _parse_leading_packet_metadata(body)
+        version_text = str(meta.get("PACKET_VERSION") or "").strip()
+        if not re.fullmatch(r"[1-9][0-9]{0,2}", version_text):
+            raise ValidationError(
+                "canonical queued execution PACKET_VERSION is invalid"
+            )
+        if int(version_text) < 2:
+            raise ValidationError(
+                "canonical queued execution packet requires PACKET_VERSION>=2"
+            )
+        _require_v2_packet_metadata(body)
+        if meta.get("STATUS") != "PAUSED":
+            raise ValidationError(
+                "canonical queued execution packet is not PAUSED"
+            )
+        if str(meta.get("QUEUE_STATE") or "").strip() != "QUEUED":
+            raise ValidationError(
+                "canonical queued execution packet is not QUEUED"
+            )
+        require_canonical_target_repo(
+            str(meta.get("TARGET_REPO") or ""), repo
+        )
+        branch = str(meta.get("BRANCH") or "").strip()
+        workstream = str(meta.get("WORKSTREAM") or "").strip()
+        head_raw = str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower()
+        if (
+            not _valid_git_branch_ref(branch)
+            or not WORKSTREAM_RE.fullmatch(workstream)
+            or not re.fullmatch(r"[0-9a-f]{40}", head_raw)
+        ):
+            raise ValidationError(
+                "canonical queued execution packet has invalid "
+                "branch, workstream, or head"
+            )
+        implementer = str(meta.get("IMPLEMENTER") or "").strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", implementer):
+            raise ValidationError(
+                "canonical queued execution packet IMPLEMENTER is invalid"
+            )
+        return {
+            "repository": repo,
+            "issue_number": number,
+            "branch": branch,
+            "workstream": workstream,
+            "head": head_raw,
+            "packet_status": "PAUSED",
+            "queue_state": "QUEUED",
+            "implementer": implementer,
+            "updated_at": str(
+                payload.get("updatedAt") or payload.get("updated_at") or ""
+            ),
+        }
+
     def activate_authorized_readiness_packet(
         self,
         graph_path: Path,
@@ -4305,14 +4404,10 @@ class GitHubWorkPacketAdapter:
         This performs the GitHub packet mutation only. It never starts or
         resumes a worker/session.
         """
-        from atlas.readiness_authorization import (
-            authorize_github_single_effect_file,
-        )
         from atlas.readiness_graph import load_readiness_graph
 
-        authorization = authorize_github_single_effect_file(
-            Path(graph_path),
-            self.read_readiness_packet_fact,
+        authorization = self.authorize_readiness_single_effect(
+            Path(graph_path)
         )
         if authorization.get("decision") != "ALLOW":
             return {
@@ -4451,9 +4546,8 @@ class GitHubWorkPacketAdapter:
         )
 
         def _assert_pre_edit_readiness() -> None:
-            repeated = authorize_github_single_effect_file(
-                Path(graph_path),
-                self.read_readiness_packet_fact,
+            repeated = self.authorize_readiness_single_effect(
+                Path(graph_path)
             )
             if repeated != authorization or repeated.get("decision") != "ALLOW":
                 raise ValidationError(

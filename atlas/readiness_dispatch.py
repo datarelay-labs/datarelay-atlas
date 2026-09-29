@@ -350,11 +350,79 @@ def activate_and_dispatch_single_worker(
         )
 
     try:
+        preauthorization = packet_adapter.authorize_readiness_single_effect(
+            Path(graph_path)
+        )
+    except ValidationError:
+        return _human_required("AUTHORIZATION_FAILED")
+    if not isinstance(preauthorization, dict):
+        return _human_required("AUTHORIZATION_RESULT_INVALID")
+    if preauthorization.get("decision") != "ALLOW":
+        return {
+            "action": "denied",
+            "authorization": preauthorization,
+        }
+    pre_digest = preauthorization.get("plan_digest")
+    if (
+        not isinstance(pre_digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", pre_digest)
+    ):
+        return _human_required("AUTHORIZATION_RESULT_INVALID")
+    try:
+        preselected = _selected_node(
+            preauthorization.get("selected_node")
+        )
+    except ValidationError:
+        return _human_required(
+            "AUTHORIZATION_RESULT_INVALID",
+            plan_digest=pre_digest,
+        )
+    try:
+        queued = packet_adapter.reread_trusted_queued_execution_packet(
+            preselected["repository"],
+            preselected["issue_number"],
+        )
+    except ValidationError:
+        return _human_required(
+            "QUEUED_EXECUTION_PACKET_RECHECK_FAILED",
+            selected_node=preselected,
+            plan_digest=pre_digest,
+        )
+    expected_queued = {
+        "repository": preselected["repository"],
+        "issue_number": preselected["issue_number"],
+        "branch": preselected["branch"],
+        "workstream": expected_workstream,
+        "head": preselected["head"],
+        "packet_status": "PAUSED",
+        "queue_state": "QUEUED",
+    }
+    if not isinstance(queued, dict) or any(
+        queued.get(key) != value
+        for key, value in expected_queued.items()
+    ):
+        return _human_required(
+            "QUEUED_PACKET_DRIFT",
+            selected_node=preselected,
+            plan_digest=pre_digest,
+        )
+    if queued.get("implementer") != "CURSOR":
+        return _human_required(
+            "IMPLEMENTER_PROFILE_MISMATCH",
+            selected_node=preselected,
+            plan_digest=pre_digest,
+        )
+
+    try:
         activation = packet_adapter.activate_authorized_readiness_packet(
             Path(graph_path)
         )
     except ValidationError:
-        return _human_required("ACTIVATION_FAILED")
+        return _human_required(
+            "ACTIVATION_FAILED",
+            selected_node=preselected,
+            plan_digest=pre_digest,
+        )
 
     if not isinstance(activation, dict):
         return _human_required("ACTIVATION_RESULT_INVALID")
@@ -376,11 +444,23 @@ def activate_and_dispatch_single_worker(
         or not re.fullmatch(r"[0-9a-f]{64}", plan_digest)
     ):
         return _human_required("ACTIVATION_RESULT_INVALID")
+    if plan_digest != pre_digest:
+        return _human_required(
+            "ACTIVATION_AUTHORIZATION_DRIFT",
+            selected_node=preselected,
+            plan_digest=plan_digest,
+        )
     try:
         selected = _selected_node(activation.get("selected_node"))
     except ValidationError:
         return _human_required(
             "ACTIVATION_RESULT_INVALID",
+            plan_digest=plan_digest,
+        )
+    if selected != preselected:
+        return _human_required(
+            "ACTIVATION_AUTHORIZATION_DRIFT",
+            selected_node=selected,
             plan_digest=plan_digest,
         )
 

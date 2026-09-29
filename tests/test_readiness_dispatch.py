@@ -79,9 +79,43 @@ class FakePacketAdapter(GitHubWorkPacketAdapter):
         self.fresh_error = fresh_error
         self.uniqueness_error = uniqueness_error
         self.implementer = implementer
+        self.authorization_calls = 0
+        self.queued_calls = 0
         self.activation_calls = 0
         self.fresh_calls = 0
         self.uniqueness_calls = 0
+
+    def authorize_readiness_single_effect(self, _path: Path) -> object:
+        self.authorization_calls += 1
+        if self.activation_error:
+            # Activation errors are post-authorization in this fake.
+            return {
+                "decision": "ALLOW",
+                "plan_digest": DIGEST,
+                "selected_node": selected_node(),
+            }
+        if isinstance(self.activation, dict) and self.activation.get("action") == "denied":
+            return self.activation.get("authorization")
+        if isinstance(self.activation, dict) and self.activation.get("action") == "activated":
+            return {
+                "decision": "ALLOW",
+                "plan_digest": self.activation.get("plan_digest"),
+                "selected_node": self.activation.get("selected_node"),
+            }
+        return self.activation
+
+    def reread_trusted_queued_execution_packet(
+        self, repository: str, issue_number: int
+    ) -> object:
+        self.queued_calls += 1
+        base = active_fact()
+        base["packet_status"] = "PAUSED"
+        base["queue_state"] = "QUEUED"
+        base["implementer"] = self.implementer
+        base["repository"] = repository
+        base["issue_number"] = issue_number
+        base.pop("status", None)
+        return base
 
     def activate_authorized_readiness_packet(self, _path: Path) -> object:
         self.activation_calls += 1
@@ -349,7 +383,9 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
         )
 
         self.assertEqual(result["action"], "denied")
-        self.assertEqual(adapter.activation_calls, 1)
+        self.assertEqual(adapter.authorization_calls, 1)
+        self.assertEqual(adapter.activation_calls, 0)
+        self.assertEqual(adapter.queued_calls, 0)
         self.assertEqual(adapter.fresh_calls, 0)
         self.assertEqual(dispatcher.requests, [])
 
@@ -367,6 +403,8 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
 
         self.assertEqual(result["action"], "human_required")
         self.assertEqual(result["reason"], "ACTIVATION_FAILED")
+        self.assertEqual(adapter.authorization_calls, 1)
+        self.assertEqual(adapter.queued_calls, 1)
         self.assertEqual(adapter.activation_calls, 1)
         self.assertEqual(adapter.fresh_calls, 0)
         self.assertEqual(dispatcher.requests, [])
@@ -390,6 +428,8 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
         self.assertTrue(result["spawned"])
         self.assertEqual(result["session_id"], "ready-1")
         self.assertEqual(result["resume_prompt"], "/work-resume")
+        self.assertEqual(adapter.authorization_calls, 1)
+        self.assertEqual(adapter.queued_calls, 1)
         self.assertEqual(adapter.activation_calls, 1)
         self.assertEqual(adapter.fresh_calls, 1)
         self.assertEqual(adapter.uniqueness_calls, 1)
@@ -424,6 +464,9 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
 
         self.assertEqual(result["action"], "human_required")
         self.assertEqual(result["reason"], "IMPLEMENTER_PROFILE_MISMATCH")
+        self.assertEqual(adapter.authorization_calls, 1)
+        self.assertEqual(adapter.queued_calls, 1)
+        self.assertEqual(adapter.activation_calls, 0)
         self.assertEqual(dispatcher.requests, [])
 
     def test_active_packet_drift_or_recheck_failure_never_dispatches(self) -> None:
@@ -626,7 +669,7 @@ class ActivePacketDispatchBoundaryTests(unittest.TestCase):
             "OWNER_INTENT=Dispatch the authorized worker.\n"
             f"LAST_VERIFIED_HEAD={HEAD}\n"
             f"AFTER_ISSUE={PREDECESSOR}\n"
-            "IMPLEMENTER=CHATGPT_CHAT\n"
+            f"IMPLEMENTER={implementer}\n"
             "CHANGE_RISK=HIGH\n"
             "INTENT_REVISION=3\n"
         )
@@ -800,6 +843,40 @@ class ActivePacketDispatchBoundaryTests(unittest.TestCase):
                     adapter.reread_trusted_active_execution_packet(
                         REPO, ISSUE
                     )
+
+    def test_queued_execution_profile_is_bounded_and_explicit(self) -> None:
+        body = (
+            self._body(implementer="CURSOR")
+            .replace("STATUS=ACTIVE", "STATUS=PAUSED", 1)
+            .replace("QUEUE_STATE=NONE", "QUEUE_STATE=QUEUED", 1)
+        )
+        fact = self._adapter(
+            body=body
+        ).reread_trusted_queued_execution_packet(REPO, ISSUE)
+
+        self.assertEqual(fact["repository"], REPO)
+        self.assertEqual(fact["issue_number"], ISSUE)
+        self.assertEqual(fact["branch"], BRANCH)
+        self.assertEqual(fact["workstream"], WORKSTREAM)
+        self.assertEqual(fact["head"], HEAD)
+        self.assertEqual(fact["packet_status"], "PAUSED")
+        self.assertEqual(fact["queue_state"], "QUEUED")
+        self.assertEqual(fact["implementer"], "CURSOR")
+        encoded = json.dumps(fact)
+        for forbidden in ("OWNER_INTENT", "body", "## Goal", "prompt"):
+            self.assertNotIn(forbidden, encoded)
+
+    def test_queued_execution_profile_rejects_missing_or_chat_drift(self) -> None:
+        missing = (
+            self._body()
+            .replace("STATUS=ACTIVE", "STATUS=PAUSED", 1)
+            .replace("QUEUE_STATE=NONE", "QUEUE_STATE=QUEUED", 1)
+            .replace("IMPLEMENTER=CHATGPT_CHAT\n", "", 1)
+        )
+        with self.assertRaisesRegex(ValidationError, "IMPLEMENTER"):
+            self._adapter(
+                body=missing
+            ).reread_trusted_queued_execution_packet(REPO, ISSUE)
 
     def test_dispatch_uniqueness_gate_rejects_graph_omitted_active(self) -> None:
         adapter = self._adapter(extra_active=True)
