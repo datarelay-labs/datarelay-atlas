@@ -112,6 +112,9 @@ class FakePacketAdapter(GitHubWorkPacketAdapter):
         base["packet_status"] = "PAUSED"
         base["queue_state"] = "QUEUED"
         base["implementer"] = self.implementer
+        base["change_risk"] = getattr(self, "change_risk", "HIGH")
+        base["intent_revision"] = getattr(self, "intent_revision", 3)
+        base["author_permission"] = getattr(self, "author_permission", "write")
         base["repository"] = repository
         base["issue_number"] = issue_number
         base.pop("status", None)
@@ -213,6 +216,29 @@ class SuccessfulPreflightDispatcher(PtyPersistCursorDispatcher):
         )
 
 
+def chat_git_runner(
+    *,
+    repository: str = REPO,
+    branch: str = BRANCH,
+    head: str = HEAD,
+    dirty: bool = False,
+):
+    def run(argv: list[str], cwd: str) -> str:
+        if argv == ["git", "rev-parse", "--show-toplevel"]:
+            return str(Path(cwd).resolve())
+        if argv == ["git", "remote", "get-url", "origin"]:
+            return f"https://github.com/{repository}.git"
+        if argv == ["git", "branch", "--show-current"]:
+            return branch
+        if argv == ["git", "rev-parse", "HEAD"]:
+            return head
+        if argv == ["git", "status", "--porcelain", "--untracked-files=all"]:
+            return " M dirty" if dirty else ""
+        raise AssertionError(argv)
+
+    return run
+
+
 class ReadinessAuthorizedHandoffTests(unittest.TestCase):
     def test_chat_handoff_authorizes_without_cursor_dispatcher(self) -> None:
         adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
@@ -222,6 +248,7 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
             workstream=WORKSTREAM,
             worktree_path=WORKTREE,
             packet_adapter=adapter,
+            git_runner=chat_git_runner(),
         )
 
         self.assertEqual(result["result"], "AUTHORIZED_HANDOFF")
@@ -273,6 +300,7 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
             workstream=WORKSTREAM,
             worktree_path=WORKTREE,
             packet_adapter=adapter,
+            git_runner=chat_git_runner(),
         )
 
         self.assertEqual(result["action"], "human_required")
@@ -291,11 +319,56 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
             workstream=WORKSTREAM,
             worktree_path=WORKTREE,
             packet_adapter=adapter,
+            git_runner=chat_git_runner(),
         )
 
         self.assertEqual(result["action"], "human_required")
         self.assertEqual(result["result"], "HUMAN_REQUIRED")
         self.assertEqual(result["reason"], "IMPLEMENTER_PROFILE_MISMATCH")
+        self.assertEqual(adapter.activation_calls, 0)
+
+    def test_chat_handoff_wrong_or_dirty_worktree_fails_before_activation(self) -> None:
+        cases = (
+            (chat_git_runner(repository="datarelay-labs/other"), "wrong repository"),
+            (chat_git_runner(branch="feature/other"), "wrong branch"),
+            (chat_git_runner(head="f" * 40), "wrong head"),
+            (chat_git_runner(dirty=True), "dirty worktree"),
+        )
+        for runner, label in cases:
+            with self.subTest(label=label):
+                adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
+                result = activate_and_authorize_single_worker_handoff(
+                    graph_path=Path("/tmp/graph.json"),
+                    workstream=WORKSTREAM,
+                    worktree_path=WORKTREE,
+                    packet_adapter=adapter,
+                    git_runner=runner,
+                )
+                self.assertEqual(result["action"], "human_required")
+                self.assertEqual(result["reason"], "WORKTREE_IDENTITY_REFUSED")
+                self.assertEqual(adapter.activation_calls, 0)
+
+    def test_chat_handoff_invalid_queued_metadata_fails_before_activation(self) -> None:
+        for field, value in (
+            ("change_risk", "UNKNOWN"),
+            ("intent_revision", 0),
+            ("author_permission", "read"),
+        ):
+            with self.subTest(field=field):
+                adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
+                setattr(adapter, field, value)
+                result = activate_and_authorize_single_worker_handoff(
+                    graph_path=Path("/tmp/graph.json"),
+                    workstream=WORKSTREAM,
+                    worktree_path=WORKTREE,
+                    packet_adapter=adapter,
+                    git_runner=chat_git_runner(),
+                )
+                self.assertEqual(result["action"], "human_required")
+                self.assertEqual(
+                    result["reason"], "EXECUTION_PACKET_METADATA_INVALID"
+                )
+                self.assertEqual(adapter.activation_calls, 0)
 
     def test_non_chat_profile_has_no_implicit_adapter(self) -> None:
         adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
@@ -306,6 +379,7 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
             worktree_path=WORKTREE,
             packet_adapter=adapter,
             implementer_profile="CURSOR",
+            git_runner=chat_git_runner(),
         )
 
         self.assertEqual(result["action"], "human_required")
@@ -325,7 +399,10 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
             cases.append((adapter, "EXECUTION_PACKET_METADATA_INVALID"))
         cases.append(
             (
-                FakePacketAdapter(fresh_error=True),
+                FakePacketAdapter(
+                    fresh_error=True,
+                    implementer="CHATGPT_CHAT",
+                ),
                 "ACTIVE_EXECUTION_PACKET_RECHECK_FAILED",
             )
         )
@@ -337,10 +414,13 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
                     workstream=WORKSTREAM,
                     worktree_path=WORKTREE,
                     packet_adapter=adapter,
+                    git_runner=chat_git_runner(),
                 )
                 self.assertEqual(result["action"], "human_required")
                 self.assertEqual(result["result"], "HUMAN_REQUIRED")
                 self.assertEqual(result["reason"], reason)
+                if reason == "EXECUTION_PACKET_METADATA_INVALID":
+                    self.assertEqual(adapter.activation_calls, 0)
 
     def test_chat_handoff_digest_is_deterministic(self) -> None:
         first = activate_and_authorize_single_worker_handoff(
@@ -348,12 +428,14 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
             workstream=WORKSTREAM,
             worktree_path=WORKTREE,
             packet_adapter=FakePacketAdapter(implementer="CHATGPT_CHAT"),
+            git_runner=chat_git_runner(),
         )
         second = activate_and_authorize_single_worker_handoff(
             graph_path=Path("/tmp/graph.json"),
             workstream=WORKSTREAM,
             worktree_path=WORKTREE,
             packet_adapter=FakePacketAdapter(implementer="CHATGPT_CHAT"),
+            git_runner=chat_git_runner(),
         )
         self.assertEqual(
             first["authorization_digest"], second["authorization_digest"]

@@ -26,6 +26,7 @@ from atlas.work_controller import (
     ResourcePreflightBlocked,
     WORKSTREAM_RE,
     redact_absolute_paths,
+    validate_clean_worktree_identity,
 )
 
 _HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -139,6 +140,7 @@ def activate_and_authorize_single_worker_handoff(
     worktree_path: str,
     packet_adapter: GitHubWorkPacketAdapter,
     implementer_profile: str = _CHATGPT_CHAT,
+    git_runner=None,
 ) -> dict[str, Any]:
     """Activate one packet and authorize an external provider-neutral handoff.
 
@@ -169,11 +171,109 @@ def activate_and_authorize_single_worker_handoff(
         return _execution_human_required("EXECUTION_ADAPTER_NOT_CONFIGURED")
 
     try:
+        preauthorization = packet_adapter.authorize_readiness_single_effect(
+            Path(graph_path)
+        )
+    except ValidationError:
+        return _execution_human_required("AUTHORIZATION_FAILED")
+    if not isinstance(preauthorization, dict):
+        return _execution_human_required("AUTHORIZATION_RESULT_INVALID")
+    if preauthorization.get("decision") != "ALLOW":
+        return _execution_human_required(
+            "ACTIVATION_DENIED",
+            authorization=preauthorization,
+        )
+    pre_digest = preauthorization.get("plan_digest")
+    if (
+        not isinstance(pre_digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", pre_digest)
+    ):
+        return _execution_human_required("AUTHORIZATION_RESULT_INVALID")
+    try:
+        preselected = _selected_node(
+            preauthorization.get("selected_node")
+        )
+    except ValidationError:
+        return _execution_human_required(
+            "AUTHORIZATION_RESULT_INVALID",
+            plan_digest=pre_digest,
+        )
+
+    try:
+        queued = packet_adapter.reread_trusted_queued_execution_packet(
+            preselected["repository"],
+            preselected["issue_number"],
+        )
+    except ValidationError:
+        return _execution_human_required(
+            "QUEUED_EXECUTION_PACKET_RECHECK_FAILED",
+            selected_node=preselected,
+            plan_digest=pre_digest,
+        )
+    expected_queued = {
+        "repository": preselected["repository"],
+        "issue_number": preselected["issue_number"],
+        "branch": preselected["branch"],
+        "workstream": expected_workstream,
+        "head": preselected["head"],
+        "packet_status": "PAUSED",
+        "queue_state": "QUEUED",
+    }
+    if not isinstance(queued, dict) or any(
+        queued.get(key) != value for key, value in expected_queued.items()
+    ):
+        return _execution_human_required(
+            "QUEUED_PACKET_DRIFT",
+            selected_node=preselected,
+            plan_digest=pre_digest,
+        )
+    if queued.get("implementer") != requested_profile:
+        return _execution_human_required(
+            "IMPLEMENTER_PROFILE_MISMATCH",
+            selected_node=preselected,
+            plan_digest=pre_digest,
+        )
+    change_risk = queued.get("change_risk")
+    intent_revision = queued.get("intent_revision")
+    author_permission = queued.get("author_permission")
+    if (
+        change_risk not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+        or isinstance(intent_revision, bool)
+        or not isinstance(intent_revision, int)
+        or intent_revision < 1
+        or author_permission not in {"write", "maintain", "admin"}
+    ):
+        return _execution_human_required(
+            "EXECUTION_PACKET_METADATA_INVALID",
+            selected_node=preselected,
+            plan_digest=pre_digest,
+        )
+
+    try:
+        validate_clean_worktree_identity(
+            target_worktree,
+            repository=preselected["repository"],
+            branch=preselected["branch"],
+            expected_head=preselected["head"],
+            git_runner=git_runner,
+        )
+    except ValidationError:
+        return _execution_human_required(
+            "WORKTREE_IDENTITY_REFUSED",
+            selected_node=preselected,
+            plan_digest=pre_digest,
+        )
+
+    try:
         activation = packet_adapter.activate_authorized_readiness_packet(
             Path(graph_path)
         )
     except ValidationError:
-        return _execution_human_required("ACTIVATION_FAILED")
+        return _execution_human_required(
+            "ACTIVATION_FAILED",
+            selected_node=preselected,
+            plan_digest=pre_digest,
+        )
 
     if not isinstance(activation, dict):
         return _execution_human_required("ACTIVATION_RESULT_INVALID")
@@ -195,11 +295,23 @@ def activate_and_authorize_single_worker_handoff(
         or not re.fullmatch(r"[0-9a-f]{64}", plan_digest)
     ):
         return _execution_human_required("ACTIVATION_RESULT_INVALID")
+    if plan_digest != pre_digest:
+        return _execution_human_required(
+            "ACTIVATION_AUTHORIZATION_DRIFT",
+            selected_node=preselected,
+            plan_digest=plan_digest,
+        )
     try:
         selected = _selected_node(activation.get("selected_node"))
     except ValidationError:
         return _execution_human_required(
             "ACTIVATION_RESULT_INVALID",
+            plan_digest=plan_digest,
+        )
+    if selected != preselected:
+        return _execution_human_required(
+            "ACTIVATION_AUTHORIZATION_DRIFT",
+            selected_node=selected,
             plan_digest=plan_digest,
         )
 
@@ -256,18 +368,13 @@ def activate_and_authorize_single_worker_handoff(
             selected_node=selected,
             plan_digest=plan_digest,
         )
-    change_risk = fresh.get("change_risk")
-    intent_revision = fresh.get("intent_revision")
-    author_permission = fresh.get("author_permission")
     if (
-        change_risk not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
-        or isinstance(intent_revision, bool)
-        or not isinstance(intent_revision, int)
-        or intent_revision < 1
-        or author_permission not in {"write", "maintain", "admin"}
+        fresh.get("change_risk") != change_risk
+        or fresh.get("intent_revision") != intent_revision
+        or fresh.get("author_permission") != author_permission
     ):
         return _execution_human_required(
-            "EXECUTION_PACKET_METADATA_INVALID",
+            "EXECUTION_PACKET_METADATA_DRIFT",
             selected_node=selected,
             plan_digest=plan_digest,
         )

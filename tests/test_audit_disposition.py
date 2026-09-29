@@ -259,6 +259,25 @@ class SliceDDispositionTests(unittest.TestCase):
         self.assertEqual(packet.mutations, 1)
         self.assertEqual(self.spawned, [])
 
+    def test_chat_rework_preserves_pending_dispatch_text_inside_finding(self) -> None:
+        packet = MemoryPacketStore(
+            _packet_body(implementer="CHATGPT_CHAT")
+        )
+        finding = (
+            "Finding discusses literal "
+            "WORK_PACKET_MUTATION=PENDING_DISPATCH and must remain unchanged."
+        )
+        outcome = self._apply(
+            claim=_claim("REWORK", findings=finding),
+            packet_store=packet,
+        )
+
+        self.assertEqual(outcome["action"], "authorized_handoff")
+        self.assertIn(finding, packet.body)
+        self.assertIn(
+            "WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF", packet.body
+        )
+
     def test_rework_mutates_once_and_resumes_the_same_chat(self) -> None:
         outcome = self._apply()
         self.assertEqual(outcome["action"], "redispatched")

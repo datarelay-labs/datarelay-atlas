@@ -1198,6 +1198,7 @@ def render_rework_work_packet_body(
     findings: str,
     attempt: int,
     head: str,
+    authorized_handoff: bool = False,
 ) -> str:
     """Rewrite canonical packet sections for a REWORK handoff.
 
@@ -1245,6 +1246,14 @@ def render_rework_work_packet_body(
         safe_findings = "(no findings text provided)"
     # Quote findings inside fences so residual markdown cannot steal sections.
     quoted_findings = "```text\n" + safe_findings + "\n```"
+    continuation_text = (
+        "Canonical Work Packet updated for an authorized implementation handoff."
+        if authorized_handoff
+        else "Canonical Work Packet mutated before `/work-resume` dispatch."
+    )
+    mutation_marker = (
+        "AUTHORIZED_HANDOFF" if authorized_handoff else "PENDING_DISPATCH"
+    )
     updated = _set_packet_metadata_line(raw, "LAST_VERIFIED_HEAD", head.strip().lower())
     updated = _replace_packet_section(
         updated,
@@ -1256,7 +1265,7 @@ def render_rework_work_packet_body(
             f"- Branch: `{expected_branch}`\n"
             f"- Findings:\n"
             f"{quoted_findings}\n"
-            f"- Canonical Work Packet mutated before `/work-resume` dispatch."
+            f"- {continuation_text}"
         ),
     )
     updated = _replace_packet_section(
@@ -1280,7 +1289,7 @@ def render_rework_work_packet_body(
             f"ATTEMPT={attempt}\n"
             "VERDICT=REWORK\n"
             f"FINDINGS=\n{safe_findings}\n"
-            "WORK_PACKET_MUTATION=PENDING_DISPATCH\n"
+            f"WORK_PACKET_MUTATION={mutation_marker}\n"
             "```"
         ),
     )
@@ -1298,8 +1307,8 @@ def render_rework_handoff_work_packet_body(
     attempt: int,
     head: str,
 ) -> str:
-    # Render REWORK as an authorized provider-neutral implementation handoff.
-    rendered = render_rework_work_packet_body(
+    # Render the handoff marker directly so finding text is never rewritten.
+    return render_rework_work_packet_body(
         body,
         repository=repository,
         branch=branch,
@@ -1307,17 +1316,8 @@ def render_rework_handoff_work_packet_body(
         findings=findings,
         attempt=attempt,
         head=head,
+        authorized_handoff=True,
     )
-    rendered = rendered.replace(
-        "Canonical Work Packet mutated before `/work-resume` dispatch.",
-        "Canonical Work Packet updated for an authorized implementation handoff.",
-    )
-    rendered = rendered.replace(
-        "WORK_PACKET_MUTATION=PENDING_DISPATCH",
-        "WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF",
-    )
-    return rendered
-
 
 def render_dispatch_blocked_work_packet_body(
     body: str,
@@ -4341,6 +4341,28 @@ class GitHubWorkPacketAdapter:
             )
         self._assert_ai_work_issue(payload, issue_number=number)
         self._require_trusted_issue_author(repo, payload)
+        login = _github_login_from_issue(payload)
+        permission_result = self._run(
+            ["gh", "api", f"repos/{repo}/collaborators/{login}/permission"]
+        )
+        if permission_result.returncode != 0:
+            raise ValidationError(
+                "WORK_PACKET_AUTHOR_UNTRUSTED: permission lookup failed"
+            )
+        try:
+            permission_payload = json.loads(permission_result.stdout or "")
+        except json.JSONDecodeError as exc:
+            raise ValidationError(
+                "WORK_PACKET_AUTHOR_UNTRUSTED: permission lookup returned non-JSON"
+            ) from exc
+        if _classify_collaborator_permission(permission_payload) != "trusted":
+            raise ValidationError(
+                "WORK_PACKET_AUTHOR_UNTRUSTED: "
+                "permission is not write, maintain, or admin"
+            )
+        author_permission = str(
+            permission_payload.get("permission") or ""
+        ).strip().lower()
         body = str(payload.get("body") or "")
         meta = _parse_leading_packet_metadata(body)
         version_text = str(meta.get("PACKET_VERSION") or "").strip()
@@ -4381,6 +4403,17 @@ class GitHubWorkPacketAdapter:
             raise ValidationError(
                 "canonical queued execution packet IMPLEMENTER is invalid"
             )
+        change_risk = str(meta.get("CHANGE_RISK") or "").strip()
+        if change_risk not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+            raise ValidationError(
+                "canonical queued execution packet CHANGE_RISK is invalid"
+            )
+        revision_text = str(meta.get("INTENT_REVISION") or "").strip()
+        if not re.fullmatch(r"[1-9][0-9]{0,8}", revision_text):
+            raise ValidationError(
+                "canonical queued execution packet INTENT_REVISION is invalid"
+            )
+        intent_revision = int(revision_text)
         return {
             "repository": repo,
             "issue_number": number,
@@ -4390,6 +4423,9 @@ class GitHubWorkPacketAdapter:
             "packet_status": "PAUSED",
             "queue_state": "QUEUED",
             "implementer": implementer,
+            "change_risk": change_risk,
+            "intent_revision": intent_revision,
+            "author_permission": author_permission,
             "updated_at": str(
                 payload.get("updatedAt") or payload.get("updated_at") or ""
             ),
