@@ -209,11 +209,38 @@ class SliceCClaimTests(unittest.TestCase):
         auditor = ScriptAuditor("PASS")
         outcome = self._run(
             auditor=auditor,
+            execution_profile="CURSOR",
             list_sessions=lambda: [
                 PersistSession(session_id="s", workspace=self.worktree, status="Attached")
             ],
         )
         self.assertEqual(outcome["action"], "cursor_active_noop")
+        self.assertEqual(auditor.calls, 0)
+        self.assertEqual(self.store.writes, 0)
+
+    def test_chat_profile_does_not_probe_cursor_state(self) -> None:
+        auditor = ScriptAuditor("PASS")
+
+        def cursor_probe_forbidden(*_args, **_kwargs):
+            raise AssertionError("Chat audit must not probe Cursor state")
+
+        outcome = self._run(
+            auditor=auditor,
+            execution_profile="CHATGPT_CHAT",
+            list_sessions=cursor_probe_forbidden,
+            list_processes=cursor_probe_forbidden,
+        )
+        self.assertEqual(outcome["action"], "audited")
+        self.assertEqual(outcome["verdict"], "PASS")
+        self.assertEqual(auditor.calls, 1)
+
+    def test_unknown_execution_profile_fails_closed(self) -> None:
+        auditor = ScriptAuditor("PASS")
+        outcome = self._run(
+            auditor=auditor,
+            execution_profile="OTHER",
+        )
+        self.assertEqual(outcome["action"], "implementer_refused")
         self.assertEqual(auditor.calls, 0)
         self.assertEqual(self.store.writes, 0)
 

@@ -3965,6 +3965,7 @@ class GitHubWorkPacketAdapter:
                     "workstream": str(meta.get("WORKSTREAM") or "").strip(),
                     "head": str(meta.get("LAST_VERIFIED_HEAD") or "").strip(),
                     "audit_base": optional_audit_base_head(meta),
+                    "implementer": str(meta.get("IMPLEMENTER") or "").strip(),
                     "status": "ACTIVE",
                 }
             )
@@ -4001,6 +4002,7 @@ class GitHubWorkPacketAdapter:
             "workstream": workstream,
             "head": head_raw,
             "audit_base": optional_audit_base_head(meta),
+            "implementer": str(meta.get("IMPLEMENTER") or "").strip(),
             "status": "ACTIVE",
             "updated_at": str(
                 payload.get("updatedAt") or payload.get("updated_at") or ""
