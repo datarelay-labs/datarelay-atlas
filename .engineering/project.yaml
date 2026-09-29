@@ -1,7 +1,7 @@
 engineering_system:
   version: 1.6.5
   mode: adopted
-  baseline: f912e7a11dea9b289e50cdc530423cbc16b25f58
+  baseline: cf75b71264757b8cf5fc9614017f19c585183966
   ci_mode: shared
   native_ci_workflows: []
   merge_gate_status: unknown
@@ -31,8 +31,13 @@ operations:
   - docs/runbooks/continuous-chat-audit-supervisor-poc.md
   - docs/runbooks/phase2-production-service.md
   - docs/runbooks/phase2-data-protection.md
-  health_command: PYTHONPATH=. python3 -m atlas ops check --env-file "${ATLAS_SERVICE_ENV_FILE:?set ATLAS_SERVICE_ENV_FILE}"
-  backup_command: PYTHONPATH=. python3 -m atlas ops backup --data-root "${ATLAS_DATA_ROOT:?set ATLAS_DATA_ROOT}" --dest "${ATLAS_BACKUP_DEST:?set ATLAS_BACKUP_DEST}"
-  restore_test_command: PYTHONPATH=. python3 -m atlas ops restore-test --backup "${ATLAS_BACKUP_SRC:?set ATLAS_BACKUP_SRC}" --dest "${ATLAS_RESTORE_PROOF_DEST:?set ATLAS_RESTORE_PROOF_DEST}"
-  upgrade_command: PYTHONPATH=. python3 -m atlas ops upgrade --data-root "${ATLAS_DATA_ROOT:?set ATLAS_DATA_ROOT}"
-  rollback_command: PYTHONPATH=. python3 -m atlas ops rollback --data-root "${ATLAS_DATA_ROOT:?set ATLAS_DATA_ROOT}" --target-code "${ATLAS_ROLLBACK_TARGET:?set ATLAS_ROLLBACK_TARGET}"
+  health_command: PYTHONPATH=. python3 -m atlas ops check --env-file "${ATLAS_SERVICE_ENV_FILE:?set
+    ATLAS_SERVICE_ENV_FILE}"
+  backup_command: PYTHONPATH=. python3 -m atlas ops backup --data-root "${ATLAS_DATA_ROOT:?set
+    ATLAS_DATA_ROOT}" --dest "${ATLAS_BACKUP_DEST:?set ATLAS_BACKUP_DEST}"
+  restore_test_command: PYTHONPATH=. python3 -m atlas ops restore-test --backup "${ATLAS_BACKUP_SRC:?set
+    ATLAS_BACKUP_SRC}" --dest "${ATLAS_RESTORE_PROOF_DEST:?set ATLAS_RESTORE_PROOF_DEST}"
+  upgrade_command: PYTHONPATH=. python3 -m atlas ops upgrade --data-root "${ATLAS_DATA_ROOT:?set
+    ATLAS_DATA_ROOT}"
+  rollback_command: PYTHONPATH=. python3 -m atlas ops rollback --data-root "${ATLAS_DATA_ROOT:?set
+    ATLAS_DATA_ROOT}" --target-code "${ATLAS_ROLLBACK_TARGET:?set ATLAS_ROLLBACK_TARGET}"
