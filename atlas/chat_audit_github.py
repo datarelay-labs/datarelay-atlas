@@ -679,15 +679,30 @@ class GitHubAIWorkHandoff:
         branch = require_persistable_branch(packet.target_branch)
         marker = f"{HANDOFF_MARKER}{safe.finding_id} -->"
         title = f"[AI Work] Audit finding: {safe.finding_id}"[:240]
+        workstream = (
+            "audit-finding-"
+            + hashlib.sha256(safe.finding_id.encode("utf-8")).hexdigest()[:24]
+        )
+        change_risk = {
+            "P0": "CRITICAL",
+            "P1": "HIGH",
+            "P2": "MEDIUM",
+            "P3": "LOW",
+        }[safe.severity]
         body = (
             f"{marker}\n"
             f"PACKET_VERSION=2\n"
             f"TARGET_REPO={packet.target_repository}\n"
+            f"WORKSTREAM={workstream}\n"
             f"STATUS=ACTIVE\n"
+            f"QUEUE_STATE=NONE\n"
             f"BRANCH={branch}\n"
             f"TASK_KIND=DEVELOPMENT\n"
             f"OWNER_INTENT=Implement bounded audit finding {safe.finding_id}\n"
             f"LAST_VERIFIED_HEAD={packet.current_target_sha}\n"
+            f"IMPLEMENTER=CHATGPT_CHAT\n"
+            f"CHANGE_RISK={change_risk}\n"
+            f"INTENT_REVISION=1\n"
             f"GATE=IMPLEMENTATION\n\n"
             f"## Goal\n\n{sanitize_durable_text(safe.summary)}\n\n"
             f"## Finding\n\n"
@@ -696,8 +711,8 @@ class GitHubAIWorkHandoff:
             f"- severity: `{safe.severity}`\n"
             f"- head: `{packet.current_target_sha}`\n\n"
             f"## Next Action\n\n"
-            f"1. Implement the bounded audit finding in Cursor.\n"
-            f"2. Do not modify product code from Chat.\n"
+            f"1. Continue implementation through the authorized ChatGPT Chat Work Packet.\n"
+            f"2. Re-run affected deterministic validation and exact-HEAD checks.\n"
             f"3. Re-audit exact HEAD after the fix lands.\n"
         )
         self._control.ensure_control_branch()

@@ -38,7 +38,9 @@ HOST = "testhost"
 SECRET = "OPENAI_API_KEY=sk-fake-secret-1234567890"
 
 
-def _packet_body(head: str = HEAD) -> str:
+def _packet_body(
+    head: str = HEAD, *, implementer: str = "CURSOR"
+) -> str:
     return f"""PACKET_VERSION=1
 TARGET_REPO={REPO}
 WORKSTREAM={WORKSTREAM}
@@ -48,6 +50,9 @@ BRANCH={BRANCH}
 TASK_KIND=DEVELOPMENT
 OWNER_INTENT=Replace unreliable scheduled-Chat orchestration.
 LAST_VERIFIED_HEAD={head}
+IMPLEMENTER={implementer}
+CHANGE_RISK=HIGH
+INTENT_REVISION=1
 GATE=IMPLEMENTATION
 NEXT_ACTION=CURSOR_IMPLEMENT_SLICE_D_AUTONOMOUS_REWORK_REDISPATCH
 
@@ -215,6 +220,64 @@ class SliceDDispositionTests(unittest.TestCase):
         fields.update(overrides)
         return apply_exact_head_disposition(**fields)  # type: ignore[arg-type]
 
+    def test_chat_rework_authorizes_handoff_without_cursor_spawn(self) -> None:
+        packet = MemoryPacketStore(
+            _packet_body(implementer="CHATGPT_CHAT")
+        )
+
+        def cursor_probe_forbidden(*_args, **_kwargs):
+            raise AssertionError("Chat REWORK must not probe Cursor state")
+
+        outcome = self._apply(
+            packet_store=packet,
+            list_sessions=cursor_probe_forbidden,
+            list_processes=cursor_probe_forbidden,
+        )
+
+        self.assertEqual(outcome["action"], "authorized_handoff")
+        self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertEqual(outcome["verdict"], "REWORK")
+        self.assertEqual(packet.mutations, 1)
+        self.assertEqual(self.spawned, [])
+        self.assertIn(
+            "WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF", packet.body
+        )
+        self.assertIn("VERDICT=REWORK", packet.body)
+        self.assertNotIn("/work-resume", packet.body)
+        self.assertNotIn(CHAT, packet.body)
+
+        ledger, _sha = self.store.load(47)
+        assert ledger is not None
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        self.assertEqual(
+            ledger.dispositions[key]["action"], "rework_handoff"
+        )
+
+        replay = self._apply(packet_store=packet)
+        self.assertEqual(replay["action"], "duplicate")
+        self.assertEqual(replay["cursor_calls"], 0)
+        self.assertEqual(packet.mutations, 1)
+        self.assertEqual(self.spawned, [])
+
+    def test_chat_rework_preserves_pending_dispatch_text_inside_finding(self) -> None:
+        packet = MemoryPacketStore(
+            _packet_body(implementer="CHATGPT_CHAT")
+        )
+        finding = (
+            "Finding discusses literal "
+            "WORK_PACKET_MUTATION=PENDING_DISPATCH and must remain unchanged."
+        )
+        outcome = self._apply(
+            claim=_claim("REWORK", findings=finding),
+            packet_store=packet,
+        )
+
+        self.assertEqual(outcome["action"], "authorized_handoff")
+        self.assertIn(finding, packet.body)
+        self.assertIn(
+            "WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF", packet.body
+        )
+
     def test_rework_mutates_once_and_resumes_the_same_chat(self) -> None:
         outcome = self._apply()
         self.assertEqual(outcome["action"], "redispatched")
@@ -232,6 +295,23 @@ class SliceDDispositionTests(unittest.TestCase):
         self.assertEqual(again["cursor_calls"], 0)
         self.assertEqual(self.packet.mutations, 1)
         self.assertEqual(len(self.spawned), 1)
+
+    def test_missing_or_unknown_implementer_fails_closed(self) -> None:
+        missing = MemoryPacketStore(
+            _packet_body().replace("IMPLEMENTER=CURSOR\n", "")
+        )
+        result = self._apply(packet_store=missing)
+        self.assertEqual(result["action"], "implementer_refused")
+        self.assertEqual(self.spawned, [])
+        self.assertEqual(missing.mutations, 0)
+
+        unknown = MemoryPacketStore(
+            _packet_body(implementer="OTHER")
+        )
+        result = self._apply(packet_store=unknown)
+        self.assertEqual(result["action"], "implementer_refused")
+        self.assertEqual(self.spawned, [])
+        self.assertEqual(unknown.mutations, 0)
 
     def test_stale_dirty_active_and_ambiguous_do_not_dispatch(self) -> None:
         stale = self._apply(head=OTHER, packets=[_snapshot(head=OTHER)])

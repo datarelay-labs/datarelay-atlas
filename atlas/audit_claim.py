@@ -179,6 +179,7 @@ class AuditClaim:
 
 
 _DISPOSITION_VERDICT = {
+    "rework_handoff": "REWORK",
     "redispatched": "REWORK",
     "dispatch_blocked": "HUMAN_REQUIRED",
     "pass_checkpoint": "PASS",
@@ -995,6 +996,7 @@ def run_exact_head_audit(
     git_runner=None,
     list_sessions=None,
     list_processes=None,
+    execution_profile: str = "CHATGPT_CHAT",
     now: Callable[[], float] | None = None,
     api_key_env: str = "OPENAI_API_KEY",
     lease_seconds: float = SLICE_CLAIM_LEASE_SECONDS,
@@ -1023,7 +1025,10 @@ def run_exact_head_audit(
         or packet.status != "ACTIVE"
     ):
         return _result("stale_head")
-    if persistent_cursor_active(
+    profile = str(execution_profile or "").strip()
+    if profile not in {"CHATGPT_CHAT", "CURSOR"}:
+        return _result("implementer_refused")
+    if profile == "CURSOR" and persistent_cursor_active(
         worktree_path,
         list_sessions=list_sessions,
         list_processes=list_processes,

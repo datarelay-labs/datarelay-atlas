@@ -151,6 +151,9 @@ def _same_packet(listed: dict[str, Any], fresh: dict[str, Any]) -> bool:
         and str(listed.get("workstream") or "") == str(fresh["workstream"])
         and listed_head == str(fresh["head"])
         and str(listed.get("status") or "") == str(fresh["status"])
+        and str(listed.get("implementer") or "") == str(
+            fresh.get("implementer") or ""
+        )
         and _audit_bases_match(listed, fresh)
     )
 
@@ -237,7 +240,16 @@ def _supervise_project(
             chat_id=chat_id,
             worktree=worktree,
         )
-    if persistent_cursor_active(
+    execution_profile = str(fresh.get("implementer") or "").strip()
+    if execution_profile not in {"CHATGPT_CHAT", "CURSOR"}:
+        return _project_result(
+            repository,
+            "implementer_refused",
+            issue_number=int(fresh["issue_number"]),
+            chat_id=chat_id,
+            worktree=worktree,
+        )
+    if execution_profile == "CURSOR" and persistent_cursor_active(
         worktree,
         list_sessions=list_sessions,
         list_processes=list_processes,
@@ -321,6 +333,7 @@ def _supervise_project(
             git_runner=git_runner,
             list_sessions=list_sessions,
             list_processes=list_processes,
+            execution_profile=execution_profile,
             now=now,
             api_key_env=api_key_env,
         )
