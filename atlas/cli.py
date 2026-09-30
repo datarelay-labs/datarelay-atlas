@@ -53,6 +53,7 @@ from atlas.context_learned import load_learned_canary_binding
 from atlas.provider_broker import STRATEGIES
 from atlas.provider_capability import CAPABILITY_NAMES
 from atlas.provider_transition import (
+    FAILURE_REASONS,
     load_provider_transition_candidates,
     plan_provider_transition,
 )
@@ -237,6 +238,17 @@ def cmd_providers_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_providers_transition_preview(args: argparse.Namespace) -> int:
+    payload = _service(args).provider_transition_preview(
+        current_route_id=args.current_route,
+        failure_reason=args.failure_reason,
+        prior_failed_route_ids=list(args.prior_failed_route or []),
+        max_attempts=args.max_attempts,
+    )
+    _print_json(payload)
+    return 0
+
+
 def cmd_providers_publish(args: argparse.Namespace) -> int:
     payload = _service(args).publish_provider_dashboard(
         candidate_paths=[Path(value) for value in args.candidate],
@@ -244,6 +256,7 @@ def cmd_providers_publish(args: argparse.Namespace) -> int:
         required_capability=args.required_capability,
         strategy=args.strategy,
         max_evidence_age_seconds=args.max_evidence_age_seconds,
+        route_set_path=Path(args.route_set) if args.route_set else None,
     )
     _print_json(payload)
     return 0
@@ -750,8 +763,15 @@ def build_parser() -> argparse.ArgumentParser:
     providers_sub = providers.add_subparsers(dest="providers_command", required=True)
     providers_show = providers_sub.add_parser("show", help="Show current provider capacity snapshot and advisory broker plan")
     providers_show.set_defaults(func=cmd_providers_show)
+    providers_preview = providers_sub.add_parser("transition-preview", help="Plan one read-only failover from the current provider snapshot")
+    providers_preview.add_argument("--current-route", required=True)
+    providers_preview.add_argument("--failure-reason", required=True, choices=sorted(FAILURE_REASONS))
+    providers_preview.add_argument("--prior-failed-route", action="append", default=[])
+    providers_preview.add_argument("--max-attempts", type=int, default=3)
+    providers_preview.set_defaults(func=cmd_providers_transition_preview)
     providers_publish = providers_sub.add_parser("publish", help="Validate candidate files and publish a derived provider dashboard snapshot")
     providers_publish.add_argument("--candidate", action="append", required=True, help="Provider route candidate JSON file; repeat for multiple routes")
+    providers_publish.add_argument("--route-set", default=None, help="Optional approved provider route-set JSON file")
     providers_publish.add_argument("--observed-at", required=True, help="UTC evaluation timestamp")
     providers_publish.add_argument("--required-capability", required=True, choices=sorted(CAPABILITY_NAMES))
     providers_publish.add_argument("--strategy", default="CAPABILITY_FIRST", choices=sorted(STRATEGIES))

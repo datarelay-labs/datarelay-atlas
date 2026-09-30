@@ -43,7 +43,7 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview)
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
@@ -53,7 +53,8 @@ def build_mcp_application(
             "content. get_project_intelligence returns non-authoritative derived context; "
             "get_intelligence_overview requires an explicit project_ids scope; "
             "get_operations_readiness is read-only and never executes operational actions; "
-            "get_provider_dashboard recomputes advisory broker selection without provider execution."
+            "get_provider_dashboard recomputes advisory broker selection without provider execution; "
+            "get_provider_transition_preview returns ADVISORY_ONLY failover planning without effect authority."
         ),
         token_verifier=verifier,
         auth=AuthSettings(
@@ -165,6 +166,28 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             tools,
             "get_provider_dashboard",
             {},
+        )
+
+    @server.tool(
+        name="get_provider_transition_preview",
+        description="Return one advisory failover recommendation without executing a provider transition",
+        structured_output=False,
+    )
+    async def get_provider_transition_preview(
+        current_route_id: str,
+        failure_reason: str,
+        prior_failed_route_ids: list[str] | None = None,
+        max_attempts: int = 3,
+    ) -> str:
+        return _call_tool(
+            tools,
+            "get_provider_transition_preview",
+            {
+                "current_route_id": current_route_id,
+                "failure_reason": failure_reason,
+                "prior_failed_route_ids": prior_failed_route_ids or [],
+                "max_attempts": max_attempts,
+            },
         )
 
     @server.tool(

@@ -15,6 +15,12 @@ from atlas.provider_broker import (
     validate_provider_route_candidate,
 )
 from atlas.provider_capability import CAPABILITY_NAMES
+from atlas.provider_route_config import (
+    bind_configured_provider_route,
+    load_provider_route_set,
+    validate_provider_route_set,
+)
+from atlas.provider_transition import FAILURE_REASONS, plan_provider_transition
 from atlas.provenance import ValidationError
 
 SCHEMA_VERSION = 1
@@ -146,6 +152,33 @@ def _route_view(candidate: dict[str, Any]) -> dict[str, object]:
     }
 
 
+def _bind_candidates_to_route_set(
+    route_set: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    *,
+    required_capability: str,
+    require_exact: bool,
+) -> list[dict[str, Any]]:
+    rebound: list[dict[str, Any]] = []
+    for candidate in candidates:
+        normalized = bind_configured_provider_route(
+            route_set,
+            route_id=candidate["route_id"],
+            capability_descriptor=candidate["capability_descriptor"],
+            capacity_input=candidate["capacity_input"],
+            gates=candidate["gates"],
+            required_capability=required_capability,
+            capacity_attribution=candidate.get("capacity_attribution"),
+            capacity_operational=candidate.get("capacity_operational"),
+        )
+        if require_exact and normalized != candidate:
+            raise ValidationError(
+                "provider dashboard candidate does not match approved route configuration"
+            )
+        rebound.append(normalized)
+    return rebound
+
+
 def publish_provider_dashboard_snapshot(
     data_root: Path,
     *,
@@ -154,6 +187,7 @@ def publish_provider_dashboard_snapshot(
     required_capability: str,
     strategy: str,
     max_evidence_age_seconds: int,
+    route_set_path: Path | None = None,
 ) -> dict[str, object]:
     """Validate candidate files and publish one derived local dashboard snapshot."""
     root = Path(data_root)
@@ -177,6 +211,18 @@ def publish_provider_dashboard_snapshot(
     if len(route_ids) != len(set(route_ids)):
         raise ValidationError("provider dashboard route ids must be unique")
 
+    route_set = (
+        load_provider_route_set(Path(route_set_path))
+        if route_set_path is not None
+        else None
+    )
+    if route_set is not None:
+        candidates = _bind_candidates_to_route_set(
+            route_set,
+            candidates,
+            required_capability=required_capability,
+            require_exact=False,
+        )
     payload = {
         "schema_version": SCHEMA_VERSION,
         "kind": KIND,
@@ -184,6 +230,7 @@ def publish_provider_dashboard_snapshot(
         "required_capability": required_capability,
         "strategy": strategy,
         "max_evidence_age_seconds": max_evidence_age_seconds,
+        "route_set": route_set,
         "candidates": candidates,
     }
     assert_content_free(payload)
@@ -201,22 +248,13 @@ def publish_provider_dashboard_snapshot(
     return provider_dashboard(root)
 
 
-def provider_dashboard(data_root: Path) -> dict[str, object]:
+def _validated_snapshot_inputs(data_root: Path) -> dict[str, object] | None:
     path = Path(data_root) / FILENAME
     if not path.exists():
-        return {
-            "state": "UNKNOWN",
-            "detail": "no provider capacity snapshot loaded",
-            "snapshot_path": FILENAME,
-            "observed_at": None,
-            "required_capability": None,
-            "strategy": None,
-            "authority": "ADVISORY_ONLY",
-            "routes": [],
-            "plan": None,
-        }
+        return None
     if path.is_symlink() or not path.is_file():
         raise ValidationError("provider dashboard snapshot path is unsafe")
+
     payload = _load(path)
     expected = {
         "schema_version",
@@ -225,6 +263,7 @@ def provider_dashboard(data_root: Path) -> dict[str, object]:
         "required_capability",
         "strategy",
         "max_evidence_age_seconds",
+        "route_set",
         "candidates",
     }
     if not isinstance(payload, dict) or set(payload) != expected:
@@ -246,21 +285,105 @@ def provider_dashboard(data_root: Path) -> dict[str, object]:
     max_age = payload.get("max_evidence_age_seconds")
     if isinstance(max_age, bool) or not isinstance(max_age, int) or max_age < 0:
         _reject("provider dashboard max evidence age is invalid")
+    route_set_raw = payload.get("route_set")
+    route_set = (
+        None
+        if route_set_raw is None
+        else validate_provider_route_set(route_set_raw)
+    )
     candidates = payload.get("candidates")
     if not isinstance(candidates, list) or not candidates or len(candidates) > 32:
         _reject("provider dashboard candidates must contain 1-32 routes")
+
     normalized = [validate_provider_route_candidate(item) for item in candidates]
+    if route_set is not None:
+        normalized = _bind_candidates_to_route_set(
+            route_set,
+            normalized,
+            required_capability=str(capability),
+            require_exact=True,
+        )
     route_ids = [item["route_id"] for item in normalized]
     if len(route_ids) != len(set(route_ids)):
         _reject("provider dashboard route ids must be unique")
+    return {
+        "observed_at": observed_at,
+        "required_capability": capability,
+        "strategy": strategy,
+        "max_evidence_age_seconds": max_age,
+        "route_set": route_set,
+        "candidates": normalized,
+    }
 
-    plan = plan_provider_routes(
-        normalized,
-        required_capability=capability,
-        strategy=strategy,
-        evaluated_at=observed_at,
-        max_evidence_age_seconds=max_age,
+
+def provider_transition_preview(
+    data_root: Path,
+    *,
+    current_route_id: str,
+    failure_reason: str,
+    prior_failed_route_ids: list[str] | None = None,
+    max_attempts: int = 3,
+) -> dict[str, object]:
+    """Plan one read-only failover using the current validated dashboard snapshot."""
+    snapshot = _validated_snapshot_inputs(data_root)
+    if snapshot is None:
+        raise ValidationError("provider dashboard snapshot is not loaded")
+    if failure_reason not in FAILURE_REASONS:
+        raise ValidationError("provider transition failure_reason is unsupported")
+    return plan_provider_transition(
+        snapshot["candidates"],
+        required_capability=str(snapshot["required_capability"]),
+        current_route_id=current_route_id,
+        failure_reason=failure_reason,
+        prior_failed_route_ids=prior_failed_route_ids or [],
+        strategy=str(snapshot["strategy"]),
+        max_attempts=max_attempts,
+        evaluated_at=str(snapshot["observed_at"]),
+        max_evidence_age_seconds=int(snapshot["max_evidence_age_seconds"]),
     )
+
+
+def provider_dashboard(data_root: Path) -> dict[str, object]:
+    snapshot = _validated_snapshot_inputs(data_root)
+    if snapshot is None:
+        return {
+            "state": "UNKNOWN",
+            "detail": "no provider capacity snapshot loaded",
+            "snapshot_path": FILENAME,
+            "observed_at": None,
+            "required_capability": None,
+            "strategy": None,
+            "authority": "ADVISORY_ONLY",
+            "configured_route_authority": "CONFIGURATION_ONLY",
+            "configured_routes": [],
+            "transition_failure_reasons": sorted(FAILURE_REASONS),
+            "routes": [],
+            "strategy_plans": {},
+            "plan": None,
+        }
+    observed_at = str(snapshot["observed_at"])
+    capability = str(snapshot["required_capability"])
+    strategy = str(snapshot["strategy"])
+    max_age = int(snapshot["max_evidence_age_seconds"])
+    normalized = list(snapshot["candidates"])
+    route_set = snapshot["route_set"]
+    configured_routes = (
+        [dict(item) for item in route_set["routes"]]
+        if isinstance(route_set, dict)
+        else []
+    )
+
+    strategy_plans = {
+        strategy_name: plan_provider_routes(
+            normalized,
+            required_capability=capability,
+            strategy=strategy_name,
+            evaluated_at=observed_at,
+            max_evidence_age_seconds=max_age,
+        )
+        for strategy_name in sorted(STRATEGIES)
+    }
+    plan = strategy_plans[strategy]
     return {
         "state": "OBSERVED",
         "detail": f"{len(normalized)} validated route candidate(s); broker plan recomputed read-only",
@@ -269,6 +392,12 @@ def provider_dashboard(data_root: Path) -> dict[str, object]:
         "required_capability": capability,
         "strategy": strategy,
         "authority": plan["authority"],
+        "configured_route_authority": (
+            route_set["authority"] if isinstance(route_set, dict) else "UNKNOWN"
+        ),
+        "configured_routes": configured_routes,
+        "transition_failure_reasons": sorted(FAILURE_REASONS),
         "routes": [_route_view(item) for item in sorted(normalized, key=lambda row: row["route_id"])],
+        "strategy_plans": strategy_plans,
         "plan": plan,
     }

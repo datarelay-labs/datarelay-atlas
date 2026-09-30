@@ -35,6 +35,7 @@ class AtlasContextTools:
         source_detail_factory: Callable[[str, str], dict[str, Any]] | None = None,
         operations_readiness_factory: Callable[[], dict[str, object]] | None = None,
         provider_dashboard_factory: Callable[[], dict[str, object]] | None = None,
+        provider_transition_preview_factory: Callable[..., dict[str, object]] | None = None,
     ) -> None:
         if (retriever is None) == (retriever_factory is None):
             raise ValueError("AtlasContextTools requires exactly one retriever source")
@@ -45,6 +46,7 @@ class AtlasContextTools:
         self._source_detail_factory = source_detail_factory
         self._operations_readiness_factory = operations_readiness_factory
         self._provider_dashboard_factory = provider_dashboard_factory
+        self._provider_transition_preview_factory = provider_transition_preview_factory
 
     def _retriever_for(self, project_id: str) -> Retriever:
         if self._retriever_factory is not None:
@@ -98,6 +100,13 @@ class AtlasContextTools:
                     "description": "Return validated provider capacity evidence and recomputed advisory broker plan",
                 }
             )
+        if self._provider_transition_preview_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_provider_transition_preview",
+                    "description": "Return one advisory failover recommendation without executing a provider transition",
+                }
+            )
         if authorize_tool("create_note", scopes, write_tools=WRITE_TOOL_NAMES):
             tools.append(
                 {
@@ -117,7 +126,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_transition_preview"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "search_project":
@@ -180,6 +189,30 @@ class AtlasContextTools:
                 return ToolResult(ok=False, data=None, error="unknown_tool:get_provider_dashboard")
             try:
                 payload = self._provider_dashboard_factory()
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_provider_transition_preview":
+            if self._provider_transition_preview_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_provider_transition_preview")
+            try:
+                current_route_id = _required_text(args, "current_route_id")
+                failure_reason = _required_text(args, "failure_reason")
+                prior = args.get("prior_failed_route_ids", [])
+                if not isinstance(prior, list) or any(
+                    not isinstance(item, str) or not item.strip() for item in prior
+                ):
+                    raise ValidationError("prior_failed_route_ids must be a list of route IDs")
+                max_attempts = args.get("max_attempts", 3)
+                if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
+                    raise ValidationError("max_attempts must be an integer")
+                payload = self._provider_transition_preview_factory(
+                    current_route_id=current_route_id,
+                    failure_reason=failure_reason,
+                    prior_failed_route_ids=[item.strip() for item in prior],
+                    max_attempts=max_attempts,
+                )
             except ValidationError as exc:
                 return ToolResult(ok=False, data=None, error=str(exc))
             return ToolResult(ok=True, data=payload)

@@ -11,6 +11,7 @@
     "required_capability",
     "strategy",
     "max_evidence_age_seconds",
+    "route_set",
     "candidates"
   ],
   "properties": {
@@ -49,6 +50,12 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 31622400
+    },
+    "route_set": {
+      "anyOf": [
+        { "$ref": "https://datarelay.local/contracts/provider-route-set.schema.json" },
+        { "type": "null" }
+      ]
     },
     "candidates": {
       "type": "array",

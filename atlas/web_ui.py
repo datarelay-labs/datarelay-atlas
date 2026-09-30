@@ -104,7 +104,13 @@ def render_projects(service: AtlasService) -> UiResponse:
     body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
     return UiResponse("200 OK", _page("Projects", body))
 
-def render_providers(service: AtlasService) -> UiResponse:
+def render_providers(
+    service: AtlasService,
+    *,
+    current_route: str = "",
+    failure_reason: str = "",
+    max_attempts: int = 3,
+) -> UiResponse:
     try:
         dashboard = service.provider_dashboard()
     except ValidationError:
@@ -113,6 +119,20 @@ def render_providers(service: AtlasService) -> UiResponse:
     plan = dashboard.get("plan")
     selected = plan.get("selected_route_id") if isinstance(plan, dict) else None
     fallback = plan.get("fallback_route_ids", []) if isinstance(plan, dict) else []
+    transition = None
+    transition_error = ""
+    if current_route or failure_reason:
+        if not current_route or not failure_reason:
+            transition_error = "current_route and failure_reason are both required"
+        else:
+            try:
+                transition = service.provider_transition_preview(
+                    current_route_id=current_route,
+                    failure_reason=failure_reason,
+                    max_attempts=max_attempts,
+                )
+            except ValidationError as exc:
+                transition_error = str(exc)
     route_cards = []
     for route in dashboard["routes"]:
         capacity = route["capacity"]
@@ -180,6 +200,26 @@ def render_providers(service: AtlasService) -> UiResponse:
             '</dl></article>'
         )
 
+    strategy_rows = "".join(
+        f'<tr><td><code>{escape(strategy_name)}</code></td>'
+        f'<td><code>{escape(str(strategy_plan["selected_route_id"] or "NONE"))}</code></td>'
+        f'<td><code>{escape(", ".join(strategy_plan["fallback_route_ids"]) or "NONE")}</code></td>'
+        f'<td><code>{escape(str(strategy_plan["evidence_fresh_until"] or "NONE"))}</code></td></tr>'
+        for strategy_name, strategy_plan in dashboard["strategy_plans"].items()
+    ) or '<tr><td colspan="4" class="muted">No strategy comparison available.</td></tr>'
+
+    configured_rows = "".join(
+        f'<tr><td><code>{escape(route["route_id"])}</code></td>'
+        f'<td><span class="pill">{"ENABLED" if route["enabled"] else "DISABLED"}</span></td>'
+        f'<td>{escape(route["provider"])}</td>'
+        f'<td><code>{escape(route["runtime"])}</code></td>'
+        f'<td><code>{escape(route["usage_mode"])}</code></td>'
+        f'<td><code>{escape(route["adapter"])}</code></td>'
+        f'<td>{escape(", ".join(route["allowed_capabilities"]))}</td>'
+        f'<td><code>{escape(str(route["ranks"]))}</code></td></tr>'
+        for route in dashboard["configured_routes"]
+    ) or '<tr><td colspan="8" class="muted">No approved route-set snapshot loaded.</td></tr>'
+
     eligible_rows = ""
     ineligible_rows = ""
     if isinstance(plan, dict):
@@ -210,13 +250,66 @@ def render_providers(service: AtlasService) -> UiResponse:
             '</dl>'
         )
 
+    route_options = []
+    default_route = current_route or str(selected or "")
+    for route in dashboard["routes"]:
+        route_id = str(route["route_id"])
+        selected_attr = " selected" if route_id == default_route else ""
+        route_options.append(
+            f'<option value="{escape(route_id, quote=True)}"{selected_attr}>{escape(route_id)}</option>'
+        )
+    reason_options = []
+    for reason in dashboard["transition_failure_reasons"]:
+        selected_attr = " selected" if reason == failure_reason else ""
+        reason_options.append(
+            f'<option value="{escape(reason, quote=True)}"{selected_attr}>{escape(reason)}</option>'
+        )
+    transition_form = (
+        '<form method="get" action="/providers">'
+        '<label>Current route <select name="current_route">'
+        + "".join(route_options)
+        + '</select></label> '
+        '<label>Failure reason <select name="failure_reason"><option value="">Choose…</option>'
+        + "".join(reason_options)
+        + '</select></label> '
+        f'<label>Max attempts <input name="max_attempts" type="number" min="1" max="32" value="{max_attempts}" style="width:80px"></label> '
+        '<button type="submit">Preview failover</button></form>'
+    )
+    transition_html = '<p class="muted">Choose a failure reason to compute an advisory failover preview.</p>'
+    if transition_error:
+        transition_html = f'<p><span class="pill">UNAVAILABLE</span> <span class="muted">{escape(transition_error)}</span></p>'
+    elif isinstance(transition, dict):
+        transition_html = (
+            '<dl>'
+            f'<dt>Authority</dt><dd><span class="pill">{escape(str(transition["authority"]))}</span></dd>'
+            f'<dt>Decision</dt><dd><span class="pill">{escape(str(transition["decision"]))}</span></dd>'
+            f'<dt>Reason</dt><dd><code>{escape(str(transition["decision_reason"]))}</code></dd>'
+            f'<dt>Failure</dt><dd><code>{escape(str(transition["failure_reason"]))}</code></dd>'
+            f'<dt>From</dt><dd><code>{escape(str(transition["from_route_id"]))}</code></dd>'
+            f'<dt>To</dt><dd><code>{escape(str(transition["to_route_id"] or "NONE"))}</code></dd>'
+            f'<dt>Attempt</dt><dd>{transition["attempt"]}/{transition["max_attempts"]}</dd>'
+            '</dl>'
+        )
+
     body = (
         '<p><a href="/">← Projects</a></p><h1>Provider capacity</h1>'
         f'<p><span class="pill">{escape(str(dashboard["state"]))}</span> <span class="muted">{escape(str(dashboard["detail"]))}</span></p>'
         '<section class="card"><h2>Broker plan</h2>'
         + plan_html
         + '<p class="muted">ADVISORY_ONLY. This page cannot invoke providers, switch routes, commit transitions, or use credentials.</p></section>'
-        '<h2>Routes</h2><section class="grid">'
+        '<section class="card" style="margin-top:16px"><h2>Failover preview</h2>'
+        + transition_form
+        + transition_html
+        + '<p class="muted">Preview only. Effect authorization, sealed request, and one-shot commit remain separate authority boundaries.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Strategy comparison</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Strategy</th><th>Selected</th><th>Fallbacks</th><th>Fresh until</th></tr></thead>'
+        f'<tbody>{strategy_rows}</tbody></table></div>'
+        '<p class="muted">All strategies are advisory plans over the same validated candidates; no route is executed by this comparison.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Approved route configuration</h2>'
+        f'<p><span class="pill">{escape(str(dashboard["configured_route_authority"]))}</span></p>'
+        '<div style="overflow:auto"><table><thead><tr><th>Route</th><th>State</th><th>Provider</th><th>Runtime</th><th>Usage</th><th>Adapter</th><th>Capabilities</th><th>Ranks</th></tr></thead>'
+        f'<tbody>{configured_rows}</tbody></table></div></section>'
+        '<h2>Observed route candidates</h2><section class="grid">'
         + ("".join(route_cards) if route_cards else '<article class="card"><p>No validated provider routes loaded.</p></article>')
         + '</section>'
         '<section class="card" style="margin-top:16px"><h2>Eligible routes</h2>'
@@ -999,7 +1092,27 @@ def create_app(data_root: Path):
             elif path == "/operations":
                 response = render_operations(service)
             elif path == "/providers":
-                response = render_providers(service)
+                params = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
+                current_route = params.get("current_route", [""])[0].strip()
+                failure_reason = params.get("failure_reason", [""])[0].strip()
+                max_attempts_text = params.get("max_attempts", ["3"])[0].strip() or "3"
+                if len(current_route) > 64 or len(failure_reason) > 64 or len(max_attempts_text) > 2:
+                    response = _error("400 Bad Request", "Invalid provider preview", "Provider preview input is invalid.")
+                else:
+                    try:
+                        max_attempts = int(max_attempts_text)
+                    except ValueError:
+                        response = _error("400 Bad Request", "Invalid provider preview", "max_attempts must be an integer.")
+                    else:
+                        if not 1 <= max_attempts <= 32:
+                            response = _error("400 Bad Request", "Invalid provider preview", "max_attempts must be 1-32.")
+                        else:
+                            response = render_providers(
+                                service,
+                                current_route=current_route,
+                                failure_reason=failure_reason,
+                                max_attempts=max_attempts,
+                            )
             elif path == "/search":
                 query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True).get("q", [""])[0]
                 response = _error("400 Bad Request", "Invalid search", "Search query is too long.") if len(query) > _MAX_QUERY else render_cross_project_search(service, query.strip())

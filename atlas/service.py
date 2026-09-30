@@ -15,7 +15,7 @@ from atlas.github_sync import FetchFn, fetch_github_file
 from atlas.derived_intelligence import derived_intelligence_payload
 from atlas.data_lock import data_root_write_lock
 from atlas.operations_readiness import operations_readiness
-from atlas.provider_dashboard import provider_dashboard, publish_provider_dashboard_snapshot
+from atlas.provider_dashboard import provider_dashboard, provider_transition_preview, publish_provider_dashboard_snapshot
 from atlas.local_markdown import (
     IMPORT_DIRNAME,
     SNAPSHOT_DIRNAME,
@@ -83,6 +83,23 @@ class AtlasService:
         """Return read-only provider capacity/broker dashboard state."""
         return provider_dashboard(self.data_root)
 
+    def provider_transition_preview(
+        self,
+        *,
+        current_route_id: str,
+        failure_reason: str,
+        prior_failed_route_ids: list[str] | None = None,
+        max_attempts: int = 3,
+    ) -> dict[str, object]:
+        """Return one read-only provider failover recommendation."""
+        return provider_transition_preview(
+            self.data_root,
+            current_route_id=current_route_id,
+            failure_reason=failure_reason,
+            prior_failed_route_ids=prior_failed_route_ids,
+            max_attempts=max_attempts,
+        )
+
     def publish_provider_dashboard(
         self,
         *,
@@ -91,6 +108,7 @@ class AtlasService:
         required_capability: str,
         strategy: str,
         max_evidence_age_seconds: int,
+        route_set_path: Path | None = None,
     ) -> dict[str, object]:
         """Publish a validated derived provider dashboard snapshot."""
         return publish_provider_dashboard_snapshot(
@@ -100,6 +118,7 @@ class AtlasService:
             required_capability=required_capability,
             strategy=strategy,
             max_evidence_age_seconds=max_evidence_age_seconds,
+            route_set_path=route_set_path,
         )
 
     def add_source(
