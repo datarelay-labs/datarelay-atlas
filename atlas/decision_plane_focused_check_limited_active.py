@@ -541,6 +541,23 @@ def _load_ledger(root: Path) -> dict[str, object]:
     return {**_empty_ledger(), "records": records}
 
 
+def get_focused_check_effect_entry(
+    data_root: Path,
+    activation_id: str,
+) -> dict[str, object]:
+    root = Path(data_root)
+    identity = _id(activation_id, label="activation_id")
+    ledger = _load_ledger(root)
+    matches = [
+        item
+        for item in ledger["records"]
+        if item["activation_id"] == identity
+    ]
+    if len(matches) != 1:
+        _reject("decision plane limited-active activation is not found")
+    return dict(matches[0])
+
+
 def _reserve(
     root: Path,
     *,
@@ -671,11 +688,26 @@ def commit_focused_check_effect(
         "terminal_required_ids": terminal_ids,
         "candidates": candidate_metadata,
     }
+    from atlas.decision_plane_measured_active import (
+        decision_class_policy,
+    )
+
+    rollback_active = (
+        decision_class_policy(root, DECISION_CLASS)["effective_state"]
+        == "ROLLBACK_TO_CURRENT"
+    )
     if not candidate_ids:
         result, selected, reason, attribution = (
             "NO_EFFECT",
             [],
             "NO_AFFECTED_CHECKS",
+            None,
+        )
+    elif rollback_active:
+        result, selected, reason, attribution = (
+            "FALLBACK",
+            candidate_ids,
+            "MEASURED_ROLLBACK_ACTIVE",
             None,
         )
     else:

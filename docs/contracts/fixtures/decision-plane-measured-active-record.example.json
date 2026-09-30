@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "kind": "decision_plane_measured_active_record",
+  "authority": "MEASURED_ACTIVE_EVIDENCE_ONLY",
+  "expansion_authority": "NONE",
+  "pass_authority": "NONE",
+  "human_required_authority": "NONE",
+  "measurement_id": "measure-example",
+  "decision_class": "OPTIONAL_CONTEXT_SELECTION",
+  "source_activation_id": "activation-example",
+  "source_receipt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_result": "APPLIED_CANARY",
+  "observed_at": "2026-09-30T18:00:00Z",
+  "baseline_outcome": "VERIFIED_SUCCESS",
+  "active_outcome": "VERIFIED_SUCCESS",
+  "cost_delta_milliunits": -10,
+  "wall_time_delta_ms": -5,
+  "frontier_call_delta": 0,
+  "retry_delta": 0,
+  "selector_attribution": {
+    "provider": "jev",
+    "model": "system-one",
+    "profile": "bounded-v1",
+    "decision_ref": "decision:example:001"
+  },
+  "measurement_digest": "fea4e7ba0713b145c69e75e12c78b61709ea7905aaabb7cd5b8eac1f5e3c8837"
+}
