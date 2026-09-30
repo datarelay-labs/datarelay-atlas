@@ -40,7 +40,7 @@ class WebUiTests(unittest.TestCase):
     def get(self, path, query="", method="GET"):
         env = {}
         setup_testing_defaults(env)
-        env.update({"REQUEST_METHOD": method, "PATH_INFO": path, "QUERY_STRING": query})
+        env.update({"REQUEST_METHOD": method, "PATH_INFO": path, "QUERY_STRING": query, "HTTP_HOST": "127.0.0.1:8788"})
         state = {}
         def start(status, headers):
             state.update(status=status, headers=dict(headers))
@@ -68,6 +68,18 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("canonical engineering source reference", body)
         self.assertIn("Unsafe &lt;title&gt;", body)
         self.assertNotIn("Unsafe <title>", body)
+
+    def test_untrusted_host_is_rejected_before_rendering_data(self):
+        env = {}
+        setup_testing_defaults(env)
+        env.update({"REQUEST_METHOD": "GET", "PATH_INFO": "/", "QUERY_STRING": "", "HTTP_HOST": "attacker.example"})
+        state = {}
+        def start(status, headers):
+            state.update(status=status, headers=dict(headers))
+        body = b"".join(self.app(env, start)).decode()
+        self.assertEqual(state["status"], "400 Bad Request")
+        self.assertIn("Untrusted request", body)
+        self.assertNotIn("&lt;Demo &amp; Co&gt;", body)
 
     def test_unknown_project_and_write_fail_closed(self):
         self.assertEqual(self.get("/projects/missing")[0]["status"], "404 Not Found")

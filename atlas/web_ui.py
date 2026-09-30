@@ -178,10 +178,20 @@ def render_project(service: AtlasService, project_id: str, query: str = "") -> U
     body += "</section>"
     return UiResponse("200 OK", _page(project.display_name, body))
 
+def _trusted_request_host(environ: dict) -> bool:
+    authority = str(environ.get("HTTP_HOST") or "").strip().lower()
+    if not authority:
+        return False
+    hostname = authority.rsplit(":", 1)[0] if ":" in authority else authority
+    return hostname in {"127.0.0.1", "localhost"}
+
+
 def create_app(data_root: Path):
     service = AtlasService(data_root)
     def app(environ, start_response):
-        if environ.get("REQUEST_METHOD") != "GET":
+        if not _trusted_request_host(environ):
+            response = _error("400 Bad Request", "Untrusted request", "The Web UI accepts loopback Host authorities only.")
+        elif environ.get("REQUEST_METHOD") != "GET":
             response = _error("405 Method Not Allowed", "Read-only UI", "Only GET requests are supported.")
         else:
             path = environ.get("PATH_INFO") or "/"
