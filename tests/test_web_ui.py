@@ -3,13 +3,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from wsgiref.util import setup_testing_defaults
 
 from atlas.provenance import CanonicalSource, render_derived_document
 from atlas.cli import build_parser
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
-from atlas.web_ui import _source_relation, create_app, serve_ui
+from atlas.web_ui import _source_relation, create_app, render_cross_project_search, serve_ui
 
 class WebUiTests(unittest.TestCase):
     def setUp(self):
@@ -128,6 +129,18 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("UNAVAILABLE", body)
         self.assertIn("failed validation", body)
 
+    def test_cross_project_search_marks_personal_hits_non_authoritative(self):
+        project = SimpleNamespace(project_id="notes", display_name="Notes", enabled=True)
+        hit = SimpleNamespace(title="Note", path="ideas.md", content="needle", identity="idea@local", provenance={
+            "repository": "local://atlas-personal", "ref": "local", "source_path": "ideas.md",
+            "source_revision": "c" * 40, "source_class": "personal", "canonical": False, "derived": True})
+        service = SimpleNamespace(list_projects=lambda: [project], search=lambda project_id, query, limit: [hit])
+        body = render_cross_project_search(service, "needle").body.decode()
+        self.assertIn("personal reference / non-authoritative", body)
+        self.assertIn("DERIVED", body)
+        self.assertIn("local://atlas-personal · local · ideas.md", body)
+        self.assertIn("idea@local", body)
+
     def test_cross_project_search_preserves_project_provenance(self):
         svc = AtlasService(self.root)
         svc.register_project(project_id="other", repository="datarelay-labs/other", display_name="Other")
@@ -136,6 +149,10 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("Cross-project search", body)
         self.assertIn("datarelay-labs/demo", body)
         self.assertIn("README.md", body)
+        self.assertIn("canonical engineering source reference", body)
+        self.assertIn("DERIVED", body)
+        self.assertIn("readme@main", body)
+        self.assertIn("datarelay-labs/demo · main · README.md", body)
         self.assertIn("1 attributable result(s) across enabled projects", body)
         self.assertNotIn("datarelay-labs/other ·", body)
 

@@ -95,7 +95,13 @@ def render_cross_project_search(service: AtlasService, query: str) -> UiResponse
             total += len(hits)
             body += f'<section class="card hit"><h2><a href="/projects/{quote(project.project_id, safe="")}">{escape(project.display_name)}</a></h2>'
             for hit in hits:
-                body += f'<article><h3>{escape(hit.title or hit.path)}</h3><p class="snippet">{escape(hit.content or "")}</p><p class="muted"><code>{escape(str(hit.provenance.get("repository", "")))} · {escape(str(hit.provenance.get("source_path", "")))} · {escape(str(hit.provenance.get("source_revision", "")))}</code></p></article>'
+                relation = _source_relation(hit.provenance)
+                body += (
+                    f'<article><h3>{escape(hit.title or hit.path)}</h3><p class="snippet">{escape(hit.content or "")}</p>'
+                    f'<p><span class="pill">DERIVED</span> <span class="pill">{escape(relation)}</span></p>'
+                    f'<p class="muted"><code>{escape(str(hit.provenance.get("repository", "")))} · {escape(str(hit.provenance.get("ref", "")))} · {escape(str(hit.provenance.get("source_path", "")))} · {escape(str(hit.provenance.get("source_revision", "")))}</code></p>'
+                    f'<p class="muted">Projection <code>{escape(hit.identity)}</code></p></article>'
+                )
             body += "</section>"
         body += f'<p class="muted">{total} attributable result(s) across enabled projects.</p>'
     return UiResponse("200 OK", _page("Cross-project search", body))
