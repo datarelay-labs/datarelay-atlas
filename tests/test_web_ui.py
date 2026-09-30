@@ -10,7 +10,7 @@ from atlas.provenance import CanonicalSource, render_derived_document
 from atlas.cli import build_parser
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
-from atlas.web_ui import _source_relation, create_app, render_cross_project_search, serve_ui
+from atlas.web_ui import _adoption_projection_state, _source_relation, create_app, render_cross_project_search, serve_ui
 
 class WebUiTests(unittest.TestCase):
     def setUp(self):
@@ -107,6 +107,14 @@ class WebUiTests(unittest.TestCase):
         state, body = self.get("/projects/demo")
         self.assertEqual(state["status"], "500 Internal Server Error")
         self.assertIn("Atlas state unavailable", body)
+
+    def test_adoption_state_uses_configured_engineering_metadata_source(self):
+        metadata = SimpleNamespace(provider="github", enabled=True, source_path=".engineering/project.yaml")
+        other = SimpleNamespace(provider="github", enabled=True, source_path="README.md")
+        project = SimpleNamespace(engineering_metadata_path=".engineering/project.yaml", sources={"engineering-meta": metadata, "readme": other})
+        self.assertEqual(_adoption_projection_state(project, [{"source_id": "engineering-meta", "sync_state": "success"}]), "OBSERVED")
+        self.assertEqual(_adoption_projection_state(project, [{"source_id": "engineering-meta", "sync_state": "error"}]), "UNKNOWN")
+        self.assertEqual(_adoption_projection_state(SimpleNamespace(engineering_metadata_path=".engineering/project.yaml", sources={"readme": other}), []), "UNKNOWN")
 
     def test_lifecycle_evidence_is_bounded(self):
         _, body = self.get("/projects/demo")

@@ -107,6 +107,19 @@ def render_cross_project_search(service: AtlasService, query: str) -> UiResponse
     return UiResponse("200 OK", _page("Cross-project search", body))
 
 
+def _adoption_projection_state(project, records: list[dict]) -> str:
+    metadata_source_ids = {
+        source_id for source_id, source in project.sources.items()
+        if source.provider == "github" and source.enabled and source.source_path == project.engineering_metadata_path
+    }
+    if not metadata_source_ids:
+        return "UNKNOWN"
+    for record in records:
+        if record.get("source_id") in metadata_source_ids and record.get("sync_state") in {"success", "unchanged", "ok"}:
+            return "OBSERVED"
+    return "UNKNOWN"
+
+
 def render_project(service: AtlasService, project_id: str, query: str = "") -> UiResponse:
     try:
         project = service.registry.get(project_id)
@@ -121,8 +134,7 @@ def render_project(service: AtlasService, project_id: str, query: str = "") -> U
     good = sum(1 for r in records if r.get("sync_state") in {"success", "unchanged", "ok"})
     errors = sum(1 for r in records if r.get("sync_state") == "error")
     disabled = sum(1 for r in records if r.get("sync_state") == "disabled")
-    adoption_record = next((r for r in records if r.get("source_id") == "__engineering_metadata__"), None)
-    adoption_state = "OBSERVED" if adoption_record and adoption_record.get("sync_state") in {"success", "unchanged", "ok"} else "UNKNOWN"
+    adoption_state = _adoption_projection_state(project, records)
     github_state, github_detail = _lifecycle_for_repository(service, project.repository)
     pid = quote(project.project_id, safe="")
     body = (
