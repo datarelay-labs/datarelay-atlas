@@ -92,6 +92,13 @@ def _load_channel_evidence(path: Path, repository: str, expected_head: str | Non
             states[channel] = EvidenceState("OBSERVED", f"{outcome}: {detail}", head)
     return states
 
+def lifecycle_view_payload(data_root: Path, repository: str) -> dict[str, object]:
+    view = lifecycle_view(data_root, repository)
+    def item(value: EvidenceState) -> dict[str, object]:
+        return {"state": value.state, "detail": value.detail, "candidate_head": value.candidate_head}
+    return {"repository": repository, "work": item(view.work), "ci": item(view.ci), "tests": item(view.tests), "release": item(view.release), "browser": item(view.browser)}
+
+
 def lifecycle_view(data_root: Path, repository: str) -> LifecycleView:
     root = Path(data_root)
     work = _work_state(root / "github-lifecycle.json", repository)

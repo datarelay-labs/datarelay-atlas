@@ -95,6 +95,13 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("UNKNOWN", body)
         self.assertNotIn(">PASS<", body)
 
+    def test_cli_lifecycle_commands_are_read_only_and_bounded(self):
+        show = build_parser().parse_args(["--data-root", str(self.root), "lifecycle", "show", "demo"])
+        self.assertEqual(show.project_id, "demo")
+        self.assertEqual(show.func.__name__, "cmd_lifecycle_show")
+        validate = build_parser().parse_args(["--data-root", str(self.root), "lifecycle", "validate", "demo"])
+        self.assertEqual(validate.func.__name__, "cmd_lifecycle_validate")
+
     def test_cli_web_defaults_are_loopback_only(self):
         args = build_parser().parse_args(["--data-root", str(self.root), "web", "serve"])
         self.assertEqual(args.host, "127.0.0.1")

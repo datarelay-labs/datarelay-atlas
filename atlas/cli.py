@@ -72,6 +72,7 @@ from atlas.readiness_graph import (
     plan_readiness_file,
     plan_selected_packet_projections,
 )
+from atlas.lifecycle_intelligence import lifecycle_view_payload
 from atlas.readiness_github import plan_github_reconciled_readiness_file
 from atlas.semantic_retrieval import embedding_config_from_cli
 from atlas.service import AtlasService
@@ -218,6 +219,20 @@ def cmd_search(args: argparse.Namespace) -> int:
     hits = svc.search(args.project_id, args.query, limit=args.limit, embedding=embedding)
     _print_json([asdict(hit) for hit in hits])
     return 0
+
+
+def cmd_lifecycle_show(args: argparse.Namespace) -> int:
+    project = _service(args).registry.get(args.project_id)
+    _print_json(lifecycle_view_payload(Path(args.data_root), project.repository))
+    return 0
+
+
+def cmd_lifecycle_validate(args: argparse.Namespace) -> int:
+    project = _service(args).registry.get(args.project_id)
+    payload = lifecycle_view_payload(Path(args.data_root), project.repository)
+    unavailable = [name for name in ("work", "ci", "tests", "release", "browser") if payload[name]["state"] == "UNAVAILABLE"]
+    _print_json({"project_id": args.project_id, "repository": project.repository, "valid": not unavailable, "unavailable_channels": unavailable})
+    return 0 if not unavailable else 2
 
 
 def cmd_web_serve(args: argparse.Namespace) -> int:
@@ -705,6 +720,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Embeddings HTTP timeout in seconds.",
     )
     search.set_defaults(func=cmd_search)
+
+    lifecycle = sub.add_parser("lifecycle", help="Read-only normalized lifecycle evidence")
+    lifecycle_sub = lifecycle.add_subparsers(dest="lifecycle_command", required=True)
+    lifecycle_show = lifecycle_sub.add_parser("show", help="Show normalized lifecycle state")
+    lifecycle_show.add_argument("project_id")
+    lifecycle_show.set_defaults(func=cmd_lifecycle_show)
+    lifecycle_validate = lifecycle_sub.add_parser("validate", help="Validate local lifecycle evidence for a project")
+    lifecycle_validate.add_argument("project_id")
+    lifecycle_validate.set_defaults(func=cmd_lifecycle_validate)
 
     web = sub.add_parser("web", help="Read-only Human UI")
     web_sub = web.add_subparsers(dest="web_command", required=True)
