@@ -79,7 +79,7 @@ The first Atlas-owned Human UI is a read-only, server-rendered Python surface (`
 
 The current UI provides project inventory/detail, source/projection health, project-scoped and cross-project attributable search, and observed/unknown lifecycle evidence. It performs no canonical writes and does not call GitHub on browser requests. Source-derived values are escaped and responses use a restrictive CSP.
 
-Remote exposure/authentication, richer lifecycle normalization, browser release contracts, and production Human UI deployment remain separate hardening work. Once Atlas declares this browser surface user-facing for release, actual-browser Surface Reconciliation and Full User E2E are mandatory on the same candidate (ADR-0016).
+Remote exposure/authentication and production Human UI deployment remain separate hardening work. Lifecycle Intelligence normalizes bounded local Work/PR and exact-candidate CI/test/release/browser evidence for display without making Atlas authoritative for those systems; see `docs/contracts/ATLAS_LIFECYCLE_EVIDENCE.md`. Actual-browser Surface Reconciliation and Full User E2E remain mandatory on the same clean candidate (ADR-0016).
 
 ## Athena relationship (historical)
 

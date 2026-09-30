@@ -53,6 +53,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("&lt;Demo &amp; Co&gt;", body)
         self.assertNotIn("<Demo & Co>", body)
         self.assertIn("default-src 'none'", state["headers"]["Content-Security-Policy"])
+        self.assertIn("no trusted local lifecycle evidence", body)
 
     def test_source_relation_never_promotes_personal_knowledge(self):
         self.assertEqual(_source_relation({"source_class": "personal", "canonical": False, "derived": True}), "personal reference / non-authoritative")
@@ -94,6 +95,13 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("UNKNOWN", body)
         self.assertNotIn(">PASS<", body)
 
+    def test_cli_lifecycle_commands_are_read_only_and_bounded(self):
+        show = build_parser().parse_args(["--data-root", str(self.root), "lifecycle", "show", "demo"])
+        self.assertEqual(show.project_id, "demo")
+        self.assertEqual(show.func.__name__, "cmd_lifecycle_show")
+        validate = build_parser().parse_args(["--data-root", str(self.root), "lifecycle", "validate", "demo"])
+        self.assertEqual(validate.func.__name__, "cmd_lifecycle_validate")
+
     def test_cli_web_defaults_are_loopback_only(self):
         args = build_parser().parse_args(["--data-root", str(self.root), "web", "serve"])
         self.assertEqual(args.host, "127.0.0.1")
@@ -116,14 +124,38 @@ class WebUiTests(unittest.TestCase):
         self.assertEqual(_adoption_projection_state(project, [{"source_id": "engineering-meta", "sync_state": "error"}]), "UNKNOWN")
         self.assertEqual(_adoption_projection_state(SimpleNamespace(engineering_metadata_path=".engineering/project.yaml", sources={"readme": other}), []), "UNKNOWN")
 
+    def test_knowledge_coverage_reports_projection_gaps_without_inventing_analysis(self):
+        _, body = self.get("/projects/demo")
+        self.assertIn("Knowledge coverage", body)
+        self.assertIn("COMPLETE", body)
+        self.assertIn("1/1 configured sources projected", body)
+        self.assertIn("Contradictions", body)
+        self.assertIn("no derived contradiction analysis in this slice", body)
+        self.assertIn("Unanswered questions", body)
+        self.assertIn("no derived question analysis in this slice", body)
+
+    def test_lifecycle_detail_route_preserves_independent_truth(self):
+        state, body = self.get("/projects/demo/lifecycle")
+        self.assertEqual(state["status"], "200 OK")
+        self.assertIn("Lifecycle evidence", body)
+        self.assertIn("Work / PR", body)
+        self.assertIn("CI", body)
+        self.assertIn("Tests", body)
+        self.assertIn("Release", body)
+        self.assertIn("Browser gates", body)
+        self.assertIn("does not infer one channel from another", body)
+        self.assertNotIn(">PASS<", body)
+
     def test_lifecycle_evidence_is_bounded(self):
         _, body = self.get("/projects/demo")
         self.assertIn("Lifecycle evidence", body)
         self.assertIn("GitHub Work / PR", body)
         self.assertIn("no trusted local lifecycle evidence", body)
-        self.assertIn("lifecycle snapshot does not authorize CI conclusions", body)
+        self.assertIn("no exact-candidate CI evidence loaded", body)
         self.assertIn("no exact-candidate test evidence loaded", body)
-        self.assertIn("no exact-candidate release evidence", body)
+        self.assertIn("no exact-candidate release evidence loaded", body)
+        self.assertIn("Browser gates", body)
+        self.assertIn("browser gates are configured but no execution evidence is loaded", body)
 
     def test_valid_local_lifecycle_snapshot_surfaces_active_packet(self):
         snapshot = {
@@ -141,7 +173,79 @@ class WebUiTests(unittest.TestCase):
         _, body = self.get("/projects/demo")
         self.assertIn("OBSERVED", body)
         self.assertIn("AI Work #162 ACTIVE", body)
+        self.assertIn("feat/ui", body)
+        self.assertIn("b" * 40, body)
         self.assertIn("PR #163 OPEN", body)
+
+    def test_noncanonical_head_mismatch_is_stale_not_observed(self):
+        snapshot = {
+            "schema_version": 1, "kind": "cursor_github_reconciliation",
+            "observed_at": "2026-09-30T00:00:00Z", "repositories": ["datarelay-labs/demo"],
+            "observations": [{
+                "repository": "datarelay-labs/demo", "issue_number": 171, "issue_state": "OPEN",
+                "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted",
+                "packet_status": "ACTIVE", "branch": "feat/lifecycle", "head": "b" * 40,
+                "pr_number": 172, "pr_state": "OPEN", "pr_head": "c" * 40,
+                "canonical_fact": False, "reasons": ["PR_HEAD_MISMATCH"]}],
+            "summary": {"observed_count": 1, "canonical_count": 0, "noncanonical_count": 1},
+        }
+        (self.root / "github-lifecycle.json").write_text(json.dumps(snapshot))
+        _, body = self.get("/projects/demo")
+        self.assertIn("STALE", body)
+        self.assertIn("PR_HEAD_MISMATCH", body)
+        self.assertNotIn("AI Work #171 ACTIVE", body)
+
+    def test_exact_candidate_lifecycle_channels_are_independent(self):
+        head = "b" * 40
+        snapshot = {
+            "schema_version": 1, "kind": "cursor_github_reconciliation",
+            "observed_at": "2026-09-30T00:00:00Z", "repositories": ["datarelay-labs/demo"],
+            "observations": [{"repository": "datarelay-labs/demo", "issue_number": 171, "issue_state": "OPEN",
+                "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted", "packet_status": "ACTIVE",
+                "branch": "feat/lifecycle", "head": head, "pr_number": 172, "pr_state": "OPEN", "pr_head": head,
+                "canonical_fact": True, "reasons": []}],
+            "summary": {"observed_count": 1, "canonical_count": 1, "noncanonical_count": 0}}
+        evidence = {"schema_version": 1, "kind": "atlas_lifecycle_evidence", "observed_at": "2026-09-30T00:01:00Z",
+            "repository": "datarelay-labs/demo", "candidate_head": head,
+            "channels": {"ci": {"outcome": "PASS", "detail": "run 123"}, "tests": {"outcome": "FAIL", "detail": "2 failed"},
+                "browser": {"outcome": "BLOCKED", "detail": "host libraries missing"}}}
+        (self.root / "github-lifecycle.json").write_text(json.dumps(snapshot))
+        (self.root / "lifecycle-evidence.json").write_text(json.dumps(evidence))
+        _, body = self.get("/projects/demo")
+        self.assertIn("PASS: run 123", body)
+        self.assertIn("FAIL: 2 failed", body)
+        self.assertIn("BLOCKED: host libraries missing", body)
+        self.assertIn("no exact-candidate release evidence loaded", body)
+
+    def test_different_candidate_lifecycle_evidence_is_stale(self):
+        head = "b" * 40
+        snapshot = {"schema_version": 1, "kind": "cursor_github_reconciliation", "observed_at": "2026-09-30T00:00:00Z",
+            "repositories": ["datarelay-labs/demo"], "observations": [{"repository": "datarelay-labs/demo", "issue_number": 171,
+                "issue_state": "OPEN", "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted", "packet_status": "ACTIVE",
+                "branch": "feat/lifecycle", "head": head, "pr_number": None, "pr_state": "NONE", "pr_head": None,
+                "canonical_fact": True, "reasons": []}], "summary": {"observed_count": 1, "canonical_count": 1, "noncanonical_count": 0}}
+        evidence = {"schema_version": 1, "kind": "atlas_lifecycle_evidence", "observed_at": "2026-09-30T00:01:00Z",
+            "repository": "datarelay-labs/demo", "candidate_head": "c" * 40, "channels": {"ci": {"outcome": "PASS", "detail": "old run"}}}
+        (self.root / "github-lifecycle.json").write_text(json.dumps(snapshot)); (self.root / "lifecycle-evidence.json").write_text(json.dumps(evidence))
+        _, body = self.get("/projects/demo")
+        self.assertIn("STALE", body)
+        self.assertIn("PASS for different candidate", body)
+        self.assertNotIn("PASS: old run", body)
+
+    def test_lifecycle_evidence_requires_utc_observation_time(self):
+        evidence = {"schema_version": 1, "kind": "atlas_lifecycle_evidence", "observed_at": "yesterday",
+            "repository": "datarelay-labs/demo", "candidate_head": "b" * 40, "channels": {"ci": {"outcome": "PASS", "detail": "run"}}}
+        (self.root / "lifecycle-evidence.json").write_text(json.dumps(evidence))
+        _, body = self.get("/projects/demo")
+        self.assertIn("UNAVAILABLE", body)
+
+    def test_invalid_lifecycle_channel_evidence_fails_closed(self):
+        evidence = {"schema_version": 1, "kind": "atlas_lifecycle_evidence", "observed_at": "2026-09-30T00:01:00Z",
+            "repository": "wrong/repo", "candidate_head": "b" * 40, "channels": {"ci": {"outcome": "PASS", "detail": "run"}}}
+        (self.root / "lifecycle-evidence.json").write_text(json.dumps(evidence))
+        _, body = self.get("/projects/demo")
+        self.assertIn("UNAVAILABLE", body)
+        self.assertIn("local lifecycle evidence failed validation", body)
 
     def test_invalid_local_lifecycle_snapshot_fails_closed_in_ui(self):
         (self.root / "github-lifecycle.json").write_text("{broken")

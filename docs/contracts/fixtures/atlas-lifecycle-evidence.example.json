@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "kind": "atlas_lifecycle_evidence",
+  "observed_at": "2026-09-30T10:00:00Z",
+  "repository": "datarelay-labs/datarelay-atlas",
+  "candidate_head": "1111111111111111111111111111111111111111",
+  "channels": {
+    "ci": {
+      "outcome": "PASS",
+      "detail": "GitHub Actions exact-head qualification",
+      "evidence_ref": "https://github.com/datarelay-labs/datarelay-atlas/actions/runs/123"
+    }
+  },
+  "human_equivalent_user_tests": {
+    "surface_reconciliation": {
+      "required": true,
+      "configured": true,
+      "outcome": "PASS",
+      "detail": "Chromium surface reconciliation",
+      "evidence_ref": "audit:surface-reconciliation:123"
+    },
+    "full_user_e2e": {
+      "required": true,
+      "configured": true,
+      "outcome": null,
+      "detail": null,
+      "evidence_ref": null
+    }
+  }
+}

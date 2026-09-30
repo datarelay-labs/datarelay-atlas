@@ -19,7 +19,7 @@ from atlas.local_markdown import (
     read_allowlisted_markdown,
 )
 from atlas.projection import PROJECTOR_ID, ProjectionRecord, ProjectionStore
-from atlas.projection_retrieval import build_keyword_retriever
+from atlas.projection_retrieval import build_keyword_retriever, iter_validated_projections
 from atlas.provenance import CanonicalSource, ValidationError
 from atlas.registry import ProjectRecord, ProjectRegistry, RegisteredSource
 from atlas.retrieval import RetrievalHit, Retriever
@@ -171,6 +171,55 @@ class AtlasService:
 
     def projection_records(self, project_id: str) -> list[dict[str, Any]]:
         return self.projections.list_records(project_id=project_id)
+
+    def engineering_system_observation(self, project_id: str) -> dict[str, Any]:
+        """Read Engineering System adoption metadata only from validated local projections."""
+        project = self.registry.get(project_id)
+        matches = [
+            projection
+            for projection in iter_validated_projections(self.projections, project_id)
+            if projection.provenance.engineering_authority
+            and projection.provenance.repository == project.repository
+            and projection.provenance.source_path == project.engineering_metadata_path
+        ]
+        if not matches:
+            return {
+                "state": "UNKNOWN",
+                "detail": "no validated Engineering System metadata projection",
+                "source_identity": None,
+                "source_revision": None,
+                "version": None,
+                "baseline": None,
+                "mode": None,
+                "ci_mode": None,
+            }
+        if len(matches) != 1:
+            return {
+                "state": "UNAVAILABLE",
+                "detail": "Engineering System metadata projection is ambiguous",
+                "source_identity": None,
+                "source_revision": None,
+                "version": None,
+                "baseline": None,
+                "mode": None,
+                "ci_mode": None,
+            }
+        projection = matches[0]
+        _header, separator, body = projection.text.partition("\n---\n")
+        if not separator:
+            raise ValidationError("Engineering System metadata projection body is unavailable")
+        adoption = parse_adoption_yaml(body.strip(), source_path=project.engineering_metadata_path)
+        assert_adoption_project_consistency(adoption, project_id=project_id)
+        return {
+            "state": "OBSERVED",
+            "detail": "validated local Engineering System metadata projection",
+            "source_identity": projection.identity,
+            "source_revision": projection.provenance.source_revision,
+            "version": adoption.engineering_system_version,
+            "baseline": adoption.engineering_system_baseline,
+            "mode": adoption.engineering_system_mode,
+            "ci_mode": adoption.engineering_system_ci_mode,
+        }
 
     def search(
         self,
