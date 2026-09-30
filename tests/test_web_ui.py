@@ -220,6 +220,13 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("PASS for different candidate", body)
         self.assertNotIn("PASS: old run", body)
 
+    def test_lifecycle_evidence_requires_utc_observation_time(self):
+        evidence = {"schema_version": 1, "kind": "atlas_lifecycle_evidence", "observed_at": "yesterday",
+            "repository": "datarelay-labs/demo", "candidate_head": "b" * 40, "channels": {"ci": {"outcome": "PASS", "detail": "run"}}}
+        (self.root / "lifecycle-evidence.json").write_text(json.dumps(evidence))
+        _, body = self.get("/projects/demo")
+        self.assertIn("UNAVAILABLE", body)
+
     def test_invalid_lifecycle_channel_evidence_fails_closed(self):
         evidence = {"schema_version": 1, "kind": "atlas_lifecycle_evidence", "observed_at": "2026-09-30T00:01:00Z",
             "repository": "wrong/repo", "candidate_head": "b" * 40, "channels": {"ci": {"outcome": "PASS", "detail": "run"}}}

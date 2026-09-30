@@ -10,6 +10,7 @@ from atlas.cursor_usage import assert_content_free, load_github_reconciliation_s
 from atlas.provenance import ValidationError
 
 _HEAD = re.compile(r"^[0-9a-f]{40}$")
+_UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$")
 _CHANNELS = ("ci", "tests", "release", "browser")
 _OUTCOMES = {"PASS", "FAIL", "BLOCKED"}
 _MAX_EVIDENCE_BYTES = 32 * 1024
@@ -74,7 +75,8 @@ def _load_channel_evidence(path: Path, repository: str, expected_head: str | Non
         return {channel: EvidenceState("UNAVAILABLE", "local lifecycle evidence failed validation") for channel in _CHANNELS}
     head = raw.get("candidate_head")
     channels = raw.get("channels")
-    if raw.get("schema_version") != 1 or raw.get("kind") != "atlas_lifecycle_evidence" or raw.get("repository") != repository or not isinstance(raw.get("observed_at"), str) or not raw["observed_at"] or not isinstance(head, str) or not _HEAD.fullmatch(head) or not isinstance(channels, dict) or set(channels).difference(_CHANNELS):
+    observed_at = raw.get("observed_at")
+    if raw.get("schema_version") != 1 or raw.get("kind") != "atlas_lifecycle_evidence" or raw.get("repository") != repository or not isinstance(observed_at, str) or _UTC.fullmatch(observed_at) is None or not isinstance(head, str) or not _HEAD.fullmatch(head) or not isinstance(channels, dict) or set(channels).difference(_CHANNELS):
         return {channel: EvidenceState("UNAVAILABLE", "local lifecycle evidence failed validation") for channel in _CHANNELS}
     stale = expected_head is not None and head != expected_head
     for channel in _CHANNELS:
