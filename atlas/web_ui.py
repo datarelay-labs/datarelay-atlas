@@ -21,7 +21,7 @@ class UiResponse:
 def _page(title: str, body: str) -> bytes:
     safe_title = escape(title)
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{safe_title} · DataRelay Atlas</title><style>
-:root{{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#171717;background:#fafafa}}body{{margin:0}}header{{padding:18px 28px;border-bottom:1px solid #e5e5e5;background:#fff}}main{{max-width:1120px;margin:auto;padding:28px}}a{{color:#1457d9;text-decoration:none}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}}.card{{background:#fff;border:1px solid #e5e5e5;border-radius:12px;padding:18px}}.muted{{color:#666}}.pill{{display:inline-block;padding:3px 8px;border-radius:999px;background:#f0f0f0;font-size:12px}}input{{width:min(620px,70%);padding:10px;border:1px solid #bbb;border-radius:8px}}button{{padding:10px 14px;border:0;border-radius:8px;background:#171717;color:white}}code{{font-size:12px}}h1{{margin-top:0}}dl{{display:grid;grid-template-columns:max-content 1fr;gap:7px 16px}}dt{{color:#666}}dd{{margin:0;overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px 10px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}}th{{font-size:12px;color:#666}}.hit{{margin:14px 0}}.snippet{{white-space:pre-wrap;overflow-wrap:anywhere}}
+:root{{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#171717;background:#fafafa}}body{{margin:0}}header{{padding:18px 28px;border-bottom:1px solid #e5e5e5;background:#fff}}main{{max-width:1120px;margin:auto;padding:28px}}a{{color:#1457d9;text-decoration:none}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}}.card{{background:#fff;border:1px solid #e5e5e5;border-radius:12px;padding:18px}}.muted{{color:#666}}.pill{{display:inline-block;padding:3px 8px;border-radius:999px;background:#f0f0f0;font-size:12px}}input{{width:min(620px,70%);padding:10px;border:1px solid #bbb;border-radius:8px}}button{{padding:10px 14px;border:0;border-radius:8px;background:#171717;color:white}}code{{font-size:12px}}h1{{margin-top:0}}dl{{display:grid;grid-template-columns:max-content 1fr;gap:7px 16px}}dt{{color:#666}}dd{{margin:0;overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px 10px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}}th{{font-size:12px;color:#666}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;background:#f7f7f7;border-radius:8px;padding:14px;max-height:70vh;overflow:auto}}.hit{{margin:14px 0}}.snippet{{white-space:pre-wrap;overflow-wrap:anywhere}}
 </style></head><body><header><strong>DataRelay Atlas</strong> <span class="muted">Engineering Knowledge &amp; Lifecycle</span></header><main>{body}</main></body></html>"""
     return html.encode("utf-8")
 
@@ -47,6 +47,13 @@ def _evidence_ref_html(value: str | None) -> str:
     return f' · evidence <code>{safe}</code>'
 
 
+def _source_detail_url(project_id: str, identity: str) -> str:
+    source_id, separator, _ref = identity.partition("@")
+    if not separator or not source_id:
+        return ""
+    return f'/projects/{quote(project_id, safe="")}/sources/{quote(source_id, safe="")}'
+
+
 def _canonical_source_link(provenance: dict[str, object]) -> str:
     repository = str(provenance.get("repository") or "")
     revision = str(provenance.get("source_revision") or "")
@@ -55,6 +62,14 @@ def _canonical_source_link(provenance: dict[str, object]) -> str:
         return ""
     url = f"https://github.com/{repository}/blob/{revision}/{quote(source_path, safe='/')}"
     return f'<a href="{escape(url, quote=True)}" rel="noreferrer">canonical source ↗</a>'
+
+
+def _projection_source_link(project_id: str, identity: str) -> str:
+    source_id, separator, _ref = identity.partition("@")
+    if not separator or not source_id:
+        return ""
+    href = f'/projects/{quote(project_id, safe="")}/sources/{quote(source_id, safe="")}'
+    return f'<a href="{href}">Atlas source →</a>'
 
 
 def render_projects(service: AtlasService) -> UiResponse:
@@ -96,8 +111,11 @@ def render_cross_project_search(service: AtlasService, query: str) -> UiResponse
             body += f'<section class="card hit"><h2><a href="/projects/{quote(project.project_id, safe="")}">{escape(project.display_name)}</a></h2>'
             for hit in hits:
                 relation = _source_relation(hit.provenance)
+                source_url = _source_detail_url(project.project_id, hit.identity)
+                title = escape(hit.title or hit.path)
+                title_html = f'<a href="{source_url}">{title}</a>' if source_url else title
                 body += (
-                    f'<article><h3>{escape(hit.title or hit.path)}</h3><p class="snippet">{escape(hit.content or "")}</p>'
+                    f'<article><h3>{title_html}</h3><p class="snippet">{escape(hit.content or "")}</p>'
                     f'<p><span class="pill">DERIVED</span> <span class="pill">{escape(relation)}</span></p>'
                     f'<p class="muted"><code>{escape(str(hit.provenance.get("repository", "")))} · {escape(str(hit.provenance.get("ref", "")))} · {escape(str(hit.provenance.get("source_path", "")))} · {escape(str(hit.provenance.get("source_revision", "")))}</code></p>'
                     f'<p class="muted">Projection <code>{escape(hit.identity)}</code></p></article>'
@@ -201,6 +219,116 @@ def render_lifecycle(service: AtlasService, project_id: str) -> UiResponse:
     return UiResponse("200 OK", _page(f"{project.display_name} lifecycle", body))
 
 
+def render_decision_detail(service: AtlasService, decision_id: str) -> UiResponse:
+    try:
+        detail = service.decision_detail(decision_id)
+    except ValidationError as exc:
+        if str(exc).startswith("unknown decision_id:") or str(exc) == "invalid decision_id":
+            return _error("404 Not Found", "Decision not found", "The requested ADR is not present in validated derived intelligence.")
+        return _error("500 Internal Server Error", "Decision unavailable", "Decision intelligence could not be built safely.")
+
+    target_html = []
+    for target in detail["targets"]:
+        prov = target["provenance"]
+        atlas_link = _projection_source_link(
+            str(target["project_id"]),
+            str(target["source_identity"]),
+        )
+        canonical_link = _canonical_source_link(prov)
+        nav = " · ".join(link for link in (atlas_link, canonical_link) if link)
+        target_html.append(
+            '<article class="hit">'
+            f'<strong>{escape(str(target["project_id"]))}</strong>'
+            f'<p><code>{escape(str(prov.get("repository", "")))} · {escape(str(prov.get("source_path", "")))}</code></p>'
+            f'<p class="muted"><code>{escape(str(prov.get("source_revision", "")))}</code>'
+            + (f' · {nav}' if nav else "")
+            + '</p></article>'
+        )
+    backlink_html = []
+    for item in detail["backlinks"]:
+        prov = item["provenance"]
+        atlas_link = _projection_source_link(
+            str(item["source_project_id"]),
+            str(item["source_identity"]),
+        )
+        canonical_link = _canonical_source_link(prov)
+        nav = " · ".join(link for link in (atlas_link, canonical_link) if link)
+        backlink_html.append(
+            '<article class="hit">'
+            f'<strong>{escape(str(item["source_project_id"]))}</strong>'
+            f'<p><code>{escape(str(prov.get("repository", "")))} · {escape(str(prov.get("source_path", "")))}</code></p>'
+            f'<p class="muted">Projection <code>{escape(str(item["source_identity"]))}</code>'
+            + (f' · {nav}' if nav else "")
+            + '</p></article>'
+        )
+    body = (
+        '<p><a href="/intelligence">← Derived intelligence</a></p>'
+        f'<h1>{escape(str(detail["decision_id"]))}</h1>'
+        '<p class="muted"><span class="pill">DERIVED</span> ADR target/backlink navigation; canonical repository artifacts remain authoritative.</p>'
+        '<section class="card"><h2>Decision targets</h2>'
+        + ("".join(target_html) if target_html else '<p class="muted">No validated ADR target projection is registered.</p>')
+        + '</section><section class="card" style="margin-top:16px"><h2>Backlinks</h2>'
+        + ("".join(backlink_html) if backlink_html else '<p class="muted">No explicit backlinks.</p>')
+        + '</section>'
+    )
+    return UiResponse("200 OK", _page(str(detail["decision_id"]), body))
+
+
+def render_source_detail(service: AtlasService, project_id: str, source_id: str) -> UiResponse:
+    try:
+        project = service.registry.get(project_id)
+        detail = service.source_detail(project_id, source_id)
+    except ValidationError as exc:
+        message = str(exc)
+        if message.startswith("unknown project_id:") or message.startswith("unknown source_id:"):
+            return _error("404 Not Found", "Source not found", "The requested project source is not registered.")
+        return _error("500 Internal Server Error", "Source unavailable", "Source projection state could not be read safely.")
+
+    source = detail["source"]
+    projection = detail["projection"]
+    prov = projection.get("provenance") or {}
+    source_link = _canonical_source_link(prov) if prov else ""
+    link_html = f' · {source_link}' if source_link else ""
+    body = (
+        f'<p><a href="/projects/{quote(project.project_id, safe="")}">← {escape(project.display_name)}</a></p>'
+        f'<h1>{escape(str(source["title"] or source["source_id"]))}</h1>'
+        '<section class="grid"><article class="card"><h2>Registered source</h2><dl>'
+        f'<dt>Source ID</dt><dd><code>{escape(str(source["source_id"]))}</code></dd>'
+        f'<dt>Provider</dt><dd><code>{escape(str(source["provider"]))}</code></dd>'
+        f'<dt>Class</dt><dd><span class="pill">{escape(str(source["source_class"]))}</span></dd>'
+        f'<dt>Path</dt><dd><code>{escape(str(source["source_path"]))}</code></dd>'
+        f'<dt>Ref</dt><dd><code>{escape(str(source["ref"]))}</code></dd>'
+        f'<dt>Enabled</dt><dd>{str(bool(source["enabled"])).lower()}</dd>'
+        '</dl></article><article class="card"><h2>Projection</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(projection["state"]))}</span></dd>'
+        f'<dt>Identity</dt><dd><code>{escape(str(projection["identity"] or "UNKNOWN"))}</code></dd>'
+        f'<dt>Revision</dt><dd><code>{escape(str(projection["source_revision"] or "UNKNOWN"))}</code>{link_html}</dd>'
+        f'<dt>Digest</dt><dd><code>{escape(str(projection["content_digest"] or "UNKNOWN"))}</code></dd>'
+        f'<dt>Fetched</dt><dd><code>{escape(str(projection["fetched_at"] or "UNKNOWN"))}</code></dd>'
+        '</dl></article></section>'
+    )
+    if prov:
+        body += (
+            '<section class="card" style="margin-top:16px"><h2>Validated provenance</h2><dl>'
+            f'<dt>Repository</dt><dd><code>{escape(str(prov.get("repository", "")))}</code></dd>'
+            f'<dt>Ref</dt><dd><code>{escape(str(prov.get("ref", "")))}</code></dd>'
+            f'<dt>Source path</dt><dd><code>{escape(str(prov.get("source_path", "")))}</code></dd>'
+            f'<dt>Source revision</dt><dd><code>{escape(str(prov.get("source_revision", "")))}</code></dd>'
+            f'<dt>Authority</dt><dd><span class="pill">{escape(_source_relation(prov))}</span></dd>'
+            '</dl></section>'
+        )
+    if projection.get("body") is not None:
+        truncation = " · content truncated for UI safety" if projection.get("body_truncated") else ""
+        body += (
+            '<section class="card" style="margin-top:16px"><h2>Derived projection content</h2>'
+            f'<p class="muted">Read-only projection; canonical source remains authoritative{escape(truncation)}.</p>'
+            f'<pre>{escape(str(projection["body"]))}</pre></section>'
+        )
+    else:
+        body += '<section class="card" style="margin-top:16px"><h2>Derived projection content</h2><p class="muted">No validated current projection content is available.</p></section>'
+    return UiResponse("200 OK", _page(f"{project.display_name} source", body))
+
+
 def render_intelligence_overview(service: AtlasService) -> UiResponse:
     try:
         intelligence = service.intelligence_overview()
@@ -248,17 +376,126 @@ def render_intelligence_overview(service: AtlasService) -> UiResponse:
             f'<td>{source_path}</td></tr>'
         )
     links = "".join(link_rows) if link_rows else '<tr><td colspan="4" class="muted">No explicit cross-project repository links.</td></tr>'
+
+    decision_rows = []
+    for adr, targets in intelligence["decision_targets"].items():
+        backlinks = intelligence["decision_backlinks"].get(adr, [])
+        target_links = []
+        for target in targets:
+            atlas_link = _projection_source_link(
+                str(target["project_id"]),
+                str(target["source_identity"]),
+            )
+            canonical_link = _canonical_source_link(target["provenance"])
+            nav = " · ".join(link for link in (atlas_link, canonical_link) if link)
+            target_links.append(
+                f'<code>{escape(str(target["project_id"]))}/{escape(str(target["source_identity"]))}</code>'
+                + (f' · {nav}' if nav else "")
+            )
+        target_html = "<br>".join(target_links) if target_links else '<span class="muted">target not projected</span>'
+        decision_href = f'/decisions/{quote(adr, safe="")}'
+        decision_rows.append(
+            f'<tr><td><a href="{decision_href}"><strong>{escape(adr)}</strong></a></td><td>{target_html}</td><td>{len(backlinks)}</td></tr>'
+        )
+    decisions = "".join(decision_rows) if decision_rows else '<tr><td colspan="3" class="muted">No ADR targets found in validated projections.</td></tr>'
+
+    concept_rows = []
+    for concept, occurrences in intelligence["concept_index"].items():
+        source_links = []
+        for occurrence in occurrences:
+            atlas_link = _projection_source_link(
+                occurrence["source_project_id"],
+                occurrence["source_identity"],
+            )
+            source_links.append(
+                atlas_link
+                or f'<code>{escape(occurrence["source_project_id"])}/{escape(occurrence["source_identity"])}</code>'
+            )
+        concept_rows.append(
+            f'<tr><td>{escape(concept)}</td><td>{len(occurrences)}</td><td>{"<br>".join(source_links)}</td></tr>'
+        )
+    concepts_html = "".join(concept_rows) if concept_rows else '<tr><td colspan="3" class="muted">No explicit heading concepts.</td></tr>'
+
+    repository_rows = []
+    for repository, occurrences in intelligence["entities"]["repositories"].items():
+        projects = sorted({row["project_id"] for row in occurrences})
+        source_paths = sorted({row["source_path"] for row in occurrences})
+        repository_rows.append(
+            f'<tr><td><code>{escape(repository)}</code></td>'
+            f'<td>{", ".join(f"<code>{escape(project)}</code>" for project in projects)}</td>'
+            f'<td>{len(source_paths)}</td></tr>'
+        )
+    repositories_html = "".join(repository_rows) if repository_rows else '<tr><td colspan="3" class="muted">No engineering repository entities.</td></tr>'
+
+    source_entity_rows = []
+    for source_path, occurrences in intelligence["entities"]["source_paths"].items():
+        nav = []
+        for occurrence in occurrences:
+            link = _projection_source_link(
+                occurrence["project_id"],
+                occurrence["source_identity"],
+            )
+            nav.append(
+                link
+                or f'<code>{escape(occurrence["project_id"])}/{escape(occurrence["source_identity"])}</code>'
+            )
+        classes = sorted({row["source_class"] for row in occurrences})
+        source_entity_rows.append(
+            f'<tr><td><code>{escape(source_path)}</code></td>'
+            f'<td>{", ".join(escape(value) for value in classes)}</td>'
+            f'<td>{"<br>".join(nav)}</td></tr>'
+        )
+    source_entities_html = "".join(source_entity_rows) if source_entity_rows else '<tr><td colspan="3" class="muted">No validated source-path entities.</td></tr>'
+
+    question_rows = []
+    for project_id, questions in intelligence["unanswered_questions"].items():
+        for question in questions:
+            atlas_link = _projection_source_link(project_id, question["source_identity"])
+            question_rows.append(
+                f'<tr><td><code>{escape(project_id)}</code></td><td>{escape(question["value"])}</td>'
+                f'<td>{atlas_link or f"<code>{escape(question["source_identity"])}</code>"}</td></tr>'
+            )
+    questions_html = "".join(question_rows) if question_rows else '<tr><td colspan="3" class="muted">No explicit QUESTION/TODO markers.</td></tr>'
+
+    gap_rows = []
+    for gap in intelligence["knowledge_gaps"]:
+        gap_rows.append(
+            f'<tr><td><code>{escape(gap["project_id"])}</code></td><td><code>{escape(gap["source_id"])}</code></td>'
+            f'<td><code>{escape(gap["source_path"])}</code></td><td><span class="pill">{escape(gap["sync_state"].upper())}</span></td></tr>'
+        )
+    gaps_html = "".join(gap_rows) if gap_rows else '<tr><td colspan="4" class="muted">No enabled configured-source gaps.</td></tr>'
+
     body = (
         '<p><a href="/">← Projects</a></p><h1>Derived intelligence</h1>'
         '<p class="muted"><span class="pill">DERIVED</span> Cross-project synthesis is rebuildable and never canonical authority.</p>'
-        '<section class="grid">'
+        f'<section class="card"><h2>Summary</h2><span class="pill">{escape(str(intelligence["summary"]["state"]))}</span> '
+        f'<span class="muted">{escape(str(intelligence["summary"]["detail"]))}</span></section>'
+        '<section class="grid" style="margin-top:16px">'
         f'<article class="card"><h2>{len(intelligence["entities"]["repositories"])}</h2><p>Repository entities</p></article>'
         f'<article class="card"><h2>{len(intelligence["entities"]["source_paths"])}</h2><p>Source-path entities</p></article>'
         f'<article class="card"><h2>{len(intelligence["entities"]["decisions"])}</h2><p>Decision entities</p></article>'
         '</section><h2>Projects</h2><section class="grid">' + "".join(project_cards) + '</section>'
+        '<section class="card" style="margin-top:16px"><h2>Concept index</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Concept</th><th>Occurrences</th><th>Sources</th></tr></thead>'
+        f'<tbody>{concepts_html}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Repository entities</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Repository</th><th>Projects</th><th>Source paths</th></tr></thead>'
+        f'<tbody>{repositories_html}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Source-path entities</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Source path</th><th>Class</th><th>Projection</th></tr></thead>'
+        f'<tbody>{source_entities_html}</tbody></table></div></section>'
         '<section class="card" style="margin-top:16px"><h2>Cross-project link graph</h2>'
         '<div style="overflow:auto"><table><thead><tr><th>Project</th><th>Source repository</th><th>Target repository</th><th>Source path</th></tr></thead>'
         f'<tbody>{links}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Decision index</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>ADR</th><th>Validated target</th><th>Backlinks</th></tr></thead>'
+        f'<tbody>{decisions}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Unanswered questions</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Project</th><th>Question</th><th>Source</th></tr></thead>'
+        f'<tbody>{questions_html}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Knowledge gaps</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Project</th><th>Source</th><th>Path</th><th>State</th></tr></thead>'
+        f'<tbody>{gaps_html}</tbody></table></div></section>'
         '<section class="card" style="margin-top:16px"><h2>Contradictions</h2>'
         f'<span class="pill">{escape(str(intelligence["contradictions"]["state"]))}</span> '
         f'<span class="muted">{escape(str(intelligence["contradictions"]["detail"]))}</span> '
@@ -295,7 +532,12 @@ def render_intelligence(service: AtlasService, project_id: str) -> UiResponse:
             prov = item["provenance"]
             relation = _source_relation(prov)
             source_link = _canonical_source_link(prov)
-            source_nav = f' · {source_link}' if source_link else ""
+            atlas_link = _projection_source_link(
+                str(item["source_project_id"]),
+                str(item["source_identity"]),
+            )
+            nav = " · ".join(link for link in (atlas_link, source_link) if link)
+            source_nav = f" · {nav}" if nav else ""
             out.append(
                 f'<article class="hit"><strong>{escape(str(item["value"]))}</strong>'
                 f'<p><span class="pill">DERIVED</span> <span class="pill">{escape(relation)}</span></p>'
@@ -315,9 +557,14 @@ def render_intelligence(service: AtlasService, project_id: str) -> UiResponse:
             for target in targets:
                 prov = target["provenance"]
                 link = _canonical_source_link(prov)
+                atlas_link = _projection_source_link(
+                    str(target["project_id"]),
+                    str(target["source_identity"]),
+                )
+                nav = " · ".join(value for value in (atlas_link, link) if value)
                 target_html.append(
                     f'<li><code>{escape(str(target["project_id"]))}/{escape(str(target["source_identity"]))}</code>'
-                    + (f' · {link}' if link else "")
+                    + (f' · {nav}' if nav else "")
                     + '</li>'
                 )
             refs = ", ".join(
@@ -325,8 +572,9 @@ def render_intelligence(service: AtlasService, project_id: str) -> UiResponse:
                 for row in backlinks
             )
             target_block = "<ul>" + "".join(target_html) + "</ul>" if target_html else '<p class="muted">Referenced ADR target is not present in validated projections.</p>'
+            decision_href = f'/decisions/{quote(adr, safe="")}'
             out.append(
-                f'<article class="hit"><strong>{escape(adr)}</strong>'
+                f'<article class="hit"><strong><a href="{decision_href}">{escape(adr)}</a></strong>'
                 f'<p class="muted">Backlinks: {refs}</p>{target_block}</article>'
             )
         return "".join(out)
@@ -346,6 +594,8 @@ def render_intelligence(service: AtlasService, project_id: str) -> UiResponse:
         f'<p><a href="/projects/{quote(project.project_id, safe="")}">← {escape(project.display_name)}</a></p>'
         '<h1>Derived engineering intelligence</h1>'
         '<p class="muted"><span class="pill">DERIVED</span> Non-authoritative, deterministic navigation over validated projections.</p>'
+        f'<section class="card"><h2>Summary</h2><span class="pill">{escape(str(intelligence["summary"]["state"]))}</span> '
+        f'<span class="muted">{escape(str(intelligence["summary"]["detail"]))}</span></section>'
         '<section class="grid">'
         f'<article class="card"><h2>{len(kinds["concept_heading"])}</h2><p>Concept anchors</p></article>'
         f'<article class="card"><h2>{len(intelligence["entities"]["source_paths"])}</h2><p>Explicit source entities</p></article>'
@@ -461,7 +711,8 @@ def render_project(service: AtlasService, project_id: str, query: str = "") -> U
         record = record_by_source.get(source_id, {})
         sync_state = str(record.get("sync_state") or "UNKNOWN").upper()
         source_class = "PERSONAL / REFERENCE" if source.source_class == "personal" else "ENGINEERING"
-        body += f'<dt>{escape(source.title or source_id)}</dt><dd><span class="pill">{escape(sync_state)}</span> <span class="pill">{source_class}</span> <code>{escape(source.source_path)}</code></dd>'
+        source_url = f'/projects/{pid}/sources/{quote(source_id, safe="")}'
+        body += f'<dt><a href="{source_url}">{escape(source.title or source_id)}</a></dt><dd><span class="pill">{escape(sync_state)}</span> <span class="pill">{source_class}</span> <code>{escape(source.source_path)}</code></dd>'
     if not project.sources:
         body += '<dt>Sources</dt><dd><span class="pill">NONE</span></dd>'
     body += '</dl></section>'
@@ -475,10 +726,15 @@ def render_project(service: AtlasService, project_id: str, query: str = "") -> U
         for hit in hits:
             prov = hit.provenance
             source_kind = _source_relation(prov)
+            atlas_link = _projection_source_link(project_id, hit.identity)
+            canonical_link = _canonical_source_link(prov)
+            nav = " · ".join(link for link in (atlas_link, canonical_link) if link)
             body += (
                 f'<article class="hit"><h3>{escape(hit.title or hit.path)}</h3>'
                 f'<p class="snippet">{escape(hit.content or "")}</p><dl>'
-                f'<dt>Source</dt><dd><code>{escape(str(prov.get("repository", "")))} · {escape(str(prov.get("source_path", "")))}</code></dd>'
+                f'<dt>Source</dt><dd><code>{escape(str(prov.get("repository", "")))} · {escape(str(prov.get("source_path", "")))}</code>'
+                + (f' · {nav}' if nav else "")
+                + '</dd>'
                 f'<dt>Revision</dt><dd><code>{escape(str(prov.get("source_revision", "")))}</code></dd>'
                 f'<dt>Source relation</dt><dd>{escape(source_kind)}</dd>'
                 f'<dt>Projection</dt><dd><span class="pill">DERIVED</span> <code>{escape(hit.identity)}</code></dd></dl></article>'
@@ -512,12 +768,21 @@ def create_app(data_root: Path):
             elif path == "/search":
                 query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True).get("q", [""])[0]
                 response = _error("400 Bad Request", "Invalid search", "Search query is too long.") if len(query) > _MAX_QUERY else render_cross_project_search(service, query.strip())
+            elif path.startswith("/decisions/") and "/" not in path[len("/decisions/"):]:
+                response = render_decision_detail(service, unquote(path[len("/decisions/"):]))
             elif path.startswith("/projects/") and path.endswith("/lifecycle") and "/" not in path[len("/projects/"):-len("/lifecycle")]:
                 project_id = unquote(path[len("/projects/"):-len("/lifecycle")])
                 response = render_lifecycle(service, project_id)
             elif path.startswith("/projects/") and path.endswith("/intelligence") and "/" not in path[len("/projects/"):-len("/intelligence")]:
                 project_id = unquote(path[len("/projects/"):-len("/intelligence")])
                 response = render_intelligence(service, project_id)
+            elif path.startswith("/projects/") and "/sources/" in path:
+                remainder = path[len("/projects/"):]
+                project_part, separator, source_part = remainder.partition("/sources/")
+                if separator and project_part and source_part and "/" not in project_part and "/" not in source_part:
+                    response = render_source_detail(service, unquote(project_part), unquote(source_part))
+                else:
+                    response = _error("404 Not Found", "Not found", "The requested UI route does not exist.")
             elif path.startswith("/projects/") and "/" not in path[len("/projects/"):]:
                 project_id = unquote(path[len("/projects/"):])
                 query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True).get("q", [""])[0]

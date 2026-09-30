@@ -43,12 +43,15 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail)
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
-            "Project-scoped Atlas retrieval. search_project returns provenance "
-            "and a projection identity. Pass that identity to get_provenance."
+            "Project-scoped Atlas retrieval and engineering context. search_project "
+            "returns provenance and a projection identity; pass that identity to "
+            "get_provenance. get_source_detail returns bounded validated projection "
+            "content. get_project_intelligence returns non-authoritative derived context; "
+            "get_intelligence_overview requires an explicit project_ids scope."
         ),
         token_verifier=verifier,
         auth=AuthSettings(
@@ -112,6 +115,42 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             tools,
             "search_project",
             {"project_id": project_id, "query": query, "limit": limit},
+        )
+
+    @server.tool(
+        name="get_project_intelligence",
+        description="Return deterministic non-authoritative project intelligence from validated projections",
+        structured_output=False,
+    )
+    async def get_project_intelligence(project_id: str) -> str:
+        return _call_tool(
+            tools,
+            "get_project_intelligence",
+            {"project_id": project_id},
+        )
+
+    @server.tool(
+        name="get_intelligence_overview",
+        description="Return deterministic cross-project intelligence for an explicit project_ids scope",
+        structured_output=False,
+    )
+    async def get_intelligence_overview(project_ids: list[str]) -> str:
+        return _call_tool(
+            tools,
+            "get_intelligence_overview",
+            {"project_ids": project_ids},
+        )
+
+    @server.tool(
+        name="get_source_detail",
+        description="Return one registered source with bounded validated projection content and provenance",
+        structured_output=False,
+    )
+    async def get_source_detail(project_id: str, source_id: str) -> str:
+        return _call_tool(
+            tools,
+            "get_source_detail",
+            {"project_id": project_id, "source_id": source_id},
         )
 
     @server.tool(

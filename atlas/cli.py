@@ -167,6 +167,11 @@ def cmd_source_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_source_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).source_detail(args.project_id, args.source_id))
+    return 0
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     svc = _service(args)
     records = svc.sync_project(args.project_id, token=args.token)
@@ -208,7 +213,14 @@ def cmd_projections(args: argparse.Namespace) -> int:
 
 
 def cmd_intelligence_overview(args: argparse.Namespace) -> int:
-    _print_json(_service(args).intelligence_overview())
+    project_ids = list(args.project_id or [])
+    _print_json(_service(args).intelligence_overview(project_ids or None))
+    return 0
+
+
+def cmd_intelligence_decision(args: argparse.Namespace) -> int:
+    project_ids = list(args.project_id or [])
+    _print_json(_service(args).decision_detail(args.decision_id, project_ids or None))
     return 0
 
 
@@ -678,6 +690,11 @@ def build_parser() -> argparse.ArgumentParser:
     slist.add_argument("project_id")
     slist.set_defaults(func=cmd_source_list)
 
+    sshow = source_sub.add_parser("show", help="Show one registered source and validated projection detail")
+    sshow.add_argument("project_id")
+    sshow.add_argument("source_id")
+    sshow.set_defaults(func=cmd_source_show)
+
     sync = sub.add_parser("sync", help="Sync one project")
     sync.add_argument("project_id")
     sync.add_argument("--token", default=None)
@@ -700,7 +717,12 @@ def build_parser() -> argparse.ArgumentParser:
     intelligence = sub.add_parser("intelligence", help="Show deterministic derived engineering intelligence")
     intelligence_sub = intelligence.add_subparsers(dest="intelligence_command", required=True)
     intelligence_overview = intelligence_sub.add_parser("overview", help="Show cross-project derived intelligence")
+    intelligence_overview.add_argument("--project-id", action="append", default=[], help="Explicit project scope; repeat to include multiple projects")
     intelligence_overview.set_defaults(func=cmd_intelligence_overview)
+    intelligence_decision = intelligence_sub.add_parser("decision", help="Show one ADR decision target and backlinks")
+    intelligence_decision.add_argument("decision_id")
+    intelligence_decision.add_argument("--project-id", action="append", default=[], help="Optional explicit project scope; repeat to include multiple projects")
+    intelligence_decision.set_defaults(func=cmd_intelligence_decision)
     intelligence_show = intelligence_sub.add_parser("show", help="Show one project's derived intelligence")
     intelligence_show.add_argument("project_id")
     intelligence_show.set_defaults(func=cmd_intelligence_show)

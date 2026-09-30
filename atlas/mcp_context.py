@@ -31,12 +31,16 @@ class AtlasContextTools:
         *,
         retriever_factory: Callable[[str], Retriever] | None = None,
         intelligence_factory: Callable[[str], dict[str, Any]] | None = None,
+        intelligence_overview_factory: Callable[[list[str]], dict[str, Any]] | None = None,
+        source_detail_factory: Callable[[str, str], dict[str, Any]] | None = None,
     ) -> None:
         if (retriever is None) == (retriever_factory is None):
             raise ValueError("AtlasContextTools requires exactly one retriever source")
         self.retriever = retriever
         self._retriever_factory = retriever_factory
         self._intelligence_factory = intelligence_factory
+        self._intelligence_overview_factory = intelligence_overview_factory
+        self._source_detail_factory = source_detail_factory
 
     def _retriever_for(self, project_id: str) -> Retriever:
         if self._retriever_factory is not None:
@@ -62,6 +66,20 @@ class AtlasContextTools:
                     "description": "Return deterministic non-authoritative concepts, links, ADR backlinks, questions, and knowledge gaps",
                 }
             )
+        if self._intelligence_overview_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_intelligence_overview",
+                    "description": "Return deterministic cross-project intelligence for an explicit project_ids scope",
+                }
+            )
+        if self._source_detail_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_source_detail",
+                    "description": "Return one registered source with bounded validated projection content and provenance",
+                }
+            )
         if authorize_tool("create_note", scopes, write_tools=WRITE_TOOL_NAMES):
             tools.append(
                 {
@@ -81,7 +99,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_project_intelligence"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "search_project":
@@ -116,6 +134,27 @@ class AtlasContextTools:
             try:
                 project_id = _required_text(args, "project_id")
                 payload = self._intelligence_factory(project_id)
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_intelligence_overview":
+            if self._intelligence_overview_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_intelligence_overview")
+            try:
+                project_ids = _required_project_ids(args, "project_ids")
+                payload = self._intelligence_overview_factory(project_ids)
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_source_detail":
+            if self._source_detail_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_source_detail")
+            try:
+                project_id = _required_text(args, "project_id")
+                source_id = _required_text(args, "source_id")
+                payload = self._source_detail_factory(project_id, source_id)
             except ValidationError as exc:
                 return ToolResult(ok=False, data=None, error=str(exc))
             return ToolResult(ok=True, data=payload)
@@ -167,6 +206,18 @@ def _required_text(args: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValidationError(f"{key} is required")
     return value
+
+
+def _required_project_ids(args: dict[str, Any], key: str) -> list[str]:
+    value = args.get(key)
+    if (
+        not isinstance(value, list)
+        or not value
+        or len(value) > 32
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+    ):
+        raise ValidationError(f"{key} must be a non-empty list of at most 32 project IDs")
+    return sorted(set(item.strip() for item in value))
 
 
 def _optional_text(args: dict[str, Any], key: str) -> str:

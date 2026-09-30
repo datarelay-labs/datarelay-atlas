@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 from atlas.adoption import (
@@ -21,10 +22,13 @@ from atlas.local_markdown import (
 )
 from atlas.projection import PROJECTOR_ID, ProjectionRecord, ProjectionStore
 from atlas.projection_retrieval import build_keyword_retriever, iter_validated_projections
-from atlas.provenance import CanonicalSource, ValidationError
+from atlas.provenance import CanonicalSource, ValidationError, provenance_dict
 from atlas.registry import ProjectRecord, ProjectRegistry, RegisteredSource
 from atlas.retrieval import RetrievalHit, Retriever
 from atlas.semantic_retrieval import EmbeddingClient, EmbeddingConfig
+
+
+_MAX_SOURCE_DETAIL_CHARS = 128 * 1024
 
 
 class AtlasService:
@@ -173,6 +177,75 @@ class AtlasService:
     def projection_records(self, project_id: str) -> list[dict[str, Any]]:
         return self.projections.list_records(project_id=project_id)
 
+    def source_detail(self, project_id: str, source_id: str) -> dict[str, Any]:
+        """Return one registered source plus bounded validated projection detail."""
+        project = self.registry.get(project_id)
+        source = project.sources.get(source_id)
+        if source is None:
+            raise ValidationError(f"unknown source_id: {source_id}")
+
+        record = next(
+            (
+                item
+                for item in self.projection_records(project_id)
+                if item.get("source_id") == source_id
+            ),
+            None,
+        )
+        projection_state = str((record or {}).get("sync_state") or "missing").upper()
+        result: dict[str, Any] = {
+            "project_id": project_id,
+            "repository": project.repository,
+            "source": {
+                "source_id": source.source_id,
+                "source_path": source.source_path,
+                "ref": source.ref or project.default_ref,
+                "enabled": source.enabled,
+                "media_type": source.media_type,
+                "title": source.title,
+                "provider": source.provider,
+                "source_class": source.source_class,
+            },
+            "projection": {
+                "state": projection_state,
+                "content_digest": (record or {}).get("content_digest"),
+                "source_revision": (record or {}).get("source_revision"),
+                "fetched_at": (record or {}).get("fetched_at"),
+                "identity": None,
+                "provenance": None,
+                "body": None,
+                "body_truncated": False,
+            },
+        }
+        if record is None or record.get("sync_state") not in {"success", "unchanged", "ok"}:
+            return result
+
+        matches = [
+            projection
+            for projection in iter_validated_projections(self.projections, project_id)
+            if projection.identity.partition("@")[0] == source_id
+        ]
+        if len(matches) != 1:
+            raise ValidationError("source projection identity is ambiguous")
+
+        projection = matches[0]
+        _header, separator, body = projection.text.partition("\n---\n")
+        if not separator:
+            raise ValidationError("source projection body is unavailable")
+        body = body.strip()
+        truncated = len(body) > _MAX_SOURCE_DETAIL_CHARS
+        if truncated:
+            body = body[:_MAX_SOURCE_DETAIL_CHARS]
+        result["projection"].update(
+            {
+                "identity": projection.identity,
+                "provenance": dict(provenance_dict(projection.provenance)),
+                "body": body,
+                "body_truncated": truncated,
+            }
+        )
+        return result
+
     def engineering_system_observation(self, project_id: str) -> dict[str, Any]:
         """Read Engineering System adoption metadata only from validated local projections."""
         project = self.registry.get(project_id)
@@ -257,9 +330,55 @@ class AtlasService:
         self.registry.get(project_id)
         return build_keyword_retriever(self.projections, project_id)
 
-    def intelligence_overview(self) -> dict[str, Any]:
-        """Build a cross-project deterministic intelligence overview."""
-        projects = [item for item in self.list_projects() if item.enabled]
+    def decision_detail(
+        self,
+        decision_id: str,
+        project_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return deterministic ADR target/backlink navigation within an explicit scope."""
+        normalized = str(decision_id).upper()
+        if re.fullmatch(r"ADR-[0-9]{4,}", normalized) is None:
+            raise ValidationError("invalid decision_id")
+        overview = self.intelligence_overview(project_ids)
+        targets = overview["decision_targets"].get(normalized, [])
+        backlinks = [
+            item
+            for item in overview["items"]
+            if item["kind"] == "decision_backlink" and item["value"] == normalized
+        ]
+        if not targets and not backlinks:
+            raise ValidationError(f"unknown decision_id: {normalized}")
+        return {
+            "decision_id": normalized,
+            "derived": True,
+            "canonical": False,
+            "targets": targets,
+            "backlinks": backlinks,
+        }
+
+    def intelligence_overview(self, project_ids: list[str] | None = None) -> dict[str, Any]:
+        """Build a cross-project deterministic intelligence overview.
+
+        UI callers may omit project_ids to use all enabled registered projects.
+        AI/MCP callers should pass an explicit scope list.
+        """
+        if project_ids is None:
+            projects = [item for item in self.list_projects() if item.enabled]
+        else:
+            if (
+                not isinstance(project_ids, list)
+                or not project_ids
+                or len(project_ids) > 32
+                or any(not isinstance(item, str) or not item.strip() for item in project_ids)
+            ):
+                raise ValidationError("project_ids must be a non-empty list of at most 32 project IDs")
+            normalized = sorted(set(project_ids))
+            projects = []
+            for project_id in normalized:
+                project = self.registry.get(project_id)
+                if not project.enabled:
+                    raise ValidationError(f"project is disabled: {project_id}")
+                projects.append(project)
         payload = derived_intelligence_payload(
             self.projections,
             [item.project_id for item in projects],
@@ -279,20 +398,58 @@ class AtlasService:
             project_counts = counts.get(item["source_project_id"])
             if project_counts is not None and item["kind"] in project_counts:
                 project_counts[item["kind"]] += 1
+        knowledge_gaps: list[dict[str, str]] = []
         for project in projects:
             records = {
                 str(record.get("source_id") or ""): record
                 for record in self.projection_records(project.project_id)
             }
-            counts[project.project_id]["knowledge_gap"] = sum(
-                1
-                for source_id, source in project.sources.items()
-                if source.enabled
-                and str((records.get(source_id) or {}).get("sync_state") or "missing")
-                not in {"success", "unchanged", "ok"}
+            project_gaps = []
+            for source_id, source in sorted(project.sources.items()):
+                if not source.enabled:
+                    continue
+                sync_state = str((records.get(source_id) or {}).get("sync_state") or "missing")
+                if sync_state in {"success", "unchanged", "ok"}:
+                    continue
+                project_gaps.append(
+                    {
+                        "project_id": project.project_id,
+                        "source_id": source_id,
+                        "source_path": source.source_path,
+                        "source_class": source.source_class,
+                        "sync_state": sync_state,
+                    }
+                )
+            counts[project.project_id]["knowledge_gap"] = len(project_gaps)
+            knowledge_gaps.extend(project_gaps)
+        totals = {
+            key: sum(project_counts[key] for project_counts in counts.values())
+            for key in (
+                "concept_heading",
+                "cross_project_link",
+                "decision_backlink",
+                "unanswered_question",
+                "contradiction_evidence",
+                "knowledge_gap",
             )
+        }
+        summary = {
+            "state": "OBSERVED",
+            "detail": (
+                f"{len(projects)} enabled project(s) · "
+                f"{totals['concept_heading']} concept anchor(s) · "
+                f"{totals['cross_project_link']} cross-project link(s) · "
+                f"{totals['decision_backlink']} ADR backlink(s) · "
+                f"{totals['unanswered_question']} unanswered question(s) · "
+                f"{totals['knowledge_gap']} configured-source gap(s) · "
+                f"{totals['contradiction_evidence']} explicit contradiction evidence item(s)"
+            ),
+            "totals": totals,
+        }
         return {
             **payload,
+            "summary": summary,
+            "knowledge_gaps": knowledge_gaps,
             "projects": [
                 {
                     "project_id": project.project_id,
@@ -361,11 +518,37 @@ class AtlasService:
             for source_path, rows in payload["entities"]["source_paths"].items()
             if any(row["project_id"] == project_id for row in rows)
         }
+        item_counts = {
+            kind: sum(1 for item in items if item["kind"] == kind)
+            for kind in (
+                "concept_heading",
+                "cross_project_link",
+                "decision_backlink",
+                "unanswered_question",
+                "contradiction_evidence",
+            )
+        }
+        summary = {
+            "state": "OBSERVED",
+            "detail": (
+                f"{item_counts['concept_heading']} concept anchor(s) · "
+                f"{item_counts['cross_project_link']} cross-project link(s) · "
+                f"{item_counts['decision_backlink']} ADR backlink(s) · "
+                f"{item_counts['unanswered_question']} unanswered question(s) · "
+                f"{len(gaps)} configured-source gap(s) · "
+                f"{item_counts['contradiction_evidence']} explicit contradiction evidence item(s)"
+            ),
+            "counts": {
+                **item_counts,
+                "knowledge_gap": len(gaps),
+            },
+        }
         return {
             "project_id": project_id,
             "repository": project.repository,
             "derived": True,
             "canonical": False,
+            "summary": summary,
             "contradictions": payload["contradictions"],
             "knowledge_gaps": gaps,
             "concept_index": dict(sorted(concepts.items())),
