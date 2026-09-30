@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/instruction-governance-routing.schema.json",
+  "title": "DataRelay Atlas Instruction Governance Routing v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "state",
+    "authority",
+    "mutation_authority",
+    "route_action",
+    "reasons",
+    "audit_identity",
+    "target_repository",
+    "target_head",
+    "current_head",
+    "current_inventory_digest",
+    "audit_inventory_digest",
+    "engineering_system_revision",
+    "model_provider",
+    "model_name",
+    "model_profile",
+    "harness_id",
+    "harness_revision",
+    "evaluation_ref",
+    "candidate_changes",
+    "behavior_results",
+    "audit_outcome",
+    "next_effect"
+  ],
+  "properties": {
+    "state": {
+      "enum": [
+        "CURRENT",
+        "STALE_OR_INVALID",
+        "UNKNOWN"
+      ]
+    },
+    "authority": {
+      "const": "ROUTING_ADVISORY_ONLY"
+    },
+    "mutation_authority": {
+      "const": "NONE"
+    },
+    "route_action": {
+      "enum": [
+        "NO_CHANGE",
+        "REJECTED",
+        "HUMAN_REQUIRED",
+        "CANARY_PR_REQUIRED"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "audit_identity": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "audit_outcome": {
+      "enum": [
+        "NO_CHANGE",
+        "CANARY_READY",
+        "REJECTED",
+        "HUMAN_REQUIRED",
+        null
+      ]
+    },
+    "target_repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "target_head": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "current_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "current_inventory_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "audit_inventory_digest": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "engineering_system_revision": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "model_provider": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "model_name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "model_profile": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "harness_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "harness_revision": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "evaluation_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "candidate_changes": {
+      "type": "array",
+      "maxItems": 32
+    },
+    "behavior_results": {
+      "type": "array",
+      "maxItems": 128
+    },
+    "next_effect": {
+      "enum": [
+        "NONE",
+        "SEPARATE_CANARY_AND_PR_GOVERNANCE_REQUIRED"
+      ]
+    }
+  }
+}

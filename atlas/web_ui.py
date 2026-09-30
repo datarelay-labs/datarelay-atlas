@@ -361,6 +361,16 @@ def render_instruction_governance(service: AtlasService) -> UiResponse:
     ) or '<tr><td colspan="7" class="muted">No instruction-governance audits recorded.</td></tr>'
 
     counts = dashboard["outcome_counts"]
+    try:
+        routing = service.instruction_governance_routing()
+    except ValidationError:
+        routing = {
+            "state": "UNAVAILABLE",
+            "route_action": "HUMAN_REQUIRED",
+            "authority": "ROUTING_ADVISORY_ONLY",
+            "mutation_authority": "NONE",
+            "reasons": ["ROUTING_STATE_UNAVAILABLE"],
+        }
     latest = dashboard["latest_audit"]
     latest_html = '<p class="muted">No audit has been recorded yet.</p>'
     if isinstance(latest, dict):
@@ -393,6 +403,13 @@ def render_instruction_governance(service: AtlasService) -> UiResponse:
         f'<article class="card"><h2>{counts["REJECTED"]}</h2><p>Rejected candidates</p></article>'
         f'<article class="card"><h2>{escape(str(dashboard["mutation_authority"]))}</h2><p>Mutation authority</p></article>'
         '</section>'
+        '<section class="card" style="margin-top:16px"><h2>Candidate routing</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(routing["state"]))}</span></dd>'
+        f'<dt>Route</dt><dd><span class="pill">{escape(str(routing["route_action"]))}</span></dd>'
+        f'<dt>Authority</dt><dd><code>{escape(str(routing["authority"]))}</code></dd>'
+        f'<dt>Mutation authority</dt><dd><code>{escape(str(routing["mutation_authority"]))}</code></dd>'
+        f'<dt>Reasons</dt><dd><code>{escape(", ".join(str(x) for x in routing.get("reasons", [])) or "NONE")}</code></dd></dl>'
+        '<p class="muted">Routing is advisory only. CANARY_PR_REQUIRED still needs separate canary evidence and ordinary PR/adoption governance.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Latest audit</h2>'
         + latest_html
         + '</section>'

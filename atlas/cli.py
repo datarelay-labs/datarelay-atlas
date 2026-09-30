@@ -328,6 +328,11 @@ def cmd_instruction_governance_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_instruction_governance_route(args: argparse.Namespace) -> int:
+    _print_json(_service(args).instruction_governance_routing())
+    return 0
+
+
 def cmd_instruction_governance_preflight(args: argparse.Namespace) -> int:
     profile = _read_json_file(args.profile, label="instruction governance profile")
     payload = _service(args).instruction_governance_preflight(
@@ -997,6 +1002,11 @@ def build_parser() -> argparse.ArgumentParser:
     instruction_governance_sub = instruction_governance.add_subparsers(dest="instruction_governance_command", required=True)
     instruction_governance_show = instruction_governance_sub.add_parser("show", help="Show managed instruction inventory and audit history")
     instruction_governance_show.set_defaults(func=cmd_instruction_governance_show)
+    instruction_governance_route = instruction_governance_sub.add_parser(
+        "route",
+        help="Show deterministic non-mutating candidate routing decision",
+    )
+    instruction_governance_route.set_defaults(func=cmd_instruction_governance_route)
     instruction_governance_profile = instruction_governance_sub.add_parser("profile-build", help="Build exact target/Engineering System/model/harness profile JSON")
     instruction_governance_profile.add_argument("--engineering-system-revision", required=True)
     instruction_governance_profile.add_argument("--agent-base", required=True)

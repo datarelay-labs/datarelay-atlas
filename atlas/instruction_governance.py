@@ -650,3 +650,201 @@ def instruction_governance_dashboard(data_root: Path, *, repo_root: Path) -> dic
         "audits": audits[-50:],
         "mutation_authority": "NONE",
     }
+
+
+ROUTING_AUTHORITY = "ROUTING_ADVISORY_ONLY"
+ROUTE_ACTIONS = frozenset({"NO_CHANGE", "REJECTED", "HUMAN_REQUIRED", "CANARY_PR_REQUIRED"})
+
+
+def _validated_routing_audit(payload: object) -> dict[str, object]:
+    keys = {
+        "audit_identity", "evaluated_at", "authority", "outcome",
+        "target_repository", "target_head", "engineering_system_revision",
+        "model_provider", "model_name", "model_profile", "harness_id",
+        "harness_revision", "trigger_kind", "trigger_revision",
+        "inventory_digest", "behavior_results", "missing_mandatory_scenarios",
+        "candidate_changes", "evaluation_ref", "canonical_mutation",
+    }
+    if not isinstance(payload, dict) or set(payload) != keys:
+        raise ValidationError("instruction governance stored audit schema is invalid")
+    if (
+        not isinstance(payload.get("audit_identity"), str)
+        or _SHA256.fullmatch(str(payload["audit_identity"])) is None
+        or payload.get("authority") != AUTHORITY
+        or payload.get("outcome") not in OUTCOMES
+        or payload.get("canonical_mutation") is not False
+    ):
+        raise ValidationError("instruction governance stored audit authority is invalid")
+    repository = payload.get("target_repository")
+    if not isinstance(repository, str) or _REPO.fullmatch(repository) is None:
+        raise ValidationError("instruction governance stored audit repository is invalid")
+    for key in ("target_head", "engineering_system_revision"):
+        value = payload.get(key)
+        if not isinstance(value, str) or _SHA40.fullmatch(value) is None:
+            raise ValidationError(f"instruction governance stored audit {key} is invalid")
+    digest = payload.get("inventory_digest")
+    if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+        raise ValidationError("instruction governance stored audit inventory digest is invalid")
+    _utc(payload.get("evaluated_at"))
+    _identity(payload.get("model_provider"), label="model_provider", provider=True)
+    for key in (
+        "model_name", "model_profile", "harness_id", "harness_revision",
+        "trigger_revision", "evaluation_ref",
+    ):
+        _identity(payload.get(key), label=key)
+    if payload.get("trigger_kind") not in TRIGGERS:
+        raise ValidationError("instruction governance stored audit trigger_kind is invalid")
+
+    behavior = payload.get("behavior_results")
+    if not isinstance(behavior, list) or len(behavior) > 128:
+        raise ValidationError("instruction governance stored audit behavior results are invalid")
+    behavior_ids: list[str] = []
+    for item in behavior:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"scenario_id", "outcome"}
+            or item.get("outcome") not in RESULTS
+        ):
+            raise ValidationError("instruction governance stored audit behavior result is invalid")
+        behavior_ids.append(_identity(item.get("scenario_id"), label="behavior scenario id"))
+    if len(behavior_ids) != len(set(behavior_ids)):
+        raise ValidationError("instruction governance stored audit behavior results are duplicated")
+
+    missing = payload.get("missing_mandatory_scenarios")
+    if not isinstance(missing, list) or len(missing) > 128:
+        raise ValidationError("instruction governance stored audit missing scenarios are invalid")
+    missing_ids = [_identity(item, label="behavior scenario id") for item in missing]
+    if len(missing_ids) != len(set(missing_ids)):
+        raise ValidationError("instruction governance stored audit missing scenarios are duplicated")
+
+    changes = payload.get("candidate_changes")
+    if not isinstance(changes, list) or len(changes) > _MAX_CHANGES:
+        raise ValidationError("instruction governance stored audit candidate changes are invalid")
+    paths: list[str] = []
+    for item in changes:
+        if not isinstance(item, dict) or set(item) != {"path", "before_digest", "after_digest"}:
+            raise ValidationError("instruction governance stored audit candidate change is invalid")
+        path = _identity(item.get("path"), label="candidate path")
+        before = item.get("before_digest")
+        after = item.get("after_digest")
+        if (
+            not isinstance(before, str) or _SHA256.fullmatch(before) is None
+            or not isinstance(after, str) or _SHA256.fullmatch(after) is None
+            or before == after
+        ):
+            raise ValidationError("instruction governance stored audit candidate change digest is invalid")
+        paths.append(path)
+    if len(paths) != len(set(paths)):
+        raise ValidationError("instruction governance stored audit candidate paths are duplicated")
+    return dict(payload)
+
+
+def _routing_fail_closed(
+    root: Path,
+    dashboard: dict[str, object],
+    *,
+    reason: str,
+) -> dict[str, object]:
+    current_head = _git(root, "rev-parse", "HEAD")
+    return {
+        "state": "UNKNOWN" if reason == "NO_AUDIT_EVIDENCE" else "STALE_OR_INVALID",
+        "authority": ROUTING_AUTHORITY,
+        "mutation_authority": "NONE",
+        "route_action": "HUMAN_REQUIRED",
+        "reasons": [reason],
+        "audit_identity": None,
+        "audit_outcome": None,
+        "target_repository": _git_repository(root),
+        "target_head": None,
+        "current_head": current_head,
+        "current_inventory_digest": dashboard["inventory_digest"],
+        "audit_inventory_digest": None,
+        "engineering_system_revision": None,
+        "model_provider": None,
+        "model_name": None,
+        "model_profile": None,
+        "harness_id": None,
+        "harness_revision": None,
+        "evaluation_ref": None,
+        "candidate_changes": [],
+        "behavior_results": [],
+        "next_effect": "NONE",
+    }
+
+
+def instruction_governance_routing(
+    data_root: Path,
+    *,
+    repo_root: Path,
+) -> dict[str, object]:
+    """Derive one current non-mutating routing decision from the latest audit."""
+    root = Path(repo_root).resolve()
+    dashboard = instruction_governance_dashboard(Path(data_root), repo_root=root)
+    latest = dashboard["latest_audit"]
+    if not isinstance(latest, dict):
+        return _routing_fail_closed(root, dashboard, reason="NO_AUDIT_EVIDENCE")
+    try:
+        latest = _validated_routing_audit(latest)
+    except ValidationError:
+        return _routing_fail_closed(root, dashboard, reason="AUDIT_EVIDENCE_INVALID")
+
+    reasons: list[str] = []
+    current_head = _git(root, "rev-parse", "HEAD")
+    current_inventory = str(dashboard["inventory_digest"])
+    if latest.get("target_head") != current_head:
+        reasons.append("TARGET_HEAD_STALE")
+    if latest.get("inventory_digest") != current_inventory:
+        reasons.append("MANAGED_INVENTORY_STALE")
+
+    outcome = latest.get("outcome")
+    changes = latest.get("candidate_changes")
+    if not isinstance(changes, list):
+        reasons.append("CANDIDATE_CHANGE_STATE_INVALID")
+        changes = []
+    if outcome == "CANARY_READY" and not changes:
+        reasons.append("CANARY_READY_WITHOUT_CHANGES")
+    if outcome == "NO_CHANGE" and changes:
+        reasons.append("NO_CHANGE_WITH_CANDIDATE_CHANGES")
+
+    route_map = {
+        "NO_CHANGE": "NO_CHANGE",
+        "REJECTED": "REJECTED",
+        "HUMAN_REQUIRED": "HUMAN_REQUIRED",
+        "CANARY_READY": "CANARY_PR_REQUIRED",
+    }
+    route_action = route_map.get(str(outcome), "HUMAN_REQUIRED")
+    if route_action == "HUMAN_REQUIRED" and outcome not in OUTCOMES:
+        reasons.append("AUDIT_OUTCOME_INVALID")
+    if reasons:
+        route_action = "HUMAN_REQUIRED"
+
+    result = {
+        "state": "CURRENT" if not reasons else "STALE_OR_INVALID",
+        "authority": ROUTING_AUTHORITY,
+        "mutation_authority": "NONE",
+        "route_action": route_action,
+        "reasons": reasons,
+        "audit_identity": latest.get("audit_identity"),
+        "audit_outcome": outcome,
+        "target_repository": latest.get("target_repository"),
+        "target_head": latest.get("target_head"),
+        "current_head": current_head,
+        "current_inventory_digest": current_inventory,
+        "audit_inventory_digest": latest.get("inventory_digest"),
+        "engineering_system_revision": latest.get("engineering_system_revision"),
+        "model_provider": latest.get("model_provider"),
+        "model_name": latest.get("model_name"),
+        "model_profile": latest.get("model_profile"),
+        "harness_id": latest.get("harness_id"),
+        "harness_revision": latest.get("harness_revision"),
+        "evaluation_ref": latest.get("evaluation_ref"),
+        "candidate_changes": list(changes),
+        "behavior_results": list(latest.get("behavior_results") or []),
+        "next_effect": (
+            "NONE"
+            if route_action in {"NO_CHANGE", "REJECTED", "HUMAN_REQUIRED"}
+            else "SEPARATE_CANARY_AND_PR_GOVERNANCE_REQUIRED"
+        ),
+    }
+    assert_content_free(result)
+    return result

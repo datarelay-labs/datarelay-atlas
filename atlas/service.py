@@ -42,6 +42,7 @@ from atlas.instruction_governance import (
     build_instruction_governance_profile,
     instruction_governance_dashboard,
     instruction_governance_preflight,
+    instruction_governance_routing,
     record_instruction_governance_audit,
 )
 from atlas.local_markdown import (
@@ -163,6 +164,13 @@ class AtlasService:
     def instruction_governance_dashboard(self) -> dict[str, object]:
         """Return managed instruction inventory and advisory audit history."""
         return instruction_governance_dashboard(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+        )
+
+    def instruction_governance_routing(self) -> dict[str, object]:
+        """Return current non-mutating instruction-governance route decision."""
+        return instruction_governance_routing(
             self.data_root,
             repo_root=Path(__file__).resolve().parents[1],
         )
