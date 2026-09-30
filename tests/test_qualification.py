@@ -68,7 +68,7 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(_engineering_system_pin(later_list), (PIN_VERSION, PIN_BASELINE))
         self.assertIsNone(
             _engineering_system_pin(
-                profile + "\nengineering_system:\n  version: 1.6.5\n  baseline: " + PIN_BASELINE + "\n"
+                profile + f"\nengineering_system:\n  version: {PIN_VERSION}\n  baseline: {PIN_BASELINE}\n"
             )
         )
         self.assertIsNone(_pin_reason(ROOT))
@@ -77,17 +77,17 @@ class QualificationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self._write_profile(root, profile.replace("version: 1.6.5", "version: 1.6.4", 1))
+            self._write_profile(root, profile.replace(f"version: {PIN_VERSION}", "version: 0.0.0", 1))
             mismatched = run_public_smoke({}, repo_root=root)
             self.assertEqual(mismatched["status"], "FAIL_CLOSED")
             self.assertIn(PIN_BASELINE, mismatched["reason"])
             self.assertNotIn("ATLAS_PUBLIC_BASE_URL", mismatched["reason"])
 
-            self._write_profile(root, "engineering_system:\n  version: 1.6.5\n")
+            self._write_profile(root, f"engineering_system:\n  version: {PIN_VERSION}\n")
             missing_baseline = run_public_smoke({}, repo_root=root)
             self.assertEqual(missing_baseline["reason"], "engineering system pin is unreadable")
 
-            self._write_profile(root, "engineering_system: 1.6.5\ndomains:\n- methodology\n")
+            self._write_profile(root, f"engineering_system: {PIN_VERSION}\ndomains:\n- methodology\n")
             scalar = run_public_smoke({}, repo_root=root)
             self.assertEqual(scalar["reason"], "engineering system pin is unreadable")
 
@@ -101,7 +101,7 @@ class QualificationTests(unittest.TestCase):
             )
             wrong_baseline = _pin_reason(root)
             self.assertIsNotNone(wrong_baseline)
-            self.assertIn("not v1.6.5 baseline", wrong_baseline or "")
+            self.assertIn(f"not v{PIN_VERSION} baseline", wrong_baseline or "")
 
     def test_local_journey_passes_without_a_production_claim(self):
         evidence = run_operational_e2e("local", {}, repo_root=ROOT)
