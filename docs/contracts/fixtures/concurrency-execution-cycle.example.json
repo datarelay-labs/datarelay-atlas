@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "kind": "concurrency_execution_cycle",
+  "authority": "ORCHESTRATION_EVIDENCE_ONLY",
+  "pass_authority": "NONE",
+  "cycle_id": "cycle-example",
+  "plan_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "authorization_id": "auth-example",
+  "authorization_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "effect_id": "effect-example",
+  "assignment_count": 2,
+  "state": "TERMINAL",
+  "effect_result": "DISPATCHED",
+  "effect_receipt_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "record_digest": "85c829f494479cc2fb4d2295c6e68fafa9ae01d232606affd266b13eec18da3d"
+}

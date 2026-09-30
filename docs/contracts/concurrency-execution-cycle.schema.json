@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/concurrency-execution-cycle.schema.json",
+  "title": "DataRelay Atlas Concurrency Execution Cycle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "authority",
+    "pass_authority",
+    "cycle_id",
+    "plan_digest",
+    "authorization_id",
+    "authorization_digest",
+    "effect_id",
+    "assignment_count",
+    "state",
+    "effect_result",
+    "effect_receipt_digest",
+    "record_digest"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "kind": {"const": "concurrency_execution_cycle"},
+    "authority": {"const": "ORCHESTRATION_EVIDENCE_ONLY"},
+    "pass_authority": {"const": "NONE"},
+    "cycle_id": {"$ref": "#/$defs/id"},
+    "plan_digest": {"$ref": "#/$defs/digest"},
+    "authorization_id": {"$ref": "#/$defs/id"},
+    "authorization_digest": {"$ref": "#/$defs/digest"},
+    "effect_id": {"$ref": "#/$defs/id"},
+    "assignment_count": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 64
+    },
+    "state": {"enum": ["IN_PROGRESS", "TERMINAL"]},
+    "effect_result": {
+      "anyOf": [
+        {"type": "null"},
+        {"enum": ["DISPATCHED", "PARTIAL", "FAILED", "HUMAN_REQUIRED"]}
+      ]
+    },
+    "effect_receipt_digest": {
+      "anyOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/digest"}
+      ]
+    },
+    "record_digest": {"$ref": "#/$defs/digest"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"state": {"const": "IN_PROGRESS"}},
+        "required": ["state"]
+      },
+      "then": {
+        "properties": {
+          "effect_result": {"type": "null"},
+          "effect_receipt_digest": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"state": {"const": "TERMINAL"}},
+        "required": ["state"]
+      },
+      "then": {
+        "properties": {
+          "effect_result": {
+            "enum": ["DISPATCHED", "PARTIAL", "FAILED", "HUMAN_REQUIRED"]
+          },
+          "effect_receipt_digest": {"$ref": "#/$defs/digest"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@#\\-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

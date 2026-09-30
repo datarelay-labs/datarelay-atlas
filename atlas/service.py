@@ -24,6 +24,10 @@ from atlas.concurrency_authorization import (
     publish_concurrency_dispatch_authorization,
 )
 from atlas.concurrency_effect import concurrency_dispatch_effect_dashboard
+from atlas.concurrency_execution import (
+    concurrency_execution_dashboard,
+    start_concurrency_execution,
+)
 from atlas.concurrency_join import (
     concurrency_dispatch_join_dashboard,
     record_concurrency_dispatch_join,
@@ -186,6 +190,25 @@ class AtlasService:
 
     def concurrency_dispatch_join_dashboard(self) -> dict[str, object]:
         return concurrency_dispatch_join_dashboard(self.data_root)
+
+    def concurrency_execution_dashboard(self) -> dict[str, object]:
+        return concurrency_execution_dashboard(self.data_root)
+
+    def start_concurrency_execution(
+        self,
+        *,
+        cycle_id: str,
+        authorization_request: object,
+        effect_id: str,
+        effect_port,
+    ) -> dict[str, object]:
+        return start_concurrency_execution(
+            self.data_root,
+            cycle_id=cycle_id,
+            authorization_request=authorization_request,
+            effect_id=effect_id,
+            effect_port=effect_port,
+        )
 
     def record_concurrency_dispatch_join(self, observation: object) -> dict[str, object]:
         return record_concurrency_dispatch_join(self.data_root, observation)

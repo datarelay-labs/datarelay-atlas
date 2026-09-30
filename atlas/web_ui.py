@@ -214,6 +214,24 @@ def render_concurrency(service: AtlasService) -> UiResponse:
 
     plan = dashboard.get("plan")
     try:
+        executions = service.concurrency_execution_dashboard()
+    except ValidationError:
+        executions = {
+            "state": "UNAVAILABLE",
+            "authority": "ORCHESTRATION_EVIDENCE_ONLY",
+            "pass_authority": "NONE",
+            "execution_count": 0,
+            "stage_counts": {
+                "IN_PROGRESS": 0,
+                "AWAITING_JOIN": 0,
+                "COMPLETE": 0,
+                "PARTIAL": 0,
+                "FAILED": 0,
+                "HUMAN_REQUIRED": 0,
+            },
+            "latest_execution": None,
+        }
+    try:
         dispatch_joins = service.concurrency_dispatch_join_dashboard()
     except ValidationError:
         dispatch_joins = {
@@ -348,6 +366,13 @@ def render_concurrency(service: AtlasService) -> UiResponse:
         '<section class="card" style="margin-top:16px"><h2>Admitted assignments</h2>'
         '<div style="overflow:auto"><table><thead><tr><th>Node</th><th>Packet</th><th>HEAD</th><th>Slot</th><th>Worker</th><th>Provider/runtime</th><th>Route</th></tr></thead>'
         f'<tbody>{assignment_rows or "<tr><td colspan=7>No snapshot.</td></tr>"}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Execution cycles</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(executions["state"]))}</span></dd>'
+        f'<dt>Cycles</dt><dd>{executions["execution_count"]}</dd>'
+        f'<dt>Authority</dt><dd><code>{escape(str(executions["authority"]))}</code></dd>'
+        f'<dt>PASS authority</dt><dd><code>{escape(str(executions["pass_authority"]))}</code></dd>'
+        f'<dt>Stages</dt><dd><code>{escape(str(executions["stage_counts"]))}</code></dd></dl>'
+        '<p class="muted">Execution cycles bind one current plan to one authorization/effect and reject plan replay before external dispatch. COMPLETE is orchestration evidence only, never engineering final PASS.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Multi-node dispatch authorization</h2><dl>'
         f'<dt>State</dt><dd><span class="pill">{escape(str(dispatch_authorization["state"]))}</span></dd>'
         f'<dt>Binding</dt><dd><span class="pill">{escape(str(dispatch_authorization["binding_state"]))}</span></dd>'
