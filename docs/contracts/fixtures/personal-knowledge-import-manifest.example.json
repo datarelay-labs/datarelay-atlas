@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "kind": "personal_knowledge_import_manifest",
+  "source_system": "tela",
+  "observed_at": "2026-09-30T12:00:00Z",
+  "items": [
+    {
+      "source_id": "tela-4305",
+      "external_id": "4305",
+      "title": "AI Access / MCP Bridge",
+      "state": "SANITIZED",
+      "reason_code": "SECRET_GUARD_FALSE_POSITIVE"
+    },
+    {
+      "source_id": null,
+      "external_id": "9999",
+      "title": "Rejected source",
+      "state": "QUARANTINED",
+      "reason_code": "SECRET_GUARD"
+    }
+  ]
+}

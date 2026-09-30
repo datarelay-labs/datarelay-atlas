@@ -48,7 +48,12 @@ class ValidatedProjection:
     provenance: Provenance
 
 
-def iter_validated_projections(store: ProjectionStore, project_id: str) -> list[ValidatedProjection]:
+def iter_validated_projections(
+    store: ProjectionStore,
+    project_id: str,
+    *,
+    source_classes: frozenset[str] | None = None,
+) -> list[ValidatedProjection]:
     """Return digest/provenance-validated successful projections for read-only derived consumers."""
     require_project_scope(project_id)
     results: list[ValidatedProjection] = []
@@ -57,6 +62,8 @@ def iter_validated_projections(store: ProjectionStore, project_id: str) -> list[
             continue
         label = _record_label(meta, project_id)
         provenance = _provenance_from_record(meta, project_id=project_id, label=label)
+        if source_classes is not None and provenance.source_class not in source_classes:
+            continue
         identity = _projection_identity(meta, provenance, label)
         text = _read_projection_text(
             store,
@@ -92,6 +99,7 @@ def build_keyword_retriever(
     *,
     embedding: EmbeddingConfig | None = None,
     embedder: EmbeddingClient | None = None,
+    source_classes: frozenset[str] | None = None,
 ) -> Retriever:
     """Index one project's successful projections with metadata provenance.
 
@@ -114,6 +122,8 @@ def build_keyword_retriever(
             continue
         label = _record_label(meta, project_id)
         provenance = _provenance_from_record(meta, project_id=project_id, label=label)
+        if source_classes is not None and provenance.source_class not in source_classes:
+            continue
         path = normalize_path(provenance.source_path)
         identity = _projection_identity(meta, provenance, label)
         if identity in seen_identities:

@@ -43,7 +43,7 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, concurrency_factory=service.concurrency_dashboard)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, concurrency_factory=service.concurrency_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit))
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
@@ -58,7 +58,8 @@ def build_mcp_application(
             "get_decision_plane returns SHADOW/REPLAY measurements with no activation authority; "
             "Decision Plane candidate tools only prepare bounded options and never execute model choices; "
             "get_instruction_governance returns Engineering-System-referenced managed-surface audit history with no mutation authority; "
-            "get_concurrency_admission returns advisory multi-node admission and measurement with no dispatch authority."
+            "get_concurrency_admission returns advisory multi-node admission and measurement with no dispatch authority; "
+            "get_personal_knowledge and search_personal_knowledge keep personal/reference content explicitly non-authoritative."
         ),
         token_verifier=verifier,
         auth=AuthSettings(
@@ -252,6 +253,26 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             tools,
             "get_concurrency_admission",
             {},
+        )
+
+    @server.tool(
+        name="get_personal_knowledge",
+        description="Return non-authoritative personal/reference inventory and bounded import/quarantine metadata",
+        structured_output=False,
+    )
+    async def get_personal_knowledge() -> str:
+        return _call_tool(tools, "get_personal_knowledge", {})
+
+    @server.tool(
+        name="search_personal_knowledge",
+        description="Search only personal/reference projections within one explicit project",
+        structured_output=False,
+    )
+    async def search_personal_knowledge(project_id: str, query: str, limit: int = 8) -> str:
+        return _call_tool(
+            tools,
+            "search_personal_knowledge",
+            {"project_id": project_id, "query": query, "limit": limit},
         )
 
     @server.tool(

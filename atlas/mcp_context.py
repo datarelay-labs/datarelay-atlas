@@ -41,6 +41,8 @@ class AtlasContextTools:
         decision_check_candidates_factory: Callable[[list[str]], dict[str, object]] | None = None,
         instruction_governance_factory: Callable[[], dict[str, object]] | None = None,
         concurrency_factory: Callable[[], dict[str, object]] | None = None,
+        personal_knowledge_factory: Callable[[], dict[str, object]] | None = None,
+        personal_search_factory: Callable[[str, str, int], list[Any]] | None = None,
     ) -> None:
         if (retriever is None) == (retriever_factory is None):
             raise ValueError("AtlasContextTools requires exactly one retriever source")
@@ -57,6 +59,8 @@ class AtlasContextTools:
         self._decision_check_candidates_factory = decision_check_candidates_factory
         self._instruction_governance_factory = instruction_governance_factory
         self._concurrency_factory = concurrency_factory
+        self._personal_knowledge_factory = personal_knowledge_factory
+        self._personal_search_factory = personal_search_factory
 
     def _retriever_for(self, project_id: str) -> Retriever:
         if self._retriever_factory is not None:
@@ -152,6 +156,20 @@ class AtlasContextTools:
                     "description": "Return provider-neutral multi-node admission and measured join evidence without dispatch authority",
                 }
             )
+        if self._personal_knowledge_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_personal_knowledge",
+                    "description": "Return non-authoritative personal/reference source inventory, provenance state, and bounded import/quarantine metadata",
+                }
+            )
+        if self._personal_search_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "search_personal_knowledge",
+                    "description": "Search only personal/reference projections within one explicit project",
+                }
+            )
         if authorize_tool("create_note", scopes, write_tools=WRITE_TOOL_NAMES):
             tools.append(
                 {
@@ -171,7 +189,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_transition_preview", "get_decision_plane", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_concurrency_admission"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_transition_preview", "get_decision_plane", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_concurrency_admission", "get_personal_knowledge", "search_personal_knowledge"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "search_project":
@@ -237,6 +255,42 @@ class AtlasContextTools:
             except ValidationError as exc:
                 return ToolResult(ok=False, data=None, error=str(exc))
             return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_personal_knowledge":
+            if self._personal_knowledge_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_personal_knowledge")
+            try:
+                payload = self._personal_knowledge_factory()
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "search_personal_knowledge":
+            if self._personal_search_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:search_personal_knowledge")
+            try:
+                project_id = _required_text(args, "project_id")
+                query = _required_text(args, "query")
+                limit = _positive_limit(args.get("limit", 8))
+                hits = self._personal_search_factory(project_id, query, limit)
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(
+                ok=True,
+                data=[
+                    {
+                        "project_id": h.project_id,
+                        "path": h.path,
+                        "identity": h.identity,
+                        "title": h.title,
+                        "content": h.content,
+                        "match": h.match,
+                        "score": h.score,
+                        "provenance": h.provenance,
+                    }
+                    for h in hits
+                ],
+            )
 
         if tool_name == "get_instruction_governance":
             if self._instruction_governance_factory is None:

@@ -250,6 +250,17 @@ def cmd_intelligence_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_personal_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).personal_knowledge_dashboard())
+    return 0
+
+
+def cmd_personal_search(args: argparse.Namespace) -> int:
+    hits = _service(args).personal_search(args.project_id, args.query, limit=args.limit)
+    _print_json([asdict(hit) for hit in hits])
+    return 0
+
+
 def cmd_providers_show(args: argparse.Namespace) -> int:
     _print_json(_service(args).provider_dashboard())
     return 0
@@ -879,6 +890,16 @@ def build_parser() -> argparse.ArgumentParser:
     intelligence_show = intelligence_sub.add_parser("show", help="Show one project's derived intelligence")
     intelligence_show.add_argument("project_id")
     intelligence_show.set_defaults(func=cmd_intelligence_show)
+
+    personal = sub.add_parser("personal", help="Read-only Personal Knowledge Plane")
+    personal_sub = personal.add_subparsers(dest="personal_command", required=True)
+    personal_show = personal_sub.add_parser("show", help="Show personal/reference source inventory and import status")
+    personal_show.set_defaults(func=cmd_personal_show)
+    personal_search = personal_sub.add_parser("search", help="Search only personal/reference projections in one project")
+    personal_search.add_argument("project_id")
+    personal_search.add_argument("query")
+    personal_search.add_argument("--limit", type=int, default=8)
+    personal_search.set_defaults(func=cmd_personal_search)
 
     providers = sub.add_parser("providers", help="Read-only provider capacity and broker state")
     providers_sub = providers.add_subparsers(dest="providers_command", required=True)

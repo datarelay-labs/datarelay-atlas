@@ -98,6 +98,10 @@ def render_projects(service: AtlasService) -> UiResponse:
         concurrency = service.concurrency_dashboard()
     except ValidationError:
         concurrency = {"state": "UNAVAILABLE", "dispatch_authority": "NO_DISPATCH_AUTHORITY"}
+    try:
+        personal = service.personal_knowledge_dashboard()
+    except ValidationError:
+        personal = {"state": "UNAVAILABLE", "totals": {"personal_sources": 0}}
     cards = []
     for project in projects:
         pid = quote(project.project_id, safe="")
@@ -113,8 +117,90 @@ def render_projects(service: AtlasService) -> UiResponse:
     listing = "".join(cards) if cards else '<div class="card"><p>No projects registered.</p></div>'
     enabled = sum(1 for project in projects if project.enabled)
     sources = sum(len(project.sources) for project in projects)
-    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section><section class="card"><h2>{escape(str(decision_plane["rollout_state"]))}</h2><p>Decision Plane</p></section><section class="card"><h2>{escape(str(instruction_governance["state"]))}</h2><p>Instruction governance</p></section><section class="card"><h2>{escape(str(concurrency["state"]))}</h2><p>Concurrency admission</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a> · <a href="/decision-plane">Decision Plane →</a> · <a href="/instruction-governance">Instruction governance →</a> · <a href="/concurrency">Concurrency →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
+    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section><section class="card"><h2>{escape(str(decision_plane["rollout_state"]))}</h2><p>Decision Plane</p></section><section class="card"><h2>{escape(str(instruction_governance["state"]))}</h2><p>Instruction governance</p></section><section class="card"><h2>{escape(str(concurrency["state"]))}</h2><p>Concurrency admission</p></section><section class="card"><h2>{personal["totals"]["personal_sources"]}</h2><p>Personal knowledge sources</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a> · <a href="/decision-plane">Decision Plane →</a> · <a href="/instruction-governance">Instruction governance →</a> · <a href="/concurrency">Concurrency →</a> · <a href="/personal">Personal knowledge →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
     return UiResponse("200 OK", _page("Projects", body))
+
+def render_personal_knowledge(service: AtlasService, query: str = "", project_id: str = "") -> UiResponse:
+    try:
+        dashboard = service.personal_knowledge_dashboard()
+    except ValidationError:
+        return _error(
+            "500 Internal Server Error",
+            "Personal knowledge unavailable",
+            "Personal/reference inventory or import metadata could not be validated safely.",
+        )
+    totals = dashboard["totals"]
+    project_rows = ""
+    for project in dashboard["projects"]:
+        project_rows += (
+            f'<tr><td><code>{escape(str(project["project_id"]))}</code></td>'
+            f'<td>{escape(str(project["display_name"]))}</td>'
+            f'<td>{project["personal_source_count"]}</td>'
+            f'<td>{project["engineering_source_count"]}</td>'
+            f'<td>{"enabled" if project["enabled"] else "disabled"}</td></tr>'
+        )
+    project_rows = project_rows or '<tr><td colspan="5" class="muted">No personal/reference sources registered.</td></tr>'
+
+    manifest = dashboard["import_manifest"]
+    manifest_rows = ""
+    for item in manifest["items"]:
+        manifest_rows += (
+            f'<tr><td><code>{escape(str(item["external_id"] or "NONE"))}</code></td>'
+            f'<td><code>{escape(str(item["source_id"] or "NONE"))}</code></td>'
+            f'<td>{escape(str(item["title"] or ""))}</td>'
+            f'<td><span class="pill">{escape(str(item["state"]))}</span></td>'
+            f'<td><code>{escape(str(item["reason_code"] or ""))}</code></td></tr>'
+        )
+    manifest_rows = manifest_rows or '<tr><td colspan="5" class="muted">No bounded import/quarantine item metadata.</td></tr>'
+
+    body = (
+        '<p><a href="/">← Projects</a></p><h1>Personal Knowledge Plane</h1>'
+        '<p class="muted"><span class="pill">PERSONAL_REFERENCE_ONLY</span> '
+        'Personal notes are derived context, never canonical engineering authority. No Tela runtime dependency is required.</p>'
+        '<section class="grid">'
+        f'<article class="card"><h2>{totals["personal_sources"]}</h2><p>Personal sources</p></article>'
+        f'<article class="card"><h2>{totals["engineering_sources"]}</h2><p>Engineering sources (excluded from personal search)</p></article>'
+        f'<article class="card"><h2>{totals["successful_projections"]}</h2><p>Successful personal projections</p></article>'
+        f'<article class="card"><h2>{totals["snapshots_present"]}</h2><p>Durable snapshots present</p></article>'
+        f'<article class="card"><h2>{totals["projection_errors"] + totals["projection_gaps"]}</h2><p>Projection errors / gaps</p></article>'
+        '</section>'
+        '<section class="card" style="margin-top:16px"><h2>Projects</h2><div style="overflow:auto"><table>'
+        '<thead><tr><th>Project</th><th>Name</th><th>Personal</th><th>Engineering</th><th>State</th></tr></thead>'
+        f'<tbody>{project_rows}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Import / quarantine metadata</h2>'
+        f'<p><span class="pill">{escape(str(manifest["state"]))}</span> '
+        f'<span class="muted">{escape(str(manifest["detail"]))}</span></p>'
+        '<div style="overflow:auto"><table><thead><tr><th>External ID</th><th>Source ID</th><th>Title</th><th>State</th><th>Reason</th></tr></thead>'
+        f'<tbody>{manifest_rows}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Search personal knowledge</h2>'
+        f'<form method="get" action="/personal"><input name="q" maxlength="{_MAX_QUERY}" value="{escape(query, quote=True)}" placeholder="Search personal/reference knowledge">'
+        f'<input name="project" maxlength="128" value="{escape(project_id, quote=True)}" placeholder="Project ID (required when searching)">'
+        '<button type="submit">Search</button></form>'
+    )
+    if query:
+        if not project_id:
+            body += '<p class="muted">Select an explicit personal project ID to search.</p>'
+        else:
+            try:
+                hits = service.personal_search(project_id, query, limit=8)
+            except ValidationError as exc:
+                return _error("400 Bad Request", "Personal search unavailable", str(exc))
+            body += f'<p class="muted">{len(hits)} personal/reference result(s)</p>'
+            for hit in hits:
+                prov = hit.provenance
+                body += (
+                    f'<article class="hit"><h3>{escape(hit.title or hit.path)}</h3>'
+                    f'<p class="snippet">{escape(hit.content or "")}</p><dl>'
+                    f'<dt>Source</dt><dd><code>{escape(str(prov.get("source_path", "")))}</code></dd>'
+                    f'<dt>Revision</dt><dd><code>{escape(str(prov.get("source_revision", "")))}</code></dd>'
+                    f'<dt>Authority</dt><dd>{escape(_source_relation(prov))}</dd>'
+                    f'<dt>Projection</dt><dd><span class="pill">DERIVED</span> <code>{escape(hit.identity)}</code></dd></dl></article>'
+                )
+            if not hits:
+                body += '<p>No personal/reference matches.</p>'
+    body += '</section>'
+    return UiResponse("200 OK", _page("Personal Knowledge", body))
+
 
 def render_concurrency(service: AtlasService) -> UiResponse:
     try:
@@ -1461,6 +1547,14 @@ def create_app(data_root: Path):
                 response = render_operations(service)
             elif path == "/concurrency":
                 response = render_concurrency(service)
+            elif path == "/personal":
+                params = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
+                query = params.get("q", [""])[0]
+                project_id = params.get("project", [""])[0].strip()
+                if len(query) > _MAX_QUERY or len(project_id) > 128:
+                    response = _error("400 Bad Request", "Invalid personal search", "Personal search input is too long.")
+                else:
+                    response = render_personal_knowledge(service, query.strip(), project_id)
             elif path == "/instruction-governance":
                 response = render_instruction_governance(service)
             elif path == "/decision-plane":

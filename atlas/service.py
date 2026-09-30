@@ -26,6 +26,7 @@ from atlas.decision_plane import (
     decision_plane_dashboard,
 )
 from atlas.operations_readiness import operations_readiness
+from atlas.personal_knowledge import build_personal_retriever, personal_knowledge_dashboard
 from atlas.provider_dashboard import provider_dashboard, provider_transition_preview, publish_provider_dashboard_snapshot
 from atlas.instruction_governance import (
     build_instruction_candidate_change,
@@ -92,6 +93,29 @@ class AtlasService:
 
     def list_projects(self) -> list[ProjectRecord]:
         return self.registry.list_projects()
+
+    def personal_knowledge_dashboard(self) -> dict[str, object]:
+        """Return read-only Personal Knowledge Plane inventory and import metadata."""
+        return personal_knowledge_dashboard(
+            self.data_root,
+            registry=self.registry,
+            projections=self.projections,
+            snapshot_root=self.snapshot_root,
+        )
+
+    def personal_search(self, project_id: str, query: str, *, limit: int = 8) -> list[RetrievalHit]:
+        """Search only personal/reference projections for one explicit project."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValidationError("limit must be a positive integer")
+        if not isinstance(query, str):
+            raise ValidationError("query is required")
+        project = self.registry.get(project_id)
+        if not any(source.source_class == "personal" for source in project.sources.values()):
+            return []
+        return build_personal_retriever(self.projections, project_id).search(
+            project_id, query, limit=limit
+        )
+
 
     def operations_readiness(self) -> dict[str, object]:
         """Return read-only Phase 5 operations/release readiness."""

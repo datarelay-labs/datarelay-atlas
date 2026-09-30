@@ -265,6 +265,35 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("local://atlas-personal · local · ideas.md", body)
         self.assertIn("idea@local", body)
 
+    def test_personal_dashboard_and_search_are_non_authoritative(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            svc = AtlasService(root)
+            svc.register_project(project_id="notes", repository="datarelay-labs/notes", display_name="Notes")
+            svc.import_root.mkdir(parents=True, exist_ok=True)
+            (svc.import_root / "note.md").write_text("personal-web-quill", encoding="utf-8")
+            svc.import_personal_markdown("notes", source_id="note", source_path="note.md", title="Private note")
+            svc.sync_project("notes")
+            app = create_app(root)
+            env = {}
+            setup_testing_defaults(env)
+            env.update({
+                "REQUEST_METHOD": "GET",
+                "PATH_INFO": "/personal",
+                "QUERY_STRING": "q=personal-web-quill&project=notes",
+                "HTTP_HOST": "127.0.0.1:8788",
+            })
+            state = {}
+            def start(status, headers):
+                state.update(status=status, headers=dict(headers))
+            body = b"".join(app(env, start)).decode()
+            self.assertEqual(state["status"], "200 OK")
+            self.assertIn("Personal Knowledge Plane", body)
+            self.assertIn("PERSONAL_REFERENCE_ONLY", body)
+            self.assertIn("personal reference / non-authoritative", body)
+            self.assertIn("personal-web-quill", body)
+            self.assertNotIn("canonical engineering source reference", body)
+
     def test_cross_project_search_preserves_project_provenance(self):
         svc = AtlasService(self.root)
         svc.register_project(project_id="other", repository="datarelay-labs/other", display_name="Other")
