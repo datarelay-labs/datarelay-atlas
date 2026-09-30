@@ -43,7 +43,7 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, instruction_governance_routing_factory=service.instruction_governance_routing, instruction_governance_disposition_factory=service.instruction_governance_disposition_dashboard, instruction_governance_canary_factory=service.instruction_governance_canary_dashboard, concurrency_factory=service.concurrency_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit), provider_route_quality_factory=service.provider_route_quality_dashboard, decision_canary_factory=service.decision_canary_readiness, decision_canary_admission_factory=service.decision_canary_dashboard, decision_limited_active_factory=service.decision_limited_active_dashboard)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, instruction_governance_routing_factory=service.instruction_governance_routing, instruction_governance_disposition_factory=service.instruction_governance_disposition_dashboard, instruction_governance_canary_factory=service.instruction_governance_canary_dashboard, concurrency_factory=service.concurrency_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit), provider_route_quality_factory=service.provider_route_quality_dashboard, decision_canary_factory=service.decision_canary_readiness, decision_canary_admission_factory=service.decision_canary_dashboard, decision_limited_active_factory=service.decision_limited_active_dashboard, decision_focused_check_limited_active_factory=service.decision_focused_check_limited_active_dashboard)
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
@@ -60,6 +60,7 @@ def build_mcp_application(
             "get_decision_canary_readiness reports REPLAY_PASS-derived request readiness without activation or execution authority; "
             "get_decision_plane_canary reports the scoped canary admission snapshot and stale evidence binding without execution authority; "
             "get_decision_plane_limited_active reports optional-context LIMITED_ACTIVE receipts with deterministic fallback and no release/PASS authority; "
+            "get_decision_plane_focused_check_limited_active reports focused-check LIMITED_ACTIVE receipts while terminal gates remain mandatory; "
             "Decision Plane candidate tools only prepare bounded options and never execute model choices; "
             "get_instruction_governance returns Engineering-System-referenced managed-surface audit history with no mutation authority; "
             "get_instruction_governance_routing derives current candidate routing without creating PRs or mutating instructions; "
@@ -268,6 +269,18 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     )
     async def get_decision_plane_limited_active() -> str:
         return _call_tool(tools, "get_decision_plane_limited_active", {})
+
+    @server.tool(
+        name="get_decision_plane_focused_check_limited_active",
+        description="Return focused-check LIMITED_ACTIVE evidence with terminal checks preserved",
+        structured_output=False,
+    )
+    async def get_decision_plane_focused_check_limited_active() -> str:
+        return _call_tool(
+            tools,
+            "get_decision_plane_focused_check_limited_active",
+            {},
+        )
 
     @server.tool(
         name="get_decision_context_candidates",

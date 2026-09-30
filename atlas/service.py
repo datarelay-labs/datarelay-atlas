@@ -31,6 +31,9 @@ from atlas.decision_plane_canary import (
     publish_decision_canary_admission,
 )
 from atlas.decision_plane_limited_active import limited_active_dashboard
+from atlas.decision_plane_focused_check_limited_active import (
+    focused_check_limited_active_dashboard,
+)
 from atlas.operations_readiness import operations_readiness
 from atlas.personal_knowledge import build_personal_retriever, personal_knowledge_dashboard
 from atlas.provider_dashboard import provider_dashboard, provider_transition_preview, publish_provider_dashboard_snapshot
@@ -316,6 +319,15 @@ class AtlasService:
     def decision_limited_active_dashboard(self) -> dict[str, object]:
         """Return bounded OPTIONAL_CONTEXT_SELECTION limited-active evidence."""
         return limited_active_dashboard(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+        )
+
+    def decision_focused_check_limited_active_dashboard(
+        self,
+    ) -> dict[str, object]:
+        """Return bounded FOCUSED_CHECK_SELECTION limited-active evidence."""
+        return focused_check_limited_active_dashboard(
             self.data_root,
             repo_root=Path(__file__).resolve().parents[1],
         )

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "decision_plane_focused_check_effect_receipt",
+  "activation_id": "focused-example",
+  "canary_request_id": "focused-canary",
+  "admission_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "decision_class": "FOCUSED_CHECK_SELECTION",
+  "project_id": "datarelay-atlas",
+  "task_kind": "DEVELOPMENT",
+  "activated_at": "2026-09-30T17:00:00Z",
+  "candidate_digest": "488539b91d184d935fc447fcbf12cb49425b353b668f7cc179bb67e2686de65f",
+  "changed_paths": [
+    "src/module.py"
+  ],
+  "affected_domains": [
+    "code"
+  ],
+  "candidate_ids": [
+    "FAST",
+    "TERM"
+  ],
+  "terminal_required_ids": [
+    "TERM"
+  ],
+  "selected_candidate_ids": [
+    "TERM"
+  ],
+  "result": "APPLIED_CANARY",
+  "fallback_reason": null,
+  "selector_attribution": {
+    "provider": "jev",
+    "model": "system-one",
+    "profile": "bounded-v1",
+    "decision_ref": "decision:focused-check:001"
+  },
+  "authority": "FOCUSED_CHECK_SELECTION_ONLY",
+  "permission_authority": "NONE",
+  "release_authority": "NONE",
+  "deploy_authority": "NONE",
+  "pass_authority": "NONE",
+  "human_required_authority": "NONE",
+  "rollout_state": "LIMITED_ACTIVE"
+}
