@@ -26,9 +26,9 @@ Data Relay Link exposed the same class of gap through its CLI product surface: c
 
 ## Minimal design gate
 
-1. **Goal** — Preserve a reusable product-testing principle for Atlas and Engineering System lifecycle intelligence: user-facing releases require human-equivalent testing through the actual primary public user surface.
+1. **Goal** — Preserve the rationale and Atlas lifecycle-intelligence model for human-equivalent user testing when the canonical Engineering System or a stricter project release contract requires it.
 2. **Non-goals** — Replacing deterministic CI, making browser automation the only testing method, inventing one universal scenario catalog for every product, or allowing AI judgment to replace exact evidence.
-3. **Two mandatory gate classes** — Surface Reconciliation plus Full User E2E.
+3. **Two gate classes to recognize** — When required by canonical release authority, Surface Reconciliation plus Full User E2E are distinct gates and must not be collapsed into machine qualification.
 4. **Actual public surface** — Browser products use a real Chromium/Chrome process; CLI products use the actual public CLI; desktop/mobile products use their supported public UI/runtime surface.
 5. **Automation boundary** — Playwright or an equivalent driver may control a real browser. Headless Chromium/Chrome is still a real browser. jsdom/component rendering, static DOM inspection, API-only flows, and CI contract validation are not execution substitutes.
 6. **Exact candidate** — Both gates bind to the same exact release candidate and are invalidated by relevant product/public-surface/harness changes.
@@ -39,7 +39,9 @@ Data Relay Link exposed the same class of gap through its CLI product surface: c
 
 ## Decision
 
-For every user-facing product, release qualification uses this sequence unless a stricter product-specific contract exists:
+Engineering System remains the canonical methodology authority. This ADR defines how Atlas stores the rationale and interprets canonical project evidence; it does not impose release policy on other repositories.
+
+When the canonical Engineering System or a stricter project-specific release contract declares human-equivalent testing required, Atlas recognizes and reports this release sequence rather than defining it independently:
 
 ```text
 exact-head machine qualification
