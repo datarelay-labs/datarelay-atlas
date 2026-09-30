@@ -14,6 +14,7 @@ from typing import Any
 
 from atlas.provider_broker import _route_id as _broker_route_id
 from atlas.provider_capability import CAPABILITY_NAMES
+from atlas.provider_transition import validate_provider_transition_plan
 from atlas.provider_transition_authorization import (
     AUTHORIZED_AUTHORITY,
     provider_transition_effect_state_digest,
@@ -110,7 +111,10 @@ def _replay_key(
 def seal_provider_transition_effect_request(
     authorization: object,
     current_state: object,
+    transition_plan: object,
     *,
+    consumed_at: str,
+    expected_max_evidence_age_seconds: int,
     expected_authorization_digest: str,
     expected_transition_plan_digest: str,
     expected_current_state_digest: str,
@@ -130,6 +134,15 @@ def seal_provider_transition_effect_request(
         label="expected provider transition current-state digest",
     )
 
+    plan = validate_provider_transition_plan(
+        transition_plan,
+        consumed_at=consumed_at,
+        expected_max_evidence_age_seconds=expected_max_evidence_age_seconds,
+        expected_transition_plan_digest=trusted_plan,
+    )
+    if plan["decision"] != "TRANSITION_RECOMMENDED":
+        _reject("provider transition plan no longer permits an effect request")
+
     auth = validate_provider_transition_effect_authorization(
         authorization,
         expected_authorization_digest=trusted_auth,
@@ -138,6 +151,15 @@ def seal_provider_transition_effect_request(
     )
     if auth["decision"] != "AUTHORIZED" or auth["authority"] != AUTHORIZED_AUTHORITY:
         _reject("provider transition authorization does not permit an effect request")
+    if (
+        auth["plan_from_route_id"] != plan["from_route_id"]
+        or auth["plan_to_route_id"] != plan["to_route_id"]
+        or auth["strategy"] != plan["strategy"]
+        or auth["required_capability"] != plan["required_capability"]
+        or auth["attempt"] != plan["attempt"]
+        or auth["max_attempts"] != plan["max_attempts"]
+    ):
+        _reject("provider transition authorization no longer matches transition plan")
 
     state = validate_provider_transition_effect_state(
         current_state,

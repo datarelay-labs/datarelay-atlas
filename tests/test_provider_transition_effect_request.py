@@ -48,10 +48,19 @@ def _authorization(plan: dict, state: dict) -> dict:
         expected_current_state_digest=provider_transition_effect_state_digest(state),
     )
 
-def _seal(auth: dict, state: dict, plan: dict) -> dict:
+def _seal(
+    auth: dict,
+    state: dict,
+    plan: dict,
+    *,
+    consumed_at: str = FRESH_EVALUATED_AT,
+) -> dict:
     return seal_provider_transition_effect_request(
         auth,
         state,
+        plan,
+        consumed_at=consumed_at,
+        expected_max_evidence_age_seconds=FRESH_MAX_EVIDENCE_AGE_SECONDS,
         expected_authorization_digest=provider_transition_effect_authorization_digest(
             auth
         ),
@@ -108,7 +117,7 @@ class ProviderTransitionEffectRequestTests(unittest.TestCase):
         auth = _authorization(plan, state)
         self.assertEqual(auth["decision"], "HUMAN_REQUIRED")
 
-        with self.assertRaisesRegex(ValidationError, "does not permit"):
+        with self.assertRaisesRegex(ValidationError, "plan no longer permits"):
             _seal(auth, state, plan)
 
     def test_changed_current_state_fails_before_sealing(self) -> None:
@@ -127,6 +136,9 @@ class ProviderTransitionEffectRequestTests(unittest.TestCase):
                     seal_provider_transition_effect_request(
                         auth,
                         changed,
+                        plan,
+                        consumed_at=FRESH_EVALUATED_AT,
+                        expected_max_evidence_age_seconds=FRESH_MAX_EVIDENCE_AGE_SECONDS,
                         expected_authorization_digest=provider_transition_effect_authorization_digest(
                             auth
                         ),
@@ -137,6 +149,29 @@ class ProviderTransitionEffectRequestTests(unittest.TestCase):
                             changed
                         ),
                     )
+
+    def test_authorization_cannot_be_sealed_after_route_evidence_expires(self) -> None:
+        plan = _recommended_plan()
+        state = _state()
+        auth = _authorization(plan, state)
+
+        with self.assertRaisesRegex(ValidationError, "stale|expired"):
+            _seal(
+                auth,
+                state,
+                plan,
+                consumed_at="2026-09-28T00:10:01Z",
+            )
+
+    def test_authorization_must_still_match_revalidated_plan(self) -> None:
+        plan = _recommended_plan()
+        state = _state()
+        auth = _authorization(plan, state)
+        tampered = deepcopy(auth)
+        tampered["strategy"] = "STEWARDSHIP"
+
+        with self.assertRaisesRegex(ValidationError, "authorization no longer matches"):
+            _seal(tampered, state, plan)
 
     def test_tampered_authorization_is_rejected(self) -> None:
         plan = _recommended_plan()
@@ -151,6 +186,9 @@ class ProviderTransitionEffectRequestTests(unittest.TestCase):
             seal_provider_transition_effect_request(
                 tampered,
                 state,
+                plan,
+                consumed_at=FRESH_EVALUATED_AT,
+                expected_max_evidence_age_seconds=FRESH_MAX_EVIDENCE_AGE_SECONDS,
                 expected_authorization_digest=trusted_auth_digest,
                 expected_transition_plan_digest=provider_transition_plan_digest(plan),
                 expected_current_state_digest=provider_transition_effect_state_digest(
