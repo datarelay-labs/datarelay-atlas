@@ -7,6 +7,7 @@ import json
 import re
 from typing import Any, Protocol
 
+from atlas.provider_broker import _route_id as _broker_route_id
 from atlas.provider_transition_authorization import (
     provider_transition_effect_state_digest,
     validate_provider_transition_effect_state,
@@ -29,6 +30,7 @@ REASONS = frozenset(
     }
 )
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_MAX_EFFECT_EPOCH = 2**31 - 1
 _RECEIPT_KEYS = frozenset(
     {
         "schema_version",
@@ -159,10 +161,8 @@ def validate_provider_transition_effect_receipt(
     if isinstance(old_epoch, bool) or not isinstance(old_epoch, int) or old_epoch < 1:
         _reject("provider transition old effect epoch is invalid")
 
-    from_route = payload.get("from_route_id")
-    to_route = payload.get("to_route_id")
-    if not isinstance(from_route, str) or not isinstance(to_route, str):
-        _reject("provider transition receipt route identity is invalid")
+    from_route = _broker_route_id(payload.get("from_route_id"))
+    to_route = _broker_route_id(payload.get("to_route_id"))
     if from_route == to_route:
         _reject("provider transition receipt target equals current route")
 
@@ -236,6 +236,8 @@ def commit_provider_transition_effect(
     target = request["to_route_id"]
     if target == state["route_id"]:
         _reject("provider transition sealed target is invalid")
+    if state["effect_epoch"] >= _MAX_EFFECT_EPOCH:
+        _reject("provider transition effect epoch cannot advance")
 
     effect_call = {
         "effect_request_digest": request_digest,

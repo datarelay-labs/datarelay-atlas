@@ -132,6 +132,51 @@ class ProviderTransitionEffectTests(unittest.TestCase):
 
         self.assertEqual(port.calls, [])
 
+    def test_terminal_effect_epoch_fails_before_port_invocation(self):
+        plan = _recommended_plan()
+        state = _state(effect_epoch=2**31 - 1)
+        auth = _authorization(plan, state)
+        request = _seal(auth, state, plan)
+        port = FakePort()
+
+        with self.assertRaisesRegex(ValidationError, "cannot advance"):
+            _commit(request, state, auth, port)
+
+        self.assertEqual(port.calls, [])
+
+    def test_receipt_runtime_rejects_unsafe_route_ids(self):
+        _plan, state, auth, request = _bundle()
+        port = FakePort(
+            {
+                "outcome": "COMMITTED",
+                "new_state": _state(
+                    "codex-secondary",
+                    revision=NEW_REVISION,
+                    effect_epoch=8,
+                ),
+            }
+        )
+        result = _commit(request, state, auth, port)
+        for field, value in (
+            ("from_route_id", ""),
+            ("to_route_id", "sk-secret"),
+        ):
+            with self.subTest(field=field):
+                bad = {**result, field: value}
+                with self.assertRaises(ValidationError):
+                    validate_provider_transition_effect_receipt(
+                        bad,
+                        expected_receipt_digest=provider_transition_effect_receipt_digest(
+                            bad
+                        ),
+                        expected_request_digest=provider_transition_effect_request_digest(
+                            request
+                        ),
+                        expected_authorization_digest=provider_transition_effect_authorization_digest(
+                            auth
+                        ),
+                    )
+
     def test_refusal_unknown_error_and_malformed_result_are_human_required(self):
         _plan, state, auth, request = _bundle()
         cases = (
