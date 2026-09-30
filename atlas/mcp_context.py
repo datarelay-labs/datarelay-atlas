@@ -40,6 +40,7 @@ class AtlasContextTools:
         decision_context_candidates_factory: Callable[[list[str]], dict[str, object]] | None = None,
         decision_check_candidates_factory: Callable[[list[str]], dict[str, object]] | None = None,
         instruction_governance_factory: Callable[[], dict[str, object]] | None = None,
+        concurrency_factory: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         if (retriever is None) == (retriever_factory is None):
             raise ValueError("AtlasContextTools requires exactly one retriever source")
@@ -55,6 +56,7 @@ class AtlasContextTools:
         self._decision_context_candidates_factory = decision_context_candidates_factory
         self._decision_check_candidates_factory = decision_check_candidates_factory
         self._instruction_governance_factory = instruction_governance_factory
+        self._concurrency_factory = concurrency_factory
 
     def _retriever_for(self, project_id: str) -> Retriever:
         if self._retriever_factory is not None:
@@ -143,6 +145,13 @@ class AtlasContextTools:
                     "description": "Return managed instruction inventory and advisory audit history without mutation authority",
                 }
             )
+        if self._concurrency_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_concurrency_admission",
+                    "description": "Return provider-neutral multi-node admission and measured join evidence without dispatch authority",
+                }
+            )
         if authorize_tool("create_note", scopes, write_tools=WRITE_TOOL_NAMES):
             tools.append(
                 {
@@ -162,7 +171,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_transition_preview", "get_decision_plane", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_transition_preview", "get_decision_plane", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_concurrency_admission"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "search_project":
@@ -216,6 +225,15 @@ class AtlasContextTools:
                 return ToolResult(ok=False, data=None, error="unknown_tool:get_operations_readiness")
             try:
                 payload = self._operations_readiness_factory()
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_concurrency_admission":
+            if self._concurrency_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_concurrency_admission")
+            try:
+                payload = self._concurrency_factory()
             except ValidationError as exc:
                 return ToolResult(ok=False, data=None, error=str(exc))
             return ToolResult(ok=True, data=payload)

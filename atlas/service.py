@@ -14,6 +14,11 @@ from atlas.adoption import (
 from atlas.github_sync import FetchFn, fetch_github_file
 from atlas.derived_intelligence import derived_intelligence_payload
 from atlas.data_lock import data_root_write_lock
+from atlas.concurrency_admission import (
+    concurrency_dashboard,
+    publish_concurrency_snapshot,
+    record_concurrency_run,
+)
 from atlas.decision_plane import (
     append_decision_observation,
     build_focused_check_candidates,
@@ -95,6 +100,18 @@ class AtlasService:
     def provider_dashboard(self) -> dict[str, object]:
         """Return read-only provider capacity/broker dashboard state."""
         return provider_dashboard(self.data_root)
+
+    def concurrency_dashboard(self) -> dict[str, object]:
+        """Return provider-neutral concurrency admission/measurement state."""
+        return concurrency_dashboard(self.data_root)
+
+    def publish_concurrency_snapshot(self, snapshot: object) -> dict[str, object]:
+        """Publish one validated derived concurrency-admission snapshot."""
+        return publish_concurrency_snapshot(self.data_root, snapshot)
+
+    def record_concurrency_run(self, observation: object) -> dict[str, object]:
+        """Record one measured run bound to the current admission plan."""
+        return record_concurrency_run(self.data_root, observation)
 
     def instruction_governance_dashboard(self) -> dict[str, object]:
         """Return managed instruction inventory and advisory audit history."""

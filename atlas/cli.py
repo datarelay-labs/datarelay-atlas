@@ -255,6 +255,23 @@ def cmd_providers_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_concurrency_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).concurrency_dashboard())
+    return 0
+
+
+def cmd_concurrency_publish(args: argparse.Namespace) -> int:
+    snapshot = _read_json_file(args.snapshot, label="concurrency snapshot")
+    _print_json(_service(args).publish_concurrency_snapshot(snapshot))
+    return 0
+
+
+def cmd_concurrency_record_run(args: argparse.Namespace) -> int:
+    observation = _read_json_file(args.observation, label="concurrency run observation")
+    _print_json(_service(args).record_concurrency_run(observation))
+    return 0
+
+
 def cmd_instruction_governance_profile_build(args: argparse.Namespace) -> int:
     payload = _service(args).build_instruction_governance_profile(
         engineering_system_revision=args.engineering_system_revision,
@@ -881,6 +898,17 @@ def build_parser() -> argparse.ArgumentParser:
     providers_publish.add_argument("--strategy", default="CAPABILITY_FIRST", choices=sorted(STRATEGIES))
     providers_publish.add_argument("--max-evidence-age-seconds", type=int, required=True)
     providers_publish.set_defaults(func=cmd_providers_publish)
+
+    concurrency = sub.add_parser("concurrency", help="Provider-neutral measured concurrency admission")
+    concurrency_sub = concurrency.add_subparsers(dest="concurrency_command", required=True)
+    concurrency_show = concurrency_sub.add_parser("show", help="Show current concurrency admission plan and measurements")
+    concurrency_show.set_defaults(func=cmd_concurrency_show)
+    concurrency_publish = concurrency_sub.add_parser("publish", help="Publish a validated derived concurrency snapshot")
+    concurrency_publish.add_argument("--snapshot", required=True)
+    concurrency_publish.set_defaults(func=cmd_concurrency_publish)
+    concurrency_record = concurrency_sub.add_parser("record-run", help="Record one measured run bound to the current plan")
+    concurrency_record.add_argument("--observation", required=True)
+    concurrency_record.set_defaults(func=cmd_concurrency_record_run)
 
     instruction_governance = sub.add_parser("instruction-governance", help="Model-aware instruction governance audit evidence")
     instruction_governance_sub = instruction_governance.add_subparsers(dest="instruction_governance_command", required=True)

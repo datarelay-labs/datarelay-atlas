@@ -94,6 +94,10 @@ def render_projects(service: AtlasService) -> UiResponse:
         instruction_governance = service.instruction_governance_dashboard()
     except ValidationError:
         instruction_governance = {"state": "UNAVAILABLE", "audit_count": 0}
+    try:
+        concurrency = service.concurrency_dashboard()
+    except ValidationError:
+        concurrency = {"state": "UNAVAILABLE", "dispatch_authority": "NO_DISPATCH_AUTHORITY"}
     cards = []
     for project in projects:
         pid = quote(project.project_id, safe="")
@@ -109,8 +113,138 @@ def render_projects(service: AtlasService) -> UiResponse:
     listing = "".join(cards) if cards else '<div class="card"><p>No projects registered.</p></div>'
     enabled = sum(1 for project in projects if project.enabled)
     sources = sum(len(project.sources) for project in projects)
-    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section><section class="card"><h2>{escape(str(decision_plane["rollout_state"]))}</h2><p>Decision Plane</p></section><section class="card"><h2>{escape(str(instruction_governance["state"]))}</h2><p>Instruction governance</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a> · <a href="/decision-plane">Decision Plane →</a> · <a href="/instruction-governance">Instruction governance →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
+    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section><section class="card"><h2>{escape(str(decision_plane["rollout_state"]))}</h2><p>Decision Plane</p></section><section class="card"><h2>{escape(str(instruction_governance["state"]))}</h2><p>Instruction governance</p></section><section class="card"><h2>{escape(str(concurrency["state"]))}</h2><p>Concurrency admission</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a> · <a href="/decision-plane">Decision Plane →</a> · <a href="/instruction-governance">Instruction governance →</a> · <a href="/concurrency">Concurrency →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
     return UiResponse("200 OK", _page("Projects", body))
+
+def render_concurrency(service: AtlasService) -> UiResponse:
+    try:
+        dashboard = service.concurrency_dashboard()
+    except ValidationError:
+        return _error(
+            "500 Internal Server Error",
+            "Concurrency admission unavailable",
+            "Concurrency admission or measurement evidence could not be read safely.",
+        )
+
+    plan = dashboard.get("plan")
+    assignment_rows = ""
+    blocked_rows = ""
+    eligible_slot_rows = ""
+    ineligible_slot_rows = ""
+    plan_html = '<p class="muted">No concurrency admission snapshot loaded.</p>'
+    if isinstance(plan, dict):
+        assignment_rows = "".join(
+            f'<tr><td><code>{escape(str(item["node_id"]))}</code></td>'
+            f'<td><code>{escape(str(item["repository"]))}#{item["issue_number"]}</code></td>'
+            f'<td><code>{escape(str(item["head"]))}</code></td>'
+            f'<td><code>{escape(str(item["slot_id"]))}</code></td>'
+            f'<td><code>{escape(str(item["worker_id"]))}</code></td>'
+            f'<td>{escape(str(item["provider"]))} / <code>{escape(str(item["runtime"]))}</code></td>'
+            f'<td><code>{escape(str(item["route_id"] or "NONE"))}</code></td></tr>'
+            for item in plan["assignments"]
+        ) or '<tr><td colspan="7" class="muted">No nodes admitted.</td></tr>'
+        blocked_rows = "".join(
+            f'<tr><td><code>{escape(str(item["node_id"]))}</code></td>'
+            f'<td><code>{escape(str(item["repository"]))}#{item["issue_number"]}</code></td>'
+            f'<td>{escape(", ".join(item["reasons"]))}</td></tr>'
+            for item in plan["blocked_selected_nodes"]
+        ) or '<tr><td colspan="3" class="muted">No graph-selected nodes blocked by the admission layer.</td></tr>'
+        eligible_slot_rows = "".join(
+            f'<tr><td><code>{escape(str(item["slot_id"]))}</code></td>'
+            f'<td><code>{escape(str(item["worker_id"]))}</code></td>'
+            f'<td>{escape(str(item["provider"]))}</td>'
+            f'<td><code>{escape(str(item["runtime"]))}</code></td>'
+            f'<td><code>{escape(str(item["route_id"] or "NONE"))}</code></td>'
+            f'<td><code>{escape(str(item["evidence_ref"]))}</code></td></tr>'
+            for item in plan["eligible_slots"]
+        ) or '<tr><td colspan="6" class="muted">No eligible execution slots.</td></tr>'
+        ineligible_slot_rows = "".join(
+            f'<tr><td><code>{escape(str(item["slot_id"]))}</code></td>'
+            f'<td><code>{escape(str(item["worker_id"]))}</code></td>'
+            f'<td>{escape(str(item["provider"]))}</td>'
+            f'<td>{escape(", ".join(item["reasons"]))}</td></tr>'
+            for item in plan["ineligible_slots"]
+        ) or '<tr><td colspan="4" class="muted">No ineligible execution slots.</td></tr>'
+        project_limits = ", ".join(
+            f'{item["repository"]}:{item["max_wip"]}'
+            for item in plan["project_limits"]
+        )
+        plan_html = (
+            '<dl>'
+            f'<dt>Authority</dt><dd><span class="pill">{escape(str(plan["authority"]))}</span></dd>'
+            f'<dt>Dispatch authority</dt><dd><span class="pill">{escape(str(plan["dispatch_authority"]))}</span></dd>'
+            f'<dt>Plan digest</dt><dd><code>{escape(str(plan["plan_digest"]))}</code></dd>'
+            f'<dt>Graph state</dt><dd><span class="pill">{escape(str(plan["graph_state"]))}</span> {escape(", ".join(plan["graph_reasons"]) or "no graph blockers")}</dd>'
+            f'<dt>Global WIP</dt><dd>{plan["active_count"]}/{plan["global_max_wip"]}</dd>'
+            f'<dt>Max parallel admission</dt><dd>{plan["max_parallel_admission"]}</dd>'
+            f'<dt>Project WIP limits</dt><dd><code>{escape(project_limits)}</code></dd>'
+            f'<dt>Graph selected</dt><dd><code>{escape(", ".join(plan["graph_selected_node_ids"]) or "NONE")}</code></dd>'
+            f'<dt>Admitted</dt><dd>{len(plan["assignments"])}</dd>'
+            '</dl>'
+        )
+
+    run_rows = "".join(
+        f'<tr><td><code>{escape(str(item["run_id"]))}</code></td>'
+        f'<td><span class="pill">{escape(str(item["result"]))}</span></td>'
+        f'<td>{len(item["outcomes"])}</td>'
+        f'<td>{item["complete_count"]}/{item["failed_count"]}/{item["human_required_count"]}</td>'
+        f'<td>{item["wall_time_ms"]}</td>'
+        f'<td>{item["sum_node_duration_ms"]}</td>'
+        f'<td>{item["parallelism_basis_points"] / 10000:.2f}x</td></tr>'
+        for item in dashboard["runs"]
+    ) or '<tr><td colspan="7" class="muted">No measured concurrency runs recorded.</td></tr>'
+
+    latest = dashboard["latest_run"]
+    latest_html = '<p class="muted">No run has been measured yet.</p>'
+    if isinstance(latest, dict):
+        latest_outcomes = "".join(
+            f'<li><code>{escape(str(item["node_id"]))}</code> → '
+            f'<span class="pill">{escape(str(item["outcome"]))}</span> '
+            f'<code>{escape(str(item["worker_id"]))}</code> / {escape(str(item["provider"]))} '
+            f'({item["duration_ms"]} ms)</li>'
+            for item in latest["outcomes"]
+        )
+        latest_html = (
+            f'<p><span class="pill">{escape(str(latest["result"]))}</span> '
+            f'<code>{escape(str(latest["run_id"]))}</code></p>'
+            f'<ul>{latest_outcomes}</ul>'
+        )
+
+    body = (
+        '<p><a href="/">← Projects</a></p><h1>Measured concurrency</h1>'
+        '<p class="muted">Provider-neutral advisory admission and measurement. Existing single-effect authorization remains unchanged.</p>'
+        '<section class="grid">'
+        f'<article class="card"><h2>{escape(str(dashboard["state"]))}</h2><p>Admission state</p></article>'
+        f'<article class="card"><h2>{escape(str(dashboard["dispatch_authority"]))}</h2><p>Dispatch authority</p></article>'
+        f'<article class="card"><h2>{dashboard["run_count"]}</h2><p>Measured runs</p></article>'
+        f'<article class="card"><h2>{dashboard["completed_nodes"]}/{dashboard["total_measured_nodes"]}</h2><p>Completed measured nodes</p></article>'
+        f'<article class="card"><h2>{dashboard["partial_failure_runs"]}</h2><p>Partial/HUMAN runs</p></article>'
+        f'<article class="card"><h2>{dashboard["max_parallelism_basis_points"] / 10000:.2f}x</h2><p>Max measured work/wall ratio</p></article>'
+        '</section>'
+        '<section class="card" style="margin-top:16px"><h2>Admission plan</h2>'
+        + plan_html
+        + '<p class="muted">Assignments are evidence only. This surface cannot activate packets or dispatch workers.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Admitted assignments</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Node</th><th>Packet</th><th>HEAD</th><th>Slot</th><th>Worker</th><th>Provider/runtime</th><th>Route</th></tr></thead>'
+        f'<tbody>{assignment_rows or "<tr><td colspan=7>No snapshot.</td></tr>"}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Admission-blocked selected nodes</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Node</th><th>Packet</th><th>Reasons</th></tr></thead>'
+        f'<tbody>{blocked_rows or "<tr><td colspan=3>No snapshot.</td></tr>"}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Execution slots</h2><h3>Eligible</h3>'
+        '<div style="overflow:auto"><table><thead><tr><th>Slot</th><th>Worker</th><th>Provider</th><th>Runtime</th><th>Route</th><th>Evidence</th></tr></thead>'
+        f'<tbody>{eligible_slot_rows or "<tr><td colspan=6>No snapshot.</td></tr>"}</tbody></table></div>'
+        '<h3>Ineligible</h3><div style="overflow:auto"><table><thead><tr><th>Slot</th><th>Worker</th><th>Provider</th><th>Reasons</th></tr></thead>'
+        f'<tbody>{ineligible_slot_rows or "<tr><td colspan=4>No snapshot.</td></tr>"}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Latest join/reconciliation</h2>'
+        + latest_html
+        + '</section>'
+        '<section class="card" style="margin-top:16px"><h2>Measured runs</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Run</th><th>Result</th><th>Nodes</th><th>Complete/Fail/Human</th><th>Wall ms</th><th>Node ms sum</th><th>Work/wall</th></tr></thead>'
+        f'<tbody>{run_rows}</tbody></table></div></section>'
+        '<p class="muted">Worker/provider identity is attribution only. Maximum agent count is never a target; admission is bounded by graph safety, WIP, project limits, slot gates and evidence freshness.</p>'
+    )
+    return UiResponse("200 OK", _page("Measured concurrency", body))
+
 
 def render_instruction_governance(service: AtlasService) -> UiResponse:
     try:
@@ -1325,6 +1459,8 @@ def create_app(data_root: Path):
                 response = render_intelligence_overview(service)
             elif path == "/operations":
                 response = render_operations(service)
+            elif path == "/concurrency":
+                response = render_concurrency(service)
             elif path == "/instruction-governance":
                 response = render_instruction_governance(service)
             elif path == "/decision-plane":
