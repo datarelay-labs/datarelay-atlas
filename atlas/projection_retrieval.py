@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 
 from atlas.projection import ProjectionStore
 from atlas.registry import REF_RE, SOURCE_ID_RE
@@ -37,6 +38,30 @@ from atlas.semantic_retrieval import (
 )
 
 INDEXABLE_SYNC_STATES = frozenset({"success", "unchanged", "ok"})
+
+
+@dataclass(frozen=True)
+class ValidatedProjection:
+    project_id: str
+    identity: str
+    text: str
+    provenance: Provenance
+
+
+def iter_validated_projections(store: ProjectionStore, project_id: str) -> list[ValidatedProjection]:
+    """Return digest/provenance-validated successful projections for derived consumers."""
+    require_project_scope(project_id)
+    results: list[ValidatedProjection] = []
+    for meta in _load_records(store, project_id):
+        if meta.get("sync_state") not in INDEXABLE_SYNC_STATES:
+            continue
+        label = _record_label(meta, project_id)
+        provenance = _provenance_from_record(meta, project_id=project_id, label=label)
+        identity = _projection_identity(meta, provenance, label)
+        text = _read_projection_text(store, meta.get("projection_path"), label, meta.get("content_digest"))
+        _require_rendered_identity(text, provenance, label)
+        results.append(ValidatedProjection(project_id=project_id, identity=identity, text=text, provenance=provenance))
+    return sorted(results, key=lambda item: item.identity)
 _REQUIRED_PROVENANCE = (
     "project_id",
     "provider",
