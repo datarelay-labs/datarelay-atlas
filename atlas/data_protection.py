@@ -32,7 +32,7 @@ PARTIAL_SUFFIX = ".partial"
 _DURABLE_NAME = "registry.json"
 _PROJECTIONS_DIR = "projections"
 _CONTROLLER_NAME = "work-controller.json"
-_DERIVED_CACHE_FILES = frozenset({"chat-audit.json", "chat-audit.lock", "chat-audit.tmp"})
+_DERIVED_CACHE_FILES = frozenset({"chat-audit.json", "chat-audit.lock", "chat-audit.tmp", PROVIDER_DASHBOARD_FILENAME})
 _DERIVED_CACHE_DIRS = frozenset({"chat-audit-handoffs"})
 _CONTROLLER_DIRS = frozenset({COMPLETION_INBOX_DIRNAME, COMPLETION_PROCESSED_DIRNAME})
 

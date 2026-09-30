@@ -82,6 +82,10 @@ def render_projects(service: AtlasService) -> UiResponse:
             "runtime": {"state": "UNAVAILABLE"},
             "release_readiness": {"state": "UNKNOWN"},
         }
+    try:
+        providers = service.provider_dashboard()
+    except ValidationError:
+        providers = {"state": "UNAVAILABLE", "routes": [], "plan": None}
     cards = []
     for project in projects:
         pid = quote(project.project_id, safe="")
@@ -97,8 +101,133 @@ def render_projects(service: AtlasService) -> UiResponse:
     listing = "".join(cards) if cards else '<div class="card"><p>No projects registered.</p></div>'
     enabled = sum(1 for project in projects if project.enabled)
     sources = sum(len(project.sources) for project in projects)
-    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
+    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
     return UiResponse("200 OK", _page("Projects", body))
+
+def render_providers(service: AtlasService) -> UiResponse:
+    try:
+        dashboard = service.provider_dashboard()
+    except ValidationError:
+        return _error("500 Internal Server Error", "Provider capacity unavailable", "Provider capacity snapshot could not be validated safely.")
+
+    plan = dashboard.get("plan")
+    selected = plan.get("selected_route_id") if isinstance(plan, dict) else None
+    fallback = plan.get("fallback_route_ids", []) if isinstance(plan, dict) else []
+    route_cards = []
+    for route in dashboard["routes"]:
+        capacity = route["capacity"]
+        attribution = route["attribution"]
+        operational = route["operational"]
+        attribution_evidence = route.get("attribution_evidence")
+        operational_evidence = route.get("operational_evidence")
+        attribution_authority = (
+            attribution_evidence.get("authority")
+            if isinstance(attribution_evidence, dict)
+            else "UNVERIFIED"
+        )
+        attribution_ref = (
+            attribution_evidence.get("source_ref")
+            if isinstance(attribution_evidence, dict)
+            else None
+        )
+        attribution_observed = (
+            attribution_evidence.get("observed_at")
+            if isinstance(attribution_evidence, dict)
+            else None
+        )
+        operational_authority = (
+            operational_evidence.get("authority")
+            if isinstance(operational_evidence, dict)
+            else "UNVERIFIED"
+        )
+        operational_observed = (
+            operational_evidence.get("observed_at")
+            if isinstance(operational_evidence, dict)
+            else None
+        )
+        route_role = "SELECTED" if route["route_id"] == selected else ("FALLBACK" if route["route_id"] in fallback else "CANDIDATE")
+        capability_text = ", ".join(
+            f'{item["name"]}:{item["status"]}'
+            for item in route["capabilities"]
+        )
+        gate_text = ", ".join(
+            f'{name}:{state}'
+            for name, state in route["gates"].items()
+        )
+        route_cards.append(
+            '<article class="card">'
+            f'<span class="pill">{escape(route_role)}</span> <span class="pill">{escape(route["route_id"])}</span>'
+            f'<h2>{escape(route["provider"])}</h2><p><code>{escape(route["runtime"])}</code> · <code>{escape(route["usage_mode"])}</code> · adapter <code>{escape(route["adapter"])}</code></p>'
+            f'<p class="muted">Capabilities: <code>{escape(capability_text)}</code></p>'
+            f'<p class="muted">Gates: <code>{escape(gate_text)}</code></p>'
+            '<dl>'
+            f'<dt>Remaining</dt><dd><span class="pill">{escape(capacity["remaining_capacity"]["status"])}</span> {escape(capacity["remaining_capacity"]["display"])}</dd>'
+            f'<dt>Reset at</dt><dd><span class="pill">{escape(capacity["reset_at"]["status"])}</span> {escape(capacity["reset_at"]["display"])}</dd>'
+            f'<dt>Capacity pool</dt><dd><span class="pill">{escape(capacity["capacity_pool"]["status"])}</span> {escape(capacity["capacity_pool"]["display"])}</dd>'
+            f'<dt>Active WIP</dt><dd><span class="pill">{escape(capacity["active_inference_wip"]["status"])}</span> {escape(capacity["active_inference_wip"]["display"])}</dd>'
+            f'<dt>Execution surface</dt><dd><span class="pill">{escape(attribution["execution_surface"]["status"])}</span> {escape(attribution["execution_surface"]["display"])}</dd>'
+            f'<dt>Allowance domain</dt><dd><span class="pill">{escape(attribution["allowance_domain"]["status"])}</span> {escape(attribution["allowance_domain"]["display"])}</dd>'
+            f'<dt>Shared allowance</dt><dd><span class="pill">{escape(attribution["shared_allowance"]["status"])}</span> {escape(attribution["shared_allowance"]["display"])}</dd>'
+            f'<dt>Charging mode</dt><dd><span class="pill">{escape(attribution["charging_mode"]["status"])}</span> {escape(attribution["charging_mode"]["display"])}</dd>'
+            f'<dt>Reset semantics</dt><dd><span class="pill">{escape(operational["reset_semantics"]["status"])}</span> {escape(operational["reset_semantics"]["display"])}</dd>'
+            f'<dt>Health</dt><dd><span class="pill">{escape(operational["health"]["status"])}</span> {escape(operational["health"]["display"])}</dd>'
+            f'<dt>Latency</dt><dd><span class="pill">{escape(operational["latency"]["status"])}</span> {escape(operational["latency"]["display"])}</dd>'
+            f'<dt>Capacity evidence</dt><dd><code>{escape(str(route["capacity_evidence"]["source_kind"]))}</code> · <code>{escape(str(route["capacity_evidence"]["window_end"] or "UNKNOWN"))}</code></dd>'
+            f'<dt>Attribution authority</dt><dd><code>{escape(str(attribution_authority))}</code></dd>'
+            f'<dt>Attribution source</dt><dd><code>{escape(str(attribution_ref or "UNKNOWN"))}</code> · <code>{escape(str(attribution_observed or "UNKNOWN"))}</code></dd>'
+            f'<dt>Operational authority</dt><dd><code>{escape(str(operational_authority))}</code></dd>'
+            f'<dt>Operational observed</dt><dd><code>{escape(str(operational_observed or "UNKNOWN"))}</code></dd>'
+            '</dl></article>'
+        )
+
+    eligible_rows = ""
+    ineligible_rows = ""
+    if isinstance(plan, dict):
+        eligible_rows = "".join(
+            f'<tr><td><code>{escape(item["route_id"])}</code></td><td>{escape(item["provider"])}</td>'
+            f'<td><code>{escape(str(item["rank"]))}</code></td><td><code>{escape(str(item["fresh_until"]))}</code></td></tr>'
+            for item in plan["eligible_routes"]
+        )
+        ineligible_rows = "".join(
+            f'<tr><td><code>{escape(item["route_id"])}</code></td><td>{escape(item["provider"])}</td>'
+            f'<td>{escape(", ".join(item["reasons"]))}</td></tr>'
+            for item in plan["ineligible_routes"]
+        )
+    eligible_rows = eligible_rows or '<tr><td colspan="4" class="muted">No eligible routes.</td></tr>'
+    ineligible_rows = ineligible_rows or '<tr><td colspan="3" class="muted">No ineligible routes.</td></tr>'
+
+    plan_html = '<p class="muted">No provider capacity snapshot loaded; broker plan is UNKNOWN.</p>'
+    if isinstance(plan, dict):
+        plan_html = (
+            '<dl>'
+            f'<dt>Authority</dt><dd><span class="pill">{escape(plan["authority"])}</span></dd>'
+            f'<dt>Required capability</dt><dd><code>{escape(plan["required_capability"])}</code></dd>'
+            f'<dt>Strategy</dt><dd><code>{escape(plan["strategy"])}</code></dd>'
+            f'<dt>Evaluated at</dt><dd><code>{escape(plan["evaluated_at"])}</code></dd>'
+            f'<dt>Fresh until</dt><dd><code>{escape(str(plan["evidence_fresh_until"] or "NONE"))}</code></dd>'
+            f'<dt>Selected</dt><dd><code>{escape(str(plan["selected_route_id"] or "NONE"))}</code></dd>'
+            f'<dt>Fallbacks</dt><dd><code>{escape(", ".join(plan["fallback_route_ids"]) or "NONE")}</code></dd>'
+            '</dl>'
+        )
+
+    body = (
+        '<p><a href="/">← Projects</a></p><h1>Provider capacity</h1>'
+        f'<p><span class="pill">{escape(str(dashboard["state"]))}</span> <span class="muted">{escape(str(dashboard["detail"]))}</span></p>'
+        '<section class="card"><h2>Broker plan</h2>'
+        + plan_html
+        + '<p class="muted">ADVISORY_ONLY. This page cannot invoke providers, switch routes, commit transitions, or use credentials.</p></section>'
+        '<h2>Routes</h2><section class="grid">'
+        + ("".join(route_cards) if route_cards else '<article class="card"><p>No validated provider routes loaded.</p></article>')
+        + '</section>'
+        '<section class="card" style="margin-top:16px"><h2>Eligible routes</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Route</th><th>Provider</th><th>Rank</th><th>Fresh until</th></tr></thead>'
+        f'<tbody>{eligible_rows}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Ineligible routes</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Route</th><th>Provider</th><th>Reasons</th></tr></thead>'
+        f'<tbody>{ineligible_rows}</tbody></table></div></section>'
+    )
+    return UiResponse("200 OK", _page("Provider capacity", body))
+
 
 def render_operations(service: AtlasService) -> UiResponse:
     try:
@@ -869,6 +998,8 @@ def create_app(data_root: Path):
                 response = render_intelligence_overview(service)
             elif path == "/operations":
                 response = render_operations(service)
+            elif path == "/providers":
+                response = render_providers(service)
             elif path == "/search":
                 query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True).get("q", [""])[0]
                 response = _error("400 Bad Request", "Invalid search", "Search query is too long.") if len(query) > _MAX_QUERY else render_cross_project_search(service, query.strip())

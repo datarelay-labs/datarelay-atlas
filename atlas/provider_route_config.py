@@ -269,6 +269,8 @@ def bind_configured_provider_route(
     }
     if capacity_attribution is not None:
         candidate["capacity_attribution"] = capacity_attribution
+    if capacity_operational is not None:
+        candidate["capacity_operational"] = capacity_operational
     return validate_provider_route_candidate(candidate)
 
 
@@ -280,6 +282,7 @@ def materialize_registered_provider_route_candidate(
     gates: object,
     required_capability: str,
     capacity_attribution: object | None = None,
+    capacity_operational: object | None = None,
 ) -> dict[str, Any]:
     """Materialize one configured live route from its registered adapter."""
     normalized_set = validate_provider_route_set(route_set)
@@ -299,6 +302,7 @@ def materialize_registered_provider_route_candidate(
         gates=gates,
         required_capability=required_capability,
         capacity_attribution=capacity_attribution,
+        capacity_operational=capacity_operational,
     )
 
 

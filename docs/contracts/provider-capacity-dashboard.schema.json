@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/provider-capacity-dashboard.schema.json",
+  "title": "DataRelay Atlas Provider Capacity Dashboard Snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "observed_at",
+    "required_capability",
+    "strategy",
+    "max_evidence_age_seconds",
+    "candidates"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "provider_capacity_dashboard_snapshot" },
+    "observed_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+    },
+    "required_capability": {
+      "type": "string",
+      "enum": [
+        "PLAN",
+        "EFFORT_CONTROL",
+        "COMPLETION_LOOP",
+        "RUNTIME_VERIFY",
+        "CODE_REVIEW",
+        "SECOND_MODEL_ADVISOR",
+        "PARALLEL_WORKERS",
+        "PERIODIC_REENTRY",
+        "PR_REWORK",
+        "CONTEXT_USAGE",
+        "CHECKPOINT_COMPACT",
+        "SESSION_RESUME_RESET",
+        "HARNESS_HEALTH_AUDIT",
+        "PROMPT_INSTRUCTION_AUDIT",
+        "SKILL_COST_AUDIT",
+        "USAGE_INSIGHTS"
+      ]
+    },
+    "strategy": {
+      "type": "string",
+      "enum": ["CAPABILITY_FIRST", "STEWARDSHIP"]
+    },
+    "max_evidence_age_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 31622400
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "https://datarelay.local/contracts/provider-route-candidate.schema.json"
+      }
+    }
+  }
+}

@@ -50,6 +50,8 @@ from atlas.cursor_usage import (
 from atlas.context_optimization import load_context_canary_report
 from atlas.context_shadow import load_shadow_quality_binding
 from atlas.context_learned import load_learned_canary_binding
+from atlas.provider_broker import STRATEGIES
+from atlas.provider_capability import CAPABILITY_NAMES
 from atlas.provider_transition import (
     load_provider_transition_candidates,
     plan_provider_transition,
@@ -227,6 +229,23 @@ def cmd_intelligence_decision(args: argparse.Namespace) -> int:
 def cmd_intelligence_show(args: argparse.Namespace) -> int:
     svc = _service(args)
     _print_json(svc.project_intelligence(args.project_id))
+    return 0
+
+
+def cmd_providers_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).provider_dashboard())
+    return 0
+
+
+def cmd_providers_publish(args: argparse.Namespace) -> int:
+    payload = _service(args).publish_provider_dashboard(
+        candidate_paths=[Path(value) for value in args.candidate],
+        observed_at=args.observed_at,
+        required_capability=args.required_capability,
+        strategy=args.strategy,
+        max_evidence_age_seconds=args.max_evidence_age_seconds,
+    )
+    _print_json(payload)
     return 0
 
 
@@ -726,6 +745,18 @@ def build_parser() -> argparse.ArgumentParser:
     intelligence_show = intelligence_sub.add_parser("show", help="Show one project's derived intelligence")
     intelligence_show.add_argument("project_id")
     intelligence_show.set_defaults(func=cmd_intelligence_show)
+
+    providers = sub.add_parser("providers", help="Read-only provider capacity and broker state")
+    providers_sub = providers.add_subparsers(dest="providers_command", required=True)
+    providers_show = providers_sub.add_parser("show", help="Show current provider capacity snapshot and advisory broker plan")
+    providers_show.set_defaults(func=cmd_providers_show)
+    providers_publish = providers_sub.add_parser("publish", help="Validate candidate files and publish a derived provider dashboard snapshot")
+    providers_publish.add_argument("--candidate", action="append", required=True, help="Provider route candidate JSON file; repeat for multiple routes")
+    providers_publish.add_argument("--observed-at", required=True, help="UTC evaluation timestamp")
+    providers_publish.add_argument("--required-capability", required=True, choices=sorted(CAPABILITY_NAMES))
+    providers_publish.add_argument("--strategy", default="CAPABILITY_FIRST", choices=sorted(STRATEGIES))
+    providers_publish.add_argument("--max-evidence-age-seconds", type=int, required=True)
+    providers_publish.set_defaults(func=cmd_providers_publish)
 
     search = sub.add_parser(
         "search",

@@ -15,6 +15,7 @@ from atlas.github_sync import FetchFn, fetch_github_file
 from atlas.derived_intelligence import derived_intelligence_payload
 from atlas.data_lock import data_root_write_lock
 from atlas.operations_readiness import operations_readiness
+from atlas.provider_dashboard import provider_dashboard, publish_provider_dashboard_snapshot
 from atlas.local_markdown import (
     IMPORT_DIRNAME,
     SNAPSHOT_DIRNAME,
@@ -77,6 +78,29 @@ class AtlasService:
     def operations_readiness(self) -> dict[str, object]:
         """Return read-only Phase 5 operations/release readiness."""
         return operations_readiness(self.data_root)
+
+    def provider_dashboard(self) -> dict[str, object]:
+        """Return read-only provider capacity/broker dashboard state."""
+        return provider_dashboard(self.data_root)
+
+    def publish_provider_dashboard(
+        self,
+        *,
+        candidate_paths: list[Path],
+        observed_at: str,
+        required_capability: str,
+        strategy: str,
+        max_evidence_age_seconds: int,
+    ) -> dict[str, object]:
+        """Publish a validated derived provider dashboard snapshot."""
+        return publish_provider_dashboard_snapshot(
+            self.data_root,
+            candidate_paths=candidate_paths,
+            observed_at=observed_at,
+            required_capability=required_capability,
+            strategy=strategy,
+            max_evidence_age_seconds=max_evidence_age_seconds,
+        )
 
     def add_source(
         self,

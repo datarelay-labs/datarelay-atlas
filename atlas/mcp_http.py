@@ -43,7 +43,7 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard)
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
@@ -52,7 +52,8 @@ def build_mcp_application(
             "get_provenance. get_source_detail returns bounded validated projection "
             "content. get_project_intelligence returns non-authoritative derived context; "
             "get_intelligence_overview requires an explicit project_ids scope; "
-            "get_operations_readiness is read-only and never executes operational actions."
+            "get_operations_readiness is read-only and never executes operational actions; "
+            "get_provider_dashboard recomputes advisory broker selection without provider execution."
         ),
         token_verifier=verifier,
         auth=AuthSettings(
@@ -151,6 +152,18 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
         return _call_tool(
             tools,
             "get_operations_readiness",
+            {},
+        )
+
+    @server.tool(
+        name="get_provider_dashboard",
+        description="Return validated provider capacity evidence and recomputed advisory broker state",
+        structured_output=False,
+    )
+    async def get_provider_dashboard() -> str:
+        return _call_tool(
+            tools,
+            "get_provider_dashboard",
             {},
         )
 
