@@ -49,9 +49,11 @@ Phase 1 evidence (implementation + deterministic tests + operator E2E against `d
 - cross-project retrieval with explicit scope
 - authenticated HTTPS MCP
 - Cursor and ChatGPT integration
-- human browsing/navigation
+- human browsing/navigation — first Atlas-owned read-only browser surface implemented: overview, project/source/projection state, project-scoped and cross-project attributable search, and bounded lifecycle evidence; remote exposure/auth hardening remains
 
 Exit: humans and AI clients retrieve the same current, attributable engineering context.
+
+Phase 2 Human UI evidence is owned by `atlas/web_ui.py`, `tests/test_web_ui.py`, `docs/contracts/ATLAS_SURFACE_RECONCILIATION.md`, and `docs/contracts/ATLAS_FULL_USER_E2E.md`. Browser release readiness is not implied by implementation: actual-browser Surface Reconciliation and Full User E2E must execute on the same candidate before a user-facing release claim.
 
 ## Phase 3 — Lifecycle Intelligence
 

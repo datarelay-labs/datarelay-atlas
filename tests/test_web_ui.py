@@ -9,7 +9,7 @@ from atlas.provenance import CanonicalSource, render_derived_document
 from atlas.cli import build_parser
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
-from atlas.web_ui import create_app, serve_ui
+from atlas.web_ui import _source_relation, create_app, serve_ui
 
 class WebUiTests(unittest.TestCase):
     def setUp(self):
@@ -53,13 +53,18 @@ class WebUiTests(unittest.TestCase):
         self.assertNotIn("<Demo & Co>", body)
         self.assertIn("default-src 'none'", state["headers"]["Content-Security-Policy"])
 
+    def test_source_relation_never_promotes_personal_knowledge(self):
+        self.assertEqual(_source_relation({"source_class": "personal", "canonical": False, "derived": True}), "personal reference / non-authoritative")
+        self.assertEqual(_source_relation({"source_class": "engineering", "canonical": False, "derived": True}), "canonical engineering source reference")
+        self.assertEqual(_source_relation({"source_class": "personal", "canonical": True, "derived": False}), "personal reference / non-authoritative")
+
     def test_project_search_shows_attributable_escaped_hit(self):
         state, body = self.get("/projects/demo", "q=needle")
         self.assertEqual(state["status"], "200 OK")
         self.assertIn("README.md", body)
         self.assertIn("a" * 40, body)
         self.assertIn("DERIVED", body)
-        self.assertIn("canonical source reference", body)
+        self.assertIn("canonical engineering source reference", body)
         self.assertIn("Unsafe &lt;title&gt;", body)
         self.assertNotIn("Unsafe <title>", body)
 
@@ -80,8 +85,59 @@ class WebUiTests(unittest.TestCase):
         args = build_parser().parse_args(["--data-root", str(self.root), "web", "serve"])
         self.assertEqual(args.host, "127.0.0.1")
         self.assertEqual(args.port, 8788)
-        with self.assertRaisesRegex(ValidationError, "loopback-only"):
-            serve_ui(self.root, host="0.0.0.0", port=8788)
+        for host in ("0.0.0.0", "::1"):
+            with self.assertRaisesRegex(ValidationError, "loopback-only"):
+                serve_ui(self.root, host=host, port=8788)
+
+    def test_corrupt_projection_state_is_not_reported_as_404(self):
+        (self.root / "projections/projections.json").write_text("{broken")
+        state, body = self.get("/projects/demo")
+        self.assertEqual(state["status"], "500 Internal Server Error")
+        self.assertIn("Atlas state unavailable", body)
+
+    def test_lifecycle_evidence_is_bounded(self):
+        _, body = self.get("/projects/demo")
+        self.assertIn("Lifecycle evidence", body)
+        self.assertIn("GitHub Work / PR", body)
+        self.assertIn("no trusted local lifecycle evidence", body)
+        self.assertIn("lifecycle snapshot does not authorize CI conclusions", body)
+        self.assertIn("no exact-candidate test evidence loaded", body)
+        self.assertIn("no exact-candidate release evidence", body)
+
+    def test_valid_local_lifecycle_snapshot_surfaces_active_packet(self):
+        snapshot = {
+            "schema_version": 1, "kind": "cursor_github_reconciliation",
+            "observed_at": "2026-09-30T00:00:00Z", "repositories": ["datarelay-labs/demo"],
+            "observations": [{
+                "repository": "datarelay-labs/demo", "issue_number": 162, "issue_state": "OPEN",
+                "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted",
+                "packet_status": "ACTIVE", "branch": "feat/ui", "head": "b" * 40,
+                "pr_number": 163, "pr_state": "OPEN", "pr_head": "b" * 40,
+                "canonical_fact": True, "reasons": []}],
+            "summary": {"observed_count": 1, "canonical_count": 1, "noncanonical_count": 0},
+        }
+        (self.root / "github-lifecycle.json").write_text(json.dumps(snapshot))
+        _, body = self.get("/projects/demo")
+        self.assertIn("OBSERVED", body)
+        self.assertIn("AI Work #162 ACTIVE", body)
+        self.assertIn("PR #163 OPEN", body)
+
+    def test_invalid_local_lifecycle_snapshot_fails_closed_in_ui(self):
+        (self.root / "github-lifecycle.json").write_text("{broken")
+        _, body = self.get("/projects/demo")
+        self.assertIn("UNAVAILABLE", body)
+        self.assertIn("failed validation", body)
+
+    def test_cross_project_search_preserves_project_provenance(self):
+        svc = AtlasService(self.root)
+        svc.register_project(project_id="other", repository="datarelay-labs/other", display_name="Other")
+        state, body = self.get("/search", "q=needle")
+        self.assertEqual(state["status"], "200 OK")
+        self.assertIn("Cross-project search", body)
+        self.assertIn("datarelay-labs/demo", body)
+        self.assertIn("README.md", body)
+        self.assertIn("1 attributable result(s) across enabled projects", body)
+        self.assertNotIn("datarelay-labs/other ·", body)
 
 if __name__ == "__main__":
     unittest.main()

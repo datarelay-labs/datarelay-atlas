@@ -42,6 +42,16 @@ GitHub / OpenSpec / Code / Tests / ADR / CI
                          Cursor / ChatGPT
 ```
 
+## Local Human UI
+
+Atlas includes a read-only local Human UI for registered project knowledge and lifecycle navigation:
+
+```bash
+ATLAS_DATA_ROOT=/path/to/atlas-data python -m atlas web serve
+```
+
+The first slice binds to `127.0.0.1:8788` by default and is intentionally not a remotely exposed production UI. It provides project inventory, source/projection state, attributable project/cross-project search, and bounded lifecycle evidence without canonical writes.
+
 ## Product principles
 
 1. **GitHub remains normative.** Derived knowledge never overrides canonical repository state.
@@ -53,7 +63,7 @@ GitHub / OpenSpec / Code / Tests / ADR / CI
 
 ## Current status
 
-DataRelay Atlas is absorbing required Engineering Knowledge PoC capabilities into Atlas-owned code while retiring Athena as a product dependency (ADR-0004). Phase 1 adds a local project registry and authenticated canonical sync (ADR-0005).
+Atlas owns its registry, canonical sync, projection/retrieval, authenticated HTTPS MCP, lifecycle/control-plane foundations, and the first read-only Human UI. Athena remains historical migration evidence only and is not a runtime dependency. The browser surface is local/loopback in the current slice; remote UI authentication/exposure and same-candidate human-equivalent release execution remain explicit follow-up gates.
 
 Milestones:
 
