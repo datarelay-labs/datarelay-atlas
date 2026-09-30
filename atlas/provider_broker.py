@@ -18,6 +18,9 @@ from atlas.provider_capability import (
     validate_provider_capability_descriptor,
 )
 from atlas.provider_capacity import validate_provider_capacity_input
+from atlas.provider_capacity_attribution import (
+    validate_provider_capacity_attribution,
+)
 from atlas.provenance import ValidationError
 
 SCHEMA_VERSION = 1
@@ -45,6 +48,7 @@ _CANDIDATE_KEYS = frozenset(
         "ranks",
     }
 )
+_CANDIDATE_OPTIONAL_KEYS = frozenset({"capacity_attribution"})
 _RANK_KEYS = frozenset({"capability_preference", "stewardship_preference"})
 _PLAN_KEYS = frozenset(
     {
@@ -169,7 +173,13 @@ def _capability_name(value: object) -> str:
 
 def validate_provider_route_candidate(payload: object) -> dict:
     """Validate one bounded route candidate without granting route authority."""
-    if not isinstance(payload, dict) or set(payload) != _CANDIDATE_KEYS:
+    if not isinstance(payload, dict):
+        _reject("provider route candidate schema is invalid")
+    payload_keys = set(payload)
+    if (
+        not _CANDIDATE_KEYS.issubset(payload_keys)
+        or not payload_keys.issubset(_CANDIDATE_KEYS | _CANDIDATE_OPTIONAL_KEYS)
+    ):
         _reject("provider route candidate schema is invalid")
     version = payload.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION:
@@ -184,6 +194,15 @@ def validate_provider_route_candidate(payload: object) -> dict:
     capacity = validate_provider_capacity_input(payload.get("capacity_input"))
     if descriptor["provider"] != capacity["provider"]:
         _reject("route provider identity does not match capacity evidence")
+
+    attribution = None
+    if "capacity_attribution" in payload:
+        attribution = validate_provider_capacity_attribution(
+            payload.get("capacity_attribution")
+        )
+        if attribution["provider"] != descriptor["provider"]:
+            _reject("route provider identity does not match capacity attribution")
+
     gates = payload.get("gates")
     if not isinstance(gates, dict) or set(gates) != set(_GATE_KEYS):
         _reject("provider route candidate gates schema is invalid")
@@ -207,7 +226,7 @@ def validate_provider_route_candidate(payload: object) -> dict:
             label="stewardship_preference",
         ),
     }
-    return {
+    normalized = {
         "schema_version": SCHEMA_VERSION,
         "kind": CANDIDATE_KIND,
         "route_id": route_id,
@@ -216,6 +235,9 @@ def validate_provider_route_candidate(payload: object) -> dict:
         "gates": normalized_gates,
         "ranks": normalized_ranks,
     }
+    if attribution is not None:
+        normalized["capacity_attribution"] = attribution
+    return normalized
 
 
 def _capability_status(descriptor: dict, required: str) -> str | None:

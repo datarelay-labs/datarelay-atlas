@@ -204,6 +204,7 @@ def bind_configured_provider_route(
     capacity_input: object,
     gates: object,
     required_capability: str,
+    capacity_attribution: object | None = None,
 ) -> dict[str, Any]:
     """Bind one configured route to existing dynamic evidence contracts."""
     normalized_set = validate_provider_route_set(route_set)
@@ -257,17 +258,18 @@ def bind_configured_provider_route(
             _reject(f"provider route config {name} gate is invalid")
         normalized_gates[name] = state
 
-    return validate_provider_route_candidate(
-        {
-            "schema_version": 1,
-            "kind": "provider_route_candidate",
-            "route_id": route["route_id"],
-            "capability_descriptor": descriptor,
-            "capacity_input": capacity,
-            "gates": normalized_gates,
-            "ranks": dict(route["ranks"]),
-        }
-    )
+    candidate = {
+        "schema_version": 1,
+        "kind": "provider_route_candidate",
+        "route_id": route["route_id"],
+        "capability_descriptor": descriptor,
+        "capacity_input": capacity,
+        "gates": normalized_gates,
+        "ranks": dict(route["ranks"]),
+    }
+    if capacity_attribution is not None:
+        candidate["capacity_attribution"] = capacity_attribution
+    return validate_provider_route_candidate(candidate)
 
 
 def materialize_registered_provider_route_candidate(
@@ -277,6 +279,7 @@ def materialize_registered_provider_route_candidate(
     capacity_input: object,
     gates: object,
     required_capability: str,
+    capacity_attribution: object | None = None,
 ) -> dict[str, Any]:
     """Materialize one configured live route from its registered adapter."""
     normalized_set = validate_provider_route_set(route_set)
@@ -295,6 +298,7 @@ def materialize_registered_provider_route_candidate(
         capacity_input=capacity_input,
         gates=gates,
         required_capability=required_capability,
+        capacity_attribution=capacity_attribution,
     )
 
 

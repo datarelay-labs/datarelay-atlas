@@ -54,6 +54,9 @@
         "capability_preference": { "$ref": "#/$defs/rank" },
         "stewardship_preference": { "$ref": "#/$defs/rank" }
       }
+    },
+    "capacity_attribution": {
+      "$ref": "https://datarelay.local/contracts/provider-capacity-attribution.schema.json"
     }
   },
   "$defs": {
