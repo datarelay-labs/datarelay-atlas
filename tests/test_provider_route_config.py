@@ -140,6 +140,37 @@ class ProviderRouteConfigTests(unittest.TestCase):
             ["TRUST_DENY", "BUDGET_UNKNOWN"],
         )
 
+    def test_capacity_attribution_is_optional_and_preserved_when_bound(self) -> None:
+        route_set = _route_set()
+        legacy = bind_configured_provider_route(
+            route_set,
+            route_id="codex-primary",
+            capability_descriptor=_descriptor("codex"),
+            capacity_input=_capacity("codex"),
+            gates=_gates(),
+            required_capability="CODE_REVIEW",
+        )
+        self.assertNotIn("capacity_attribution", legacy)
+
+        attribution = _json(
+            FIXTURES / "provider-capacity-attribution.example.json"
+        )
+        attributed = bind_configured_provider_route(
+            route_set,
+            route_id="codex-primary",
+            capability_descriptor=_descriptor("codex"),
+            capacity_input=_capacity("codex"),
+            gates=_gates(),
+            required_capability="CODE_REVIEW",
+            capacity_attribution=attribution,
+        )
+        self.assertEqual(
+            attributed["capacity_attribution"],
+            attribution,
+        )
+        self.assertEqual(attributed["ranks"], legacy["ranks"])
+        self.assertEqual(attributed["gates"], legacy["gates"])
+
     def test_disabled_or_unconfigured_route_cannot_bind(self) -> None:
         route_set = _route_set()
         route_set["routes"][0]["enabled"] = False

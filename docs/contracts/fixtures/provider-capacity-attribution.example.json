@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "provider_capacity_attribution",
+  "provider": "codex",
+  "evidence": {
+    "authority": "PROVIDER_AUTHORITATIVE",
+    "source_kind": "provider_documentation",
+    "observed_at": "2026-09-30T00:00:00Z",
+    "source_ref": "https://provider.example/docs/work-capacity",
+    "source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "facts": {
+    "execution_surface": {
+      "status": "OBSERVED",
+      "value": "work_execution"
+    },
+    "allowance_domain": {
+      "status": "OBSERVED",
+      "value": "work_allowance"
+    },
+    "shared_allowance": {
+      "status": "UNKNOWN"
+    },
+    "charging_mode": {
+      "status": "UNKNOWN"
+    }
+  }
+}
