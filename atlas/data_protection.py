@@ -17,6 +17,7 @@ from pathlib import Path
 from atlas.data_lock import LOCK_NAME, data_root_write_lock
 from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
 from atlas.provider_dashboard import FILENAME as PROVIDER_DASHBOARD_FILENAME
+from atlas.provider_route_quality import FILENAME as PROVIDER_ROUTE_QUALITY_FILENAME
 from atlas.decision_plane import FILENAME as DECISION_PLANE_FILENAME
 from atlas.instruction_governance import FILENAME as INSTRUCTION_GOVERNANCE_FILENAME
 from atlas.concurrency_admission import (
@@ -39,7 +40,7 @@ PARTIAL_SUFFIX = ".partial"
 _DURABLE_NAME = "registry.json"
 _PROJECTIONS_DIR = "projections"
 _CONTROLLER_NAME = "work-controller.json"
-_DERIVED_CACHE_FILES = frozenset({"chat-audit.json", "chat-audit.lock", "chat-audit.tmp", PROVIDER_DASHBOARD_FILENAME, DECISION_PLANE_FILENAME, INSTRUCTION_GOVERNANCE_FILENAME, CONCURRENCY_SNAPSHOT_FILENAME, CONCURRENCY_RUNS_FILENAME})
+_DERIVED_CACHE_FILES = frozenset({"chat-audit.json", "chat-audit.lock", "chat-audit.tmp", PROVIDER_DASHBOARD_FILENAME, PROVIDER_ROUTE_QUALITY_FILENAME, DECISION_PLANE_FILENAME, INSTRUCTION_GOVERNANCE_FILENAME, CONCURRENCY_SNAPSHOT_FILENAME, CONCURRENCY_RUNS_FILENAME})
 _DERIVED_CACHE_DIRS = frozenset({"chat-audit-handoffs"})
 _CONTROLLER_DIRS = frozenset({COMPLETION_INBOX_DIRNAME, COMPLETION_PROCESSED_DIRNAME})
 

@@ -21,6 +21,7 @@ from atlas.provider_route_config import (
     validate_provider_route_set,
 )
 from atlas.provider_transition import FAILURE_REASONS, plan_provider_transition
+from atlas.provider_route_quality import provider_route_quality_dashboard
 from atlas.provenance import ValidationError
 
 SCHEMA_VERSION = 1
@@ -360,6 +361,7 @@ def provider_dashboard(data_root: Path) -> dict[str, object]:
             "routes": [],
             "strategy_plans": {},
             "plan": None,
+            "route_quality": provider_route_quality_dashboard(data_root),
         }
     observed_at = str(snapshot["observed_at"])
     capability = str(snapshot["required_capability"])
@@ -400,4 +402,5 @@ def provider_dashboard(data_root: Path) -> dict[str, object]:
         "routes": [_route_view(item) for item in sorted(normalized, key=lambda row: row["route_id"])],
         "strategy_plans": strategy_plans,
         "plan": plan,
+        "route_quality": provider_route_quality_dashboard(data_root),
     }

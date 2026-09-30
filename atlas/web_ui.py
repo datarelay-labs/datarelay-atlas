@@ -570,6 +570,7 @@ def render_providers(
     except ValidationError:
         return _error("500 Internal Server Error", "Provider capacity unavailable", "Provider capacity snapshot could not be validated safely.")
 
+    quality = dashboard.get("route_quality") or service.provider_route_quality_dashboard()
     plan = dashboard.get("plan")
     selected = plan.get("selected_route_id") if isinstance(plan, dict) else None
     fallback = plan.get("fallback_route_ids", []) if isinstance(plan, dict) else []
@@ -653,6 +654,19 @@ def render_providers(
             f'<dt>Operational observed</dt><dd><code>{escape(str(operational_observed or "UNKNOWN"))}</code></dd>'
             '</dl></article>'
         )
+
+    quality_rows = "".join(
+        f'<tr><td><code>{escape(str(row["route_id"]))}</code></td>'
+        f'<td>{escape(str(row["provider"]))} / <code>{escape(str(row["runtime"]))}</code></td>'
+        f'<td>{row["sample_count"]}</td>'
+        f'<td>{row["verified_pass_count"]} / {row["verified_pass_rate_basis_points"] / 100:.2f}%</td>'
+        f'<td>{row["first_pass_count"]} / {row["first_pass_rate_basis_points"] / 100:.2f}%</td>'
+        f'<td>{row["rework_total"]} / {row["audit_finding_total"]}</td>'
+        f'<td>{row["owner_intervention_total"]} / {row["quota_interruption_total"]}</td>'
+        f'<td>{row["wall_time_average_ms"]}</td>'
+        f'<td>{row["observed_cost_total_milliunits"]} ({row["observed_cost_count"]} observed; {row["unknown_cost_count"]} unknown)</td></tr>'
+        for row in quality["routes"]
+    ) or '<tr><td colspan="9" class="muted">No verified route-quality observations loaded.</td></tr>'
 
     strategy_rows = "".join(
         f'<tr><td><code>{escape(strategy_name)}</code></td>'
@@ -755,6 +769,13 @@ def render_providers(
         + transition_form
         + transition_html
         + '<p class="muted">Preview only. Effect authorization, sealed request, and one-shot commit remain separate authority boundaries.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Verified route outcomes</h2>'
+        f'<p><span class="pill">{escape(str(quality["state"]))}</span> '
+        f'<span class="pill">{escape(str(quality["authority"]))}</span> '
+        f'<span class="muted">{escape(str(quality["detail"]))}</span></p>'
+        '<div style="overflow:auto"><table><thead><tr><th>Route</th><th>Provider/runtime</th><th>Samples</th><th>PASS</th><th>First pass</th><th>Rework / findings</th><th>Owner / quota</th><th>Avg wall ms</th><th>Observed cost milliunits</th></tr></thead>'
+        f'<tbody>{quality_rows}</tbody></table></div>'
+        '<p class="muted">EVIDENCE_ONLY / broker influence NONE. These measurements never change eligibility, ranking or route selection.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Strategy comparison</h2>'
         '<div style="overflow:auto"><table><thead><tr><th>Strategy</th><th>Selected</th><th>Fallbacks</th><th>Fresh until</th></tr></thead>'
         f'<tbody>{strategy_rows}</tbody></table></div>'

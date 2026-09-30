@@ -44,6 +44,7 @@ class AtlasContextTools:
         personal_knowledge_factory: Callable[[], dict[str, object]] | None = None,
         personal_search_factory: Callable[[str, str, int], list[Any]] | None = None,
         knowledge_search_factory: Callable[[str, list[str], str, int], dict[str, Any]] | None = None,
+        provider_route_quality_factory: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         if (retriever is None) == (retriever_factory is None):
             raise ValueError("AtlasContextTools requires exactly one retriever source")
@@ -63,6 +64,7 @@ class AtlasContextTools:
         self._personal_knowledge_factory = personal_knowledge_factory
         self._personal_search_factory = personal_search_factory
         self._knowledge_search_factory = knowledge_search_factory
+        self._provider_route_quality_factory = provider_route_quality_factory
 
     def _retriever_for(self, project_id: str) -> Retriever:
         if self._retriever_factory is not None:
@@ -114,6 +116,13 @@ class AtlasContextTools:
                 {
                     "name": "get_provider_dashboard",
                     "description": "Return validated provider capacity evidence and recomputed advisory broker plan",
+                }
+            )
+        if self._provider_route_quality_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_provider_route_quality",
+                    "description": "Return verified provider-route outcome measurements with no broker influence",
                 }
             )
         if self._provider_transition_preview_factory is not None and READ_SCOPE in scopes:
@@ -198,7 +207,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_transition_preview", "get_decision_plane", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_concurrency_admission", "get_personal_knowledge", "search_personal_knowledge", "search_knowledge"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_route_quality", "get_provider_transition_preview", "get_decision_plane", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_concurrency_admission", "get_personal_knowledge", "search_personal_knowledge", "search_knowledge"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "search_project":
@@ -371,6 +380,15 @@ class AtlasContextTools:
                 return ToolResult(ok=False, data=None, error="unknown_tool:get_provider_dashboard")
             try:
                 payload = self._provider_dashboard_factory()
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_provider_route_quality":
+            if self._provider_route_quality_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_provider_route_quality")
+            try:
+                payload = self._provider_route_quality_factory()
             except ValidationError as exc:
                 return ToolResult(ok=False, data=None, error=str(exc))
             return ToolResult(ok=True, data=payload)

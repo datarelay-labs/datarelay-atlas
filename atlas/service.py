@@ -28,6 +28,10 @@ from atlas.decision_plane import (
 from atlas.operations_readiness import operations_readiness
 from atlas.personal_knowledge import build_personal_retriever, personal_knowledge_dashboard
 from atlas.provider_dashboard import provider_dashboard, provider_transition_preview, publish_provider_dashboard_snapshot
+from atlas.provider_route_quality import (
+    provider_route_quality_dashboard,
+    publish_provider_route_quality_snapshot,
+)
 from atlas.instruction_governance import (
     build_instruction_candidate_change,
     build_instruction_governance_profile,
@@ -124,6 +128,20 @@ class AtlasService:
     def provider_dashboard(self) -> dict[str, object]:
         """Return read-only provider capacity/broker dashboard state."""
         return provider_dashboard(self.data_root)
+
+    def provider_route_quality_dashboard(self) -> dict[str, object]:
+        """Return evidence-only verified provider route outcome measurements."""
+        return provider_route_quality_dashboard(self.data_root)
+
+    def publish_provider_route_quality(
+        self,
+        observation_paths: list[Path],
+    ) -> dict[str, object]:
+        """Publish a deterministic derived route-quality snapshot."""
+        return publish_provider_route_quality_snapshot(
+            self.data_root,
+            observation_paths,
+        )
 
     def concurrency_dashboard(self) -> dict[str, object]:
         """Return provider-neutral concurrency admission/measurement state."""

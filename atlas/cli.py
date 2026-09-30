@@ -266,6 +266,20 @@ def cmd_providers_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_providers_quality_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).provider_route_quality_dashboard())
+    return 0
+
+
+def cmd_providers_quality_publish(args: argparse.Namespace) -> int:
+    _print_json(
+        _service(args).publish_provider_route_quality(
+            [Path(value) for value in args.observation]
+        )
+    )
+    return 0
+
+
 def cmd_concurrency_show(args: argparse.Namespace) -> int:
     _print_json(_service(args).concurrency_dashboard())
     return 0
@@ -921,6 +935,22 @@ def build_parser() -> argparse.ArgumentParser:
     providers_sub = providers.add_subparsers(dest="providers_command", required=True)
     providers_show = providers_sub.add_parser("show", help="Show current provider capacity snapshot and advisory broker plan")
     providers_show.set_defaults(func=cmd_providers_show)
+    providers_quality_show = providers_sub.add_parser(
+        "quality-show",
+        help="Show verified provider route outcome measurements",
+    )
+    providers_quality_show.set_defaults(func=cmd_providers_quality_show)
+    providers_quality_publish = providers_sub.add_parser(
+        "quality-publish",
+        help="Publish a derived provider route quality snapshot from observation files",
+    )
+    providers_quality_publish.add_argument(
+        "--observation",
+        action="append",
+        required=True,
+        help="Provider route outcome observation JSON; repeat for multiple observations",
+    )
+    providers_quality_publish.set_defaults(func=cmd_providers_quality_publish)
     providers_preview = providers_sub.add_parser("transition-preview", help="Plan one read-only failover from the current provider snapshot")
     providers_preview.add_argument("--current-route", required=True)
     providers_preview.add_argument("--failure-reason", required=True, choices=sorted(FAILURE_REASONS))
