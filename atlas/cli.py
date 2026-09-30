@@ -357,6 +357,22 @@ def cmd_decision_plane_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_decision_plane_canary_readiness(args: argparse.Namespace) -> int:
+    _print_json(_service(args).decision_canary_readiness())
+    return 0
+
+
+def cmd_decision_plane_canary_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).decision_canary_dashboard())
+    return 0
+
+
+def cmd_decision_plane_canary_publish(args: argparse.Namespace) -> int:
+    request = _read_json_file(args.request, label="decision plane canary request")
+    _print_json(_service(args).publish_decision_canary_admission(request))
+    return 0
+
+
 def cmd_decision_plane_append(args: argparse.Namespace) -> int:
     try:
         payload = json.loads(Path(args.observation).read_text(encoding="utf-8"))
@@ -1013,6 +1029,22 @@ def build_parser() -> argparse.ArgumentParser:
     decision_plane_sub = decision_plane.add_subparsers(dest="decision_plane_command", required=True)
     decision_plane_show = decision_plane_sub.add_parser("show", help="Show Decision Plane shadow/replay summary")
     decision_plane_show.set_defaults(func=cmd_decision_plane_show)
+    decision_plane_canary_readiness = decision_plane_sub.add_parser(
+        "canary-readiness",
+        help="Show deterministic readiness for a bounded canary admission request",
+    )
+    decision_plane_canary_readiness.set_defaults(func=cmd_decision_plane_canary_readiness)
+    decision_plane_canary_show = decision_plane_sub.add_parser(
+        "canary-show",
+        help="Show the current bounded Decision Plane canary admission snapshot",
+    )
+    decision_plane_canary_show.set_defaults(func=cmd_decision_plane_canary_show)
+    decision_plane_canary_publish = decision_plane_sub.add_parser(
+        "canary-publish",
+        help="Publish a bounded Decision Plane canary admission request",
+    )
+    decision_plane_canary_publish.add_argument("--request", required=True)
+    decision_plane_canary_publish.set_defaults(func=cmd_decision_plane_canary_publish)
     decision_plane_append = decision_plane_sub.add_parser("append", help="Append one validated shadow/replay observation JSON")
     decision_plane_append.add_argument("--observation", required=True)
     decision_plane_append.set_defaults(func=cmd_decision_plane_append)

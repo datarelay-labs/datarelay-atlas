@@ -46,3 +46,9 @@ Atlas exposes two bounded candidate generators:
 - CLI read: `python -m atlas decision-plane show`
 - CLI append: `python -m atlas decision-plane append --observation <json>`
 - authenticated MCP read: `get_decision_plane`
+
+## Canary request readiness
+
+Atlas derives decision_plane_canary_readiness from the same validated replay ledger. REPLAY_PASS makes a class CANARY_REQUEST_ELIGIBLE; other replay states remain CANARY_REQUEST_NOT_ELIGIBLE.
+
+Readiness adds no execution or activation authority. A separate bounded canary request must bind the exact replay evidence digest, project/path/task scope, decision budget and expiry before CANARY_ELIGIBLE can be produced. See decision-plane-canary-admission.md.

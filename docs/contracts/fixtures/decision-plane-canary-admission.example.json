@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "kind": "decision_plane_canary_admission",
+  "request_id": "optional-context-canary-1",
+  "decision_class": "OPTIONAL_CONTEXT_SELECTION",
+  "decision": "CANARY_ELIGIBLE",
+  "reasons": [],
+  "authority": "CANARY_ADMISSION_ONLY",
+  "activation_authority": "NO_ACTIVATION_AUTHORITY",
+  "execution_authority": "NONE",
+  "fallback": "CURRENT_DECISION",
+  "current_rollout_state": "SHADOW",
+  "requested_rollout_state": "CANARY",
+  "scope": {
+    "project_id": "datarelay-atlas",
+    "path_prefixes": ["atlas"],
+    "task_kinds": ["DEVELOPMENT"]
+  },
+  "max_canary_decisions": 10,
+  "evaluated_at": "2026-09-30T12:00:00Z",
+  "expires_at": "2026-10-01T12:00:00Z",
+  "expected_evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "current_evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "replay_assessment": "REPLAY_PASS",
+  "verified_replay_count": 5,
+  "false_routing_count": 0
+}

@@ -24,6 +24,11 @@ from atlas.decision_plane import (
     build_focused_check_candidates,
     build_optional_context_candidates,
     decision_plane_dashboard,
+    decision_canary_readiness,
+)
+from atlas.decision_plane_canary import (
+    decision_canary_dashboard,
+    publish_decision_canary_admission,
 )
 from atlas.operations_readiness import operations_readiness
 from atlas.personal_knowledge import build_personal_retriever, personal_knowledge_dashboard
@@ -241,6 +246,18 @@ class AtlasService:
     def decision_plane_dashboard(self) -> dict[str, object]:
         """Return shadow/replay Decision Plane evidence."""
         return decision_plane_dashboard(self.data_root)
+
+    def decision_canary_readiness(self) -> dict[str, object]:
+        """Return read-only canary-admission evidence; never activates a model choice."""
+        return decision_canary_readiness(self.data_root)
+
+    def decision_canary_dashboard(self) -> dict[str, object]:
+        """Return the bounded canary admission snapshot and evidence binding state."""
+        return decision_canary_dashboard(self.data_root)
+
+    def publish_decision_canary_admission(self, request: object) -> dict[str, object]:
+        """Publish one derived bounded canary admission snapshot."""
+        return publish_decision_canary_admission(self.data_root, request)
 
     def append_decision_plane_observation(self, observation: object) -> dict[str, object]:
         """Append one validated derived Decision Plane observation."""

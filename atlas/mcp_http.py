@@ -43,7 +43,7 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, concurrency_factory=service.concurrency_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit), provider_route_quality_factory=service.provider_route_quality_dashboard)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, concurrency_factory=service.concurrency_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit), provider_route_quality_factory=service.provider_route_quality_dashboard, decision_canary_factory=service.decision_canary_readiness, decision_canary_admission_factory=service.decision_canary_dashboard)
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
@@ -57,6 +57,8 @@ def build_mcp_application(
             "get_provider_route_quality reports verified route outcomes with no broker influence; "
             "get_provider_transition_preview returns ADVISORY_ONLY failover planning without effect authority; "
             "get_decision_plane returns SHADOW/REPLAY measurements with no activation authority; "
+            "get_decision_canary_readiness reports REPLAY_PASS-derived request readiness without activation or execution authority; "
+            "get_decision_plane_canary reports the scoped canary admission snapshot and stale evidence binding without execution authority; "
             "Decision Plane candidate tools only prepare bounded options and never execute model choices; "
             "get_instruction_governance returns Engineering-System-referenced managed-surface audit history with no mutation authority; "
             "get_concurrency_admission returns advisory multi-node admission and measurement with no dispatch authority; "
@@ -238,6 +240,22 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             "get_decision_plane",
             {},
         )
+
+    @server.tool(
+        name="get_decision_canary_readiness",
+        description="Return deterministic readiness evidence for a bounded Decision Plane canary request",
+        structured_output=False,
+    )
+    async def get_decision_canary_readiness() -> str:
+        return _call_tool(tools, "get_decision_canary_readiness", {})
+
+    @server.tool(
+        name="get_decision_plane_canary",
+        description="Return the bounded Decision Plane canary admission snapshot and replay-evidence binding state",
+        structured_output=False,
+    )
+    async def get_decision_plane_canary() -> str:
+        return _call_tool(tools, "get_decision_plane_canary", {})
 
     @server.tool(
         name="get_decision_context_candidates",

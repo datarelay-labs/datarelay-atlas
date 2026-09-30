@@ -490,6 +490,30 @@ def render_decision_plane(
         )
     class_cards = "".join(class_cards_parts)
 
+    canary = dashboard["canary_readiness"]
+    try:
+        canary_admission = service.decision_canary_dashboard()
+    except ValidationError:
+        canary_admission = {
+            "state": "UNAVAILABLE",
+            "detail": "canary admission snapshot failed validation",
+            "authority": "CANARY_ADMISSION_ONLY",
+            "activation_authority": "NO_ACTIVATION_AUTHORITY",
+            "execution_authority": "NONE",
+            "binding_state": "UNKNOWN",
+            "effective_decision": "CANARY_NOT_ELIGIBLE",
+            "admission": None,
+        }
+    canary_rows = "".join(
+        f'<tr><td><code>{escape(str(item["decision_class"]))}</code></td>'
+        f'<td><span class="pill">{escape(str(item["replay_assessment"]))}</span></td>'
+        f'<td><span class="pill">{escape(str(item["readiness"]))}</span></td>'
+        f'<td>{item["verified_replay_count"]}</td>'
+        f'<td>{item["false_routing_count"]}</td>'
+        f'<td><code>{escape(str(item["fallback"]))}</code></td></tr>'
+        for item in canary["classes"]
+    )
+
     context_html = (
         f'<p><span class="pill">UNAVAILABLE</span> <span class="muted">{escape(context_error)}</span></p>'
         if context_error
@@ -541,6 +565,36 @@ def render_decision_plane(
         '<button type="submit">Prepare checks</button></form>'
         + check_html
         + '<p class="muted">Terminal release gates remain deterministic and outside model selection authority.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Canary admission readiness</h2>'
+        f'<p><span class="pill">{escape(str(canary["authority"]))}</span> '
+        f'<span class="pill">rollout {escape(str(canary["rollout_state"]))}</span> '
+        f'<span class="pill">activation {escape(str(canary["activation_authority"]))}</span></p>'
+        f'<p class="muted">Evidence digest <code>{escape(str(canary["evidence_digest"]))}</code>. '
+        'CANARY_REQUEST_ELIGIBLE only permits a later scoped admission request; no model choice is activated.</p>'
+        '<div style="overflow:auto"><table><thead><tr><th>Decision class</th><th>Replay</th><th>Canary</th><th>Verified replay</th><th>False routing</th><th>Fallback</th></tr></thead>'
+        f'<tbody>{canary_rows}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Canary admission</h2>'
+        f'<p><span class="pill">{escape(str(canary_admission["state"]))}</span> '
+        f'<span class="pill">{escape(str(canary_admission["effective_decision"]))}</span> '
+        f'<span class="pill">binding {escape(str(canary_admission["binding_state"]))}</span></p>'
+        f'<p class="muted">{escape(str(canary_admission["detail"]))}</p>'
+        + (
+            '<dl>'
+            f'<dt>Authority</dt><dd><code>{escape(str(canary_admission["authority"]))}</code></dd>'
+            f'<dt>Activation</dt><dd><code>{escape(str(canary_admission["activation_authority"]))}</code></dd>'
+            f'<dt>Execution</dt><dd><code>{escape(str(canary_admission["execution_authority"]))}</code></dd>'
+            f'<dt>Class</dt><dd><code>{escape(str(canary_admission["admission"]["decision_class"]))}</code></dd>'
+            f'<dt>Scope project</dt><dd><code>{escape(str(canary_admission["admission"]["scope"]["project_id"]))}</code></dd>'
+            f'<dt>Path prefixes</dt><dd><code>{escape(", ".join(canary_admission["admission"]["scope"]["path_prefixes"]))}</code></dd>'
+            f'<dt>Task kinds</dt><dd><code>{escape(", ".join(canary_admission["admission"]["scope"]["task_kinds"]))}</code></dd>'
+            f'<dt>Decision budget</dt><dd>{canary_admission["admission"]["max_canary_decisions"]}</dd>'
+            f'<dt>Expires</dt><dd><code>{escape(str(canary_admission["admission"]["expires_at"]))}</code></dd>'
+            f'<dt>Reasons</dt><dd><code>{escape(", ".join(canary_admission["admission"]["reasons"]) or "NONE")}</code></dd>'
+            '</dl>'
+            if isinstance(canary_admission.get("admission"), dict)
+            else '<p class="muted">No bounded canary admission has been published.</p>'
+        )
+        + '<p class="muted">Admission remains non-executing. Any future effect boundary must re-check scope, expiry and evidence binding.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Replay metrics</h2><dl>'
         f'<dt>Current success rate</dt><dd><code>{escape(str(dashboard["current_success_rate_percent"] or "UNKNOWN"))}%</code></dd>'
         f'<dt>Model success rate</dt><dd><code>{escape(str(dashboard["model_success_rate_percent"] or "UNKNOWN"))}%</code></dd>'

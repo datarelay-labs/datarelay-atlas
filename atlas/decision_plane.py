@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from fnmatch import fnmatch
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -456,6 +457,80 @@ def _class_replay_assessment(
     }
 
 
+def _replay_evidence_digest(
+    records: list[dict[str, Any]],
+    assessments: dict[str, dict[str, object]],
+) -> str:
+    payload = {
+        "records": records,
+        "class_assessments": assessments,
+    }
+    raw = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _canary_readiness(
+    records: list[dict[str, Any]],
+    assessments: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    evidence_digest = _replay_evidence_digest(records, assessments)
+    classes = []
+    for decision_class in sorted(DECISION_CLASSES):
+        assessment = assessments[decision_class]
+        replay_assessment = str(assessment["assessment"])
+        readiness = (
+            "CANARY_REQUEST_ELIGIBLE"
+            if replay_assessment == "REPLAY_PASS"
+            else "CANARY_REQUEST_NOT_ELIGIBLE"
+        )
+        classes.append(
+            {
+                "decision_class": decision_class,
+                "readiness": readiness,
+                "replay_assessment": replay_assessment,
+                "verified_replay_count": assessment["verified_replay_count"],
+                "false_routing_count": assessment["false_routing_count"],
+                "criteria": dict(assessment["criteria"]),
+                "fallback": "CURRENT_DECISION",
+                "candidate_authority": "ATLAS_VALIDATED_CANDIDATES_ONLY",
+                "execution_authority": "NONE",
+            }
+        )
+    eligible = [
+        item["decision_class"]
+        for item in classes
+        if item["readiness"] == "CANARY_REQUEST_ELIGIBLE"
+    ]
+    return {
+        "schema_version": 1,
+        "kind": "decision_plane_canary_readiness",
+        "state": "OBSERVED" if records else "UNKNOWN",
+        "rollout_state": "SHADOW",
+        "authority": "CANARY_READINESS_EVIDENCE_ONLY",
+        "activation_authority": "NO_ACTIVATION_AUTHORITY",
+        "execution_authority": "NONE",
+        "evidence_digest": evidence_digest,
+        "eligible_class_count": len(eligible),
+        "eligible_decision_classes": eligible,
+        "classes": classes,
+    }
+
+
+def decision_canary_readiness(data_root: Path) -> dict[str, object]:
+    """Return deterministic canary-admission evidence without activating a decision."""
+    ledger = _load_ledger(Path(data_root) / FILENAME)
+    records = ledger["records"]
+    assessments = {
+        decision_class: _class_replay_assessment(decision_class, records)
+        for decision_class in sorted(DECISION_CLASSES)
+    }
+    return _canary_readiness(records, assessments)
+
+
 def decision_plane_dashboard(data_root: Path) -> dict[str, object]:
     ledger = _load_ledger(Path(data_root) / FILENAME)
     records = ledger["records"]
@@ -501,5 +576,6 @@ def decision_plane_dashboard(data_root: Path) -> dict[str, object]:
         "total_retry_delta": sum(item["retry_delta"] for item in verified_replay),
         "replay_gate": replay_gate,
         "class_assessments": assessments,
+        "canary_readiness": _canary_readiness(records, assessments),
         "records": records,
     }
