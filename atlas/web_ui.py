@@ -138,6 +138,15 @@ def render_project(service: AtlasService, project_id: str, query: str = "") -> U
         f'<dt>Browser gates</dt><dd><span class="pill">{escape(lifecycle.browser.state)}</span> <span class="muted">{escape(lifecycle.browser.detail)}</span></dd>'
         '</dl></section></div>'
     )
+    projected_source_ids = {str(r.get("source_id", "")) for r in records if r.get("sync_state") in {"success", "unchanged", "ok"}}
+    configured_source_ids = set(project.sources)
+    missing_projection_ids = sorted(configured_source_ids - projected_source_ids)
+    coverage_state = "COMPLETE" if configured_source_ids and not missing_projection_ids else ("EMPTY" if not configured_source_ids else "GAPS")
+    body += '<section class="card" style="margin-top:16px"><h2>Knowledge coverage</h2><dl>'
+    body += f'<dt>Coverage</dt><dd><span class="pill">{coverage_state}</span> {len(projected_source_ids & configured_source_ids)}/{len(configured_source_ids)} configured sources projected</dd>'
+    if missing_projection_ids:
+        body += f'<dt>Projection gaps</dt><dd><code>{escape(", ".join(missing_projection_ids))}</code></dd>'
+    body += '<dt>Contradictions</dt><dd><span class="pill">UNKNOWN</span> <span class="muted">no derived contradiction analysis in this slice</span></dd><dt>Unanswered questions</dt><dd><span class="pill">UNKNOWN</span> <span class="muted">no derived question analysis in this slice</span></dd></dl></section>'
     body += '<section class="card" style="margin-top:16px"><h2>Sources</h2><dl>'
     record_by_source = {str(r.get("source_id", "")): r for r in records}
     for source_id, source in sorted(project.sources.items()):

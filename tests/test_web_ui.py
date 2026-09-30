@@ -124,6 +124,16 @@ class WebUiTests(unittest.TestCase):
         self.assertEqual(_adoption_projection_state(project, [{"source_id": "engineering-meta", "sync_state": "error"}]), "UNKNOWN")
         self.assertEqual(_adoption_projection_state(SimpleNamespace(engineering_metadata_path=".engineering/project.yaml", sources={"readme": other}), []), "UNKNOWN")
 
+    def test_knowledge_coverage_reports_projection_gaps_without_inventing_analysis(self):
+        _, body = self.get("/projects/demo")
+        self.assertIn("Knowledge coverage", body)
+        self.assertIn("COMPLETE", body)
+        self.assertIn("1/1 configured sources projected", body)
+        self.assertIn("Contradictions", body)
+        self.assertIn("no derived contradiction analysis in this slice", body)
+        self.assertIn("Unanswered questions", body)
+        self.assertIn("no derived question analysis in this slice", body)
+
     def test_lifecycle_evidence_is_bounded(self):
         _, body = self.get("/projects/demo")
         self.assertIn("Lifecycle evidence", body)
