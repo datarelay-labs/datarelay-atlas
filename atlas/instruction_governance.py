@@ -848,3 +848,443 @@ def instruction_governance_routing(
     }
     assert_content_free(result)
     return result
+
+DISPOSITION_AUTHORITY = "PR_HANDOFF_ADVISORY_ONLY"
+DISPOSITION_KIND = "instruction_governance_disposition"
+DISPOSITION_LEDGER_KIND = "instruction_governance_disposition_ledger"
+DISPOSITION_FILENAME = "instruction-governance-dispositions.json"
+DISPOSITIONS = frozenset({"NO_CHANGE", "PR_CANDIDATE", "HUMAN_REQUIRED", "REJECTED"})
+_MAX_DISPOSITIONS = 500
+
+
+def _empty_disposition_ledger() -> dict[str, object]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": DISPOSITION_LEDGER_KIND,
+        "authority": DISPOSITION_AUTHORITY,
+        "dispositions": [],
+    }
+
+
+def _validate_pr_handoff(payload: object) -> dict[str, object] | None:
+    if payload is None:
+        return None
+    keys = {
+        "kind", "target_repository", "target_head", "audit_identity",
+        "engineering_system_revision", "evaluation_ref", "managed_changes",
+        "required_route", "merge_authority", "release_authority", "handoff_digest",
+    }
+    if not isinstance(payload, dict) or set(payload) != keys:
+        raise ValidationError("instruction governance PR handoff schema is invalid")
+    if (
+        payload.get("kind") != "ordinary_pr_adoption_handoff"
+        or payload.get("required_route") != "ORDINARY_PR_OR_MANAGED_ADOPTION"
+        or payload.get("merge_authority") != "NONE"
+        or payload.get("release_authority") != "NONE"
+    ):
+        raise ValidationError("instruction governance PR handoff authority is invalid")
+    repository = payload.get("target_repository")
+    if not isinstance(repository, str) or _REPO.fullmatch(repository) is None:
+        raise ValidationError("instruction governance PR handoff repository is invalid")
+    for key in ("target_head", "engineering_system_revision"):
+        value = payload.get(key)
+        if not isinstance(value, str) or _SHA40.fullmatch(value) is None:
+            raise ValidationError(f"instruction governance PR handoff {key} is invalid")
+    audit_identity = payload.get("audit_identity")
+    if not isinstance(audit_identity, str) or _SHA256.fullmatch(audit_identity) is None:
+        raise ValidationError("instruction governance PR handoff audit identity is invalid")
+    _identity(payload.get("evaluation_ref"), label="evaluation_ref")
+    changes = payload.get("managed_changes")
+    if not isinstance(changes, list) or not changes or len(changes) > _MAX_CHANGES:
+        raise ValidationError("instruction governance PR handoff managed changes are invalid")
+    normalized_changes = []
+    seen_paths: set[str] = set()
+    for item in changes:
+        if not isinstance(item, dict) or set(item) != {"path", "before_digest", "after_digest"}:
+            raise ValidationError("instruction governance PR handoff managed change is invalid")
+        path = _identity(item.get("path"), label="candidate path")
+        before = item.get("before_digest")
+        after = item.get("after_digest")
+        if (
+            path in seen_paths
+            or not isinstance(before, str) or _SHA256.fullmatch(before) is None
+            or not isinstance(after, str) or _SHA256.fullmatch(after) is None
+            or before == after
+        ):
+            raise ValidationError("instruction governance PR handoff managed change is invalid")
+        seen_paths.add(path)
+        normalized_changes.append(
+            {"path": path, "before_digest": before, "after_digest": after}
+        )
+    normalized_changes.sort(key=lambda item: str(item["path"]))
+    digest = payload.get("handoff_digest")
+    if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+        raise ValidationError("instruction governance PR handoff digest is invalid")
+    body = {key: value for key, value in payload.items() if key != "handoff_digest"}
+    if _canonical_digest(body) != digest:
+        raise ValidationError("instruction governance PR handoff digest mismatch")
+    return {**body, "managed_changes": normalized_changes, "handoff_digest": digest}
+
+
+def validate_instruction_governance_disposition(payload: object) -> dict[str, object]:
+    keys = {
+        "schema_version", "kind", "authority", "mutation_authority",
+        "disposition", "reasons", "audit_identity", "audit_outcome",
+        "target_repository", "target_head", "inventory_digest",
+        "engineering_system_revision", "model_provider", "model_name",
+        "model_profile", "harness_id", "harness_revision", "evaluation_ref",
+        "candidate_changes", "behavior_results", "missing_mandatory_scenarios",
+        "pr_handoff", "disposition_digest",
+    }
+    if not isinstance(payload, dict) or set(payload) != keys:
+        raise ValidationError("instruction governance disposition schema is invalid")
+    if (
+        payload.get("schema_version") != SCHEMA_VERSION
+        or isinstance(payload.get("schema_version"), bool)
+        or payload.get("kind") != DISPOSITION_KIND
+        or payload.get("authority") != DISPOSITION_AUTHORITY
+        or payload.get("mutation_authority") != "NONE"
+        or payload.get("disposition") not in DISPOSITIONS
+        or payload.get("audit_outcome") not in OUTCOMES
+    ):
+        raise ValidationError("instruction governance disposition authority/state is invalid")
+    audit_identity = payload.get("audit_identity")
+    if not isinstance(audit_identity, str) or _SHA256.fullmatch(audit_identity) is None:
+        raise ValidationError("instruction governance disposition audit identity is invalid")
+    repository = payload.get("target_repository")
+    if not isinstance(repository, str) or _REPO.fullmatch(repository) is None:
+        raise ValidationError("instruction governance disposition repository is invalid")
+    for key in ("target_head", "engineering_system_revision"):
+        value = payload.get(key)
+        if not isinstance(value, str) or _SHA40.fullmatch(value) is None:
+            raise ValidationError(f"instruction governance disposition {key} is invalid")
+    inventory = payload.get("inventory_digest")
+    if not isinstance(inventory, str) or _SHA256.fullmatch(inventory) is None:
+        raise ValidationError("instruction governance disposition inventory digest is invalid")
+    _identity(payload.get("model_provider"), label="model_provider", provider=True)
+    for key in (
+        "model_name", "model_profile", "harness_id", "harness_revision",
+        "evaluation_ref",
+    ):
+        _identity(payload.get(key), label=key)
+    reasons = payload.get("reasons")
+    if (
+        not isinstance(reasons, list)
+        or len(reasons) > 16
+        or any(not isinstance(item, str) or not item or len(item) > 256 for item in reasons)
+        or len(reasons) != len(set(reasons))
+    ):
+        raise ValidationError("instruction governance disposition reasons are invalid")
+    changes = payload.get("candidate_changes")
+    behavior = payload.get("behavior_results")
+    missing = payload.get("missing_mandatory_scenarios")
+    if not isinstance(changes, list) or len(changes) > _MAX_CHANGES:
+        raise ValidationError("instruction governance disposition candidate changes are invalid")
+    normalized_changes = []
+    seen_paths: set[str] = set()
+    for item in changes:
+        if not isinstance(item, dict) or set(item) != {"path", "before_digest", "after_digest"}:
+            raise ValidationError("instruction governance disposition candidate change is invalid")
+        path = _identity(item.get("path"), label="candidate path")
+        before = item.get("before_digest")
+        after = item.get("after_digest")
+        if (
+            path in seen_paths
+            or not isinstance(before, str) or _SHA256.fullmatch(before) is None
+            or not isinstance(after, str) or _SHA256.fullmatch(after) is None
+            or before == after
+        ):
+            raise ValidationError("instruction governance disposition candidate change is invalid")
+        seen_paths.add(path)
+        normalized_changes.append(
+            {"path": path, "before_digest": before, "after_digest": after}
+        )
+    normalized_changes.sort(key=lambda item: str(item["path"]))
+
+    if not isinstance(behavior, list) or len(behavior) > 128:
+        raise ValidationError("instruction governance disposition behavior results are invalid")
+    normalized_behavior = []
+    seen_scenarios: set[str] = set()
+    for item in behavior:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"scenario_id", "outcome"}
+            or item.get("outcome") not in RESULTS
+        ):
+            raise ValidationError("instruction governance disposition behavior result is invalid")
+        scenario_id = _identity(item.get("scenario_id"), label="behavior scenario id")
+        if scenario_id in seen_scenarios:
+            raise ValidationError("instruction governance disposition behavior result is duplicated")
+        seen_scenarios.add(scenario_id)
+        normalized_behavior.append(
+            {"scenario_id": scenario_id, "outcome": item["outcome"]}
+        )
+    normalized_behavior.sort(key=lambda item: str(item["scenario_id"]))
+
+    if not isinstance(missing, list) or len(missing) > 128:
+        raise ValidationError("instruction governance disposition missing scenarios are invalid")
+    normalized_missing = [_identity(item, label="behavior scenario id") for item in missing]
+    if len(normalized_missing) != len(set(normalized_missing)):
+        raise ValidationError("instruction governance disposition missing scenarios are duplicated")
+    normalized_missing.sort()
+
+    handoff = _validate_pr_handoff(payload.get("pr_handoff"))
+    if payload["disposition"] == "PR_CANDIDATE":
+        if handoff is None:
+            raise ValidationError("instruction governance PR candidate requires handoff")
+        if not normalized_changes or not normalized_behavior:
+            raise ValidationError("instruction governance PR candidate evidence is incomplete")
+        if any(item["outcome"] != "PASS" for item in normalized_behavior):
+            raise ValidationError("instruction governance PR candidate behavior is not all PASS")
+        if normalized_missing:
+            raise ValidationError("instruction governance PR candidate has missing mandatory scenarios")
+        expected_handoff_binding = {
+            "target_repository": payload["target_repository"],
+            "target_head": payload["target_head"],
+            "audit_identity": payload["audit_identity"],
+            "engineering_system_revision": payload["engineering_system_revision"],
+            "evaluation_ref": payload["evaluation_ref"],
+            "managed_changes": normalized_changes,
+        }
+        if any(handoff[key] != value for key, value in expected_handoff_binding.items()):
+            raise ValidationError("instruction governance PR handoff binding is invalid")
+    elif handoff is not None:
+        raise ValidationError("non-PR disposition cannot contain PR handoff")
+    digest = payload.get("disposition_digest")
+    if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+        raise ValidationError("instruction governance disposition digest is invalid")
+    body = {key: value for key, value in payload.items() if key != "disposition_digest"}
+    if _canonical_digest(body) != digest:
+        raise ValidationError("instruction governance disposition digest mismatch")
+    assert_content_free(payload)
+    return dict(payload)
+
+
+def _load_disposition_ledger(data_root: Path) -> dict[str, object]:
+    path = Path(data_root) / DISPOSITION_FILENAME
+    if not path.exists():
+        return _empty_disposition_ledger()
+    if path.is_symlink() or not path.is_file():
+        raise ValidationError("instruction governance disposition ledger path is unsafe")
+    payload = _load_json(path, label="disposition ledger", max_bytes=_MAX_LEDGER_BYTES)
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "kind", "authority", "dispositions"}
+        or payload.get("schema_version") != SCHEMA_VERSION
+        or payload.get("kind") != DISPOSITION_LEDGER_KIND
+        or payload.get("authority") != DISPOSITION_AUTHORITY
+        or not isinstance(payload.get("dispositions"), list)
+        or len(payload["dispositions"]) > _MAX_DISPOSITIONS
+    ):
+        raise ValidationError("instruction governance disposition ledger schema is invalid")
+    normalized = []
+    seen: set[str] = set()
+    for item in payload["dispositions"]:
+        disposition = validate_instruction_governance_disposition(item)
+        identity = str(disposition["audit_identity"])
+        if identity in seen:
+            raise ValidationError("instruction governance disposition audit identity is duplicated")
+        seen.add(identity)
+        normalized.append(disposition)
+    return {**_empty_disposition_ledger(), "dispositions": normalized}
+
+
+def _audit_by_identity(data_root: Path, audit_identity: str) -> dict[str, object]:
+    if not isinstance(audit_identity, str) or _SHA256.fullmatch(audit_identity) is None:
+        raise ValidationError("instruction governance disposition audit identity is invalid")
+    ledger = _load_ledger(Path(data_root))
+    matches = [
+        item for item in ledger["audits"]
+        if item.get("audit_identity") == audit_identity
+    ]
+    if len(matches) != 1:
+        raise ValidationError("instruction governance disposition audit is not found")
+    return _validated_routing_audit(matches[0])
+
+
+def build_instruction_governance_disposition(
+    data_root: Path,
+    *,
+    repo_root: Path,
+    audit_identity: str,
+) -> dict[str, object]:
+    """Build one deterministic audit-bound disposition without mutation authority."""
+    root = Path(repo_root).resolve()
+    audit = _audit_by_identity(Path(data_root), audit_identity)
+    current_dashboard = instruction_governance_dashboard(Path(data_root), repo_root=root)
+    current_head = _git(root, "rev-parse", "HEAD")
+    current_inventory = str(current_dashboard["inventory_digest"])
+    reasons: list[str] = []
+    if audit["target_repository"] != _git_repository(root):
+        reasons.append("TARGET_REPOSITORY_MISMATCH")
+    if audit["target_head"] != current_head:
+        reasons.append("TARGET_HEAD_STALE")
+    if audit["inventory_digest"] != current_inventory:
+        reasons.append("MANAGED_INVENTORY_STALE")
+
+    outcome = str(audit["outcome"])
+    behavior = list(audit["behavior_results"])
+    changes = list(audit["candidate_changes"])
+    missing = list(audit["missing_mandatory_scenarios"])
+    disposition_map = {
+        "NO_CHANGE": "NO_CHANGE",
+        "CANARY_READY": "PR_CANDIDATE",
+        "HUMAN_REQUIRED": "HUMAN_REQUIRED",
+        "REJECTED": "REJECTED",
+    }
+    disposition = disposition_map[outcome]
+
+    if disposition == "PR_CANDIDATE":
+        if not changes:
+            reasons.append("PR_CANDIDATE_WITHOUT_CHANGES")
+        if not behavior:
+            reasons.append("PR_CANDIDATE_WITHOUT_BEHAVIOR_EVIDENCE")
+        if any(
+            not isinstance(item, dict) or item.get("outcome") != "PASS"
+            for item in behavior
+        ):
+            reasons.append("PR_CANDIDATE_BEHAVIOR_NOT_ALL_PASS")
+        if missing:
+            reasons.append("PR_CANDIDATE_MISSING_MANDATORY_SCENARIOS")
+    if reasons:
+        disposition = "HUMAN_REQUIRED"
+
+    handoff = None
+    if disposition == "PR_CANDIDATE":
+        handoff_body = {
+            "kind": "ordinary_pr_adoption_handoff",
+            "target_repository": audit["target_repository"],
+            "target_head": audit["target_head"],
+            "audit_identity": audit["audit_identity"],
+            "engineering_system_revision": audit["engineering_system_revision"],
+            "evaluation_ref": audit["evaluation_ref"],
+            "managed_changes": changes,
+            "required_route": "ORDINARY_PR_OR_MANAGED_ADOPTION",
+            "merge_authority": "NONE",
+            "release_authority": "NONE",
+        }
+        handoff = {
+            **handoff_body,
+            "handoff_digest": _canonical_digest(handoff_body),
+        }
+
+    body = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": DISPOSITION_KIND,
+        "authority": DISPOSITION_AUTHORITY,
+        "mutation_authority": "NONE",
+        "disposition": disposition,
+        "reasons": reasons,
+        "audit_identity": audit["audit_identity"],
+        "audit_outcome": audit["outcome"],
+        "target_repository": audit["target_repository"],
+        "target_head": audit["target_head"],
+        "inventory_digest": audit["inventory_digest"],
+        "engineering_system_revision": audit["engineering_system_revision"],
+        "model_provider": audit["model_provider"],
+        "model_name": audit["model_name"],
+        "model_profile": audit["model_profile"],
+        "harness_id": audit["harness_id"],
+        "harness_revision": audit["harness_revision"],
+        "evaluation_ref": audit["evaluation_ref"],
+        "candidate_changes": changes,
+        "behavior_results": behavior,
+        "missing_mandatory_scenarios": missing,
+        "pr_handoff": handoff,
+    }
+    result = {**body, "disposition_digest": _canonical_digest(body)}
+    return validate_instruction_governance_disposition(result)
+
+
+def publish_instruction_governance_disposition(
+    data_root: Path,
+    *,
+    repo_root: Path,
+    audit_identity: str,
+) -> dict[str, object]:
+    """Publish one derived disposition; an exact replay is a deterministic no-op."""
+    root = Path(data_root)
+    if root.is_symlink() or not root.is_dir():
+        raise ValidationError("instruction governance disposition data root is not a directory")
+    disposition = build_instruction_governance_disposition(
+        root,
+        repo_root=repo_root,
+        audit_identity=audit_identity,
+    )
+    with data_root_write_lock(root):
+        ledger = _load_disposition_ledger(root)
+        existing = next(
+            (
+                item for item in ledger["dispositions"]
+                if item["audit_identity"] == disposition["audit_identity"]
+            ),
+            None,
+        )
+        if existing is not None:
+            if existing["disposition_digest"] != disposition["disposition_digest"]:
+                raise ValidationError("instruction governance disposition replay drifted")
+            return {
+                "state": "DUPLICATE_NOOP",
+                "authority": DISPOSITION_AUTHORITY,
+                "disposition": existing,
+            }
+        if len(ledger["dispositions"]) >= _MAX_DISPOSITIONS:
+            raise ValidationError("instruction governance disposition ledger limit reached")
+        ledger["dispositions"].append(disposition)
+        atomic_write_text(
+            root / DISPOSITION_FILENAME,
+            json.dumps(ledger, indent=2, sort_keys=True) + "\n",
+        )
+    return {
+        "state": "PUBLISHED",
+        "authority": DISPOSITION_AUTHORITY,
+        "disposition": disposition,
+    }
+
+
+def instruction_governance_disposition_dashboard(
+    data_root: Path,
+    *,
+    repo_root: Path,
+) -> dict[str, object]:
+    """Read the derived handoff ledger and rebind every entry to source audit evidence."""
+    root = Path(data_root)
+    ledger = _load_disposition_ledger(root)
+    dispositions = list(ledger["dispositions"])
+    for item in dispositions:
+        source = _audit_by_identity(root, str(item["audit_identity"]))
+        for key in (
+            "audit_outcome", "target_repository", "target_head", "inventory_digest",
+            "engineering_system_revision", "model_provider", "model_name",
+            "model_profile", "harness_id", "harness_revision", "evaluation_ref",
+            "candidate_changes", "behavior_results", "missing_mandatory_scenarios",
+        ):
+            source_key = "outcome" if key == "audit_outcome" else key
+            if item[key] != source[source_key]:
+                raise ValidationError("instruction governance disposition source binding is invalid")
+    counts = {name: 0 for name in sorted(DISPOSITIONS)}
+    for item in dispositions:
+        counts[str(item["disposition"])] += 1
+    latest = dispositions[-1] if dispositions else None
+    current_binding = None
+    if isinstance(latest, dict):
+        current = build_instruction_governance_disposition(
+            root,
+            repo_root=repo_root,
+            audit_identity=str(latest["audit_identity"]),
+        )
+        current_binding = (
+            "CURRENT"
+            if current["disposition_digest"] == latest["disposition_digest"]
+            else "STALE"
+        )
+    return {
+        "state": "OBSERVED" if dispositions else "UNKNOWN",
+        "authority": DISPOSITION_AUTHORITY,
+        "mutation_authority": "NONE",
+        "disposition_count": len(dispositions),
+        "disposition_counts": counts,
+        "binding_state": current_binding or "UNKNOWN",
+        "latest_disposition": latest,
+        "dispositions": dispositions[-50:],
+    }

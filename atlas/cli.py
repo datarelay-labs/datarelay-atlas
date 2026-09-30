@@ -359,6 +359,21 @@ def cmd_instruction_governance_route(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_instruction_governance_disposition_build(args: argparse.Namespace) -> int:
+    _print_json(_service(args).build_instruction_governance_disposition(args.audit_identity))
+    return 0
+
+
+def cmd_instruction_governance_disposition_publish(args: argparse.Namespace) -> int:
+    _print_json(_service(args).publish_instruction_governance_disposition(args.audit_identity))
+    return 0
+
+
+def cmd_instruction_governance_disposition_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).instruction_governance_disposition_dashboard())
+    return 0
+
+
 def cmd_instruction_governance_preflight(args: argparse.Namespace) -> int:
     profile = _read_json_file(args.profile, label="instruction governance profile")
     payload = _service(args).instruction_governance_preflight(
@@ -1059,6 +1074,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show deterministic non-mutating candidate routing decision",
     )
     instruction_governance_route.set_defaults(func=cmd_instruction_governance_route)
+    instruction_governance_disposition_build = instruction_governance_sub.add_parser(
+        "disposition-build",
+        help="Build one exact-audit disposition and digest-bound PR handoff without persistence",
+    )
+    instruction_governance_disposition_build.add_argument("--audit-identity", required=True)
+    instruction_governance_disposition_build.set_defaults(func=cmd_instruction_governance_disposition_build)
+    instruction_governance_disposition_publish = instruction_governance_sub.add_parser(
+        "disposition-publish",
+        help="Publish one derived exact-audit disposition/PR handoff",
+    )
+    instruction_governance_disposition_publish.add_argument("--audit-identity", required=True)
+    instruction_governance_disposition_publish.set_defaults(func=cmd_instruction_governance_disposition_publish)
+    instruction_governance_disposition_show = instruction_governance_sub.add_parser(
+        "disposition-show",
+        help="Show derived instruction-governance disposition/PR-handoff ledger",
+    )
+    instruction_governance_disposition_show.set_defaults(func=cmd_instruction_governance_disposition_show)
     instruction_governance_profile = instruction_governance_sub.add_parser("profile-build", help="Build exact target/Engineering System/model/harness profile JSON")
     instruction_governance_profile.add_argument("--engineering-system-revision", required=True)
     instruction_governance_profile.add_argument("--agent-base", required=True)

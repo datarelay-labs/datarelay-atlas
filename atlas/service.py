@@ -56,6 +56,9 @@ from atlas.instruction_governance import (
     instruction_governance_dashboard,
     instruction_governance_preflight,
     instruction_governance_routing,
+    build_instruction_governance_disposition,
+    publish_instruction_governance_disposition,
+    instruction_governance_disposition_dashboard,
     record_instruction_governance_audit,
 )
 from atlas.local_markdown import (
@@ -223,6 +226,29 @@ class AtlasService:
     def instruction_governance_routing(self) -> dict[str, object]:
         """Return current non-mutating instruction-governance route decision."""
         return instruction_governance_routing(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+        )
+
+    def build_instruction_governance_disposition(self, audit_identity: str) -> dict[str, object]:
+        """Build one audit-bound PR handoff disposition without persisting it."""
+        return build_instruction_governance_disposition(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+            audit_identity=audit_identity,
+        )
+
+    def publish_instruction_governance_disposition(self, audit_identity: str) -> dict[str, object]:
+        """Publish one derived audit-bound disposition."""
+        return publish_instruction_governance_disposition(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+            audit_identity=audit_identity,
+        )
+
+    def instruction_governance_disposition_dashboard(self) -> dict[str, object]:
+        """Return derived disposition/PR-handoff evidence."""
+        return instruction_governance_disposition_dashboard(
             self.data_root,
             repo_root=Path(__file__).resolve().parents[1],
         )

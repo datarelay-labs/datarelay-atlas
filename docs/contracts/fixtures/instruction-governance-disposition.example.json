@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "kind": "instruction_governance_disposition",
+  "authority": "PR_HANDOFF_ADVISORY_ONLY",
+  "mutation_authority": "NONE",
+  "disposition": "PR_CANDIDATE",
+  "reasons": [],
+  "audit_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "audit_outcome": "CANARY_READY",
+  "target_repository": "datarelay-labs/datarelay-atlas",
+  "target_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "inventory_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "engineering_system_revision": "dddddddddddddddddddddddddddddddddddddddd",
+  "model_provider": "openai",
+  "model_name": "gpt-5.6-sol",
+  "model_profile": "medium",
+  "harness_id": "chatgpt-chat",
+  "harness_revision": "2026-09-30",
+  "evaluation_ref": "github:issue-191",
+  "candidate_changes": [
+    {
+      "path": "AGENTS.md",
+      "before_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "after_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "behavior_results": [
+    {
+      "scenario_id": "chat-primary-implementation",
+      "outcome": "PASS"
+    }
+  ],
+  "missing_mandatory_scenarios": [],
+  "pr_handoff": {
+    "kind": "ordinary_pr_adoption_handoff",
+    "target_repository": "datarelay-labs/datarelay-atlas",
+    "target_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "audit_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "engineering_system_revision": "dddddddddddddddddddddddddddddddddddddddd",
+    "evaluation_ref": "github:issue-191",
+    "managed_changes": [
+      {
+        "path": "AGENTS.md",
+        "before_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "after_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    ],
+    "required_route": "ORDINARY_PR_OR_MANAGED_ADOPTION",
+    "merge_authority": "NONE",
+    "release_authority": "NONE",
+    "handoff_digest": "7da046a91456fba22882edd57c249df3cd37bf6e793d2c0af44e072690624e22"
+  },
+  "disposition_digest": "2c0bae64a6e1889752eb9cdcb9e3b6e11ead7c175577d34c61d2044c8ea7a621"
+}
