@@ -9,6 +9,8 @@ project:
   name: datarelay-atlas
   type: engineering-platform
   maturity: development
+  user_facing: true
+  primary_user_surface: browser
 domains:
 - methodology
 - project-registry

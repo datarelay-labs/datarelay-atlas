@@ -60,8 +60,10 @@ Exit: humans and AI clients retrieve the same current, attributable engineering 
 - current workstream/AI Work Packet visibility
 - stale/unknown state distinction
 - validation/release evidence navigation
+- human-equivalent user-test lifecycle visibility for user-facing projects: Surface Reconciliation vs Full User E2E, required/configured/executed status, exact evidence HEAD, and stale/different-HEAD distinction
+- distinguish CI/static contract configuration from actual public-user-surface execution evidence; never infer execution PASS from contract presence
 
-Exit: Atlas can show what a project knows and where it is in the engineering lifecycle.
+Exit: Atlas can show what a project knows and where it is in the engineering lifecycle, including whether required real-user release gates were actually executed on the current candidate.
 
 ## Phase 4 — Derived Engineering Intelligence
 
@@ -84,8 +86,9 @@ Exit: synthesis improves navigation and reasoning without becoming a competing s
 - security review
 - dependency/SBOM/provenance policy
 - multi-project operational E2E
+- before any user-facing Atlas production release: mandatory actual-browser Surface Reconciliation and Full User E2E on the same exact candidate, following ADR-0016 and the active Engineering System release standard
 
-Exit: self-hosted single-organization production release is supportable.
+Exit: self-hosted single-organization production release is supportable and user-facing release evidence includes both machine qualification and human-equivalent user validation.
 
 ## Deferred unless explicitly approved
 

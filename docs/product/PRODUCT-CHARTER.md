@@ -76,6 +76,7 @@ MVP is successful when a new/existing project can be registered and Atlas can:
 - search exact and semantic context
 - answer project-scoped questions with provenance
 - expose current lifecycle/validation/release state where GitHub evidence exists
+- distinguish configured machine/CI gates from actually executed human-equivalent user-surface release gates, including same-HEAD Surface Reconciliation and Full User E2E when a project declares them
 - provide the same trusted context to human UI and MCP clients
 
 ## Scope discipline
