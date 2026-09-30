@@ -453,6 +453,17 @@ def render_instruction_governance(service: AtlasService) -> UiResponse:
             "mutation_authority": "NONE",
             "reasons": ["ROUTING_STATE_UNAVAILABLE"],
         }
+    try:
+        disposition = service.instruction_governance_disposition_dashboard()
+    except ValidationError:
+        disposition = {
+            "state": "UNAVAILABLE",
+            "authority": "PR_HANDOFF_ADVISORY_ONLY",
+            "mutation_authority": "NONE",
+            "disposition_count": 0,
+            "binding_state": "UNKNOWN",
+            "latest_disposition": None,
+        }
     latest = dashboard["latest_audit"]
     latest_html = '<p class="muted">No audit has been recorded yet.</p>'
     if isinstance(latest, dict):
@@ -492,6 +503,14 @@ def render_instruction_governance(service: AtlasService) -> UiResponse:
         f'<dt>Mutation authority</dt><dd><code>{escape(str(routing["mutation_authority"]))}</code></dd>'
         f'<dt>Reasons</dt><dd><code>{escape(", ".join(str(x) for x in routing.get("reasons", [])) or "NONE")}</code></dd></dl>'
         '<p class="muted">Routing is advisory only. CANARY_PR_REQUIRED still needs separate canary evidence and ordinary PR/adoption governance.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Disposition / PR handoff</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(disposition["state"]))}</span></dd>'
+        f'<dt>Published</dt><dd>{disposition["disposition_count"]}</dd>'
+        f'<dt>Binding</dt><dd><span class="pill">{escape(str(disposition["binding_state"]))}</span></dd>'
+        f'<dt>Authority</dt><dd><code>{escape(str(disposition["authority"]))}</code></dd>'
+        f'<dt>Mutation authority</dt><dd><code>{escape(str(disposition["mutation_authority"]))}</code></dd>'
+        f'<dt>Latest disposition</dt><dd><span class="pill">{escape(str((disposition.get("latest_disposition") or {}).get("disposition", "NONE")))}</span></dd></dl>'
+        '<p class="muted">PR_CANDIDATE is a digest-bound handoff to ordinary PR/adoption governance. It grants no file, PR, merge, release, or default-branch mutation authority.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Latest audit</h2>'
         + latest_html
         + '</section>'
