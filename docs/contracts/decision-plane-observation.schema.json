@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/decision-plane-observation.schema.json",
+  "title": "DataRelay Atlas Decision Plane Observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version","kind","record_id","mode","decision_class","observed_at",
+    "candidate_ids","required_candidate_ids","current_choice_ids","model_choice_ids",
+    "model_provider","model_name","model_profile","confidence","current_outcome",
+    "model_outcome","cost_delta_milliunits","wall_time_delta_ms",
+    "frontier_call_delta","retry_delta"
+  ],
+  "properties": {
+    "schema_version": {"type":"integer","const":1},
+    "kind": {"type":"string","const":"decision_plane_observation"},
+    "record_id": {"$ref":"#/$defs/id"},
+    "mode": {"enum":["SHADOW","REPLAY"]},
+    "decision_class": {"enum":["OPTIONAL_CONTEXT_SELECTION","FOCUSED_CHECK_SELECTION"]},
+    "observed_at": {"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"},
+    "candidate_ids": {"$ref":"#/$defs/idList"},
+    "required_candidate_ids": {"$ref":"#/$defs/idListAllowEmpty"},
+    "current_choice_ids": {"$ref":"#/$defs/idList"},
+    "model_choice_ids": {"$ref":"#/$defs/idListAllowEmpty"},
+    "model_provider": {"type":"string","pattern":"^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "model_name": {"$ref":"#/$defs/id"},
+    "model_profile": {"$ref":"#/$defs/id"},
+    "confidence": {
+      "anyOf": [
+        {"type":"null"},
+        {"type":"string","pattern":"^(?:0(?:\\.[0-9]{1,6})?|1(?:\\.0{1,6})?)$"}
+      ]
+    },
+    "current_outcome": {"$ref":"#/$defs/outcome"},
+    "model_outcome": {"$ref":"#/$defs/outcome"},
+    "cost_delta_milliunits": {"type":"integer","minimum":-1000000000,"maximum":1000000000},
+    "wall_time_delta_ms": {"type":"integer","minimum":-86400000,"maximum":86400000},
+    "frontier_call_delta": {"type":"integer","minimum":-1000000,"maximum":1000000},
+    "retry_delta": {"type":"integer","minimum":-1000000,"maximum":1000000}
+  },
+  "$defs": {
+    "id": {
+      "type":"string",
+      "minLength":1,
+      "maxLength":256,
+      "pattern":"^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]{0,255}$"
+    },
+    "idList": {
+      "type":"array",
+      "minItems":1,
+      "maxItems":128,
+      "uniqueItems":true,
+      "items":{"$ref":"#/$defs/id"}
+    },
+    "idListAllowEmpty": {
+      "type":"array",
+      "maxItems":128,
+      "uniqueItems":true,
+      "items":{"$ref":"#/$defs/id"}
+    },
+    "outcome": {
+      "type":"string",
+      "enum":["UNKNOWN","VERIFIED_SUCCESS","VERIFIED_FAILURE"]
+    }
+  }
+}

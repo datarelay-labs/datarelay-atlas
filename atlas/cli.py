@@ -238,6 +238,38 @@ def cmd_providers_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_decision_plane_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).decision_plane_dashboard())
+    return 0
+
+
+def cmd_decision_plane_append(args: argparse.Namespace) -> int:
+    try:
+        payload = json.loads(Path(args.observation).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValidationError("decision plane observation file is invalid") from exc
+    _print_json(_service(args).append_decision_plane_observation(payload))
+    return 0
+
+
+def cmd_decision_plane_context_candidates(args: argparse.Namespace) -> int:
+    _print_json(
+        _service(args).decision_plane_optional_context_candidates(
+            list(args.optional_path or [])
+        )
+    )
+    return 0
+
+
+def cmd_decision_plane_check_candidates(args: argparse.Namespace) -> int:
+    _print_json(
+        _service(args).decision_plane_focused_check_candidates(
+            list(args.changed_path or [])
+        )
+    )
+    return 0
+
+
 def cmd_providers_transition_preview(args: argparse.Namespace) -> int:
     payload = _service(args).provider_transition_preview(
         current_route_id=args.current_route,
@@ -777,6 +809,20 @@ def build_parser() -> argparse.ArgumentParser:
     providers_publish.add_argument("--strategy", default="CAPABILITY_FIRST", choices=sorted(STRATEGIES))
     providers_publish.add_argument("--max-evidence-age-seconds", type=int, required=True)
     providers_publish.set_defaults(func=cmd_providers_publish)
+
+    decision_plane = sub.add_parser("decision-plane", help="Decision Plane shadow/replay evidence")
+    decision_plane_sub = decision_plane.add_subparsers(dest="decision_plane_command", required=True)
+    decision_plane_show = decision_plane_sub.add_parser("show", help="Show Decision Plane shadow/replay summary")
+    decision_plane_show.set_defaults(func=cmd_decision_plane_show)
+    decision_plane_append = decision_plane_sub.add_parser("append", help="Append one validated shadow/replay observation JSON")
+    decision_plane_append.add_argument("--observation", required=True)
+    decision_plane_append.set_defaults(func=cmd_decision_plane_append)
+    decision_plane_context = decision_plane_sub.add_parser("context-candidates", help="Prepare optional-context candidates while preserving mandatory context")
+    decision_plane_context.add_argument("--optional-path", action="append", default=[])
+    decision_plane_context.set_defaults(func=cmd_decision_plane_context_candidates)
+    decision_plane_checks = decision_plane_sub.add_parser("focused-check-candidates", help="Prepare affected focused-check candidates from .engineering/tests.yaml")
+    decision_plane_checks.add_argument("--changed-path", action="append", required=True)
+    decision_plane_checks.set_defaults(func=cmd_decision_plane_check_candidates)
 
     search = sub.add_parser(
         "search",

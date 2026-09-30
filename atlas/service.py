@@ -14,6 +14,12 @@ from atlas.adoption import (
 from atlas.github_sync import FetchFn, fetch_github_file
 from atlas.derived_intelligence import derived_intelligence_payload
 from atlas.data_lock import data_root_write_lock
+from atlas.decision_plane import (
+    append_decision_observation,
+    build_focused_check_candidates,
+    build_optional_context_candidates,
+    decision_plane_dashboard,
+)
 from atlas.operations_readiness import operations_readiness
 from atlas.provider_dashboard import provider_dashboard, provider_transition_preview, publish_provider_dashboard_snapshot
 from atlas.local_markdown import (
@@ -82,6 +88,34 @@ class AtlasService:
     def provider_dashboard(self) -> dict[str, object]:
         """Return read-only provider capacity/broker dashboard state."""
         return provider_dashboard(self.data_root)
+
+    def decision_plane_dashboard(self) -> dict[str, object]:
+        """Return shadow/replay Decision Plane evidence."""
+        return decision_plane_dashboard(self.data_root)
+
+    def append_decision_plane_observation(self, observation: object) -> dict[str, object]:
+        """Append one validated derived Decision Plane observation."""
+        return append_decision_observation(self.data_root, observation)
+
+    def decision_plane_optional_context_candidates(
+        self,
+        optional_paths: list[str],
+    ) -> dict[str, object]:
+        """Prepare bounded optional-context candidates from repository files."""
+        return build_optional_context_candidates(
+            Path(__file__).resolve().parents[1],
+            optional_paths,
+        )
+
+    def decision_plane_focused_check_candidates(
+        self,
+        changed_paths: list[str],
+    ) -> dict[str, object]:
+        """Prepare affected focused-check candidates from Engineering System metadata."""
+        return build_focused_check_candidates(
+            Path(__file__).resolve().parents[1],
+            changed_paths,
+        )
 
     def provider_transition_preview(
         self,

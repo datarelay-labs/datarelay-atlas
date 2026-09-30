@@ -86,6 +86,10 @@ def render_projects(service: AtlasService) -> UiResponse:
         providers = service.provider_dashboard()
     except ValidationError:
         providers = {"state": "UNAVAILABLE", "routes": [], "plan": None}
+    try:
+        decision_plane = service.decision_plane_dashboard()
+    except ValidationError:
+        decision_plane = {"state": "UNAVAILABLE", "rollout_state": "SHADOW"}
     cards = []
     for project in projects:
         pid = quote(project.project_id, safe="")
@@ -101,8 +105,158 @@ def render_projects(service: AtlasService) -> UiResponse:
     listing = "".join(cards) if cards else '<div class="card"><p>No projects registered.</p></div>'
     enabled = sum(1 for project in projects if project.enabled)
     sources = sum(len(project.sources) for project in projects)
-    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
+    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section><section class="card"><h2>{escape(str(decision_plane["rollout_state"]))}</h2><p>Decision Plane</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a> · <a href="/decision-plane">Decision Plane →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
     return UiResponse("200 OK", _page("Projects", body))
+
+def render_decision_plane(
+    service: AtlasService,
+    *,
+    optional_paths: list[str] | None = None,
+    changed_paths: list[str] | None = None,
+) -> UiResponse:
+    try:
+        dashboard = service.decision_plane_dashboard()
+    except ValidationError:
+        return _error(
+            "500 Internal Server Error",
+            "Decision Plane unavailable",
+            "Decision Plane shadow/replay evidence could not be read safely.",
+        )
+
+    optional_paths = list(optional_paths or [])
+    changed_paths = list(changed_paths or [])
+    context_candidates = None
+    context_error = ""
+    check_candidates = None
+    check_error = ""
+    try:
+        context_candidates = service.decision_plane_optional_context_candidates(
+            optional_paths
+        )
+    except ValidationError as exc:
+        context_error = str(exc)
+    if changed_paths:
+        try:
+            check_candidates = service.decision_plane_focused_check_candidates(
+                changed_paths
+            )
+        except ValidationError as exc:
+            check_error = str(exc)
+
+    class_counts: dict[str, dict[str, int]] = {}
+    rows = []
+    for record in dashboard["records"]:
+        counts = class_counts.setdefault(
+            record["decision_class"],
+            {"total": 0, "valid": 0, "shadow": 0, "replay": 0},
+        )
+        counts["total"] += 1
+        counts["valid"] += record["validation"] == "VALID"
+        counts["shadow"] += record["mode"] == "SHADOW"
+        counts["replay"] += record["mode"] == "REPLAY"
+        reasons = ", ".join(record["validation_reasons"]) or "NONE"
+        rows.append(
+            f'<tr><td><code>{escape(record["record_id"])}</code></td>'
+            f'<td><span class="pill">{escape(record["mode"])}</span></td>'
+            f'<td>{escape(record["decision_class"])}</td>'
+            f'<td><span class="pill">{escape(record["validation"])}</span><br><span class="muted">{escape(reasons)}</span></td>'
+            f'<td><code>{escape(", ".join(record["current_choice_ids"]))}</code></td>'
+            f'<td><code>{escape(", ".join(record["model_choice_ids"]) or "NONE")}</code></td>'
+            f'<td>{escape(record["current_outcome"])} / {escape(record["model_outcome"])}</td>'
+            f'<td>{record["cost_delta_milliunits"]} / {record["wall_time_delta_ms"]}</td></tr>'
+        )
+    record_rows = "".join(rows) if rows else '<tr><td colspan="8" class="muted">No Decision Plane observations loaded.</td></tr>'
+
+    class_cards_parts = []
+    for name, assessment in dashboard["class_assessments"].items():
+        counts = class_counts.get(
+            name,
+            {"total": 0, "valid": 0, "shadow": 0, "replay": 0},
+        )
+        class_cards_parts.append(
+            f'<article class="card"><h2>{escape(name.replace("_", " ").title())}</h2>'
+            f'<p><span class="pill">{escape(str(assessment["assessment"]))}</span></p><dl>'
+            f'<dt>Total</dt><dd>{counts["total"]}</dd>'
+            f'<dt>Valid</dt><dd>{counts["valid"]}</dd>'
+            f'<dt>Shadow</dt><dd>{counts["shadow"]}</dd>'
+            f'<dt>Replay</dt><dd>{counts["replay"]}</dd>'
+            f'<dt>Verified replay</dt><dd>{assessment["verified_replay_count"]}</dd>'
+            f'<dt>Current/model success</dt><dd>{assessment["current_success_count"]}/{assessment["model_success_count"]}</dd>'
+            f'<dt>False routing</dt><dd>{assessment["false_routing_count"]}</dd>'
+            f'<dt>Cost/time Δ</dt><dd>{assessment["cost_delta_milliunits"]} / {assessment["wall_time_delta_ms"]}</dd>'
+            f'<dt>Frontier/retry Δ</dt><dd>{assessment["frontier_call_delta"]} / {assessment["retry_delta"]}</dd>'
+            f'<dt>Confidence range</dt><dd><code>{escape(str(assessment["confidence_min"] or "UNKNOWN"))}</code> – <code>{escape(str(assessment["confidence_max"] or "UNKNOWN"))}</code></dd>'
+            '</dl></article>'
+        )
+    class_cards = "".join(class_cards_parts)
+
+    context_html = (
+        f'<p><span class="pill">UNAVAILABLE</span> <span class="muted">{escape(context_error)}</span></p>'
+        if context_error
+        else (
+            '<dl>'
+            f'<dt>Candidates</dt><dd><code>{escape(", ".join(context_candidates["candidate_ids"]))}</code></dd>'
+            f'<dt>Mandatory</dt><dd><code>{escape(", ".join(context_candidates["required_candidate_ids"]))}</code></dd>'
+            f'<dt>Authority</dt><dd><span class="pill">{escape(context_candidates["authority"])}</span></dd></dl>'
+            if context_candidates is not None
+            else '<p class="muted">No context candidate set available.</p>'
+        )
+    )
+    check_html = '<p class="muted">Enter changed repository paths to prepare affected focused-check candidates.</p>'
+    if check_error:
+        check_html = f'<p><span class="pill">UNAVAILABLE</span> <span class="muted">{escape(check_error)}</span></p>'
+    elif check_candidates is not None:
+        check_html = (
+            '<dl>'
+            f'<dt>Affected domains</dt><dd><code>{escape(", ".join(check_candidates["affected_domains"]) or "NONE")}</code></dd>'
+            f'<dt>Focused candidates</dt><dd><code>{escape(", ".join(check_candidates["candidate_ids"]) or "NONE")}</code></dd>'
+            f'<dt>Terminal release gates</dt><dd><code>{escape(", ".join(check_candidates["terminal_required_ids"]) or "NONE")}</code></dd>'
+            f'<dt>Authority</dt><dd><span class="pill">{escape(check_candidates["authority"])}</span></dd></dl>'
+        )
+    optional_value = escape(",".join(optional_paths), quote=True)
+    changed_value = escape(",".join(changed_paths), quote=True)
+
+    body = (
+        '<p><a href="/">← Projects</a></p><h1>Decision Plane</h1>'
+        '<p class="muted">Shadow/replay measurement only. Decision-model choices never replace current execution in this slice.</p>'
+        '<section class="grid">'
+        f'<article class="card"><h2>{escape(str(dashboard["rollout_state"]))}</h2><p>Rollout state</p></article>'
+        f'<article class="card"><h2>{dashboard["record_count"]}</h2><p>Observations</p></article>'
+        f'<article class="card"><h2>{dashboard["invalid_choice_count"]}</h2><p>Invalid model choices</p></article>'
+        f'<article class="card"><h2>{dashboard["verified_replay_count"]}</h2><p>Verified replay cases</p></article>'
+        f'<article class="card"><h2>{escape(str(dashboard["replay_gate"]))}</h2><p>Replay evidence gate</p></article>'
+        f'<article class="card"><h2>{escape(str(dashboard["activation_authority"]))}</h2><p>Activation authority</p></article>'
+        '</section>'
+        '<section class="card" style="margin-top:16px"><h2>Optional context candidates</h2>'
+        '<form method="get" action="/decision-plane">'
+        f'<input name="optional_paths" value="{optional_value}" placeholder="docs/decisions/ADR-0008.md,docs/contracts/...">'
+        f'<input type="hidden" name="changed_paths" value="{changed_value}">'
+        '<button type="submit">Prepare context</button></form>'
+        + context_html
+        + '<p class="muted">AGENTS.md and .engineering/project.yaml remain mandatory when present.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Focused-check candidates</h2>'
+        '<form method="get" action="/decision-plane">'
+        f'<input name="changed_paths" value="{changed_value}" placeholder="atlas/service.py,atlas/web_ui.py">'
+        f'<input type="hidden" name="optional_paths" value="{optional_value}">'
+        '<button type="submit">Prepare checks</button></form>'
+        + check_html
+        + '<p class="muted">Terminal release gates remain deterministic and outside model selection authority.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Replay metrics</h2><dl>'
+        f'<dt>Current success rate</dt><dd><code>{escape(str(dashboard["current_success_rate_percent"] or "UNKNOWN"))}%</code></dd>'
+        f'<dt>Model success rate</dt><dd><code>{escape(str(dashboard["model_success_rate_percent"] or "UNKNOWN"))}%</code></dd>'
+        f'<dt>Cost delta</dt><dd><code>{dashboard["total_cost_delta_milliunits"]} milliunits</code></dd>'
+        f'<dt>Wall-time delta</dt><dd><code>{dashboard["total_wall_time_delta_ms"]} ms</code></dd>'
+        f'<dt>Frontier-call delta</dt><dd><code>{dashboard["total_frontier_call_delta"]}</code></dd>'
+        f'<dt>Retry delta</dt><dd><code>{dashboard["total_retry_delta"]}</code></dd></dl>'
+        '<p class="muted">REPLAY_PASS is evidence only. It does not activate the Decision Plane; promotion remains outside this slice.</p></section>'
+        '<h2>Decision classes</h2><section class="grid">' + class_cards + '</section>'
+        '<section class="card" style="margin-top:16px"><h2>Observations</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>ID</th><th>Mode</th><th>Class</th><th>Validation</th><th>Current choice</th><th>Model choice</th><th>Outcomes</th><th>Cost / time Δ</th></tr></thead>'
+        f'<tbody>{record_rows}</tbody></table></div></section>'
+        '<p class="muted">Permissions, release/deploy, secrets, exact-head PASS and HUMAN_REQUIRED decisions remain outside Decision Plane authority.</p>'
+    )
+    return UiResponse("200 OK", _page("Decision Plane", body))
+
 
 def render_providers(
     service: AtlasService,
@@ -1091,6 +1245,23 @@ def create_app(data_root: Path):
                 response = render_intelligence_overview(service)
             elif path == "/operations":
                 response = render_operations(service)
+            elif path == "/decision-plane":
+                params = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
+                optional_text = params.get("optional_paths", [""])[0].strip()
+                changed_text = params.get("changed_paths", [""])[0].strip()
+                if len(optional_text) > 4096 or len(changed_text) > 4096:
+                    response = _error("400 Bad Request", "Invalid Decision Plane input", "Candidate input is too long.")
+                else:
+                    optional_paths = [item.strip() for item in optional_text.split(",") if item.strip()]
+                    changed_paths = [item.strip() for item in changed_text.split(",") if item.strip()]
+                    if len(optional_paths) > 128 or len(changed_paths) > 256:
+                        response = _error("400 Bad Request", "Invalid Decision Plane input", "Too many candidate paths.")
+                    else:
+                        response = render_decision_plane(
+                            service,
+                            optional_paths=optional_paths,
+                            changed_paths=changed_paths,
+                        )
             elif path == "/providers":
                 params = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
                 current_route = params.get("current_route", [""])[0].strip()

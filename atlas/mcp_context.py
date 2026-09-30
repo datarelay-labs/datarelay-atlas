@@ -36,6 +36,9 @@ class AtlasContextTools:
         operations_readiness_factory: Callable[[], dict[str, object]] | None = None,
         provider_dashboard_factory: Callable[[], dict[str, object]] | None = None,
         provider_transition_preview_factory: Callable[..., dict[str, object]] | None = None,
+        decision_plane_factory: Callable[[], dict[str, object]] | None = None,
+        decision_context_candidates_factory: Callable[[list[str]], dict[str, object]] | None = None,
+        decision_check_candidates_factory: Callable[[list[str]], dict[str, object]] | None = None,
     ) -> None:
         if (retriever is None) == (retriever_factory is None):
             raise ValueError("AtlasContextTools requires exactly one retriever source")
@@ -47,6 +50,9 @@ class AtlasContextTools:
         self._operations_readiness_factory = operations_readiness_factory
         self._provider_dashboard_factory = provider_dashboard_factory
         self._provider_transition_preview_factory = provider_transition_preview_factory
+        self._decision_plane_factory = decision_plane_factory
+        self._decision_context_candidates_factory = decision_context_candidates_factory
+        self._decision_check_candidates_factory = decision_check_candidates_factory
 
     def _retriever_for(self, project_id: str) -> Retriever:
         if self._retriever_factory is not None:
@@ -107,6 +113,27 @@ class AtlasContextTools:
                     "description": "Return one advisory failover recommendation without executing a provider transition",
                 }
             )
+        if self._decision_plane_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_decision_plane",
+                    "description": "Return Decision Plane shadow/replay measurements without activation authority",
+                }
+            )
+        if self._decision_context_candidates_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_decision_context_candidates",
+                    "description": "Prepare optional-context candidates while preserving deterministic mandatory context",
+                }
+            )
+        if self._decision_check_candidates_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_decision_focused_check_candidates",
+                    "description": "Prepare affected focused-check candidates while keeping terminal release gates separate",
+                }
+            )
         if authorize_tool("create_note", scopes, write_tools=WRITE_TOOL_NAMES):
             tools.append(
                 {
@@ -126,7 +153,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_transition_preview"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_transition_preview", "get_decision_plane", "get_decision_context_candidates", "get_decision_focused_check_candidates"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "search_project":
@@ -180,6 +207,47 @@ class AtlasContextTools:
                 return ToolResult(ok=False, data=None, error="unknown_tool:get_operations_readiness")
             try:
                 payload = self._operations_readiness_factory()
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_decision_plane":
+            if self._decision_plane_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_decision_plane")
+            try:
+                payload = self._decision_plane_factory()
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_decision_context_candidates":
+            if self._decision_context_candidates_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_decision_context_candidates")
+            optional_paths = args.get("optional_paths", [])
+            if not isinstance(optional_paths, list) or any(
+                not isinstance(item, str) or not item.strip() for item in optional_paths
+            ):
+                return ToolResult(ok=False, data=None, error="optional_paths must be a list of repository paths")
+            try:
+                payload = self._decision_context_candidates_factory(
+                    [item.strip() for item in optional_paths]
+                )
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_decision_focused_check_candidates":
+            if self._decision_check_candidates_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_decision_focused_check_candidates")
+            changed_paths = args.get("changed_paths", [])
+            if not isinstance(changed_paths, list) or not changed_paths or any(
+                not isinstance(item, str) or not item.strip() for item in changed_paths
+            ):
+                return ToolResult(ok=False, data=None, error="changed_paths must be a non-empty list of repository paths")
+            try:
+                payload = self._decision_check_candidates_factory(
+                    [item.strip() for item in changed_paths]
+                )
             except ValidationError as exc:
                 return ToolResult(ok=False, data=None, error=str(exc))
             return ToolResult(ok=True, data=payload)
