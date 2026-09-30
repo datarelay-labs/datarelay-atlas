@@ -10,6 +10,7 @@ _REPO = re.compile(r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?![A-Z
 _BODY_SEPARATOR = "\n---\n"
 _ADR = re.compile(r"(?i)(?:docs/decisions/)?(ADR-[0-9]{4,})(?:[A-Za-z0-9_.-]*)")
 _QUESTION = re.compile(r"(?im)^\s*(?:[-*]\s*)?(?:TODO(?:\([^)]*\))?\s*[:：]\s*(.+)|QUESTION\s*[:：]\s*(.+))\s*$")
+_HEADING = re.compile(r"(?m)^#{1,6}\s+([^#\n][^\n]{0,199})\s*$")
 _MAX_ITEMS = 500
 
 @dataclass(frozen=True)
@@ -35,6 +36,8 @@ def build_derived_intelligence(store: ProjectionStore, project_ids: list[str]) -
             pattern = rf"(?<![A-Za-z0-9_.-]){re.escape(repo)}(?=$|[\s),;:!?])|(?<![A-Za-z0-9_.-]){re.escape(repo)}\.(?=$|\s)"
             if re.search(pattern, body):
                 _append(items, seen, "cross_project_link", repo, projection.project_id, projection.identity, prov)
+        for heading in sorted({match.strip() for match in _HEADING.findall(body) if match.strip()}):
+            _append(items, seen, "concept_heading", heading, projection.project_id, projection.identity, prov)
         for adr in sorted({match.upper() for match in _ADR.findall(body)}):
             _append(items, seen, "decision_backlink", adr, projection.project_id, projection.identity, prov)
         for match in _QUESTION.finditer(body):

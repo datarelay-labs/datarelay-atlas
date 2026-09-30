@@ -19,6 +19,7 @@ Every item carries:
 
 ## v1 item kinds
 
+- `concept_heading`: emitted only from an explicit Markdown heading in the projection body; it is a navigation anchor, not semantic entity inference.
 - `cross_project_link`: emitted only when the projection body explicitly names another engineering repository that is present in the same validated input set.
 - `decision_backlink`: emitted only from an explicit `ADR-NNNN` reference in the projection body.
 - `unanswered_question`: emitted only from explicit `QUESTION:` or `TODO:` markers. Ordinary prose ending in `?` is not promoted.

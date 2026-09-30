@@ -12,7 +12,7 @@ class DerivedIntelligenceTests(unittest.TestCase):
         svc=AtlasService(Path(tmp))
         svc.register_project(project_id="alpha",repository="datarelay-labs/alpha")
         svc.add_source("alpha",source_id="design",source_path="docs/DESIGN.md")
-        content="# Design\n\nSee datarelay-labs/beta and docs/decisions/ADR-0016-human.md.\n\nQUESTION: Who owns rollout?\nTODO: define rollback signal\n"
+        content="# Design\n\n## Rollout Model\n\nSee datarelay-labs/beta and docs/decisions/ADR-0016-human.md.\n\nQUESTION: Who owns rollout?\nTODO: define rollback signal\n"
         svc.sync_project("alpha",fetch=lambda s,t: FetchedSource(content=content,source_revision="a"*40))
         svc.register_project(project_id="beta",repository="datarelay-labs/beta")
         svc.add_source("beta",source_id="readme",source_path="README.md")
@@ -26,6 +26,8 @@ class DerivedIntelligenceTests(unittest.TestCase):
             kinds={(i["kind"],i["value"],i["source_project_id"]) for i in payload["items"]}
             self.assertIn(("cross_project_link","datarelay-labs/beta","alpha"),kinds)
             self.assertIn(("cross_project_link","datarelay-labs/alpha","beta"),kinds)
+            self.assertIn(("concept_heading","Design","alpha"),kinds)
+            self.assertIn(("concept_heading","Rollout Model","alpha"),kinds)
             self.assertIn(("decision_backlink","ADR-0016","alpha"),kinds)
             self.assertIn(("unanswered_question","Who owns rollout?","alpha"),kinds)
             self.assertIn(("unanswered_question","define rollback signal","alpha"),kinds)
