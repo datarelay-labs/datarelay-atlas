@@ -425,7 +425,13 @@ class HeadlessCursorDispatcher:
         expected_head: str,
         prompt: str,
         git_runner: GitRunner,
+        cursor_opt_in: bool = False,
     ) -> list[str]:
+        if cursor_opt_in is not True:
+            raise ValidationError(
+                "cursor resume disabled by default; require validated "
+                "Work Packet IMPLEMENTER=CURSOR opt-in"
+            )
         identity = validate_clean_worktree_identity(
             descriptor.worktree,
             repository=descriptor.repository,
@@ -488,6 +494,7 @@ def run_once(
     host_probe: HostProbe | None = None,
     list_sessions: SessionList | None = None,
     list_processes: ProcessList | None = None,
+    cursor_opt_in: bool = False,
 ) -> dict[str, Any]:
     """Run one pass. Idle does no git, model, or Cursor work.
 
@@ -554,6 +561,7 @@ def run_once(
                 expected_head=expected_head,
                 prompt=canonical_prompt,
                 git_runner=git_runner,
+                cursor_opt_in=cursor_opt_in,
             )
         projection = descriptor.github_projection()
         if descriptor.cursor_chat_id in json.dumps(projection, sort_keys=True):

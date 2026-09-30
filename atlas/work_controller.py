@@ -329,6 +329,7 @@ class DispatchRequest:
     repository: str
     expected_head: str
     resume_prompt: str = RESUME_PROMPT
+    cursor_opt_in: bool = False
 
 
 @dataclass(frozen=True)
@@ -365,6 +366,17 @@ class AuditPort(Protocol):
 
 
 class WorkPacketPort(Protocol):
+    def assert_cursor_dispatch_authorized(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        workstream: str,
+        head: str,
+    ) -> None:
+        ...
+
     def apply_rework_findings(
         self,
         *,
@@ -1169,6 +1181,27 @@ def _require_v2_packet_metadata(body: str) -> None:
                 f"work packet missing {key} metadata required for "
                 f"PACKET_VERSION>={version}"
             )
+
+
+def _require_cursor_authority_metadata(body: str) -> dict[str, str]:
+    """Require complete v2 authority metadata before any Cursor lifecycle effect."""
+    meta = _parse_leading_packet_metadata(body)
+    version_text = str(meta.get("PACKET_VERSION") or "").strip()
+    if not re.fullmatch(r"[1-9][0-9]{0,2}", version_text) or int(version_text) < 2:
+        raise ValidationError("cursor dispatch requires PACKET_VERSION>=2")
+    _require_v2_packet_metadata(body)
+    revision_text = str(meta.get("INTENT_REVISION") or "").strip()
+    if not re.fullmatch(r"[1-9][0-9]{0,8}", revision_text):
+        raise ValidationError("cursor dispatch INTENT_REVISION is invalid")
+    change_risk = str(meta.get("CHANGE_RISK") or "").strip()
+    if change_risk not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+        raise ValidationError("cursor dispatch CHANGE_RISK is invalid")
+    if meta.get("IMPLEMENTER") != "CURSOR":
+        raise ValidationError(
+            "cursor dispatch disabled: active Work Packet must explicitly set "
+            "IMPLEMENTER=CURSOR"
+        )
+    return meta
 
 
 def _replace_packet_section(body: str, heading: str, content: str) -> str:
@@ -2028,6 +2061,17 @@ def render_cycle_successor_active_body(
 class RecordingWorkPacketAdapter:
     """Test/offline Work Packet adapter. Do not use on the production path."""
 
+    def assert_cursor_dispatch_authorized(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        workstream: str,
+        head: str,
+    ) -> None:
+        return None
+
     def __init__(self) -> None:
         self.updates: list[dict] = []
         self.cycle_calls: list[dict] = []
@@ -2140,6 +2184,43 @@ class GitHubWorkPacketAdapter:
         self._timeout_sec = timeout_sec
         self._max_findings_chars = max_findings_chars
         self._owned_pending_dispatch: dict[str, object] | None = None
+
+    def assert_cursor_dispatch_authorized(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        branch: str,
+        workstream: str,
+        head: str,
+    ) -> None:
+        repo = normalize_github_repository(repository)
+        expected_branch = branch.strip()
+        expected_workstream = workstream.strip()
+        expected_head = str(head or "").strip().lower()
+        if not expected_branch or not expected_workstream:
+            raise ValidationError("cursor dispatch requires branch and workstream")
+        if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+            raise ValidationError("cursor dispatch requires exact 40-char head")
+        self._require_unique_active_packet(
+            repo,
+            issue_number=int(issue_number),
+            branch=expected_branch,
+        )
+        payload = self._view_issue(repo, int(issue_number))
+        self._assert_ai_work_issue(payload, issue_number=int(issue_number))
+        self._require_trusted_issue_author(repo, payload)
+        body = str(payload.get("body") or "")
+        meta = _require_cursor_authority_metadata(body)
+        require_canonical_target_repo(meta.get("TARGET_REPO", ""), repo)
+        if meta.get("STATUS") != "ACTIVE":
+            raise ValidationError("cursor dispatch requires STATUS=ACTIVE")
+        if meta.get("BRANCH") != expected_branch:
+            raise ValidationError("cursor dispatch Work Packet branch mismatch")
+        if meta.get("WORKSTREAM") != expected_workstream:
+            raise ValidationError("cursor dispatch Work Packet workstream mismatch")
+        if str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower() != expected_head:
+            raise ValidationError("cursor dispatch Work Packet head mismatch")
 
     def apply_rework_findings(
         self,
@@ -2861,6 +2942,14 @@ class GitHubWorkPacketAdapter:
         successor_updated_at = str(
             successor.get("updatedAt") or successor.get("updated_at") or ""
         )
+        try:
+            _require_cursor_authority_metadata(successor_body)
+        except ValidationError as exc:
+            return self._cycle_human(
+                "successor Cursor authorization failed before activation: "
+                f"{exc}",
+                transition_id,
+            )
         if complete_predecessor:
             predecessor = self._view_issue(repository, predecessor_issue)
             predecessor_body = str(predecessor.get("body") or "")
@@ -4051,6 +4140,11 @@ class GitHubWorkPacketAdapter:
         branch = str(meta.get("BRANCH") or "").strip()
         workstream = str(meta.get("WORKSTREAM") or "").strip()
         head_raw = str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower()
+        implementer = str(meta.get("IMPLEMENTER") or "").strip()
+        if implementer not in {"CHATGPT_CHAT", "CURSOR"}:
+            raise ValidationError(
+                "canonical readiness packet IMPLEMENTER is missing or invalid"
+            )
         if (
             not _valid_git_branch_ref(branch)
             or not WORKSTREAM_RE.fullmatch(workstream)
@@ -4090,6 +4184,7 @@ class GitHubWorkPacketAdapter:
             "head": head_raw,
             "status": "ACTIVE",
             "queue_state": "NONE",
+            "implementer": implementer,
             "updated_at": str(
                 payload.get("updatedAt") or payload.get("updated_at") or ""
             ),
@@ -5092,6 +5187,11 @@ class SubprocessCursorDispatcher:
         self.requests: list[DispatchRequest] = []
 
     def start_resume(self, request: DispatchRequest) -> DispatchResult:
+        if request.cursor_opt_in is not True:
+            raise ValidationError(
+                "cursor dispatch disabled by default; require explicit validated "
+                "Work Packet IMPLEMENTER=CURSOR opt-in"
+            )
         self.requests.append(request)
         command = build_persist_resume_command(request)
         session_id = self._runner(command, request.worktree_path)
@@ -5184,6 +5284,11 @@ class PtyPersistCursorDispatcher:
         ) from cause
 
     def start_resume(self, request: DispatchRequest) -> DispatchResult:
+        if request.cursor_opt_in is not True:
+            raise ValidationError(
+                "cursor dispatch disabled by default; require explicit validated "
+                "Work Packet IMPLEMENTER=CURSOR opt-in"
+            )
         self.requests.append(request)
         worktree = str(Path(request.worktree_path).resolve())
         if not Path(worktree).is_dir():
@@ -5976,6 +6081,13 @@ class WorkController:
                         )
                     else:
                         try:
+                            self.work_packet.assert_cursor_dispatch_authorized(
+                                repository=record.repository,
+                                issue_number=record.issue_number,
+                                branch=record.branch,
+                                workstream=record.workstream,
+                                head=event.head,
+                            )
                             dispatch = self.dispatcher.start_resume(
                                 DispatchRequest(
                                     workstream=record.workstream,
@@ -5986,6 +6098,7 @@ class WorkController:
                                     repository=record.repository,
                                     expected_head=event.head,
                                     resume_prompt=RESUME_PROMPT,
+                                    cursor_opt_in=True,
                                 )
                             )
                         except DispatchSpawnCleanupUncertainError as exc:
@@ -6252,6 +6365,13 @@ class WorkController:
         record.state = "CYCLE_DISPATCHING"
         self.store.put(record)
         try:
+            self.work_packet.assert_cursor_dispatch_authorized(
+                repository=record.repository,
+                issue_number=record.issue_number,
+                branch=record.branch,
+                workstream=record.workstream,
+                head=record.expected_head,
+            )
             dispatch = self.dispatcher.start_resume(
                 DispatchRequest(
                     workstream=record.workstream,
@@ -6262,6 +6382,7 @@ class WorkController:
                     repository=record.repository,
                     expected_head=record.expected_head,
                     resume_prompt=RESUME_PROMPT,
+                    cursor_opt_in=True,
                 )
             )
         except ValidationError as exc:

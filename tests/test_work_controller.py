@@ -539,6 +539,9 @@ class WorkControllerTests(unittest.TestCase):
             def apply_rework_findings(self, **kwargs):
                 self.order.append("packet")
 
+            def assert_cursor_dispatch_authorized(self, **kwargs):
+                self.order.append("authorize")
+
             def start_resume(self, request):
                 self.order.append("dispatch")
                 return DispatchResult(
@@ -571,7 +574,7 @@ class WorkControllerTests(unittest.TestCase):
             )
             outcome = ctl.handle_completion(self._event())
             self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
-            self.assertEqual(probe.order, ["packet", "dispatch"])
+            self.assertEqual(probe.order, ["packet", "authorize", "dispatch"])
 
     def test_spawned_but_unobserved_requires_human(self):
         """Unobserved spawn is not a proven dispatch; compensate and stop."""

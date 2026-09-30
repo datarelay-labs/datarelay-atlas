@@ -41,7 +41,7 @@ SECRET = "OPENAI_API_KEY=sk-fake-secret-1234567890"
 def _packet_body(
     head: str = HEAD, *, implementer: str = "CURSOR"
 ) -> str:
-    return f"""PACKET_VERSION=1
+    return f"""PACKET_VERSION=2
 TARGET_REPO={REPO}
 WORKSTREAM={WORKSTREAM}
 STATUS=ACTIVE

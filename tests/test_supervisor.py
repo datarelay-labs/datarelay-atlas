@@ -47,7 +47,7 @@ def _packet_body(
     status: str = "ACTIVE",
     implementer: str = "CURSOR",
 ) -> str:
-    return f"""PACKET_VERSION=1
+    return f"""PACKET_VERSION=2
 TARGET_REPO={repository}
 WORKSTREAM={WORKSTREAM}
 STATUS={status}
@@ -55,8 +55,10 @@ QUEUE_STATE=NONE
 BRANCH={BRANCH}
 TASK_KIND=DEVELOPMENT
 OWNER_INTENT=Replace unreliable scheduled-Chat orchestration.
-LAST_VERIFIED_HEAD={head}
+INTENT_REVISION=1
+CHANGE_RISK=HIGH
 IMPLEMENTER={implementer}
+LAST_VERIFIED_HEAD={head}
 GATE=IMPLEMENTATION
 NEXT_ACTION=CURSOR_IMPLEMENT_SLICE_E1
 

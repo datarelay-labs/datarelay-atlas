@@ -49,7 +49,7 @@ def activated() -> dict:
     }
 
 
-def active_fact(*, workstream: str = WORKSTREAM) -> dict:
+def active_fact(*, workstream: str = WORKSTREAM, implementer: str = "CURSOR") -> dict:
     return {
         "repository": REPO,
         "issue_number": ISSUE,
@@ -59,6 +59,7 @@ def active_fact(*, workstream: str = WORKSTREAM) -> dict:
         "audit_base": "",
         "status": "ACTIVE",
         "updated_at": "2026-09-28T00:00:00Z",
+        "implementer": implementer,
     }
 
 
@@ -528,6 +529,7 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
         self.assertEqual(request.expected_head, HEAD)
         self.assertEqual(request.attempt, 1)
         self.assertEqual(request.resume_prompt, "/work-resume")
+        self.assertTrue(request.cursor_opt_in)
         encoded = json.dumps(result)
         for forbidden in ("body", "OWNER_INTENT", "prompt_text", "transcript"):
             self.assertNotIn(forbidden, encoded)
@@ -576,6 +578,25 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
                 self.assertEqual(result["action"], "human_required")
                 self.assertEqual(result["reason"], expected_reason)
                 self.assertEqual(dispatcher.requests, [])
+
+    def test_chatgpt_primary_packet_never_dispatches_cursor(self) -> None:
+        adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
+        dispatcher = FakePersistentDispatcher()
+
+        result = activate_and_dispatch_single_worker(
+            graph_path=Path("/tmp/graph.json"),
+            workstream=WORKSTREAM,
+            worktree_path=WORKTREE,
+            packet_adapter=adapter,  # type: ignore[arg-type]
+            dispatcher=dispatcher,
+        )
+
+        self.assertEqual(result["action"], "human_required")
+        self.assertEqual(result["reason"], "IMPLEMENTER_PROFILE_MISMATCH")
+        self.assertEqual(adapter.activation_calls, 0)
+        self.assertEqual(adapter.fresh_calls, 0)
+        self.assertEqual(adapter.uniqueness_calls, 0)
+        self.assertEqual(dispatcher.requests, [])
 
     def test_active_uniqueness_failure_never_dispatches(self) -> None:
         adapter = FakePacketAdapter(uniqueness_error=True)
@@ -783,6 +804,7 @@ class ActivePacketDispatchBoundaryTests(unittest.TestCase):
                         f"BRANCH={BRANCH}\n"
                         "TASK_KIND=DEVELOPMENT\n"
                         "OWNER_INTENT=Completed predecessor.\n"
+                        "IMPLEMENTER=CHATGPT_CHAT\n"
                         f"LAST_VERIFIED_HEAD={PREDECESSOR_HEAD}\n"
                     )
                     payload = {

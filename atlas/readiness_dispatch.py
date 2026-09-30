@@ -629,6 +629,7 @@ def activate_and_dispatch_single_worker(
         repository=selected["repository"],
         expected_head=selected["head"],
         resume_prompt=RESUME_PROMPT,
+        cursor_opt_in=True,
     )
     try:
         dispatched = dispatcher.start_resume(request)

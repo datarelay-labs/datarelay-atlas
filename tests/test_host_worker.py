@@ -140,6 +140,7 @@ class HostWorkerSliceATests(unittest.TestCase):
             "git_runner": self._git(),
             "spawn": lambda argv, cwd: 0,
             "prompt": PROMPT,
+            "cursor_opt_in": True,
         }
         params.update(kwargs)
         return self._run(**params)
@@ -214,6 +215,17 @@ class HostWorkerSliceATests(unittest.TestCase):
                 )
             )
         self.assertIn("unknown", str(extra_root.exception))
+
+    def test_resume_requires_explicit_cursor_opt_in(self) -> None:
+        called = {"spawn": 0}
+
+        def spawn(_argv: list[str], _cwd: str) -> int:
+            called["spawn"] += 1
+            return 0
+
+        with self.assertRaisesRegex(ValidationError, "IMPLEMENTER=CURSOR"):
+            self._resume(cursor_opt_in=False, spawn=spawn)
+        self.assertEqual(called["spawn"], 0)
 
     def test_fixed_argv_binds_workspace_and_prompt_without_persist(self) -> None:
         workspace = str(self.worktree.resolve())
