@@ -553,6 +553,45 @@ def _validate_run_observation(
         "outcomes": normalized,
     }
 
+
+def concurrency_effect_context(
+    data_root: Path,
+    *,
+    expected_plan_digest: str,
+) -> dict[str, object]:
+    """Return bounded immutable admission facts for one exact dispatch effect."""
+    root = Path(data_root)
+    snapshot = _load_snapshot(root)
+    if snapshot is None:
+        raise ValidationError("concurrency snapshot is not loaded")
+    plan = plan_concurrency_admission(snapshot)
+    if plan["plan_digest"] != expected_plan_digest:
+        raise ValidationError("concurrency effect plan digest mismatch")
+    active: dict[str, list[int]] = {
+        str(item["repository"]): []
+        for item in snapshot["policy"]["project_limits"]
+    }
+    for node in snapshot["graph"]["nodes"]:
+        if node["packet_status"] == "ACTIVE":
+            active[str(node["repository"])].append(int(node["issue_number"]))
+    active_rows = [
+        {
+            "repository": repository,
+            "issue_numbers": sorted(issue_numbers),
+        }
+        for repository, issue_numbers in sorted(active.items())
+    ]
+    result = {
+        "plan_digest": plan["plan_digest"],
+        "project_limits": list(plan["project_limits"]),
+        "assignments": [dict(item) for item in plan["assignments"]],
+        "active_issue_numbers": active_rows,
+    }
+    assert_content_free(result)
+    return result
+
+
+
 def record_concurrency_run(data_root: Path, observation: object) -> dict[str, object]:
     root = Path(data_root)
     snapshot = _load_snapshot(root)
