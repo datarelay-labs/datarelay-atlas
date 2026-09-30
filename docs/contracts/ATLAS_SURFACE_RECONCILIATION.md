@@ -9,7 +9,7 @@ This gate reconciles the exact release candidate's implemented browser surface a
 - Executor: ChatGPT Chat or another owner-authorized human-equivalent browser executor.
 - Surface: the actual Atlas browser UI launched from the exact candidate.
 - Browser: a real Chromium/Chrome process; source inspection, API calls, jsdom, or static HTML parsing do not substitute.
-- Candidate: record the exact Git commit and reject evidence from a different candidate.
+- Candidate: execute from a clean immutable checkout (or equivalently content-addressed release artifact) of the exact Git commit, record that commit/artifact identity before launch, and reject dirty-worktree, untracked-file, or different-candidate evidence. `git rev-parse HEAD` alone is not sufficient candidate binding.
 - Environment: isolated Atlas data root with representative engineering and personal/reference sources.
 - Evidence must record browser engine/version, candidate SHA, route/action, expected result, actual result, and cleanup truth.
 
