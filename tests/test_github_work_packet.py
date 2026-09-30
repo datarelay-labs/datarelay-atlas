@@ -1669,6 +1669,8 @@ class SelectedPacketProjectionTests(unittest.TestCase):
             f"BRANCH={branch}\n"
             "TASK_KIND=IMPLEMENTATION_AND_TEST\n"
             "OWNER_INTENT=Exercise selected readiness projection.\n"
+            "INTENT_REVISION=1\n"
+            "CHANGE_RISK=HIGH\n"
             f"LAST_VERIFIED_HEAD={head}\n\n"
             "## Goal\n\nTest.\n"
         )
@@ -1775,6 +1777,27 @@ class SelectedPacketProjectionTests(unittest.TestCase):
                     workstream=workstream,
                     head=head,
                 )
+
+        incomplete_cases = {
+            "packet version": cursor_body.replace("PACKET_VERSION=2\n", "PACKET_VERSION=1\n"),
+            "intent revision": cursor_body.replace("INTENT_REVISION=1\n", ""),
+            "change risk": cursor_body.replace("CHANGE_RISK=HIGH\n", ""),
+        }
+        for label, body in incomplete_cases.items():
+            candidate, _calls = self._adapter(
+                {12: self._issue(12, state="OPEN", body=body)}
+            )
+            with self.subTest(label=label), mock.patch.object(
+                candidate, "_require_unique_active_packet", return_value=None
+            ):
+                with self.assertRaises(ValidationError):
+                    candidate.assert_cursor_dispatch_authorized(
+                        repository=self.REPO,
+                        issue_number=12,
+                        branch=branch,
+                        workstream=workstream,
+                        head=head,
+                    )
 
     def test_selected_projection_reads_only_explicit_packets(self) -> None:
         complete = self._issue(
@@ -2294,6 +2317,9 @@ def _queued_successor_body(
     workstream: str = WORKSTREAM,
     task_kind: str = "DEVELOPMENT",
     owner_intent: str = "Advance the next cycle safely.",
+    implementer: str = "CURSOR",
+    intent_revision: str = "1",
+    change_risk: str = "HIGH",
 ) -> str:
     return f"""PACKET_VERSION=2
 TARGET_REPO=datarelay-labs/datarelay-atlas
@@ -2304,6 +2330,9 @@ AFTER_ISSUE={after}
 BRANCH={branch}
 TASK_KIND={task_kind}
 OWNER_INTENT={owner_intent}
+INTENT_REVISION={intent_revision}
+CHANGE_RISK={change_risk}
+IMPLEMENTER={implementer}
 LAST_VERIFIED_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 ## Goal
@@ -2491,6 +2520,21 @@ class QueuedCycleAdapterTests(unittest.TestCase):
         result, edits = self._run({12: _ai_issue(12, SAMPLE_BODY)})
         self.assertEqual(result.kind, "no_successor")
         self.assertEqual(edits, [])
+
+    def test_chatgpt_successor_is_rejected_before_predecessor_mutation(self):
+        issues = {
+            12: _ai_issue(12, SAMPLE_BODY),
+            18: _ai_issue(
+                18,
+                _queued_successor_body(implementer="CHATGPT_CHAT"),
+            ),
+        }
+        result, edits = self._run(issues)
+        self.assertEqual(result.kind, "human_required")
+        self.assertIn("IMPLEMENTER=CURSOR", result.reason)
+        self.assertEqual(edits, [])
+        self.assertIn("STATUS=ACTIVE", issues[12]["body"].split("\n\n", 1)[0])
+        self.assertIn("STATUS=PAUSED", issues[18]["body"].split("\n\n", 1)[0])
 
     def test_two_successors_fail_closed_without_writes(self):
         issues = {

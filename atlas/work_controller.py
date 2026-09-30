@@ -1183,6 +1183,27 @@ def _require_v2_packet_metadata(body: str) -> None:
             )
 
 
+def _require_cursor_authority_metadata(body: str) -> dict[str, str]:
+    """Require complete v2 authority metadata before any Cursor lifecycle effect."""
+    meta = _parse_leading_packet_metadata(body)
+    version_text = str(meta.get("PACKET_VERSION") or "").strip()
+    if not re.fullmatch(r"[1-9][0-9]{0,2}", version_text) or int(version_text) < 2:
+        raise ValidationError("cursor dispatch requires PACKET_VERSION>=2")
+    _require_v2_packet_metadata(body)
+    revision_text = str(meta.get("INTENT_REVISION") or "").strip()
+    if not re.fullmatch(r"[1-9][0-9]{0,8}", revision_text):
+        raise ValidationError("cursor dispatch INTENT_REVISION is invalid")
+    change_risk = str(meta.get("CHANGE_RISK") or "").strip()
+    if change_risk not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+        raise ValidationError("cursor dispatch CHANGE_RISK is invalid")
+    if meta.get("IMPLEMENTER") != "CURSOR":
+        raise ValidationError(
+            "cursor dispatch disabled: active Work Packet must explicitly set "
+            "IMPLEMENTER=CURSOR"
+        )
+    return meta
+
+
 def _replace_packet_section(body: str, heading: str, content: str) -> str:
     if heading not in _WORK_PACKET_SECTION_HEADINGS:
         raise ValidationError(f"unsupported work packet section: {heading}")
@@ -2190,8 +2211,7 @@ class GitHubWorkPacketAdapter:
         self._assert_ai_work_issue(payload, issue_number=int(issue_number))
         self._require_trusted_issue_author(repo, payload)
         body = str(payload.get("body") or "")
-        _require_v2_packet_metadata(body)
-        meta = _parse_leading_packet_metadata(body)
+        meta = _require_cursor_authority_metadata(body)
         require_canonical_target_repo(meta.get("TARGET_REPO", ""), repo)
         if meta.get("STATUS") != "ACTIVE":
             raise ValidationError("cursor dispatch requires STATUS=ACTIVE")
@@ -2201,11 +2221,6 @@ class GitHubWorkPacketAdapter:
             raise ValidationError("cursor dispatch Work Packet workstream mismatch")
         if str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower() != expected_head:
             raise ValidationError("cursor dispatch Work Packet head mismatch")
-        if meta.get("IMPLEMENTER") != "CURSOR":
-            raise ValidationError(
-                "cursor dispatch disabled: active Work Packet must explicitly set "
-                "IMPLEMENTER=CURSOR"
-            )
 
     def apply_rework_findings(
         self,
@@ -2927,6 +2942,14 @@ class GitHubWorkPacketAdapter:
         successor_updated_at = str(
             successor.get("updatedAt") or successor.get("updated_at") or ""
         )
+        try:
+            _require_cursor_authority_metadata(successor_body)
+        except ValidationError as exc:
+            return self._cycle_human(
+                "successor Cursor authorization failed before activation: "
+                f"{exc}",
+                transition_id,
+            )
         if complete_predecessor:
             predecessor = self._view_issue(repository, predecessor_issue)
             predecessor_body = str(predecessor.get("body") or "")
