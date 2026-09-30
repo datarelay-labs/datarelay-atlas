@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/concurrency-dispatch-effect-receipt.schema.json",
+  "title": "DataRelay Atlas Concurrency Dispatch Effect Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "effect_id",
+    "authorization_digest",
+    "authorization_id",
+    "result",
+    "assignment_count",
+    "dispatched_count",
+    "refused_count",
+    "human_required_count",
+    "error_count",
+    "receipts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "concurrency_dispatch_effect_receipt"
+    },
+    "effect_id": {
+      "$ref": "#/$defs/id"
+    },
+    "authorization_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "authorization_id": {
+      "$ref": "#/$defs/id"
+    },
+    "result": {
+      "enum": [
+        "DISPATCHED",
+        "PARTIAL",
+        "FAILED",
+        "HUMAN_REQUIRED"
+      ]
+    },
+    "assignment_count": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 64
+    },
+    "dispatched_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "refused_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "human_required_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "error_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "receipts": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/assignmentReceipt"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@#\\-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "assignmentReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "slot_id",
+        "worker_id",
+        "provider",
+        "runtime",
+        "route_id",
+        "head",
+        "replay_key",
+        "result",
+        "dispatch_ref"
+      ],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/id"
+        },
+        "slot_id": {
+          "$ref": "#/$defs/id"
+        },
+        "worker_id": {
+          "$ref": "#/$defs/id"
+        },
+        "provider": {
+          "$ref": "#/$defs/id"
+        },
+        "runtime": {
+          "$ref": "#/$defs/id"
+        },
+        "route_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head": {
+          "$ref": "#/$defs/id"
+        },
+        "replay_key": {
+          "$ref": "#/$defs/digest"
+        },
+        "result": {
+          "enum": [
+            "DISPATCHED",
+            "REFUSED",
+            "HUMAN_REQUIRED",
+            "ERROR"
+          ]
+        },
+        "dispatch_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

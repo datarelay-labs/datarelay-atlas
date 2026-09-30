@@ -23,6 +23,7 @@ from atlas.concurrency_authorization import (
     concurrency_dispatch_authorization_dashboard,
     publish_concurrency_dispatch_authorization,
 )
+from atlas.concurrency_effect import concurrency_dispatch_effect_dashboard
 from atlas.decision_plane import (
     append_decision_observation,
     build_focused_check_candidates,
@@ -175,6 +176,9 @@ class AtlasService:
     ) -> dict[str, object]:
         """Publish exact-plan multi-node dispatch authorization without dispatching."""
         return publish_concurrency_dispatch_authorization(self.data_root, request)
+
+    def concurrency_dispatch_effect_dashboard(self) -> dict[str, object]:
+        return concurrency_dispatch_effect_dashboard(self.data_root)
 
     def instruction_governance_dashboard(self) -> dict[str, object]:
         """Return managed instruction inventory and advisory audit history."""

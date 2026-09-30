@@ -308,6 +308,11 @@ def cmd_concurrency_authorize(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_concurrency_effects_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).concurrency_dispatch_effect_dashboard())
+    return 0
+
+
 def cmd_instruction_governance_profile_build(args: argparse.Namespace) -> int:
     payload = _service(args).build_instruction_governance_profile(
         engineering_system_revision=args.engineering_system_revision,
@@ -1019,6 +1024,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     concurrency_authorize.add_argument("--request", required=True)
     concurrency_authorize.set_defaults(func=cmd_concurrency_authorize)
+    concurrency_effects_show = concurrency_sub.add_parser(
+        "effects-show",
+        help="Show one-shot multi-node dispatch effect receipts",
+    )
+    concurrency_effects_show.set_defaults(func=cmd_concurrency_effects_show)
 
     instruction_governance = sub.add_parser("instruction-governance", help="Model-aware instruction governance audit evidence")
     instruction_governance_sub = instruction_governance.add_subparsers(dest="instruction_governance_command", required=True)

@@ -214,6 +214,19 @@ def render_concurrency(service: AtlasService) -> UiResponse:
 
     plan = dashboard.get("plan")
     try:
+        dispatch_effects = service.concurrency_dispatch_effect_dashboard()
+    except ValidationError:
+        dispatch_effects = {
+            "state": "UNAVAILABLE",
+            "authority": "DISPATCH_EFFECT_RECEIPT_ONLY",
+            "effect_count": 0,
+            "terminal_count": 0,
+            "in_progress_count": 0,
+            "latest_effect": None,
+            "join_authority": "NONE",
+            "pass_authority": "NONE",
+        }
+    try:
         dispatch_authorization = service.concurrency_dispatch_authorization_dashboard()
     except ValidationError:
         dispatch_authorization = {
@@ -331,6 +344,14 @@ def render_concurrency(service: AtlasService) -> UiResponse:
         f'<dt>Dispatch effect authority</dt><dd><code>{escape(str(dispatch_authorization["dispatch_effect_authority"]))}</code></dd>'
         f'<dt>Detail</dt><dd>{escape(str(dispatch_authorization["detail"]))}</dd></dl>'
         '<p class="muted">Authorization only. This surface does not spawn workers, mutate GitHub, invoke providers, retry effects, or declare join/PASS.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Dispatch effect receipts</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(dispatch_effects["state"]))}</span></dd>'
+        f'<dt>Effects</dt><dd>{dispatch_effects["effect_count"]}</dd>'
+        f'<dt>Terminal / in progress</dt><dd>{dispatch_effects["terminal_count"]} / {dispatch_effects["in_progress_count"]}</dd>'
+        f'<dt>Authority</dt><dd><code>{escape(str(dispatch_effects["authority"]))}</code></dd>'
+        f'<dt>Join authority</dt><dd><code>{escape(str(dispatch_effects["join_authority"]))}</code></dd>'
+        f'<dt>PASS authority</dt><dd><code>{escape(str(dispatch_effects["pass_authority"]))}</code></dd></dl>'
+        '<p class="muted">Each authorized assignment may be dispatched once. Completion/join truth remains in measured concurrency run evidence.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Admission-blocked selected nodes</h2>'
         '<div style="overflow:auto"><table><thead><tr><th>Node</th><th>Packet</th><th>Reasons</th></tr></thead>'
         f'<tbody>{blocked_rows or "<tr><td colspan=3>No snapshot.</td></tr>"}</tbody></table></div></section>'
