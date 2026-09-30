@@ -19,6 +19,7 @@ from atlas.provenance import ValidationError
 from atlas.work_controller import (
     GitHubWorkPacketAdapter,
     WORKSTREAM_RE,
+    WorktreeIdentity,
     validate_clean_worktree_identity,
 )
 
@@ -47,6 +48,21 @@ def _canonical_digest(payload: object) -> str:
         ensure_ascii=False,
     ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def concurrency_handoff_worktree_identity_digest(
+    identity: WorktreeIdentity,
+) -> str:
+    """Content-address the bounded exact worktree identity used by handoffs."""
+    return _canonical_digest(
+        {
+            "worktree_path": identity.worktree_path,
+            "repository": identity.repository,
+            "branch": identity.branch,
+            "head": identity.head,
+            "toplevel": identity.toplevel,
+        }
+    )
 
 
 def _identity(value: object, *, label: str) -> str:
@@ -484,14 +500,8 @@ class ConcurrencyWorkPacketHandoffPort:
                     raise ValidationError(
                         "concurrency handoff active packet drifted"
                     )
-                worktree_identity_digest = _canonical_digest(
-                    {
-                        "worktree_path": identity_after.worktree_path,
-                        "repository": identity_after.repository,
-                        "branch": identity_after.branch,
-                        "head": identity_after.head,
-                        "toplevel": identity_after.toplevel,
-                    }
+                worktree_identity_digest = (
+                    concurrency_handoff_worktree_identity_digest(identity_after)
                 )
                 basis = {
                     "schema_version": SCHEMA_VERSION,
