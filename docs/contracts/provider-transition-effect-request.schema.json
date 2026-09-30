@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datarelay.local/contracts/provider-transition-effect-request.schema.json",
+  "title": "DataRelay Atlas Provider Transition Effect Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "authority",
+    "authorization_digest",
+    "current_state_digest",
+    "replay_key",
+    "from_route_id",
+    "to_route_id",
+    "state_revision",
+    "effect_epoch",
+    "strategy",
+    "required_capability",
+    "attempt",
+    "max_attempts"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "provider_transition_effect_request" },
+    "authority": { "type": "string", "const": "SEALED_EFFECT_REQUEST_ONLY" },
+    "authorization_digest": { "$ref": "#/$defs/digest" },
+    "current_state_digest": { "$ref": "#/$defs/digest" },
+    "replay_key": { "$ref": "#/$defs/digest" },
+    "from_route_id": { "$ref": "#/$defs/routeId" },
+    "to_route_id": { "$ref": "#/$defs/routeId" },
+    "state_revision": { "$ref": "#/$defs/digest" },
+    "effect_epoch": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+    "strategy": {
+      "type": "string",
+      "enum": ["CAPABILITY_FIRST", "STEWARDSHIP"]
+    },
+    "required_capability": { "$ref": "#/$defs/capability" },
+    "attempt": { "type": "integer", "minimum": 1, "maximum": 32 },
+    "max_attempts": { "type": "integer", "minimum": 1, "maximum": 32 }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "routeId": {
+      "type": "string",
+      "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "capability": {
+      "type": "string",
+      "enum": [
+        "PLAN",
+        "EFFORT_CONTROL",
+        "COMPLETION_LOOP",
+        "RUNTIME_VERIFY",
+        "CODE_REVIEW",
+        "SECOND_MODEL_ADVISOR",
+        "PARALLEL_WORKERS",
+        "PERIODIC_REENTRY",
+        "PR_REWORK",
+        "CONTEXT_USAGE",
+        "CHECKPOINT_COMPACT",
+        "SESSION_RESUME_RESET",
+        "HARNESS_HEALTH_AUDIT",
+        "PROMPT_INSTRUCTION_AUDIT",
+        "SKILL_COST_AUDIT",
+        "USAGE_INSIGHTS"
+      ]
+    }
+  }
+}
