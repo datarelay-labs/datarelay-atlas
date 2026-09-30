@@ -30,11 +30,13 @@ class AtlasContextTools:
         retriever: Retriever | None = None,
         *,
         retriever_factory: Callable[[str], Retriever] | None = None,
+        intelligence_factory: Callable[[str], dict[str, Any]] | None = None,
     ) -> None:
         if (retriever is None) == (retriever_factory is None):
             raise ValueError("AtlasContextTools requires exactly one retriever source")
         self.retriever = retriever
         self._retriever_factory = retriever_factory
+        self._intelligence_factory = intelligence_factory
 
     def _retriever_for(self, project_id: str) -> Retriever:
         if self._retriever_factory is not None:
@@ -53,6 +55,13 @@ class AtlasContextTools:
                 "description": "Return provenance for a projected path in a project",
             },
         ]
+        if self._intelligence_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_project_intelligence",
+                    "description": "Return deterministic non-authoritative concepts, links, ADR backlinks, questions, and knowledge gaps",
+                }
+            )
         if authorize_tool("create_note", scopes, write_tools=WRITE_TOOL_NAMES):
             tools.append(
                 {
@@ -72,7 +81,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_project_intelligence"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "search_project":
@@ -100,6 +109,16 @@ class AtlasContextTools:
                     for h in hits
                 ],
             )
+
+        if tool_name == "get_project_intelligence":
+            if self._intelligence_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_project_intelligence")
+            try:
+                project_id = _required_text(args, "project_id")
+                payload = self._intelligence_factory(project_id)
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
 
         if tool_name == "get_provenance":
             try:

@@ -207,6 +207,17 @@ def cmd_projections(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_intelligence_overview(args: argparse.Namespace) -> int:
+    _print_json(_service(args).intelligence_overview())
+    return 0
+
+
+def cmd_intelligence_show(args: argparse.Namespace) -> int:
+    svc = _service(args)
+    _print_json(svc.project_intelligence(args.project_id))
+    return 0
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     svc = _service(args)
     embedding = embedding_config_from_cli(
@@ -685,6 +696,14 @@ def build_parser() -> argparse.ArgumentParser:
     projections = sub.add_parser("projections", help="Show projection/provenance records")
     projections.add_argument("project_id")
     projections.set_defaults(func=cmd_projections)
+
+    intelligence = sub.add_parser("intelligence", help="Show deterministic derived engineering intelligence")
+    intelligence_sub = intelligence.add_subparsers(dest="intelligence_command", required=True)
+    intelligence_overview = intelligence_sub.add_parser("overview", help="Show cross-project derived intelligence")
+    intelligence_overview.set_defaults(func=cmd_intelligence_overview)
+    intelligence_show = intelligence_sub.add_parser("show", help="Show one project's derived intelligence")
+    intelligence_show.add_argument("project_id")
+    intelligence_show.set_defaults(func=cmd_intelligence_show)
 
     search = sub.add_parser(
         "search",
