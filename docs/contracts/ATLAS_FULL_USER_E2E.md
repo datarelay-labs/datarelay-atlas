@@ -7,7 +7,7 @@ This gate proves complete user missions through the actual Atlas browser UI on t
 ## Required environment
 
 - real Chromium/Chrome process;
-- exact candidate SHA recorded before execution;
+- clean immutable checkout (or equivalently content-addressed release artifact) of the exact candidate, with candidate identity recorded before launch; dirty/untracked bytes invalidate the evidence;
 - isolated Atlas data root;
 - at least two registered projects;
 - at least one successful engineering projection;
