@@ -22,6 +22,13 @@ from atlas.decision_plane import (
 )
 from atlas.operations_readiness import operations_readiness
 from atlas.provider_dashboard import provider_dashboard, provider_transition_preview, publish_provider_dashboard_snapshot
+from atlas.instruction_governance import (
+    build_instruction_candidate_change,
+    build_instruction_governance_profile,
+    instruction_governance_dashboard,
+    instruction_governance_preflight,
+    record_instruction_governance_audit,
+)
 from atlas.local_markdown import (
     IMPORT_DIRNAME,
     SNAPSHOT_DIRNAME,
@@ -88,6 +95,89 @@ class AtlasService:
     def provider_dashboard(self) -> dict[str, object]:
         """Return read-only provider capacity/broker dashboard state."""
         return provider_dashboard(self.data_root)
+
+    def instruction_governance_dashboard(self) -> dict[str, object]:
+        """Return managed instruction inventory and advisory audit history."""
+        return instruction_governance_dashboard(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+        )
+
+    def build_instruction_governance_profile(
+        self,
+        *,
+        engineering_system_revision: str,
+        agent_base_path: Path,
+        behavior_scenarios_path: Path,
+        trigger_kind: str,
+        trigger_revision: str,
+        model_provider: str,
+        model_name: str,
+        model_profile: str,
+        harness_id: str,
+        harness_revision: str,
+    ) -> dict[str, object]:
+        """Build exact target/reference/model/harness instruction profile."""
+        return build_instruction_governance_profile(
+            repo_root=Path(__file__).resolve().parents[1],
+            engineering_system_revision=engineering_system_revision,
+            agent_base_path=agent_base_path,
+            behavior_scenarios_path=behavior_scenarios_path,
+            trigger_kind=trigger_kind,
+            trigger_revision=trigger_revision,
+            model_provider=model_provider,
+            model_name=model_name,
+            model_profile=model_profile,
+            harness_id=harness_id,
+            harness_revision=harness_revision,
+        )
+
+    def build_instruction_candidate_change(
+        self,
+        *,
+        managed_path: str,
+        candidate_path: Path,
+    ) -> dict[str, str]:
+        """Build digest-only bounded candidate-change metadata."""
+        return build_instruction_candidate_change(
+            repo_root=Path(__file__).resolve().parents[1],
+            managed_path=managed_path,
+            candidate_path=candidate_path,
+        )
+
+    def instruction_governance_preflight(
+        self,
+        *,
+        profile: object,
+        agent_base_path: Path,
+        behavior_scenarios_path: Path,
+    ) -> dict[str, object]:
+        """Bind exact managed-surface/profile/reference identity before audit."""
+        return instruction_governance_preflight(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+            profile=profile,
+            agent_base_path=agent_base_path,
+            behavior_scenarios_path=behavior_scenarios_path,
+        )
+
+    def record_instruction_governance_audit(
+        self,
+        *,
+        profile: object,
+        agent_base_path: Path,
+        behavior_scenarios_path: Path,
+        result: object,
+    ) -> dict[str, object]:
+        """Record one advisory instruction-governance audit result."""
+        return record_instruction_governance_audit(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+            profile=profile,
+            agent_base_path=agent_base_path,
+            behavior_scenarios_path=behavior_scenarios_path,
+            result=result,
+        )
 
     def decision_plane_dashboard(self) -> dict[str, object]:
         """Return shadow/replay Decision Plane evidence."""

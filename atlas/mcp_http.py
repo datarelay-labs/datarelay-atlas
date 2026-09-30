@@ -43,7 +43,7 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard)
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
@@ -56,7 +56,8 @@ def build_mcp_application(
             "get_provider_dashboard recomputes advisory broker selection without provider execution; "
             "get_provider_transition_preview returns ADVISORY_ONLY failover planning without effect authority; "
             "get_decision_plane returns SHADOW/REPLAY measurements with no activation authority; "
-            "Decision Plane candidate tools only prepare bounded options and never execute model choices."
+            "Decision Plane candidate tools only prepare bounded options and never execute model choices; "
+            "get_instruction_governance returns Engineering-System-referenced managed-surface audit history with no mutation authority."
         ),
         token_verifier=verifier,
         auth=AuthSettings(
@@ -226,6 +227,18 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             tools,
             "get_decision_focused_check_candidates",
             {"changed_paths": changed_paths},
+        )
+
+    @server.tool(
+        name="get_instruction_governance",
+        description="Return managed instruction inventory and advisory audit history without mutation authority",
+        structured_output=False,
+    )
+    async def get_instruction_governance() -> str:
+        return _call_tool(
+            tools,
+            "get_instruction_governance",
+            {},
         )
 
     @server.tool(

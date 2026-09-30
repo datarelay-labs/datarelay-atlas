@@ -58,6 +58,7 @@ from atlas.provider_transition import (
     plan_provider_transition,
 )
 from atlas.host_worker import load_host_worker_config, run_once
+from atlas.instruction_governance import TRIGGERS
 from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
 from atlas.schema_compat import rollback_data_root, upgrade_data_root
@@ -109,6 +110,22 @@ def _service(args: argparse.Namespace) -> AtlasService:
 
 def _print_json(payload: object) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _read_json_file(path: str, *, label: str, max_bytes: int = 1024 * 1024) -> object:
+    source = Path(path)
+    if source.is_symlink() or not source.is_file():
+        raise ValidationError(f"{label} file is unsafe")
+    try:
+        raw = source.read_bytes()
+    except OSError as exc:
+        raise ValidationError(f"{label} file is unreadable") from exc
+    if len(raw) > max_bytes:
+        raise ValidationError(f"{label} file exceeds bounded size")
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        raise ValidationError(f"{label} file is invalid JSON") from exc
 
 
 def cmd_project_register(args: argparse.Namespace) -> int:
@@ -235,6 +252,61 @@ def cmd_intelligence_show(args: argparse.Namespace) -> int:
 
 def cmd_providers_show(args: argparse.Namespace) -> int:
     _print_json(_service(args).provider_dashboard())
+    return 0
+
+
+def cmd_instruction_governance_profile_build(args: argparse.Namespace) -> int:
+    payload = _service(args).build_instruction_governance_profile(
+        engineering_system_revision=args.engineering_system_revision,
+        agent_base_path=Path(args.agent_base),
+        behavior_scenarios_path=Path(args.behavior_scenarios),
+        trigger_kind=args.trigger_kind,
+        trigger_revision=args.trigger_revision,
+        model_provider=args.model_provider,
+        model_name=args.model_name,
+        model_profile=args.model_profile,
+        harness_id=args.harness_id,
+        harness_revision=args.harness_revision,
+    )
+    _print_json(payload)
+    return 0
+
+
+def cmd_instruction_governance_candidate_change(args: argparse.Namespace) -> int:
+    payload = _service(args).build_instruction_candidate_change(
+        managed_path=args.path,
+        candidate_path=Path(args.candidate),
+    )
+    _print_json(payload)
+    return 0
+
+
+def cmd_instruction_governance_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).instruction_governance_dashboard())
+    return 0
+
+
+def cmd_instruction_governance_preflight(args: argparse.Namespace) -> int:
+    profile = _read_json_file(args.profile, label="instruction governance profile")
+    payload = _service(args).instruction_governance_preflight(
+        profile=profile,
+        agent_base_path=Path(args.agent_base),
+        behavior_scenarios_path=Path(args.behavior_scenarios),
+    )
+    _print_json(payload)
+    return 0
+
+
+def cmd_instruction_governance_record(args: argparse.Namespace) -> int:
+    profile = _read_json_file(args.profile, label="instruction governance profile")
+    result = _read_json_file(args.result, label="instruction governance audit result")
+    payload = _service(args).record_instruction_governance_audit(
+        profile=profile,
+        agent_base_path=Path(args.agent_base),
+        behavior_scenarios_path=Path(args.behavior_scenarios),
+        result=result,
+    )
+    _print_json(payload)
     return 0
 
 
@@ -809,6 +881,38 @@ def build_parser() -> argparse.ArgumentParser:
     providers_publish.add_argument("--strategy", default="CAPABILITY_FIRST", choices=sorted(STRATEGIES))
     providers_publish.add_argument("--max-evidence-age-seconds", type=int, required=True)
     providers_publish.set_defaults(func=cmd_providers_publish)
+
+    instruction_governance = sub.add_parser("instruction-governance", help="Model-aware instruction governance audit evidence")
+    instruction_governance_sub = instruction_governance.add_subparsers(dest="instruction_governance_command", required=True)
+    instruction_governance_show = instruction_governance_sub.add_parser("show", help="Show managed instruction inventory and audit history")
+    instruction_governance_show.set_defaults(func=cmd_instruction_governance_show)
+    instruction_governance_profile = instruction_governance_sub.add_parser("profile-build", help="Build exact target/Engineering System/model/harness profile JSON")
+    instruction_governance_profile.add_argument("--engineering-system-revision", required=True)
+    instruction_governance_profile.add_argument("--agent-base", required=True)
+    instruction_governance_profile.add_argument("--behavior-scenarios", required=True)
+    instruction_governance_profile.add_argument("--trigger-kind", required=True, choices=sorted(TRIGGERS))
+    instruction_governance_profile.add_argument("--trigger-revision", required=True)
+    instruction_governance_profile.add_argument("--model-provider", required=True)
+    instruction_governance_profile.add_argument("--model-name", required=True)
+    instruction_governance_profile.add_argument("--model-profile", required=True)
+    instruction_governance_profile.add_argument("--harness-id", required=True)
+    instruction_governance_profile.add_argument("--harness-revision", required=True)
+    instruction_governance_profile.set_defaults(func=cmd_instruction_governance_profile_build)
+    instruction_governance_candidate = instruction_governance_sub.add_parser("candidate-change", help="Build digest-only change metadata for one managed surface")
+    instruction_governance_candidate.add_argument("--path", required=True)
+    instruction_governance_candidate.add_argument("--candidate", required=True)
+    instruction_governance_candidate.set_defaults(func=cmd_instruction_governance_candidate_change)
+    instruction_governance_preflight = instruction_governance_sub.add_parser("preflight", help="Bind exact target/profile/Engineering System reference identity")
+    instruction_governance_preflight.add_argument("--profile", required=True)
+    instruction_governance_preflight.add_argument("--agent-base", required=True)
+    instruction_governance_preflight.add_argument("--behavior-scenarios", required=True)
+    instruction_governance_preflight.set_defaults(func=cmd_instruction_governance_preflight)
+    instruction_governance_record = instruction_governance_sub.add_parser("record", help="Record one advisory behavior/candidate-diff audit result")
+    instruction_governance_record.add_argument("--profile", required=True)
+    instruction_governance_record.add_argument("--agent-base", required=True)
+    instruction_governance_record.add_argument("--behavior-scenarios", required=True)
+    instruction_governance_record.add_argument("--result", required=True)
+    instruction_governance_record.set_defaults(func=cmd_instruction_governance_record)
 
     decision_plane = sub.add_parser("decision-plane", help="Decision Plane shadow/replay evidence")
     decision_plane_sub = decision_plane.add_subparsers(dest="decision_plane_command", required=True)

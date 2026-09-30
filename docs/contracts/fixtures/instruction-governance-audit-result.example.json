@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "kind": "instruction_governance_audit_result",
+  "audit_identity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "evaluated_at": "2026-09-30T12:00:00Z",
+  "behavior_results": [
+    {
+      "scenario_id": "BEH-CTX-001",
+      "outcome": "PASS"
+    },
+    {
+      "scenario_id": "BEH-WP-002",
+      "outcome": "PASS"
+    },
+    {
+      "scenario_id": "BEH-AFFECTED-003",
+      "outcome": "PASS"
+    },
+    {
+      "scenario_id": "BEH-WAIT-005",
+      "outcome": "PASS"
+    },
+    {
+      "scenario_id": "BEH-ADOPTION-008",
+      "outcome": "PASS"
+    },
+    {
+      "scenario_id": "BEH-PERM-009",
+      "outcome": "PASS"
+    },
+    {
+      "scenario_id": "BEH-TRUST-010",
+      "outcome": "PASS"
+    }
+  ],
+  "candidate_changes": [],
+  "evaluation_ref": "github:behavior-eval:example"
+}

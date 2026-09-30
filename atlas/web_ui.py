@@ -90,6 +90,10 @@ def render_projects(service: AtlasService) -> UiResponse:
         decision_plane = service.decision_plane_dashboard()
     except ValidationError:
         decision_plane = {"state": "UNAVAILABLE", "rollout_state": "SHADOW"}
+    try:
+        instruction_governance = service.instruction_governance_dashboard()
+    except ValidationError:
+        instruction_governance = {"state": "UNAVAILABLE", "audit_count": 0}
     cards = []
     for project in projects:
         pid = quote(project.project_id, safe="")
@@ -105,8 +109,84 @@ def render_projects(service: AtlasService) -> UiResponse:
     listing = "".join(cards) if cards else '<div class="card"><p>No projects registered.</p></div>'
     enabled = sum(1 for project in projects if project.enabled)
     sources = sum(len(project.sources) for project in projects)
-    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section><section class="card"><h2>{escape(str(decision_plane["rollout_state"]))}</h2><p>Decision Plane</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a> · <a href="/decision-plane">Decision Plane →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
+    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section><section class="card"><h2>{escape(str(decision_plane["rollout_state"]))}</h2><p>Decision Plane</p></section><section class="card"><h2>{escape(str(instruction_governance["state"]))}</h2><p>Instruction governance</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a> · <a href="/decision-plane">Decision Plane →</a> · <a href="/instruction-governance">Instruction governance →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
     return UiResponse("200 OK", _page("Projects", body))
+
+def render_instruction_governance(service: AtlasService) -> UiResponse:
+    try:
+        dashboard = service.instruction_governance_dashboard()
+    except ValidationError:
+        return _error(
+            "500 Internal Server Error",
+            "Instruction governance unavailable",
+            "Managed instruction inventory or audit history could not be read safely.",
+        )
+
+    surface_rows = "".join(
+        f'<tr><td><code>{escape(str(item["path"]))}</code></td>'
+        f'<td>{escape(str(item["category"]))}</td>'
+        f'<td>{item["size_bytes"]}</td>'
+        f'<td><code>{escape(str(item["content_digest"]))}</code></td></tr>'
+        for item in dashboard["managed_surfaces"]
+    )
+    audit_rows = "".join(
+        f'<tr><td><code>{escape(str(item["evaluated_at"]))}</code></td>'
+        f'<td><span class="pill">{escape(str(item["outcome"]))}</span></td>'
+        f'<td>{escape(str(item["trigger_kind"]))}<br><code>{escape(str(item["trigger_revision"]))}</code></td>'
+        f'<td>{escape(str(item["model_provider"]))} / <code>{escape(str(item["model_name"]))}</code><br><code>{escape(str(item["model_profile"]))}</code></td>'
+        f'<td><code>{escape(str(item["engineering_system_revision"]))}</code></td>'
+        f'<td>{len(item["candidate_changes"])}</td>'
+        f'<td><code>{escape(str(item["evaluation_ref"]))}</code></td></tr>'
+        for item in dashboard["audits"]
+    ) or '<tr><td colspan="7" class="muted">No instruction-governance audits recorded.</td></tr>'
+
+    counts = dashboard["outcome_counts"]
+    latest = dashboard["latest_audit"]
+    latest_html = '<p class="muted">No audit has been recorded yet.</p>'
+    if isinstance(latest, dict):
+        behavior = ", ".join(
+            f'{item["scenario_id"]}:{item["outcome"]}'
+            for item in latest["behavior_results"]
+        )
+        latest_html = (
+            '<dl>'
+            f'<dt>Outcome</dt><dd><span class="pill">{escape(str(latest["outcome"]))}</span></dd>'
+            f'<dt>Audit identity</dt><dd><code>{escape(str(latest["audit_identity"]))}</code></dd>'
+            f'<dt>Target HEAD</dt><dd><code>{escape(str(latest["target_head"]))}</code></dd>'
+            f'<dt>Engineering System</dt><dd><code>{escape(str(latest["engineering_system_revision"]))}</code></dd>'
+            f'<dt>Model profile</dt><dd>{escape(str(latest["model_provider"]))} / <code>{escape(str(latest["model_name"]))}</code> / <code>{escape(str(latest["model_profile"]))}</code></dd>'
+            f'<dt>Harness</dt><dd><code>{escape(str(latest["harness_id"]))}</code> / <code>{escape(str(latest["harness_revision"]))}</code></dd>'
+            f'<dt>Behavior</dt><dd><code>{escape(behavior or "NONE")}</code></dd>'
+            f'<dt>Candidate changes</dt><dd>{len(latest["candidate_changes"])}</dd>'
+            f'<dt>Canonical mutation</dt><dd><code>{str(bool(latest["canonical_mutation"])).lower()}</code></dd>'
+            '</dl>'
+        )
+
+    body = (
+        '<p><a href="/">← Projects</a></p><h1>Instruction governance</h1>'
+        '<p class="muted">Engineering-System-referenced audit evidence only. Atlas does not define a competing prompting methodology and does not rewrite managed surfaces.</p>'
+        '<section class="grid">'
+        f'<article class="card"><h2>{escape(str(dashboard["state"]))}</h2><p>Governance state</p></article>'
+        f'<article class="card"><h2>{dashboard["managed_surface_count"]}</h2><p>Managed surfaces</p></article>'
+        f'<article class="card"><h2>{dashboard["audit_count"]}</h2><p>Recorded audits</p></article>'
+        f'<article class="card"><h2>{counts["CANARY_READY"]}</h2><p>Canary-ready findings</p></article>'
+        f'<article class="card"><h2>{counts["REJECTED"]}</h2><p>Rejected candidates</p></article>'
+        f'<article class="card"><h2>{escape(str(dashboard["mutation_authority"]))}</h2><p>Mutation authority</p></article>'
+        '</section>'
+        '<section class="card" style="margin-top:16px"><h2>Latest audit</h2>'
+        + latest_html
+        + '</section>'
+        '<section class="card" style="margin-top:16px"><h2>Managed surfaces</h2>'
+        f'<p class="muted">Inventory digest <code>{escape(str(dashboard["inventory_digest"]))}</code></p>'
+        '<div style="overflow:auto"><table><thead><tr><th>Path</th><th>Category</th><th>Bytes</th><th>SHA-256</th></tr></thead>'
+        f'<tbody>{surface_rows}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Audit history</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Evaluated</th><th>Outcome</th><th>Trigger</th><th>Model/profile</th><th>Engineering System</th><th>Changes</th><th>Evidence</th></tr></thead>'
+        f'<tbody>{audit_rows}</tbody></table></div></section>'
+        '<p class="muted">Use CLI preflight/record with immutable AGENT_BASE and behavior-scenarios references. Exact revision/profile duplicates return DUPLICATE_NOOP before repeated evaluation.</p>'
+    )
+    return UiResponse("200 OK", _page("Instruction governance", body))
+
 
 def render_decision_plane(
     service: AtlasService,
@@ -1245,6 +1325,8 @@ def create_app(data_root: Path):
                 response = render_intelligence_overview(service)
             elif path == "/operations":
                 response = render_operations(service)
+            elif path == "/instruction-governance":
+                response = render_instruction_governance(service)
             elif path == "/decision-plane":
                 params = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
                 optional_text = params.get("optional_paths", [""])[0].strip()
