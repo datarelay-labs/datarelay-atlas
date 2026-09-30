@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/concurrency-claim-bound-join-evidence.schema.json",
+  "title": "DataRelay Atlas Concurrency Claim-Bound Join Evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "authority",
+    "claim_join_id",
+    "dispatch_join_id",
+    "dispatch_join_digest",
+    "effect_id",
+    "effect_receipt_digest",
+    "authorization_digest",
+    "observed_at",
+    "effect_result",
+    "result",
+    "pass_authority",
+    "completion_authority",
+    "release_authority",
+    "merge_authority",
+    "deploy_authority",
+    "dispatched_count",
+    "dispatch_omission_count",
+    "complete_count",
+    "failed_count",
+    "human_required_count",
+    "bindings",
+    "dispatch_omissions",
+    "evidence_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "concurrency_claim_bound_join_evidence"
+    },
+    "authority": {
+      "const": "MEASUREMENT_ONLY"
+    },
+    "claim_join_id": {
+      "$ref": "#/$defs/id"
+    },
+    "dispatch_join_id": {
+      "$ref": "#/$defs/id"
+    },
+    "dispatch_join_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "effect_id": {
+      "$ref": "#/$defs/id"
+    },
+    "effect_receipt_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "authorization_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "observed_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "effect_result": {
+      "enum": [
+        "DISPATCHED",
+        "PARTIAL"
+      ]
+    },
+    "result": {
+      "enum": [
+        "PASS",
+        "PARTIAL",
+        "FAILED",
+        "HUMAN_REQUIRED"
+      ]
+    },
+    "pass_authority": {
+      "const": "MEASUREMENT_ONLY"
+    },
+    "completion_authority": {
+      "const": "NONE"
+    },
+    "release_authority": {
+      "const": "NONE"
+    },
+    "merge_authority": {
+      "const": "NONE"
+    },
+    "deploy_authority": {
+      "const": "NONE"
+    },
+    "dispatched_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "dispatch_omission_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "complete_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "failed_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "human_required_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "bindings": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node_id",
+          "claim_digest",
+          "handoff_digest",
+          "slot_id",
+          "worker_id",
+          "provider",
+          "runtime",
+          "route_id",
+          "head",
+          "outcome",
+          "duration_ms",
+          "evidence_ref"
+        ],
+        "properties": {
+          "node_id": {
+            "$ref": "#/$defs/id"
+          },
+          "claim_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "handoff_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "slot_id": {
+            "$ref": "#/$defs/id"
+          },
+          "worker_id": {
+            "$ref": "#/$defs/id"
+          },
+          "provider": {
+            "$ref": "#/$defs/id"
+          },
+          "runtime": {
+            "$ref": "#/$defs/id"
+          },
+          "route_id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "head": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "outcome": {
+            "enum": [
+              "COMPLETE",
+              "FAILED",
+              "HUMAN_REQUIRED"
+            ]
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 604800000
+          },
+          "evidence_ref": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "dispatch_omissions": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node_id",
+          "slot_id",
+          "worker_id",
+          "provider",
+          "runtime",
+          "route_id",
+          "head",
+          "dispatch_result"
+        ],
+        "properties": {
+          "node_id": {
+            "$ref": "#/$defs/id"
+          },
+          "slot_id": {
+            "$ref": "#/$defs/id"
+          },
+          "worker_id": {
+            "$ref": "#/$defs/id"
+          },
+          "provider": {
+            "$ref": "#/$defs/id"
+          },
+          "runtime": {
+            "$ref": "#/$defs/id"
+          },
+          "route_id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "head": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "dispatch_result": {
+            "enum": [
+              "REFUSED",
+              "HUMAN_REQUIRED",
+              "ERROR"
+            ]
+          }
+        }
+      }
+    },
+    "evidence_digest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@#+\\-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

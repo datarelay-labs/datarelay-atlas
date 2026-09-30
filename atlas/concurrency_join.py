@@ -483,6 +483,22 @@ def record_concurrency_dispatch_join(
     return concurrency_dispatch_join_dashboard(root)
 
 
+def get_concurrency_dispatch_join_entry(
+    data_root: Path,
+    join_digest: str,
+) -> dict[str, object]:
+    """Return one fully validated dispatch join by exact content digest."""
+    digest = _digest(join_digest, label="join_digest")
+    ledger = _load_ledger(Path(data_root))
+    matches = [
+        item for item in ledger["joins"]
+        if item.get("join_digest") == digest
+    ]
+    if len(matches) != 1:
+        _reject("concurrency dispatch join is not found")
+    return dict(matches[0])
+
+
 def concurrency_dispatch_join_dashboard(data_root: Path) -> dict[str, object]:
     ledger = _load_ledger(Path(data_root))
     joins = list(ledger["joins"])
