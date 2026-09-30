@@ -19,6 +19,10 @@ from atlas.concurrency_admission import (
     publish_concurrency_snapshot,
     record_concurrency_run,
 )
+from atlas.concurrency_authorization import (
+    concurrency_dispatch_authorization_dashboard,
+    publish_concurrency_dispatch_authorization,
+)
 from atlas.decision_plane import (
     append_decision_observation,
     build_focused_check_candidates,
@@ -160,6 +164,17 @@ class AtlasService:
     def record_concurrency_run(self, observation: object) -> dict[str, object]:
         """Record one measured run bound to the current admission plan."""
         return record_concurrency_run(self.data_root, observation)
+
+    def concurrency_dispatch_authorization_dashboard(self) -> dict[str, object]:
+        """Return current multi-node dispatch authorization binding."""
+        return concurrency_dispatch_authorization_dashboard(self.data_root)
+
+    def publish_concurrency_dispatch_authorization(
+        self,
+        request: object,
+    ) -> dict[str, object]:
+        """Publish exact-plan multi-node dispatch authorization without dispatching."""
+        return publish_concurrency_dispatch_authorization(self.data_root, request)
 
     def instruction_governance_dashboard(self) -> dict[str, object]:
         """Return managed instruction inventory and advisory audit history."""

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "kind": "concurrency_dispatch_authorization_request",
+  "authorization_id": "multi-node-authorization-1",
+  "expected_plan_digest": "972973d1b6f2dca6d54557294b43273a2fed750905ba97bc47903d75890cfc33",
+  "evaluated_at": "2026-09-30T12:30:00Z"
+}

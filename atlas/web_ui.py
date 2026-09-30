@@ -213,6 +213,17 @@ def render_concurrency(service: AtlasService) -> UiResponse:
         )
 
     plan = dashboard.get("plan")
+    try:
+        dispatch_authorization = service.concurrency_dispatch_authorization_dashboard()
+    except ValidationError:
+        dispatch_authorization = {
+            "state": "UNAVAILABLE",
+            "binding_state": "STALE",
+            "authority": "DISPATCH_AUTHORIZATION_ONLY",
+            "dispatch_effect_authority": "NONE",
+            "detail": "authorization state unavailable",
+            "authorization": None,
+        }
     assignment_rows = ""
     blocked_rows = ""
     eligible_slot_rows = ""
@@ -313,6 +324,13 @@ def render_concurrency(service: AtlasService) -> UiResponse:
         '<section class="card" style="margin-top:16px"><h2>Admitted assignments</h2>'
         '<div style="overflow:auto"><table><thead><tr><th>Node</th><th>Packet</th><th>HEAD</th><th>Slot</th><th>Worker</th><th>Provider/runtime</th><th>Route</th></tr></thead>'
         f'<tbody>{assignment_rows or "<tr><td colspan=7>No snapshot.</td></tr>"}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Multi-node dispatch authorization</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(dispatch_authorization["state"]))}</span></dd>'
+        f'<dt>Binding</dt><dd><span class="pill">{escape(str(dispatch_authorization["binding_state"]))}</span></dd>'
+        f'<dt>Authority</dt><dd><code>{escape(str(dispatch_authorization["authority"]))}</code></dd>'
+        f'<dt>Dispatch effect authority</dt><dd><code>{escape(str(dispatch_authorization["dispatch_effect_authority"]))}</code></dd>'
+        f'<dt>Detail</dt><dd>{escape(str(dispatch_authorization["detail"]))}</dd></dl>'
+        '<p class="muted">Authorization only. This surface does not spawn workers, mutate GitHub, invoke providers, retry effects, or declare join/PASS.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Admission-blocked selected nodes</h2>'
         '<div style="overflow:auto"><table><thead><tr><th>Node</th><th>Packet</th><th>Reasons</th></tr></thead>'
         f'<tbody>{blocked_rows or "<tr><td colspan=3>No snapshot.</td></tr>"}</tbody></table></div></section>'

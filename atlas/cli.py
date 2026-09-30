@@ -297,6 +297,17 @@ def cmd_concurrency_record_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_concurrency_authorization_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).concurrency_dispatch_authorization_dashboard())
+    return 0
+
+
+def cmd_concurrency_authorize(args: argparse.Namespace) -> int:
+    request = _read_json_file(args.request, label="concurrency authorization request")
+    _print_json(_service(args).publish_concurrency_dispatch_authorization(request))
+    return 0
+
+
 def cmd_instruction_governance_profile_build(args: argparse.Namespace) -> int:
     payload = _service(args).build_instruction_governance_profile(
         engineering_system_revision=args.engineering_system_revision,
@@ -997,6 +1008,17 @@ def build_parser() -> argparse.ArgumentParser:
     concurrency_record = concurrency_sub.add_parser("record-run", help="Record one measured run bound to the current plan")
     concurrency_record.add_argument("--observation", required=True)
     concurrency_record.set_defaults(func=cmd_concurrency_record_run)
+    concurrency_authorization_show = concurrency_sub.add_parser(
+        "authorization-show",
+        help="Show current exact-plan multi-node dispatch authorization",
+    )
+    concurrency_authorization_show.set_defaults(func=cmd_concurrency_authorization_show)
+    concurrency_authorize = concurrency_sub.add_parser(
+        "authorize",
+        help="Publish multi-node dispatch authorization without dispatching",
+    )
+    concurrency_authorize.add_argument("--request", required=True)
+    concurrency_authorize.set_defaults(func=cmd_concurrency_authorize)
 
     instruction_governance = sub.add_parser("instruction-governance", help="Model-aware instruction governance audit evidence")
     instruction_governance_sub = instruction_governance.add_subparsers(dest="instruction_governance_command", required=True)
