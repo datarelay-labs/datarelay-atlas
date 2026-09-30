@@ -58,6 +58,8 @@ class ProviderCapacityAttributionTests(unittest.TestCase):
             source_kind="unverified_observation",
         )
         self.assertEqual(payload["evidence"]["authority"], "UNVERIFIED")
+        self.assertIsNone(payload["evidence"]["source_ref"])
+        self.assertIsNone(payload["evidence"]["source_digest"])
         self.assertIsNone(payload["evidence"]["observed_at"])
         for value in payload["facts"].values():
             self.assertEqual(value, {"status": "UNKNOWN"})
@@ -65,6 +67,8 @@ class ProviderCapacityAttributionTests(unittest.TestCase):
     def test_observed_fact_requires_provider_authoritative_evidence(self) -> None:
         payload = _observed()
         payload["evidence"]["authority"] = "UNVERIFIED"
+        payload["evidence"]["source_ref"] = None
+        payload["evidence"]["source_digest"] = None
         payload["evidence"]["observed_at"] = None
 
         with self.assertRaisesRegex(
@@ -110,14 +114,55 @@ class ProviderCapacityAttributionTests(unittest.TestCase):
             "usage_credit",
         )
 
-    def test_unverified_evidence_cannot_claim_observed_at(self) -> None:
-        payload = build_unknown_provider_capacity_attribution(
+    def test_unverified_evidence_cannot_claim_source_provenance(self) -> None:
+        base = build_unknown_provider_capacity_attribution(
             provider="codex",
             source_kind="unverified_observation",
         )
-        payload["evidence"]["observed_at"] = "2026-09-30T00:00:00Z"
-        with self.assertRaisesRegex(ValidationError, "cannot claim observed_at"):
-            validate_provider_capacity_attribution(payload)
+        cases = (
+            ("source_ref", "https://provider.example/docs/quota"),
+            ("source_digest", "a" * 64),
+            ("observed_at", "2026-09-30T00:00:00Z"),
+        )
+        for field, value in cases:
+            with self.subTest(field=field):
+                payload = deepcopy(base)
+                payload["evidence"][field] = value
+                with self.assertRaisesRegex(
+                    ValidationError,
+                    "cannot claim source provenance",
+                ):
+                    validate_provider_capacity_attribution(payload)
+
+    def test_authoritative_evidence_requires_verifiable_source_provenance(self) -> None:
+        schema = _json(SCHEMA)
+        for field, value in (
+            ("source_ref", None),
+            ("source_digest", None),
+            ("source_digest", "not-a-digest"),
+        ):
+            with self.subTest(field=field, value=value):
+                payload = _observed()
+                payload["evidence"][field] = value
+                with self.assertRaises(ValidationError):
+                    validate_provider_capacity_attribution(payload)
+                with self.assertRaises(JsonSchemaValidationError):
+                    Draft202012Validator(schema).validate(payload)
+
+    def test_secret_like_source_and_fact_labels_fail_closed(self) -> None:
+        for mutator in (
+            lambda payload: payload["evidence"].__setitem__(
+                "source_ref", "ghp_secretlike"
+            ),
+            lambda payload: payload["facts"].__setitem__(
+                "allowance_domain",
+                {"status": "OBSERVED", "value": "sk-secret"},
+            ),
+        ):
+            payload = _observed()
+            mutator(payload)
+            with self.assertRaises(ValidationError):
+                validate_provider_capacity_attribution(payload)
 
     def test_optional_candidate_binding_preserves_legacy_shape(self) -> None:
         legacy = _candidate(

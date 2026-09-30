@@ -30,6 +30,8 @@
       "required": [
         "authority",
         "source_kind",
+        "source_ref",
+        "source_digest",
         "observed_at"
       ],
       "properties": {
@@ -47,6 +49,26 @@
           "oneOf": [
             {
               "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/label"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
             },
             {
               "type": "null"
@@ -83,7 +105,7 @@
   "$defs": {
     "label": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+      "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
     },
     "timestamp": {
       "type": "string",
@@ -152,6 +174,10 @@
           "$ref": "#/$defs/observedBoolFact"
         }
       ]
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     }
   },
   "allOf": [
@@ -177,6 +203,12 @@
         "properties": {
           "evidence": {
             "properties": {
+              "source_ref": {
+                "type": "null"
+              },
+              "source_digest": {
+                "type": "null"
+              },
               "observed_at": {
                 "type": "null"
               }
@@ -223,6 +255,12 @@
         "properties": {
           "evidence": {
             "properties": {
+              "source_ref": {
+                "$ref": "#/$defs/label"
+              },
+              "source_digest": {
+                "$ref": "#/$defs/digest"
+              },
               "observed_at": {
                 "$ref": "#/$defs/timestamp"
               }
