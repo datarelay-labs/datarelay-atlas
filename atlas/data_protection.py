@@ -16,6 +16,13 @@ from pathlib import Path
 
 from atlas.data_lock import LOCK_NAME, data_root_write_lock
 from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
+from atlas.provider_dashboard import FILENAME as PROVIDER_DASHBOARD_FILENAME
+from atlas.decision_plane import FILENAME as DECISION_PLANE_FILENAME
+from atlas.instruction_governance import FILENAME as INSTRUCTION_GOVERNANCE_FILENAME
+from atlas.concurrency_admission import (
+    SNAPSHOT_FILENAME as CONCURRENCY_SNAPSHOT_FILENAME,
+    RUNS_FILENAME as CONCURRENCY_RUNS_FILENAME,
+)
 from atlas.provenance import ValidationError
 from atlas.registry import REGISTRY_SCHEMA_VERSION, ProjectRegistry
 from atlas.secrets import contains_unsafe_secret
