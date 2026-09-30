@@ -11,6 +11,7 @@ from atlas.adoption import (
     parse_adoption_yaml,
 )
 from atlas.github_sync import FetchFn, fetch_github_file
+from atlas.derived_intelligence import derived_intelligence_payload
 from atlas.data_lock import data_root_write_lock
 from atlas.local_markdown import (
     IMPORT_DIRNAME,
@@ -206,3 +207,132 @@ class AtlasService:
         """
         self.registry.get(project_id)
         return build_keyword_retriever(self.projections, project_id)
+
+    def intelligence_overview(self) -> dict[str, Any]:
+        """Build a cross-project deterministic intelligence overview."""
+        projects = [item for item in self.list_projects() if item.enabled]
+        payload = derived_intelligence_payload(
+            self.projections,
+            [item.project_id for item in projects],
+        )
+        counts: dict[str, dict[str, int]] = {
+            item.project_id: {
+                "concept_heading": 0,
+                "cross_project_link": 0,
+                "decision_backlink": 0,
+                "unanswered_question": 0,
+                "contradiction_evidence": 0,
+                "knowledge_gap": 0,
+            }
+            for item in projects
+        }
+        for item in payload["items"]:
+            project_counts = counts.get(item["source_project_id"])
+            if project_counts is not None and item["kind"] in project_counts:
+                project_counts[item["kind"]] += 1
+        for project in projects:
+            records = {
+                str(record.get("source_id") or ""): record
+                for record in self.projection_records(project.project_id)
+            }
+            counts[project.project_id]["knowledge_gap"] = sum(
+                1
+                for source_id, source in project.sources.items()
+                if source.enabled
+                and str((records.get(source_id) or {}).get("sync_state") or "missing")
+                not in {"success", "unchanged", "ok"}
+            )
+        return {
+            **payload,
+            "projects": [
+                {
+                    "project_id": project.project_id,
+                    "display_name": project.display_name,
+                    "repository": project.repository,
+                    "counts": counts[project.project_id],
+                }
+                for project in projects
+            ],
+        }
+
+    def project_intelligence(self, project_id: str) -> dict[str, Any]:
+        """Build deterministic Phase 4 intelligence for one registered project."""
+        project = self.registry.get(project_id)
+        projects = [item for item in self.list_projects() if item.enabled]
+        payload = derived_intelligence_payload(
+            self.projections,
+            [item.project_id for item in projects],
+        )
+        items = [
+            item
+            for item in payload["items"]
+            if item["source_project_id"] == project_id
+        ]
+        records = {
+            str(record.get("source_id") or ""): record
+            for record in self.projection_records(project_id)
+        }
+        gaps = []
+        for source_id, source in sorted(project.sources.items()):
+            if not source.enabled:
+                continue
+            record = records.get(source_id)
+            sync_state = str((record or {}).get("sync_state") or "missing")
+            if sync_state in {"success", "unchanged", "ok"}:
+                continue
+            gaps.append(
+                {
+                    "source_id": source_id,
+                    "source_path": source.source_path,
+                    "source_class": source.source_class,
+                    "sync_state": sync_state,
+                }
+            )
+        backlinks: dict[str, list[dict[str, str]]] = {}
+        concepts: dict[str, list[dict[str, str]]] = {}
+        for item in items:
+            row = {
+                "source_project_id": item["source_project_id"],
+                "source_identity": item["source_identity"],
+            }
+            if item["kind"] == "decision_backlink":
+                backlinks.setdefault(item["value"], []).append(dict(row))
+            elif item["kind"] == "concept_heading":
+                concepts.setdefault(item["value"], []).append(dict(row))
+        referenced_adrs = set(backlinks)
+        repository_entities = {
+            repository: rows
+            for repository, rows in payload["entities"]["repositories"].items()
+            if any(row["project_id"] == project_id for row in rows)
+        }
+        source_entities = {
+            source_path: [
+                row for row in rows if row["project_id"] == project_id
+            ]
+            for source_path, rows in payload["entities"]["source_paths"].items()
+            if any(row["project_id"] == project_id for row in rows)
+        }
+        return {
+            "project_id": project_id,
+            "repository": project.repository,
+            "derived": True,
+            "canonical": False,
+            "contradictions": payload["contradictions"],
+            "knowledge_gaps": gaps,
+            "concept_index": dict(sorted(concepts.items())),
+            "entities": {
+                "repositories": dict(sorted(repository_entities.items())),
+                "source_paths": dict(sorted(source_entities.items())),
+                "decisions": {
+                    adr: payload["decision_targets"].get(adr, [])
+                    for adr in sorted(referenced_adrs)
+                },
+            },
+            "decision_backlinks": dict(sorted(backlinks.items())),
+            "decision_targets": {
+                adr: payload["decision_targets"].get(adr, [])
+                for adr in sorted(referenced_adrs)
+            },
+            "unanswered_questions": payload["unanswered_questions"].get(project_id, []),
+            "items": items,
+        }

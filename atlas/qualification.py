@@ -534,7 +534,7 @@ def _fetch(source, token):  # noqa: ARG001
 
 
 def _mcp_query(service: AtlasService) -> bool:
-    tools = AtlasContextTools(retriever_factory=service.project_retriever)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence)
     found = tools.call(
         "search_project",
         {"project_id": _PROJECT_ID, "query": _QUERY, "limit": 1},
