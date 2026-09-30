@@ -193,16 +193,39 @@ effect adapter must freshly re-read the current route state and require the same
 state digest/revision/epoch before attempting one transition. A changed state
 therefore invalidates an earlier authorization rather than silently reusing it.
 
+## Sealed one-shot transition effect request
+
+The exact-state authorization is not itself a provider invocation. Before any
+future executor is allowed to touch a provider, Atlas can seal a transport-free
+one-shot effect request from the authorization plus a freshly revalidated
+current-route state.
+
+Sealing requires the trusted authorization digest, trusted transition-plan
+digest, and trusted current-state digest. The fresh state must still match the
+authorization's current route, state revision, and effect epoch exactly. Any
+route, revision, epoch, or digest change rejects the request before an effect.
+
+The sealed request contains only bounded route/state metadata and a deterministic
+`replay_key` derived from immutable authorization/state identity. The request
+has its own out-of-band SHA-256 identity. It carries
+`SEALED_EFFECT_REQUEST_ONLY`: it is neither provider transport authority nor
+proof that an effect occurred.
+
+A later executor must reject duplicate replay keys and re-read current state
+again immediately before one provider effect. Provider credentials, API calls,
+session/process control, retries, and partial-effect reconciliation remain out
+of scope for this boundary.
+
 ## One-shot transition effect commit boundary
 
-A valid exact-state authorization is necessary but still not itself a provider
-transition. The one-shot effect boundary consumes that authorization together
-with the freshly revalidated current-route state and calls one provider-neutral
-effect port at most once.
+A sealed effect request is still not proof of a provider transition. The
+one-shot effect boundary consumes the sealed request together with freshly
+revalidated current-route state and calls one provider-neutral effect port at
+most once.
 
 Pre-effect failures are fail-closed and invoke no effect. The current route,
-state revision, effect epoch, authorization digest, and state digest must still
-match the authorization exactly.
+state revision, effect epoch, sealed-request digest, authorization digest, and
+state digest must still match the sealed request exactly.
 
 The effect port receives only bounded from/to route and expected state identity
 facts. It may return `COMMITTED`, `REFUSED`, or `UNKNOWN`; exceptions are also
@@ -214,7 +237,7 @@ increments the effect epoch by exactly one. Refusal, ambiguity, errors, or an
 invalid committed state become `HUMAN_REQUIRED` and do not fabricate rollback
 or a new authoritative state.
 
-The receipt binds the authorization digest plus old/new state identities and is
-itself content-addressed with a deterministic SHA-256 digest. No concrete
-provider SDK, credential, session transcript, prompt, or automatic retry is part
-of this boundary.
+The receipt binds the sealed-request and authorization digests plus old/new
+state identities and is itself content-addressed with a deterministic SHA-256
+digest. No concrete provider SDK, credential, session transcript, prompt, or
+automatic retry is part of this boundary.
