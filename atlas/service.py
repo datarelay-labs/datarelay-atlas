@@ -24,6 +24,10 @@ from atlas.concurrency_authorization import (
     publish_concurrency_dispatch_authorization,
 )
 from atlas.concurrency_effect import concurrency_dispatch_effect_dashboard
+from atlas.concurrency_join import (
+    concurrency_dispatch_join_dashboard,
+    record_concurrency_dispatch_join,
+)
 from atlas.decision_plane import (
     append_decision_observation,
     build_focused_check_candidates,
@@ -179,6 +183,12 @@ class AtlasService:
 
     def concurrency_dispatch_effect_dashboard(self) -> dict[str, object]:
         return concurrency_dispatch_effect_dashboard(self.data_root)
+
+    def concurrency_dispatch_join_dashboard(self) -> dict[str, object]:
+        return concurrency_dispatch_join_dashboard(self.data_root)
+
+    def record_concurrency_dispatch_join(self, observation: object) -> dict[str, object]:
+        return record_concurrency_dispatch_join(self.data_root, observation)
 
     def instruction_governance_dashboard(self) -> dict[str, object]:
         """Return managed instruction inventory and advisory audit history."""

@@ -313,6 +313,11 @@ def cmd_concurrency_effects_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_concurrency_joins_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).concurrency_dispatch_join_dashboard())
+    return 0
+
+
 def cmd_instruction_governance_profile_build(args: argparse.Namespace) -> int:
     payload = _service(args).build_instruction_governance_profile(
         engineering_system_revision=args.engineering_system_revision,
@@ -1029,6 +1034,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show one-shot multi-node dispatch effect receipts",
     )
     concurrency_effects_show.set_defaults(func=cmd_concurrency_effects_show)
+    concurrency_joins_show = concurrency_sub.add_parser(
+        "joins-show",
+        help="Show dispatch-bound multi-node join evidence",
+    )
+    concurrency_joins_show.set_defaults(func=cmd_concurrency_joins_show)
 
     instruction_governance = sub.add_parser("instruction-governance", help="Model-aware instruction governance audit evidence")
     instruction_governance_sub = instruction_governance.add_subparsers(dest="instruction_governance_command", required=True)

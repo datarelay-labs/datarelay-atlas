@@ -479,6 +479,22 @@ def commit_concurrency_dispatch_effect(
     return {**receipt, "receipt_digest": receipt_digest}
 
 
+def get_concurrency_dispatch_effect_entry(
+    data_root: Path,
+    effect_id: str,
+) -> dict[str, object]:
+    """Return one fully validated effect-ledger entry by exact effect id."""
+    identity = _identity(effect_id, label="effect_id")
+    ledger = _load_ledger(Path(data_root))
+    matches = [
+        item for item in ledger["effects"]
+        if item.get("effect_id") == identity
+    ]
+    if len(matches) != 1:
+        _reject("concurrency dispatch effect is not found")
+    return dict(matches[0])
+
+
 def concurrency_dispatch_effect_dashboard(data_root: Path) -> dict[str, object]:
     root = Path(data_root)
     ledger = _load_ledger(root)

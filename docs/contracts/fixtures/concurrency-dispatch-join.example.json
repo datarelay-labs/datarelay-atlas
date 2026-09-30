@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "kind": "concurrency_dispatch_join_observation",
+  "join_id": "join-example",
+  "effect_id": "effect-example",
+  "effect_receipt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "authorization_digest": "6c96faad4ba60956d9cd7ae1e43b7f7c7b4af03095650a9615eeef7e4fdf95b1",
+  "observed_at": "2026-09-30T13:00:00Z",
+  "effect_result": "DISPATCHED",
+  "result": "PASS",
+  "pass_authority": "MEASUREMENT_ONLY",
+  "dispatched_count": 2,
+  "dispatch_omission_count": 0,
+  "complete_count": 2,
+  "failed_count": 0,
+  "human_required_count": 0,
+  "outcomes": [
+    {
+      "node_id": "datarelay-labs/datarelay-atlas#201",
+      "slot_id": "slot-chat-1",
+      "worker_id": "chat-worker-1",
+      "provider": "openai",
+      "runtime": "chat_ssh",
+      "route_id": "chat-primary",
+      "head": "1111111111111111111111111111111111111111",
+      "outcome": "COMPLETE",
+      "duration_ms": 1200,
+      "evidence_ref": "evidence-node-201"
+    },
+    {
+      "node_id": "datarelay-labs/datarelay-atlas#202",
+      "slot_id": "slot-codex-1",
+      "worker_id": "codex-worker-1",
+      "provider": "openai",
+      "runtime": "codex",
+      "route_id": "codex-review",
+      "head": "2222222222222222222222222222222222222222",
+      "outcome": "COMPLETE",
+      "duration_ms": 1800,
+      "evidence_ref": "evidence-node-202"
+    }
+  ],
+  "dispatch_omissions": [],
+  "join_digest": "d5c2de2d0acd2490ed9aa004d4a4f9275cee25a54b3cf2de50267bb54b61ca7c"
+}

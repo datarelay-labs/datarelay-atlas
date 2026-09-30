@@ -214,6 +214,17 @@ def render_concurrency(service: AtlasService) -> UiResponse:
 
     plan = dashboard.get("plan")
     try:
+        dispatch_joins = service.concurrency_dispatch_join_dashboard()
+    except ValidationError:
+        dispatch_joins = {
+            "state": "UNAVAILABLE",
+            "authority": "MEASUREMENT_ONLY",
+            "pass_authority": "MEASUREMENT_ONLY",
+            "join_count": 0,
+            "result_counts": {"PASS": 0, "PARTIAL": 0, "FAILED": 0, "HUMAN_REQUIRED": 0},
+            "latest_join": None,
+        }
+    try:
         dispatch_effects = service.concurrency_dispatch_effect_dashboard()
     except ValidationError:
         dispatch_effects = {
@@ -352,6 +363,13 @@ def render_concurrency(service: AtlasService) -> UiResponse:
         f'<dt>Join authority</dt><dd><code>{escape(str(dispatch_effects["join_authority"]))}</code></dd>'
         f'<dt>PASS authority</dt><dd><code>{escape(str(dispatch_effects["pass_authority"]))}</code></dd></dl>'
         '<p class="muted">Each authorized assignment may be dispatched once. Completion/join truth remains in measured concurrency run evidence.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Dispatch-bound join evidence</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(dispatch_joins["state"]))}</span></dd>'
+        f'<dt>Joins</dt><dd>{dispatch_joins["join_count"]}</dd>'
+        f'<dt>Authority</dt><dd><code>{escape(str(dispatch_joins["authority"]))}</code></dd>'
+        f'<dt>PASS authority</dt><dd><code>{escape(str(dispatch_joins["pass_authority"]))}</code></dd>'
+        f'<dt>Results</dt><dd><code>{escape(str(dispatch_joins["result_counts"]))}</code></dd></dl>'
+        '<p class="muted">PASS here means all actually dispatched assignments completed; it is measurement evidence, not engineering final PASS.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Admission-blocked selected nodes</h2>'
         '<div style="overflow:auto"><table><thead><tr><th>Node</th><th>Packet</th><th>Reasons</th></tr></thead>'
         f'<tbody>{blocked_rows or "<tr><td colspan=3>No snapshot.</td></tr>"}</tbody></table></div></section>'
