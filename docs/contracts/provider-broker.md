@@ -192,3 +192,29 @@ This boundary still performs **no provider call or state mutation**. A later
 effect adapter must freshly re-read the current route state and require the same
 state digest/revision/epoch before attempting one transition. A changed state
 therefore invalidates an earlier authorization rather than silently reusing it.
+
+## One-shot transition effect commit boundary
+
+A valid exact-state authorization is necessary but still not itself a provider
+transition. The one-shot effect boundary consumes that authorization together
+with the freshly revalidated current-route state and calls one provider-neutral
+effect port at most once.
+
+Pre-effect failures are fail-closed and invoke no effect. The current route,
+state revision, effect epoch, authorization digest, and state digest must still
+match the authorization exactly.
+
+The effect port receives only bounded from/to route and expected state identity
+facts. It may return `COMMITTED`, `REFUSED`, or `UNKNOWN`; exceptions are also
+normalized. Atlas never retries in this slice.
+
+A `COMMITTED` result becomes `PASS / COMMITTED` only when the returned new
+state moves to the authorized target route, changes the state revision, and
+increments the effect epoch by exactly one. Refusal, ambiguity, errors, or an
+invalid committed state become `HUMAN_REQUIRED` and do not fabricate rollback
+or a new authoritative state.
+
+The receipt binds the authorization digest plus old/new state identities and is
+itself content-addressed with a deterministic SHA-256 digest. No concrete
+provider SDK, credential, session transcript, prompt, or automatic retry is part
+of this boundary.

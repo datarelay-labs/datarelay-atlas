@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datarelay.local/contracts/provider-transition-effect-receipt.schema.json",
+  "title": "DataRelay Atlas Provider Transition Effect Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "kind", "outcome", "reason",
+    "authorization_digest", "old_state_digest", "new_state_digest",
+    "from_route_id", "to_route_id",
+    "old_state_revision", "new_state_revision",
+    "old_effect_epoch", "new_effect_epoch"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "provider_transition_effect_receipt" },
+    "outcome": { "type": "string", "enum": ["PASS", "HUMAN_REQUIRED"] },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "COMMITTED", "AUTHORIZATION_REQUIRED", "EFFECT_REFUSED",
+        "EFFECT_AMBIGUOUS", "EFFECT_ERROR", "EFFECT_RESULT_INVALID"
+      ]
+    },
+    "authorization_digest": { "$ref": "#/$defs/digest" },
+    "old_state_digest": { "$ref": "#/$defs/digest" },
+    "new_state_digest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "from_route_id": { "$ref": "#/$defs/routeId" },
+    "to_route_id": { "oneOf": [{ "$ref": "#/$defs/routeId" }, { "type": "null" }] },
+    "old_state_revision": { "$ref": "#/$defs/digest" },
+    "new_state_revision": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "old_effect_epoch": { "type": "integer", "minimum": 1 },
+    "new_effect_epoch": { "oneOf": [{ "type": "integer", "minimum": 2 }, { "type": "null" }] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "PASS" } } },
+      "then": {
+        "properties": {
+          "reason": { "const": "COMMITTED" },
+          "to_route_id": { "$ref": "#/$defs/routeId" },
+          "new_state_digest": { "$ref": "#/$defs/digest" },
+          "new_state_revision": { "$ref": "#/$defs/digest" },
+          "new_effect_epoch": { "type": "integer", "minimum": 2 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "HUMAN_REQUIRED" } } },
+      "then": {
+        "properties": {
+          "reason": {
+            "enum": [
+              "AUTHORIZATION_REQUIRED", "EFFECT_REFUSED",
+              "EFFECT_AMBIGUOUS", "EFFECT_ERROR", "EFFECT_RESULT_INVALID"
+            ]
+          },
+          "new_state_digest": { "type": "null" },
+          "new_state_revision": { "type": "null" },
+          "new_effect_epoch": { "type": "null" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "routeId": {
+      "type": "string",
+      "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[a-z0-9][a-z0-9._-]{0,63}$"
+    }
+  }
+}
