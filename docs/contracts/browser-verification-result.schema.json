@@ -1,0 +1,320 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/browser-verification-result.schema.json",
+  "title": "DataRelay Atlas Browser Verification Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "authority",
+    "deterministic_gate_override",
+    "run_id",
+    "scenario_id",
+    "provider",
+    "target_url",
+    "environment",
+    "source_revision",
+    "work_packet_issue",
+    "variation",
+    "result",
+    "browser",
+    "duration_ms",
+    "steps",
+    "model_metrics",
+    "trace_ref",
+    "screenshot_ref",
+    "error_code",
+    "detail",
+    "result_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "browser_verification_result"
+    },
+    "authority": {
+      "const": "BROWSER_EVIDENCE_ONLY"
+    },
+    "deterministic_gate_override": {
+      "const": "NONE"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._@#+\\-]{0,255}$"
+    },
+    "scenario_id": {
+      "const": "ATLAS_OVERVIEW_TO_CONCURRENCY"
+    },
+    "provider": {
+      "enum": [
+        "playwright",
+        "stagehand"
+      ]
+    },
+    "target_url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "environment": {
+      "enum": [
+        "LOCAL",
+        "PREVIEW"
+      ]
+    },
+    "source_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "work_packet_issue": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "variation": {
+      "enum": [
+        "BASELINE",
+        "WRAPPED_LAYOUT"
+      ]
+    },
+    "result": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "HUMAN_REQUIRED"
+      ]
+    },
+    "browser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engine",
+        "version",
+        "mode",
+        "actual_process"
+      ],
+      "properties": {
+        "engine": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "mode": {
+          "enum": [
+            "HEADLESS",
+            "HEADED",
+            "NONE"
+          ]
+        },
+        "actual_process": {
+          "type": "boolean"
+        }
+      }
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3600000
+    },
+    "steps": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step_id",
+          "outcome",
+          "detail",
+          "evidence_ref"
+        ],
+        "properties": {
+          "step_id": {
+            "$ref": "#/$defs/id"
+          },
+          "outcome": {
+            "enum": [
+              "PASS",
+              "FAIL",
+              "SKIPPED"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "model_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "provider",
+        "model",
+        "llm_call_count",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cost_microusd"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "NOT_APPLICABLE",
+            "OBSERVED",
+            "UNAVAILABLE"
+          ]
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "llm_call_count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cost_microusd": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "trace_ref": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 512
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "screenshot_ref": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 512
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 600
+    },
+    "result_digest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@#+/\\-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
