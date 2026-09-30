@@ -53,6 +53,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("&lt;Demo &amp; Co&gt;", body)
         self.assertNotIn("<Demo & Co>", body)
         self.assertIn("default-src 'none'", state["headers"]["Content-Security-Policy"])
+        self.assertIn("no trusted local lifecycle evidence", body)
 
     def test_source_relation_never_promotes_personal_knowledge(self):
         self.assertEqual(_source_relation({"source_class": "personal", "canonical": False, "derived": True}), "personal reference / non-authoritative")
@@ -121,9 +122,11 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("Lifecycle evidence", body)
         self.assertIn("GitHub Work / PR", body)
         self.assertIn("no trusted local lifecycle evidence", body)
-        self.assertIn("lifecycle snapshot does not authorize CI conclusions", body)
+        self.assertIn("no exact-candidate CI evidence loaded", body)
         self.assertIn("no exact-candidate test evidence loaded", body)
-        self.assertIn("no exact-candidate release evidence", body)
+        self.assertIn("no exact-candidate release evidence loaded", body)
+        self.assertIn("Browser gates", body)
+        self.assertIn("browser gates are configured but no execution evidence is loaded", body)
 
     def test_valid_local_lifecycle_snapshot_surfaces_active_packet(self):
         snapshot = {
@@ -141,7 +144,72 @@ class WebUiTests(unittest.TestCase):
         _, body = self.get("/projects/demo")
         self.assertIn("OBSERVED", body)
         self.assertIn("AI Work #162 ACTIVE", body)
+        self.assertIn("feat/ui", body)
+        self.assertIn("b" * 40, body)
         self.assertIn("PR #163 OPEN", body)
+
+    def test_noncanonical_head_mismatch_is_stale_not_observed(self):
+        snapshot = {
+            "schema_version": 1, "kind": "cursor_github_reconciliation",
+            "observed_at": "2026-09-30T00:00:00Z", "repositories": ["datarelay-labs/demo"],
+            "observations": [{
+                "repository": "datarelay-labs/demo", "issue_number": 171, "issue_state": "OPEN",
+                "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted",
+                "packet_status": "ACTIVE", "branch": "feat/lifecycle", "head": "b" * 40,
+                "pr_number": 172, "pr_state": "OPEN", "pr_head": "c" * 40,
+                "canonical_fact": False, "reasons": ["PR_HEAD_MISMATCH"]}],
+            "summary": {"observed_count": 1, "canonical_count": 0, "noncanonical_count": 1},
+        }
+        (self.root / "github-lifecycle.json").write_text(json.dumps(snapshot))
+        _, body = self.get("/projects/demo")
+        self.assertIn("STALE", body)
+        self.assertIn("PR_HEAD_MISMATCH", body)
+        self.assertNotIn("AI Work #171 ACTIVE", body)
+
+    def test_exact_candidate_lifecycle_channels_are_independent(self):
+        head = "b" * 40
+        snapshot = {
+            "schema_version": 1, "kind": "cursor_github_reconciliation",
+            "observed_at": "2026-09-30T00:00:00Z", "repositories": ["datarelay-labs/demo"],
+            "observations": [{"repository": "datarelay-labs/demo", "issue_number": 171, "issue_state": "OPEN",
+                "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted", "packet_status": "ACTIVE",
+                "branch": "feat/lifecycle", "head": head, "pr_number": 172, "pr_state": "OPEN", "pr_head": head,
+                "canonical_fact": True, "reasons": []}],
+            "summary": {"observed_count": 1, "canonical_count": 1, "noncanonical_count": 0}}
+        evidence = {"schema_version": 1, "kind": "atlas_lifecycle_evidence", "observed_at": "2026-09-30T00:01:00Z",
+            "repository": "datarelay-labs/demo", "candidate_head": head,
+            "channels": {"ci": {"outcome": "PASS", "detail": "run 123"}, "tests": {"outcome": "FAIL", "detail": "2 failed"},
+                "browser": {"outcome": "BLOCKED", "detail": "host libraries missing"}}}
+        (self.root / "github-lifecycle.json").write_text(json.dumps(snapshot))
+        (self.root / "lifecycle-evidence.json").write_text(json.dumps(evidence))
+        _, body = self.get("/projects/demo")
+        self.assertIn("PASS: run 123", body)
+        self.assertIn("FAIL: 2 failed", body)
+        self.assertIn("BLOCKED: host libraries missing", body)
+        self.assertIn("no exact-candidate release evidence loaded", body)
+
+    def test_different_candidate_lifecycle_evidence_is_stale(self):
+        head = "b" * 40
+        snapshot = {"schema_version": 1, "kind": "cursor_github_reconciliation", "observed_at": "2026-09-30T00:00:00Z",
+            "repositories": ["datarelay-labs/demo"], "observations": [{"repository": "datarelay-labs/demo", "issue_number": 171,
+                "issue_state": "OPEN", "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted", "packet_status": "ACTIVE",
+                "branch": "feat/lifecycle", "head": head, "pr_number": None, "pr_state": "NONE", "pr_head": None,
+                "canonical_fact": True, "reasons": []}], "summary": {"observed_count": 1, "canonical_count": 1, "noncanonical_count": 0}}
+        evidence = {"schema_version": 1, "kind": "atlas_lifecycle_evidence", "observed_at": "2026-09-30T00:01:00Z",
+            "repository": "datarelay-labs/demo", "candidate_head": "c" * 40, "channels": {"ci": {"outcome": "PASS", "detail": "old run"}}}
+        (self.root / "github-lifecycle.json").write_text(json.dumps(snapshot)); (self.root / "lifecycle-evidence.json").write_text(json.dumps(evidence))
+        _, body = self.get("/projects/demo")
+        self.assertIn("STALE", body)
+        self.assertIn("PASS for different candidate", body)
+        self.assertNotIn("PASS: old run", body)
+
+    def test_invalid_lifecycle_channel_evidence_fails_closed(self):
+        evidence = {"schema_version": 1, "kind": "atlas_lifecycle_evidence", "observed_at": "2026-09-30T00:01:00Z",
+            "repository": "wrong/repo", "candidate_head": "b" * 40, "channels": {"ci": {"outcome": "PASS", "detail": "run"}}}
+        (self.root / "lifecycle-evidence.json").write_text(json.dumps(evidence))
+        _, body = self.get("/projects/demo")
+        self.assertIn("UNAVAILABLE", body)
+        self.assertIn("local lifecycle evidence failed validation", body)
 
     def test_invalid_local_lifecycle_snapshot_fails_closed_in_ui(self):
         (self.root / "github-lifecycle.json").write_text("{broken")

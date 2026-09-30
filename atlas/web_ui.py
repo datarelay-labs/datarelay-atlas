@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote
 from wsgiref.simple_server import make_server
 
-from atlas.cursor_usage import load_github_reconciliation_snapshot
+from atlas.lifecycle_intelligence import lifecycle_view
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
 
@@ -29,28 +29,6 @@ def _error(status: str, title: str, message: str) -> UiResponse:
     body = f'<h1>{escape(title)}</h1><p>{escape(message)}</p><p><a href="/">Back to projects</a></p>'
     return UiResponse(status, _page(title, body))
 
-def _lifecycle_for_repository(service: AtlasService, repository: str) -> tuple[str, str]:
-    snapshot = service.data_root / "github-lifecycle.json"
-    if not snapshot.is_file():
-        return "UNKNOWN", "no trusted local lifecycle evidence"
-    try:
-        _, observations, metadata = load_github_reconciliation_snapshot(snapshot)
-    except ValidationError:
-        return "UNAVAILABLE", "local lifecycle evidence failed validation"
-    matching = [item for item in observations if item.get("repository") == repository]
-    if not matching:
-        return "UNKNOWN", f"snapshot {metadata['observed_at']} has no project observation"
-    canonical = [item for item in matching if item.get("canonical_fact") is True]
-    if not canonical:
-        return "UNAVAILABLE", f"snapshot {metadata['observed_at']} has no canonical lifecycle fact"
-    active = [item for item in canonical if item.get("packet_status") == "ACTIVE"]
-    if active:
-        item = sorted(active, key=lambda value: int(value["issue_number"]))[0]
-        pr = f"PR #{item['pr_number']} {item['pr_state']}" if item.get("pr_number") else "no PR"
-        return "OBSERVED", f"AI Work #{item['issue_number']} ACTIVE · {pr} · snapshot {metadata['observed_at']}"
-    return "OBSERVED", f"{len(canonical)} canonical packet fact(s) · snapshot {metadata['observed_at']}"
-
-
 def _source_relation(provenance: dict[str, object]) -> str:
     if provenance.get("source_class") == "personal":
         return "personal reference / non-authoritative"
@@ -65,11 +43,13 @@ def render_projects(service: AtlasService) -> UiResponse:
     for project in projects:
         pid = quote(project.project_id, safe="")
         state = "enabled" if project.enabled else "disabled"
+        lifecycle = lifecycle_view(service.data_root, project.repository)
         cards.append(
-            f'<article class="card"><span class="pill">{state}</span>'
+            f'<article class="card"><span class="pill">{state}</span> <span class="pill">{escape(lifecycle.work.state)}</span>'
             f'<h2><a href="/projects/{pid}">{escape(project.display_name)}</a></h2>'
             f'<p><code>{escape(project.repository)}</code></p>'
-            f'<p class="muted">{len(project.sources)} configured sources</p></article>'
+            f'<p class="muted">{len(project.sources)} configured sources</p>'
+            f'<p class="muted">{escape(lifecycle.work.detail)}</p></article>'
         )
     listing = "".join(cards) if cards else '<div class="card"><p>No projects registered.</p></div>'
     enabled = sum(1 for project in projects if project.enabled)
@@ -135,7 +115,7 @@ def render_project(service: AtlasService, project_id: str, query: str = "") -> U
     errors = sum(1 for r in records if r.get("sync_state") == "error")
     disabled = sum(1 for r in records if r.get("sync_state") == "disabled")
     adoption_state = _adoption_projection_state(project, records)
-    github_state, github_detail = _lifecycle_for_repository(service, project.repository)
+    lifecycle = lifecycle_view(service.data_root, project.repository)
     pid = quote(project.project_id, safe="")
     body = (
         f'<p><a href="/">← Projects</a></p><h1>{escape(project.display_name)}</h1>'
@@ -151,10 +131,11 @@ def render_project(service: AtlasService, project_id: str, query: str = "") -> U
         f'<dt>Disabled projections</dt><dd>{disabled}</dd></dl></section>'
         '<section class="card"><h2>Lifecycle evidence</h2><dl>'
         f'<dt>Engineering System adoption</dt><dd><span class="pill">{adoption_state}</span></dd>'
-        f'<dt>GitHub Work / PR</dt><dd><span class="pill">{escape(github_state)}</span> <span class="muted">{escape(github_detail)}</span></dd>'
-        '<dt>CI</dt><dd><span class="pill">UNKNOWN</span> <span class="muted">lifecycle snapshot does not authorize CI conclusions</span></dd>'
-        '<dt>Tests</dt><dd><span class="pill">UNKNOWN</span> <span class="muted">no exact-candidate test evidence loaded</span></dd>'
-        '<dt>Release</dt><dd><span class="pill">UNKNOWN</span> <span class="muted">no exact-candidate release evidence</span></dd>'
+        f'<dt>GitHub Work / PR</dt><dd><span class="pill">{escape(lifecycle.work.state)}</span> <span class="muted">{escape(lifecycle.work.detail)}</span></dd>'
+        f'<dt>CI</dt><dd><span class="pill">{escape(lifecycle.ci.state)}</span> <span class="muted">{escape(lifecycle.ci.detail)}</span></dd>'
+        f'<dt>Tests</dt><dd><span class="pill">{escape(lifecycle.tests.state)}</span> <span class="muted">{escape(lifecycle.tests.detail)}</span></dd>'
+        f'<dt>Release</dt><dd><span class="pill">{escape(lifecycle.release.state)}</span> <span class="muted">{escape(lifecycle.release.detail)}</span></dd>'
+        f'<dt>Browser gates</dt><dd><span class="pill">{escape(lifecycle.browser.state)}</span> <span class="muted">{escape(lifecycle.browser.detail)}</span></dd>'
         '</dl></section></div>'
     )
     body += '<section class="card" style="margin-top:16px"><h2>Sources</h2><dl>'
