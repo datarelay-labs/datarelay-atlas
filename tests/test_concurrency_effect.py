@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import tempfile
+import threading
+import time
 import unittest
 from copy import deepcopy
 from pathlib import Path
@@ -61,13 +63,35 @@ class RecordingPort:
     def __init__(self, results):
         self.results = list(results)
         self.calls = []
+        self._lock = threading.Lock()
 
     def dispatch(self, request):
-        self.calls.append(deepcopy(request))
-        result = self.results[len(self.calls) - 1]
+        with self._lock:
+            index = len(self.calls)
+            self.calls.append(deepcopy(request))
+            result = self.results[index]
         if isinstance(result, Exception):
             raise result
         return deepcopy(result)
+
+
+class BarrierPort:
+    def __init__(self):
+        self.barrier = threading.Barrier(2, timeout=2)
+        self.calls = []
+        self._lock = threading.Lock()
+
+    def dispatch(self, request):
+        node_id = request["assignment"]["node_id"]
+        with self._lock:
+            self.calls.append(node_id)
+        self.barrier.wait()
+        if node_id.endswith("#201"):
+            time.sleep(0.05)
+        return {
+            "result": "DISPATCHED",
+            "dispatch_ref": "parallel-" + node_id.rsplit("#", 1)[-1],
+        }
 
 
 class ConcurrencyEffectTests(unittest.TestCase):
@@ -111,6 +135,29 @@ class ConcurrencyEffectTests(unittest.TestCase):
             self.assertEqual(dashboard["in_progress_count"], 0)
             self.assertEqual(dashboard["join_authority"], "NONE")
             self.assertEqual(dashboard["pass_authority"], "NONE")
+
+    def test_dispatch_calls_overlap_and_receipts_preserve_authorization_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            auth = _prepare(root)
+            port = BarrierPort()
+            receipt = commit_concurrency_dispatch_effect(
+                root,
+                effect_id="parallel-effect",
+                expected_authorization_digest=auth["authorization_digest"],
+                effect_port=port,
+            )
+            self.assertEqual(receipt["result"], "DISPATCHED")
+            self.assertEqual(len(port.calls), 2)
+            self.assertEqual(set(port.calls), {item["node_id"] for item in auth["assignments"]})
+            self.assertEqual(
+                [item["node_id"] for item in receipt["receipts"]],
+                [item["node_id"] for item in auth["assignments"]],
+            )
+            self.assertEqual(
+                [item["dispatch_ref"] for item in receipt["receipts"]],
+                ["parallel-201", "parallel-202"],
+            )
 
     def test_partial_human_and_error_results_are_bounded_without_retry(self):
         cases = [

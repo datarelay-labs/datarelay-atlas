@@ -1,6 +1,7 @@
 """One-shot provider-neutral multi-node dispatch effect boundary."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 from pathlib import Path
@@ -417,8 +418,9 @@ def commit_concurrency_dispatch_effect(
             authorization=authorization,
         )
 
-    receipts: list[dict[str, object]] = []
-    for assignment in authorization["assignments"]:
+    assignments = [dict(item) for item in authorization["assignments"]]
+
+    def dispatch_once(assignment: dict[str, object]) -> dict[str, object]:
         call = {
             "effect_id": effect_identity,
             "authorization_id": authorization["authorization_id"],
@@ -433,13 +435,22 @@ def commit_concurrency_dispatch_effect(
             raw = effect_port.dispatch(call)
         except Exception:
             raw = {"result": "ERROR", "dispatch_ref": None}
-        receipts.append(
-            _normalize_port_result(
-                dict(assignment),
-                trusted_auth_digest,
-                raw,
-            )
+        return _normalize_port_result(
+            assignment,
+            trusted_auth_digest,
+            raw,
         )
+
+    # Admission/authorization has already bounded this exact assignment set and
+    # proved slot/worker/resource uniqueness. Submit every assignment once so
+    # independent dispatch starts can overlap. executor.map preserves input
+    # order, keeping the terminal receipt deterministic even when completions
+    # arrive out of order.
+    with ThreadPoolExecutor(
+        max_workers=len(assignments),
+        thread_name_prefix="atlas-concurrency-dispatch",
+    ) as executor:
+        receipts = list(executor.map(dispatch_once, assignments))
 
     counts = {
         name: sum(item["result"] == name for item in receipts)
