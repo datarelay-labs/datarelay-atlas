@@ -59,5 +59,13 @@ def _sort_key(item: DerivedItem):
 
 def derived_intelligence_payload(store: ProjectionStore, project_ids: list[str]) -> dict[str, object]:
     items=build_derived_intelligence(store,project_ids)
+    backlinks: dict[str, list[dict[str, str]]] = {}
+    for item in items:
+        if item.kind != "decision_backlink":
+            continue
+        backlinks.setdefault(item.value, []).append({"source_project_id": item.source_project_id, "source_identity": item.source_identity})
+    for value in backlinks.values():
+        value.sort(key=lambda row: (row["source_project_id"], row["source_identity"]))
     return {"derived":True,"canonical":False,"contradictions":{"state":"UNKNOWN","detail":"no contradiction inference in deterministic v1"},
+        "decision_backlinks": dict(sorted(backlinks.items())),
         "items":[{"kind":i.kind,"value":i.value,"source_project_id":i.source_project_id,"source_identity":i.source_identity,"provenance":i.provenance} for i in items]}

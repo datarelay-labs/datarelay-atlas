@@ -29,6 +29,7 @@ class DerivedIntelligenceTests(unittest.TestCase):
             self.assertIn(("concept_heading","Design","alpha"),kinds)
             self.assertIn(("concept_heading","Rollout Model","alpha"),kinds)
             self.assertIn(("decision_backlink","ADR-0016","alpha"),kinds)
+            self.assertEqual(payload["decision_backlinks"]["ADR-0016"],[{"source_project_id":"alpha","source_identity":"design@main"}])
             self.assertIn(("unanswered_question","Who owns rollout?","alpha"),kinds)
             self.assertIn(("unanswered_question","define rollback signal","alpha"),kinds)
             for item in payload["items"]:
