@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 from wsgiref.simple_server import make_server
 
 from atlas.lifecycle_intelligence import lifecycle_view
@@ -21,7 +21,7 @@ class UiResponse:
 def _page(title: str, body: str) -> bytes:
     safe_title = escape(title)
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{safe_title} · DataRelay Atlas</title><style>
-:root{{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#171717;background:#fafafa}}body{{margin:0}}header{{padding:18px 28px;border-bottom:1px solid #e5e5e5;background:#fff}}main{{max-width:1120px;margin:auto;padding:28px}}a{{color:#1457d9;text-decoration:none}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}}.card{{background:#fff;border:1px solid #e5e5e5;border-radius:12px;padding:18px}}.muted{{color:#666}}.pill{{display:inline-block;padding:3px 8px;border-radius:999px;background:#f0f0f0;font-size:12px}}input{{width:min(620px,70%);padding:10px;border:1px solid #bbb;border-radius:8px}}button{{padding:10px 14px;border:0;border-radius:8px;background:#171717;color:white}}code{{font-size:12px}}h1{{margin-top:0}}dl{{display:grid;grid-template-columns:max-content 1fr;gap:7px 16px}}dt{{color:#666}}dd{{margin:0;overflow-wrap:anywhere}}.hit{{margin:14px 0}}.snippet{{white-space:pre-wrap;overflow-wrap:anywhere}}
+:root{{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#171717;background:#fafafa}}body{{margin:0}}header{{padding:18px 28px;border-bottom:1px solid #e5e5e5;background:#fff}}main{{max-width:1120px;margin:auto;padding:28px}}a{{color:#1457d9;text-decoration:none}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}}.card{{background:#fff;border:1px solid #e5e5e5;border-radius:12px;padding:18px}}.muted{{color:#666}}.pill{{display:inline-block;padding:3px 8px;border-radius:999px;background:#f0f0f0;font-size:12px}}input{{width:min(620px,70%);padding:10px;border:1px solid #bbb;border-radius:8px}}button{{padding:10px 14px;border:0;border-radius:8px;background:#171717;color:white}}code{{font-size:12px}}h1{{margin-top:0}}dl{{display:grid;grid-template-columns:max-content 1fr;gap:7px 16px}}dt{{color:#666}}dd{{margin:0;overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px 10px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}}th{{font-size:12px;color:#666}}.hit{{margin:14px 0}}.snippet{{white-space:pre-wrap;overflow-wrap:anywhere}}
 </style></head><body><header><strong>DataRelay Atlas</strong> <span class="muted">Engineering Knowledge &amp; Lifecycle</span></header><main>{body}</main></body></html>"""
     return html.encode("utf-8")
 
@@ -35,6 +35,16 @@ def _source_relation(provenance: dict[str, object]) -> str:
     if provenance.get("source_class", "engineering") == "engineering" and provenance.get("canonical") is False and provenance.get("derived") is True:
         return "canonical engineering source reference"
     return "UNKNOWN"
+
+
+def _evidence_ref_html(value: str | None) -> str:
+    if not value:
+        return ""
+    parsed = urlsplit(value)
+    safe = escape(value)
+    if parsed.scheme == "https" and parsed.netloc == "github.com":
+        return f' · <a href="{escape(value, quote=True)}" rel="noreferrer">evidence ↗</a>'
+    return f' · evidence <code>{safe}</code>'
 
 
 def render_projects(service: AtlasService) -> UiResponse:
@@ -87,17 +97,46 @@ def render_cross_project_search(service: AtlasService, query: str) -> UiResponse
     return UiResponse("200 OK", _page("Cross-project search", body))
 
 
-def _adoption_projection_state(project, records: list[dict]) -> str:
-    metadata_source_ids = {
-        source_id for source_id, source in project.sources.items()
+def _engineering_system_observation(project, records: list[dict]) -> dict[str, str]:
+    metadata_sources = {
+        source_id: source for source_id, source in project.sources.items()
         if source.provider == "github" and source.enabled and source.source_path == project.engineering_metadata_path
     }
-    if not metadata_source_ids:
-        return "UNKNOWN"
-    for record in records:
-        if record.get("source_id") in metadata_source_ids and record.get("sync_state") in {"success", "unchanged", "ok"}:
-            return "OBSERVED"
-    return "UNKNOWN"
+    if not metadata_sources:
+        return {
+            "state": "UNKNOWN",
+            "detail": "engineering metadata source is not configured",
+            "source_id": "",
+            "source_revision": "",
+            "sync_state": "UNKNOWN",
+        }
+    matching = [record for record in records if record.get("source_id") in metadata_sources]
+    if not matching:
+        return {
+            "state": "UNKNOWN",
+            "detail": "engineering metadata source is configured but has no projection evidence",
+            "source_id": sorted(metadata_sources)[0],
+            "source_revision": "",
+            "sync_state": "UNKNOWN",
+        }
+    record = sorted(matching, key=lambda item: str(item.get("source_id", "")))[0]
+    sync_state = str(record.get("sync_state") or "UNKNOWN").upper()
+    revision = str(record.get("source_revision") or "")
+    state = "OBSERVED" if sync_state in {"SUCCESS", "UNCHANGED", "OK"} and revision else ("UNAVAILABLE" if sync_state == "ERROR" else "UNKNOWN")
+    detail = f"{project.engineering_metadata_path} · projection {sync_state.lower()}"
+    if revision:
+        detail += f" · source revision {revision}"
+    return {
+        "state": state,
+        "detail": detail,
+        "source_id": str(record.get("source_id") or ""),
+        "source_revision": revision,
+        "sync_state": sync_state,
+    }
+
+
+def _adoption_projection_state(project, records: list[dict]) -> str:
+    return _engineering_system_observation(project, records)["state"]
 
 
 def render_lifecycle(service: AtlasService, project_id: str) -> UiResponse:
@@ -108,11 +147,47 @@ def render_lifecycle(service: AtlasService, project_id: str) -> UiResponse:
             return _error("404 Not Found", "Project not found", "The requested project is not registered.")
         return _error("500 Internal Server Error", "Atlas state unavailable", "Project registry state could not be read safely.")
     lifecycle = lifecycle_view(service.data_root, project.repository)
+    engineering = service.engineering_system_observation(project_id)
     rows = []
-    for label, value in (("Work / PR", lifecycle.work), ("CI", lifecycle.ci), ("Tests", lifecycle.tests), ("Release", lifecycle.release), ("Browser gates", lifecycle.browser)):
+    for label, value in (("Work / PR", lifecycle.work), ("CI", lifecycle.ci), ("Tests", lifecycle.tests), ("Release", lifecycle.release), ("Surface Reconciliation", lifecycle.surface_reconciliation), ("Full User E2E", lifecycle.full_user_e2e)):
         head = f' <code>{escape(value.candidate_head)}</code>' if value.candidate_head else ""
-        rows.append(f'<dt>{label}</dt><dd><span class="pill">{escape(value.state)}</span>{head}<br><span class="muted">{escape(value.detail)}</span></dd>')
-    body = f'<p><a href="/projects/{quote(project.project_id,safe="")}">← {escape(project.display_name)}</a></p><h1>Lifecycle evidence</h1><section class="card"><dl>{"".join(rows)}</dl></section><p class="muted">Read-only normalized evidence. Atlas does not infer one channel from another and does not become CI, GitHub, test, browser, or release authority.</p>'
+        evidence = _evidence_ref_html(value.evidence_ref)
+        rows.append(f'<dt>{label}</dt><dd><span class="pill">{escape(value.state)}</span>{head}<br><span class="muted">{escape(value.detail)}</span>{evidence}</dd>')
+    packet_rows = []
+    for packet in lifecycle.work_packets:
+        issue_url = f"https://github.com/{project.repository}/issues/{packet.issue_number}"
+        pr = "no PR"
+        if packet.pr_number is not None:
+            pr_url = f"https://github.com/{project.repository}/pull/{packet.pr_number}"
+            pr_head = f' · <code>{escape(packet.pr_head)}</code>' if packet.pr_head else ""
+            pr = f'<a href="{escape(pr_url, quote=True)}" rel="noreferrer">PR #{packet.pr_number}</a> {escape(packet.pr_state)}{pr_head}'
+        reasons = f' · <span class="muted">{escape(", ".join(packet.reasons))}</span>' if packet.reasons else ""
+        authority = "CANONICAL" if packet.canonical else "NONCANONICAL"
+        packet_rows.append(
+            f'<tr><td><a href="{escape(issue_url, quote=True)}" rel="noreferrer">#{packet.issue_number}</a></td>'
+            f'<td><span class="pill">{escape(packet.packet_status)}</span> <span class="pill">{authority}</span>{reasons}</td>'
+            f'<td><code>{escape(packet.branch)}</code></td><td><code>{escape(packet.head)}</code></td><td>{pr}</td></tr>'
+        )
+    packets = "".join(packet_rows) if packet_rows else '<tr><td colspan="5" class="muted">No Work Packet observation loaded.</td></tr>'
+    engineering_rows = (
+        f'<dt>State</dt><dd><span class="pill">{escape(str(engineering["state"]))}</span> <span class="muted">{escape(str(engineering["detail"]))}</span></dd>'
+        f'<dt>Version</dt><dd><code>{escape(str(engineering["version"] or "UNKNOWN"))}</code></dd>'
+        f'<dt>Baseline</dt><dd><code>{escape(str(engineering["baseline"] or "UNKNOWN"))}</code></dd>'
+        f'<dt>Mode</dt><dd><code>{escape(str(engineering["mode"] or "UNKNOWN"))}</code></dd>'
+        f'<dt>CI mode</dt><dd><code>{escape(str(engineering["ci_mode"] or "UNKNOWN"))}</code></dd>'
+        f'<dt>Source revision</dt><dd><code>{escape(str(engineering["source_revision"] or "UNKNOWN"))}</code></dd>'
+    )
+    body = (
+        f'<p><a href="/projects/{quote(project.project_id,safe="")}">← {escape(project.display_name)}</a></p>'
+        '<h1>Lifecycle evidence</h1><section class="card"><dl>'
+        + "".join(rows)
+        + '</dl></section><section class="card" style="margin-top:16px"><h2>Engineering System compliance</h2><dl>'
+        + engineering_rows
+        + '</dl></section><section class="card" style="margin-top:16px"><h2>Work Packets</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Issue</th><th>Status</th><th>Branch</th><th>HEAD</th><th>PR</th></tr></thead>'
+        f'<tbody>{packets}</tbody></table></div></section>'
+        '<p class="muted">Read-only normalized evidence. Atlas does not infer one channel from another and does not become CI, GitHub, test, browser, or release authority.</p>'
+    )
     return UiResponse("200 OK", _page(f"{project.display_name} lifecycle", body))
 
 
@@ -130,7 +205,8 @@ def render_project(service: AtlasService, project_id: str, query: str = "") -> U
     good = sum(1 for r in records if r.get("sync_state") in {"success", "unchanged", "ok"})
     errors = sum(1 for r in records if r.get("sync_state") == "error")
     disabled = sum(1 for r in records if r.get("sync_state") == "disabled")
-    adoption_state = _adoption_projection_state(project, records)
+    engineering = service.engineering_system_observation(project_id)
+    adoption_state = str(engineering["state"])
     lifecycle = lifecycle_view(service.data_root, project.repository)
     pid = quote(project.project_id, safe="")
     body = (
@@ -146,12 +222,15 @@ def render_project(service: AtlasService, project_id: str, query: str = "") -> U
         f'<dt>Projection errors</dt><dd>{errors}</dd>'
         f'<dt>Disabled projections</dt><dd>{disabled}</dd></dl></section>'
         '<section class="card"><h2>Lifecycle evidence</h2><dl>'
-        f'<dt>Engineering System adoption</dt><dd><span class="pill">{adoption_state}</span></dd>'
+        f'<dt>Engineering System adoption</dt><dd><span class="pill">{escape(adoption_state)}</span> <span class="muted">{escape(str(engineering["detail"]))}</span></dd>'
+        f'<dt>Engineering System</dt><dd><code>{escape(str(engineering["version"] or "UNKNOWN"))}</code> · <code>{escape(str(engineering["mode"] or "UNKNOWN"))}</code> · CI <code>{escape(str(engineering["ci_mode"] or "UNKNOWN"))}</code></dd>'
+        f'<dt>Engineering baseline</dt><dd><code>{escape(str(engineering["baseline"] or "UNKNOWN"))}</code></dd>'
         f'<dt>GitHub Work / PR</dt><dd><span class="pill">{escape(lifecycle.work.state)}</span> <span class="muted">{escape(lifecycle.work.detail)}</span></dd>'
         f'<dt>CI</dt><dd><span class="pill">{escape(lifecycle.ci.state)}</span> <span class="muted">{escape(lifecycle.ci.detail)}</span></dd>'
         f'<dt>Tests</dt><dd><span class="pill">{escape(lifecycle.tests.state)}</span> <span class="muted">{escape(lifecycle.tests.detail)}</span></dd>'
         f'<dt>Release</dt><dd><span class="pill">{escape(lifecycle.release.state)}</span> <span class="muted">{escape(lifecycle.release.detail)}</span></dd>'
-        f'<dt>Browser gates</dt><dd><span class="pill">{escape(lifecycle.browser.state)}</span> <span class="muted">{escape(lifecycle.browser.detail)}</span></dd>'
+        f'<dt>Surface Reconciliation</dt><dd><span class="pill">{escape(lifecycle.surface_reconciliation.state)}</span> <span class="muted">{escape(lifecycle.surface_reconciliation.detail)}</span></dd>'
+        f'<dt>Full User E2E</dt><dd><span class="pill">{escape(lifecycle.full_user_e2e.state)}</span> <span class="muted">{escape(lifecycle.full_user_e2e.detail)}</span></dd>'
         f'</dl><p><a href="/projects/{pid}/lifecycle">Open lifecycle evidence →</a></p></section></div>'
     )
     projected_source_ids = {str(r.get("source_id", "")) for r in records if r.get("sync_state") in {"success", "unchanged", "ok"}}

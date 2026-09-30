@@ -230,7 +230,7 @@ def cmd_lifecycle_show(args: argparse.Namespace) -> int:
 def cmd_lifecycle_validate(args: argparse.Namespace) -> int:
     project = _service(args).registry.get(args.project_id)
     payload = lifecycle_view_payload(Path(args.data_root), project.repository)
-    unavailable = [name for name in ("work", "ci", "tests", "release", "browser") if payload[name]["state"] == "UNAVAILABLE"]
+    unavailable = [name for name in ("work", "ci", "tests", "release", "surface_reconciliation", "full_user_e2e") if payload[name]["state"] == "UNAVAILABLE"]
     _print_json({"project_id": args.project_id, "repository": project.repository, "valid": not unavailable, "unavailable_channels": unavailable})
     return 0 if not unavailable else 2
 
