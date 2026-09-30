@@ -61,6 +61,10 @@ from atlas.instruction_governance import (
     instruction_governance_disposition_dashboard,
     record_instruction_governance_audit,
 )
+from atlas.instruction_governance_canary import (
+    instruction_governance_canary_dashboard,
+    record_instruction_governance_canary,
+)
 from atlas.local_markdown import (
     IMPORT_DIRNAME,
     SNAPSHOT_DIRNAME,
@@ -249,6 +253,21 @@ class AtlasService:
     def instruction_governance_disposition_dashboard(self) -> dict[str, object]:
         """Return derived disposition/PR-handoff evidence."""
         return instruction_governance_disposition_dashboard(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+        )
+
+    def record_instruction_governance_canary(self, observation: object) -> dict[str, object]:
+        """Record one canary result bound to a current PR_CANDIDATE handoff."""
+        return record_instruction_governance_canary(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+            observation=observation,
+        )
+
+    def instruction_governance_canary_dashboard(self) -> dict[str, object]:
+        """Return canary/adoption-gate evidence without mutation authority."""
+        return instruction_governance_canary_dashboard(
             self.data_root,
             repo_root=Path(__file__).resolve().parents[1],
         )
