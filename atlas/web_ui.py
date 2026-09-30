@@ -464,6 +464,17 @@ def render_instruction_governance(service: AtlasService) -> UiResponse:
             "binding_state": "UNKNOWN",
             "latest_disposition": None,
         }
+    try:
+        canary = service.instruction_governance_canary_dashboard()
+    except ValidationError:
+        canary = {
+            "state": "UNAVAILABLE",
+            "authority": "CANARY_EVIDENCE_ONLY",
+            "mutation_authority": "NONE",
+            "record_count": 0,
+            "binding_state": "UNKNOWN",
+            "latest_record": None,
+        }
     latest = dashboard["latest_audit"]
     latest_html = '<p class="muted">No audit has been recorded yet.</p>'
     if isinstance(latest, dict):
@@ -511,6 +522,14 @@ def render_instruction_governance(service: AtlasService) -> UiResponse:
         f'<dt>Mutation authority</dt><dd><code>{escape(str(disposition["mutation_authority"]))}</code></dd>'
         f'<dt>Latest disposition</dt><dd><span class="pill">{escape(str((disposition.get("latest_disposition") or {}).get("disposition", "NONE")))}</span></dd></dl>'
         '<p class="muted">PR_CANDIDATE is a digest-bound handoff to ordinary PR/adoption governance. It grants no file, PR, merge, release, or default-branch mutation authority.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Canary / adoption gate</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(canary["state"]))}</span></dd>'
+        f'<dt>Records</dt><dd>{canary["record_count"]}</dd>'
+        f'<dt>Binding</dt><dd><span class="pill">{escape(str(canary["binding_state"]))}</span></dd>'
+        f'<dt>Authority</dt><dd><code>{escape(str(canary["authority"]))}</code></dd>'
+        f'<dt>Mutation authority</dt><dd><code>{escape(str(canary["mutation_authority"]))}</code></dd>'
+        f'<dt>Latest result</dt><dd><span class="pill">{escape(str((canary.get("latest_record") or {}).get("result", "NONE")))}</span></dd></dl>'
+        '<p class="muted">Only PASS canary evidence emits an ordinary PR/adoption request artifact. Atlas still grants no GitHub, merge, release, or default-branch authority.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Latest audit</h2>'
         + latest_html
         + '</section>'

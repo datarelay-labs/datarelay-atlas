@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "kind": "instruction_governance_canary_record",
+  "authority": "CANARY_EVIDENCE_ONLY",
+  "canary_id": "canary-example",
+  "evaluated_at": "2026-09-30T14:00:00Z",
+  "audit_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "disposition_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "handoff_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "target_repository": "datarelay-labs/datarelay-atlas",
+  "target_head": "dddddddddddddddddddddddddddddddddddddddd",
+  "managed_changes": [
+    {
+      "path": "AGENTS.md",
+      "before_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "after_digest": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ],
+  "result": "PASS",
+  "check_count": 1,
+  "checks": [
+    {
+      "check_id": "canary-behavior",
+      "outcome": "PASS",
+      "evidence_ref": "evidence:canary:001"
+    }
+  ],
+  "adoption_request": {
+    "kind": "ordinary_pr_or_managed_adoption_request",
+    "target_repository": "datarelay-labs/datarelay-atlas",
+    "target_head": "dddddddddddddddddddddddddddddddddddddddd",
+    "audit_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "disposition_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "handoff_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "canary_digest": "a294020f663183b66301bc9a6f16206ba523aa00a54dbada69438340453f8ddb",
+    "managed_changes": [
+      {
+        "path": "AGENTS.md",
+        "before_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "after_digest": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ],
+    "canary_evidence_refs": [
+      "evidence:canary:001"
+    ],
+    "required_route": "ORDINARY_PR_OR_MANAGED_ADOPTION",
+    "mutation_authority": "NONE",
+    "merge_authority": "NONE",
+    "release_authority": "NONE",
+    "default_branch_authority": "NONE",
+    "request_digest": "b08ace18c99d68d661509a3917c1e291a6c4ef0c67524324ceccd00bd2becc5d"
+  },
+  "canary_digest": "a294020f663183b66301bc9a6f16206ba523aa00a54dbada69438340453f8ddb"
+}
