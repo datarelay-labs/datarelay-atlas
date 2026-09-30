@@ -1,7 +1,7 @@
 engineering_system:
   version: 1.6.5
   mode: adopted
-  baseline: 6a80c09cb66230d9a63660a1d3e5abd401bf8a14
+  baseline: 56ee4ff158266efcce06af5567afe3783ccace91
   ci_mode: shared
   native_ci_workflows: []
   merge_gate_status: unknown
@@ -9,8 +9,8 @@ project:
   name: datarelay-atlas
   type: engineering-platform
   maturity: development
-  user_facing: true
-  primary_user_surface: browser
+  user_facing: false
+  primary_user_surface: none
 domains:
 - methodology
 - project-registry
