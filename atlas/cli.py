@@ -1236,6 +1236,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     ops = sub.add_parser("ops", help="Service configuration and health")
     ops_sub = ops.add_subparsers(dest="ops_command", required=True)
+    ops_readiness = ops_sub.add_parser(
+        "readiness",
+        help="Show read-only Phase 5 operations and release readiness",
+    )
+    ops_readiness.set_defaults(func=cmd_ops_readiness)
     ops_check = ops_sub.add_parser(
         "check",
         help="Fail closed unless the service environment is ready",
@@ -1617,6 +1622,11 @@ def cmd_host_worker_supervise_once(args: argparse.Namespace) -> int:
         host_probe=None,
     )
     _print_json(outcome)
+    return 0
+
+
+def cmd_ops_readiness(args: argparse.Namespace) -> int:
+    _print_json(_service(args).operations_readiness())
     return 0
 
 

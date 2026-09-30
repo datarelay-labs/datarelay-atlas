@@ -43,7 +43,7 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness)
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
@@ -51,7 +51,8 @@ def build_mcp_application(
             "returns provenance and a projection identity; pass that identity to "
             "get_provenance. get_source_detail returns bounded validated projection "
             "content. get_project_intelligence returns non-authoritative derived context; "
-            "get_intelligence_overview requires an explicit project_ids scope."
+            "get_intelligence_overview requires an explicit project_ids scope; "
+            "get_operations_readiness is read-only and never executes operational actions."
         ),
         token_verifier=verifier,
         auth=AuthSettings(
@@ -139,6 +140,18 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             tools,
             "get_intelligence_overview",
             {"project_ids": project_ids},
+        )
+
+    @server.tool(
+        name="get_operations_readiness",
+        description="Return read-only runtime, operations, and release readiness without executing operations",
+        structured_output=False,
+    )
+    async def get_operations_readiness() -> str:
+        return _call_tool(
+            tools,
+            "get_operations_readiness",
+            {},
         )
 
     @server.tool(

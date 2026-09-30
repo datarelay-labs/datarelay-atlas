@@ -74,6 +74,14 @@ def _projection_source_link(project_id: str, identity: str) -> str:
 
 def render_projects(service: AtlasService) -> UiResponse:
     projects = service.list_projects()
+    try:
+        operations = service.operations_readiness()
+    except ValidationError:
+        operations = {
+            "state": "UNAVAILABLE",
+            "runtime": {"state": "UNAVAILABLE"},
+            "release_readiness": {"state": "UNKNOWN"},
+        }
     cards = []
     for project in projects:
         pid = quote(project.project_id, safe="")
@@ -89,8 +97,102 @@ def render_projects(service: AtlasService) -> UiResponse:
     listing = "".join(cards) if cards else '<div class="card"><p>No projects registered.</p></div>'
     enabled = sum(1 for project in projects if project.enabled)
     sources = sum(len(project.sources) for project in projects)
-    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
+    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
     return UiResponse("200 OK", _page("Projects", body))
+
+def render_operations(service: AtlasService) -> UiResponse:
+    try:
+        readiness = service.operations_readiness()
+    except ValidationError:
+        return _error("500 Internal Server Error", "Operations readiness unavailable", "Operations/release metadata could not be read safely.")
+
+    commands = readiness["operations"]["commands"]
+    command_rows = "".join(
+        f'<tr><td>{escape(name.replace("_", " ").title())}</td>'
+        f'<td><span class="pill">{escape(str(item["state"]))}</span></td>'
+        f'<td><code>{escape(str(item["command"] or "not configured"))}</code></td></tr>'
+        for name, item in commands.items()
+    )
+    runbook_rows = "".join(
+        f'<tr><td><code>{escape(str(item["path"]))}</code></td>'
+        f'<td><span class="pill">{escape(str(item["state"]))}</span></td></tr>'
+        for item in readiness["operations"]["runbooks"]
+    ) or '<tr><td colspan="2" class="muted">No runbooks declared.</td></tr>'
+
+    gate_rows = "".join(
+        f'<tr><td>{escape(name.replace("_", " ").title())}</td>'
+        f'<td><span class="pill">{escape(str(item["state"]))}</span></td>'
+        f'<td>{str(bool(item.get("required"))).lower()}</td>'
+        f'<td>{str(bool(item.get("configured"))).lower()}</td>'
+        f'<td><span class="pill">{escape(str(item.get("execution", "UNKNOWN")))}</span></td></tr>'
+        for name, item in readiness["release"]["gates"].items()
+    )
+    unit_rows = "".join(
+        f'<tr><td><code>{escape(str(item["unit"]))}</code></td>'
+        f'<td><span class="pill">{escape(str(item["state"]))}</span></td></tr>'
+        for item in readiness["deployment"]["units"]
+    )
+    blocker_rows = "".join(
+        f'<tr><td>{escape(str(name).upper())}</td><td><code>{str(bool(value)).lower()}</code></td></tr>'
+        for name, value in readiness["release"]["blockers"].items()
+    )
+    contract = readiness["deployment"]["contract"]
+    dependency_rows = "".join(
+        f'<tr><td><code>{escape(str(value))}</code></td></tr>'
+        for value in readiness["dependencies"]["declared_dependencies"]
+    ) or '<tr><td class="muted">No declared runtime dependencies found.</td></tr>'
+
+    body = (
+        '<p><a href="/">← Projects</a></p><h1>Operations readiness</h1>'
+        f'<section class="grid"><article class="card"><h2>{escape(str(readiness["state"]))}</h2><p>Deployment profile</p></article>'
+        f'<article class="card"><h2>{escape(str(readiness["runtime"]["state"]))}</h2><p>Current data-root runtime</p></article>'
+        f'<article class="card"><h2>{escape(str(readiness["operations"]["runbook_state"]))}</h2><p>Runbooks</p></article>'
+        f'<article class="card"><h2>{escape(str(readiness["deployment"]["state"]))}</h2><p>Deployment contract</p></article>'
+        f'<article class="card"><h2>{escape(str(readiness["security_controls"]["state"]))}</h2><p>Security controls</p></article>'
+        f'<article class="card"><h2>{escape(str(readiness["release_readiness"]["state"]))}</h2><p>Release readiness</p></article></section>'
+        '<section class="card" style="margin-top:16px"><h2>Production claim boundary</h2><dl>'
+        f'<dt>production_oriented</dt><dd><code>{str(bool(readiness["production_oriented"])).lower()}</code></dd>'
+        f'<dt>Runtime</dt><dd><span class="pill">{escape(str(readiness["runtime"]["state"]))}</span></dd>'
+        f'<dt>Configuration ready</dt><dd><code>{str(bool(readiness["operations"]["configuration_ready"])).lower()}</code></dd>'
+        f'<dt>Release readiness</dt><dd><span class="pill">{escape(str(readiness["release_readiness"]["state"]))}</span> '
+        f'<span class="muted">{escape(str(readiness["release_readiness"]["detail"]))}</span></dd>'
+        f'<dt>Security controls</dt><dd><span class="pill">{escape(str(readiness["security_controls"]["state"]))}</span> '
+        f'<span class="muted">{escape(str(readiness["security_controls"]["detail"]))}</span></dd>'
+        f'<dt>Security review</dt><dd><span class="pill">{escape(str(readiness["security_review"]["state"]))}</span> '
+        f'<span class="muted">{escape(str(readiness["security_review"]["detail"]))}</span></dd></dl></section>'
+        '<section class="card" style="margin-top:16px"><h2>prod-atlas deployment contract</h2><dl>'
+        f'<dt>Status</dt><dd><span class="pill">{escape(str(contract["status"]))}</span></dd>'
+        f'<dt>Hostname</dt><dd><code>{escape(str(contract["hostname"]))}</code></dd>'
+        f'<dt>MCP DNS</dt><dd><code>{escape(str(contract["mcp_dns"]))}</code></dd>'
+        f'<dt>Resource URL</dt><dd><code>{escape(str(contract["resource_url"]))}</code></dd>'
+        f'<dt>Ingress</dt><dd><code>{escape(str(contract["ingress_listen"]))}</code> → <code>{escape(str(contract["ingress_target"]))}</code></dd>'
+        f'<dt>Production evidence</dt><dd><code>{str(bool(contract["production_evidence"])).lower()}</code></dd></dl>'
+        '<div style="overflow:auto"><table><thead><tr><th>Systemd unit</th><th>Repository contract state</th></tr></thead>'
+        f'<tbody>{unit_rows}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Operations commands</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Capability</th><th>State</th><th>Configured command</th></tr></thead>'
+        f'<tbody>{command_rows}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Runbooks</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Path</th><th>State</th></tr></thead>'
+        f'<tbody>{runbook_rows}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Dependency / supply-chain visibility</h2><dl>'
+        f'<dt>Dependency declaration</dt><dd><span class="pill">{escape(str(readiness["dependencies"]["state"]))}</span> <code>{escape(str(readiness["dependencies"]["requirements_path"]))}</code></dd>'
+        f'<dt>Declared dependencies</dt><dd>{escape(str(readiness["dependencies"]["declared_dependency_count"]))}</dd>'
+        f'<dt>Third-party record</dt><dd><span class="pill">{escape(str(readiness["dependencies"]["third_party_state"]))}</span> <code>{escape(str(readiness["dependencies"]["third_party_path"]))}</code></dd>'
+        f'<dt>SBOM</dt><dd><span class="pill">{escape(str(readiness["dependencies"]["sbom_state"]))}</span> <span class="muted">{escape(str(readiness["dependencies"]["detail"]))}</span></dd></dl>'
+        '<div style="overflow:auto"><table><thead><tr><th>Declared runtime dependency</th></tr></thead>'
+        f'<tbody>{dependency_rows}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Release gates</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Gate</th><th>Configuration state</th><th>Required</th><th>Configured</th><th>Execution</th></tr></thead>'
+        f'<tbody>{gate_rows}</tbody></table></div></section>'
+        '<section class="card" style="margin-top:16px"><h2>Release blockers</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Class</th><th>Blocks release</th></tr></thead>'
+        f'<tbody>{blocker_rows}</tbody></table></div>'
+        f'<p class="muted">Full E2E passes configured: <code>{escape(str(readiness["release"]["full_e2e_passes"]))}</code>; exact HEAD required: <code>{str(bool(readiness["release"]["exact_head_required"])).lower()}</code>.</p></section>'
+        '<p class="muted">This page is observational only. It never executes backup, restore, upgrade, rollback, smoke, E2E, SBOM, provenance, or security-review actions.</p>'
+    )
+    return UiResponse("200 OK", _page("Operations readiness", body))
+
 
 def render_cross_project_search(service: AtlasService, query: str) -> UiResponse:
     body = '<p><a href="/">← Projects</a></p><h1>Cross-project search</h1>'
@@ -765,6 +867,8 @@ def create_app(data_root: Path):
                 response = render_projects(service)
             elif path == "/intelligence":
                 response = render_intelligence_overview(service)
+            elif path == "/operations":
+                response = render_operations(service)
             elif path == "/search":
                 query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True).get("q", [""])[0]
                 response = _error("400 Bad Request", "Invalid search", "Search query is too long.") if len(query) > _MAX_QUERY else render_cross_project_search(service, query.strip())

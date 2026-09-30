@@ -33,6 +33,7 @@ class AtlasContextTools:
         intelligence_factory: Callable[[str], dict[str, Any]] | None = None,
         intelligence_overview_factory: Callable[[list[str]], dict[str, Any]] | None = None,
         source_detail_factory: Callable[[str, str], dict[str, Any]] | None = None,
+        operations_readiness_factory: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         if (retriever is None) == (retriever_factory is None):
             raise ValueError("AtlasContextTools requires exactly one retriever source")
@@ -41,6 +42,7 @@ class AtlasContextTools:
         self._intelligence_factory = intelligence_factory
         self._intelligence_overview_factory = intelligence_overview_factory
         self._source_detail_factory = source_detail_factory
+        self._operations_readiness_factory = operations_readiness_factory
 
     def _retriever_for(self, project_id: str) -> Retriever:
         if self._retriever_factory is not None:
@@ -80,6 +82,13 @@ class AtlasContextTools:
                     "description": "Return one registered source with bounded validated projection content and provenance",
                 }
             )
+        if self._operations_readiness_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_operations_readiness",
+                    "description": "Return read-only operations, runtime-health, and release-gate readiness without executing operations",
+                }
+            )
         if authorize_tool("create_note", scopes, write_tools=WRITE_TOOL_NAMES):
             tools.append(
                 {
@@ -99,7 +108,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "search_project":
@@ -144,6 +153,15 @@ class AtlasContextTools:
             try:
                 project_ids = _required_project_ids(args, "project_ids")
                 payload = self._intelligence_overview_factory(project_ids)
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_operations_readiness":
+            if self._operations_readiness_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_operations_readiness")
+            try:
+                payload = self._operations_readiness_factory()
             except ValidationError as exc:
                 return ToolResult(ok=False, data=None, error=str(exc))
             return ToolResult(ok=True, data=payload)

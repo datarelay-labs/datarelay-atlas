@@ -14,6 +14,7 @@ from atlas.adoption import (
 from atlas.github_sync import FetchFn, fetch_github_file
 from atlas.derived_intelligence import derived_intelligence_payload
 from atlas.data_lock import data_root_write_lock
+from atlas.operations_readiness import operations_readiness
 from atlas.local_markdown import (
     IMPORT_DIRNAME,
     SNAPSHOT_DIRNAME,
@@ -72,6 +73,10 @@ class AtlasService:
 
     def list_projects(self) -> list[ProjectRecord]:
         return self.registry.list_projects()
+
+    def operations_readiness(self) -> dict[str, object]:
+        """Return read-only Phase 5 operations/release readiness."""
+        return operations_readiness(self.data_root)
 
     def add_source(
         self,
