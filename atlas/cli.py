@@ -404,6 +404,11 @@ def cmd_decision_plane_canary_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_decision_plane_limited_active_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).decision_limited_active_dashboard())
+    return 0
+
+
 def cmd_decision_plane_append(args: argparse.Namespace) -> int:
     try:
         payload = json.loads(Path(args.observation).read_text(encoding="utf-8"))
@@ -1109,6 +1114,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     decision_plane_canary_publish.add_argument("--request", required=True)
     decision_plane_canary_publish.set_defaults(func=cmd_decision_plane_canary_publish)
+    decision_plane_limited_active_show = decision_plane_sub.add_parser(
+        "limited-active-show",
+        help="Show bounded optional-context LIMITED_ACTIVE effect evidence",
+    )
+    decision_plane_limited_active_show.set_defaults(
+        func=cmd_decision_plane_limited_active_show
+    )
     decision_plane_append = decision_plane_sub.add_parser("append", help="Append one validated shadow/replay observation JSON")
     decision_plane_append.add_argument("--observation", required=True)
     decision_plane_append.set_defaults(func=cmd_decision_plane_append)
