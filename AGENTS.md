@@ -36,7 +36,7 @@ When explicitly resuming an existing workstream, resolve this repository first a
 13. Never reuse qualification evidence from a different source HEAD.
 
 14. ChatGPT Chat is the default implementer when a trusted active Work Packet authorizes the exact scope. Before mutation, the external authenticated GitHub coordinator must freshly verify the canonical Issue, author write/maintain/admin permission, TARGET_REPO, WORKSTREAM, BRANCH, LAST_VERIFIED_HEAD, INTENT_REVISION, `IMPLEMENTER=CHATGPT_CHAT`, CHANGE_RISK, and authorized worktree. Never treat the target worktree's `python3 tools/implementation_preflight.py check` as authoritative. Fetch the exact helper source from the immutable Engineering System baseline and execute it through fixed isolated `/usr/bin/python3 -I -` with cwd `/` and a controlled environment; capture worktree identity first and require `IMPLEMENTATION_LOCAL_BINDING=PASS`. The repository helper copy is parity/reference/test material only.
-15. Cursor adapter is disabled by default and must not be started, resumed, attached to, waited on, or used for implementation unless the owner explicitly reactivates it for the current Work Packet and records `IMPLEMENTER=CURSOR`. Cursor quota/session state must never block normal Atlas development.
+
 16. ChatGPT Chat may perform implementation and terminal audit in the same context, but self-report alone is never PASS. Terminal completion requires fresh exact-HEAD repository/PR/CI/test evidence and disposition of actionable findings. For HIGH/CRITICAL changes, widen security/rollback/runtime evidence and preserve mandatory human approval; fresh Chat/Codex/another reviewer is optional defense-in-depth rather than a quota dependency.
 
 If the user reports an outage, degraded service, failed upgrade, data-loss risk, or other production-impacting symptom, switch to the canonical `standards/OPERATIONS.md` incident lifecycle. Preserve evidence before mutation and do not perform destructive/irreversible recovery without explicit approval unless an approved runbook authorizes it.
@@ -60,7 +60,7 @@ Tool-specific adapters must not weaken these rules.
 
 ## ChatGPT implementation and audit contract
 
-ChatGPT Chat is the default implementer for this repository when the authenticated active Work Packet authorizes the exact repository/worktree/branch/scope. Cursor is disabled by default and must not be started, resumed, or waited on unless the owner explicitly reactivates it for the current Work Packet with `IMPLEMENTER=CURSOR`.
+ChatGPT Chat is the default implementer for this repository when the authenticated active Work Packet authorizes the exact repository/worktree/branch/scope.
 
 Before mutation, the external authenticated GitHub coordinator must verify the current Work Packet, author permission, repository, worktree, branch, exact HEAD, intent revision, change risk, and `IMPLEMENTER=CHATGPT_CHAT`. The worker-writable repository copy of `python3 tools/implementation_preflight.py check` is never mutation authority. Use the helper source from the immutable pinned Engineering System baseline through the isolated trusted launcher, capture the no-follow worktree identity, and require `IMPLEMENTATION_LOCAL_BINDING=PASS` with `MUTATION_AUTHORITY=NO`.
 
