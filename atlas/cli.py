@@ -394,6 +394,22 @@ def cmd_providers_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_search_all(args: argparse.Namespace) -> int:
+    svc = _service(args)
+    project_ids = list(args.project_id or [])
+    if not project_ids:
+        project_ids = [project.project_id for project in svc.list_projects() if project.enabled]
+    _print_json(
+        svc.search_across_projects(
+            args.query,
+            project_ids=project_ids,
+            source_class=args.source_class,
+            limit_per_project=args.limit_per_project,
+        )
+    )
+    return 0
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     svc = _service(args)
     embedding = embedding_config_from_cli(
@@ -976,6 +992,20 @@ def build_parser() -> argparse.ArgumentParser:
     decision_plane_checks = decision_plane_sub.add_parser("focused-check-candidates", help="Prepare affected focused-check candidates from .engineering/tests.yaml")
     decision_plane_checks.add_argument("--changed-path", action="append", required=True)
     decision_plane_checks.set_defaults(func=cmd_decision_plane_check_candidates)
+
+    search_all = sub.add_parser(
+        "search-all",
+        help="Search an explicit/all-enabled project scope with engineering/personal filtering",
+    )
+    search_all.add_argument("query")
+    search_all.add_argument("--project-id", action="append", default=[])
+    search_all.add_argument(
+        "--source-class",
+        choices=["all", "engineering", "personal"],
+        default="all",
+    )
+    search_all.add_argument("--limit-per-project", type=int, default=5)
+    search_all.set_defaults(func=cmd_search_all)
 
     search = sub.add_parser(
         "search",

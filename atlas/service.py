@@ -508,6 +508,86 @@ class AtlasService:
             "ci_mode": adoption.engineering_system_ci_mode,
         }
 
+    def search_across_projects(
+        self,
+        query: str,
+        *,
+        project_ids: list[str],
+        source_class: str = "all",
+        limit_per_project: int = 5,
+    ) -> dict[str, Any]:
+        """Search an explicit enabled project scope with source-class filtering."""
+        if not isinstance(query, str):
+            raise ValidationError("query is required")
+        if (
+            not isinstance(project_ids, list)
+            or not project_ids
+            or len(project_ids) > 32
+            or any(not isinstance(item, str) or not item.strip() for item in project_ids)
+        ):
+            raise ValidationError("project_ids must be a non-empty list of at most 32 project IDs")
+        if isinstance(limit_per_project, bool) or not isinstance(limit_per_project, int):
+            raise ValidationError("limit_per_project must be an integer")
+        if not 1 <= limit_per_project <= 50:
+            raise ValidationError("limit_per_project must be between 1 and 50")
+        normalized_class = str(source_class).strip().lower()
+        allowed_classes = {"all", "engineering", "personal"}
+        if normalized_class not in allowed_classes:
+            raise ValidationError("source_class must be all, engineering, or personal")
+        source_classes = (
+            None if normalized_class == "all" else frozenset({normalized_class})
+        )
+        normalized_projects = sorted(set(item.strip() for item in project_ids))
+        groups: list[dict[str, Any]] = []
+        total = 0
+        class_counts = {"engineering": 0, "personal": 0}
+        for project_id in normalized_projects:
+            project = self.registry.get(project_id)
+            if not project.enabled:
+                raise ValidationError(f"project is disabled: {project_id}")
+            retriever = build_keyword_retriever(
+                self.projections,
+                project_id,
+                source_classes=source_classes,
+            )
+            hits = retriever.search(project_id, query, limit=limit_per_project)
+            rows = []
+            for hit in hits:
+                hit_class = str(hit.provenance.get("source_class", "engineering"))
+                if hit_class not in class_counts:
+                    raise ValidationError("search result source_class is invalid")
+                class_counts[hit_class] += 1
+                rows.append(
+                    {
+                        "project_id": hit.project_id,
+                        "path": hit.path,
+                        "identity": hit.identity,
+                        "title": hit.title,
+                        "content": hit.content,
+                        "match": hit.match,
+                        "score": hit.score,
+                        "provenance": hit.provenance,
+                    }
+                )
+            total += len(rows)
+            groups.append(
+                {
+                    "project_id": project.project_id,
+                    "display_name": project.display_name,
+                    "repository": project.repository,
+                    "result_count": len(rows),
+                    "hits": rows,
+                }
+            )
+        return {
+            "query": query,
+            "source_class": normalized_class,
+            "project_ids": normalized_projects,
+            "total": total,
+            "class_counts": class_counts,
+            "groups": groups,
+        }
+
     def search(
         self,
         project_id: str,

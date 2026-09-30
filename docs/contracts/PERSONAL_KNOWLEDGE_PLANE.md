@@ -33,3 +33,7 @@ CLI search: atlas personal search PROJECT QUERY
 MCP: get_personal_knowledge
 
 MCP search: search_personal_knowledge
+
+## Cross-project source-class search
+
+Cross-project search accepts one explicit project scope and one source-class filter: all, engineering, or personal. Filtering happens before retrieval. Personal-only search cannot return engineering projections, engineering-only search cannot return personal projections, and all-mode keeps the source relation visible on every result. MCP callers must provide project_ids explicitly.

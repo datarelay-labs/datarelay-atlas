@@ -43,7 +43,7 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, concurrency_factory=service.concurrency_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit))
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, concurrency_factory=service.concurrency_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit))
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
@@ -59,7 +59,8 @@ def build_mcp_application(
             "Decision Plane candidate tools only prepare bounded options and never execute model choices; "
             "get_instruction_governance returns Engineering-System-referenced managed-surface audit history with no mutation authority; "
             "get_concurrency_admission returns advisory multi-node admission and measurement with no dispatch authority; "
-            "get_personal_knowledge and search_personal_knowledge keep personal/reference content explicitly non-authoritative."
+            "get_personal_knowledge and search_personal_knowledge keep personal/reference content explicitly non-authoritative; "
+            "search_knowledge requires explicit project_ids and supports all/engineering/personal source-class filtering."
         ),
         token_verifier=verifier,
         auth=AuthSettings(
@@ -123,6 +124,28 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             tools,
             "search_project",
             {"project_id": project_id, "query": query, "limit": limit},
+        )
+
+    @server.tool(
+        name="search_knowledge",
+        description="Search an explicit project scope with all/engineering/personal filtering and attributable provenance",
+        structured_output=False,
+    )
+    async def search_knowledge(
+        project_ids: list[str],
+        query: str,
+        source_class: str = "all",
+        limit_per_project: int = 5,
+    ) -> str:
+        return _call_tool(
+            tools,
+            "search_knowledge",
+            {
+                "project_ids": project_ids,
+                "query": query,
+                "source_class": source_class,
+                "limit_per_project": limit_per_project,
+            },
         )
 
     @server.tool(

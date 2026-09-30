@@ -870,36 +870,83 @@ def render_operations(service: AtlasService) -> UiResponse:
     return UiResponse("200 OK", _page("Operations readiness", body))
 
 
-def render_cross_project_search(service: AtlasService, query: str) -> UiResponse:
+def render_cross_project_search(
+    service: AtlasService,
+    query: str,
+    source_class: str = "all",
+) -> UiResponse:
+    normalized_class = source_class.strip().lower() or "all"
+    if normalized_class not in {"all", "engineering", "personal"}:
+        return _error(
+            "400 Bad Request",
+            "Invalid search",
+            "source_class must be all, engineering, or personal.",
+        )
+    selected = {
+        value: (" selected" if normalized_class == value else "")
+        for value in ("all", "engineering", "personal")
+    }
     body = '<p><a href="/">← Projects</a></p><h1>Cross-project search</h1>'
-    body += f'<form method="get" action="/search"><input name="q" maxlength="{_MAX_QUERY}" value="{escape(query, quote=True)}" placeholder="Search all registered projects"><button type="submit">Search</button></form>'
+    body += (
+        f'<form method="get" action="/search"><input name="q" maxlength="{_MAX_QUERY}" '
+        f'value="{escape(query, quote=True)}" placeholder="Search all registered projects">'
+        '<select name="source_class">'
+        f'<option value="all"{selected["all"]}>All sources</option>'
+        f'<option value="engineering"{selected["engineering"]}>Engineering only</option>'
+        f'<option value="personal"{selected["personal"]}>Personal/reference only</option>'
+        '</select><button type="submit">Search</button></form>'
+    )
     if query:
-        total = 0
-        for project in service.list_projects():
-            if not project.enabled:
+        project_ids = [
+            project.project_id
+            for project in service.list_projects()
+            if project.enabled
+        ]
+        if not project_ids:
+            body += '<p class="muted">No enabled projects.</p>'
+            return UiResponse("200 OK", _page("Cross-project search", body))
+        try:
+            result = service.search_across_projects(
+                query,
+                project_ids=project_ids,
+                source_class=normalized_class,
+                limit_per_project=5,
+            )
+        except ValidationError:
+            return _error(
+                "500 Internal Server Error",
+                "Search unavailable",
+                "Validated search state could not be read safely.",
+            )
+        for group in result["groups"]:
+            if not group["hits"]:
                 continue
-            try:
-                hits = service.search(project.project_id, query, limit=5)
-            except ValidationError:
-                body += f'<section class="card hit"><h2>{escape(project.display_name)}</h2><span class="pill">UNAVAILABLE</span></section>'
-                continue
-            if not hits:
-                continue
-            total += len(hits)
-            body += f'<section class="card hit"><h2><a href="/projects/{quote(project.project_id, safe="")}">{escape(project.display_name)}</a></h2>'
-            for hit in hits:
-                relation = _source_relation(hit.provenance)
-                source_url = _source_detail_url(project.project_id, hit.identity)
-                title = escape(hit.title or hit.path)
+            body += (
+                f'<section class="card hit"><h2><a href="/projects/{quote(str(group["project_id"]), safe="")}">'
+                f'{escape(str(group["display_name"]))}</a></h2>'
+            )
+            for hit in group["hits"]:
+                provenance = hit["provenance"]
+                relation = _source_relation(provenance)
+                source_url = _source_detail_url(str(group["project_id"]), str(hit["identity"]))
+                title = escape(str(hit["title"] or hit["path"]))
                 title_html = f'<a href="{source_url}">{title}</a>' if source_url else title
                 body += (
-                    f'<article><h3>{title_html}</h3><p class="snippet">{escape(hit.content or "")}</p>'
+                    f'<article><h3>{title_html}</h3><p class="snippet">{escape(str(hit["content"] or ""))}</p>'
                     f'<p><span class="pill">DERIVED</span> <span class="pill">{escape(relation)}</span></p>'
-                    f'<p class="muted"><code>{escape(str(hit.provenance.get("repository", "")))} · {escape(str(hit.provenance.get("ref", "")))} · {escape(str(hit.provenance.get("source_path", "")))} · {escape(str(hit.provenance.get("source_revision", "")))}</code></p>'
-                    f'<p class="muted">Projection <code>{escape(hit.identity)}</code></p></article>'
+                    f'<p class="muted"><code>{escape(str(provenance.get("repository", "")))} · '
+                    f'{escape(str(provenance.get("ref", "")))} · '
+                    f'{escape(str(provenance.get("source_path", "")))} · '
+                    f'{escape(str(provenance.get("source_revision", "")))}</code></p>'
+                    f'<p class="muted">Projection <code>{escape(str(hit["identity"]))}</code></p></article>'
                 )
             body += "</section>"
-        body += f'<p class="muted">{total} attributable result(s) across enabled projects.</p>'
+        counts = result["class_counts"]
+        body += (
+            f'<p class="muted">{result["total"]} attributable result(s) across enabled projects · '
+            f'engineering {counts["engineering"]} · personal {counts["personal"]} · '
+            f'filter {escape(normalized_class)}.</p>'
+        )
     return UiResponse("200 OK", _page("Cross-project search", body))
 
 
@@ -1597,8 +1644,14 @@ def create_app(data_root: Path):
                                 max_attempts=max_attempts,
                             )
             elif path == "/search":
-                query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True).get("q", [""])[0]
-                response = _error("400 Bad Request", "Invalid search", "Search query is too long.") if len(query) > _MAX_QUERY else render_cross_project_search(service, query.strip())
+                params = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
+                query = params.get("q", [""])[0]
+                source_class = params.get("source_class", ["all"])[0]
+                response = (
+                    _error("400 Bad Request", "Invalid search", "Search query is too long.")
+                    if len(query) > _MAX_QUERY
+                    else render_cross_project_search(service, query.strip(), source_class)
+                )
             elif path.startswith("/decisions/") and "/" not in path[len("/decisions/"):]:
                 response = render_decision_detail(service, unquote(path[len("/decisions/"):]))
             elif path.startswith("/projects/") and path.endswith("/lifecycle") and "/" not in path[len("/projects/"):-len("/lifecycle")]:

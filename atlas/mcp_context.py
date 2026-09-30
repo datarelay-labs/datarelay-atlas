@@ -43,6 +43,7 @@ class AtlasContextTools:
         concurrency_factory: Callable[[], dict[str, object]] | None = None,
         personal_knowledge_factory: Callable[[], dict[str, object]] | None = None,
         personal_search_factory: Callable[[str, str, int], list[Any]] | None = None,
+        knowledge_search_factory: Callable[[str, list[str], str, int], dict[str, Any]] | None = None,
     ) -> None:
         if (retriever is None) == (retriever_factory is None):
             raise ValueError("AtlasContextTools requires exactly one retriever source")
@@ -61,6 +62,7 @@ class AtlasContextTools:
         self._concurrency_factory = concurrency_factory
         self._personal_knowledge_factory = personal_knowledge_factory
         self._personal_search_factory = personal_search_factory
+        self._knowledge_search_factory = knowledge_search_factory
 
     def _retriever_for(self, project_id: str) -> Retriever:
         if self._retriever_factory is not None:
@@ -170,6 +172,13 @@ class AtlasContextTools:
                     "description": "Search only personal/reference projections within one explicit project",
                 }
             )
+        if self._knowledge_search_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "search_knowledge",
+                    "description": "Search an explicit project_ids scope with source_class all/engineering/personal filtering and provenance",
+                }
+            )
         if authorize_tool("create_note", scopes, write_tools=WRITE_TOOL_NAMES):
             tools.append(
                 {
@@ -189,7 +198,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_transition_preview", "get_decision_plane", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_concurrency_admission", "get_personal_knowledge", "search_personal_knowledge"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_transition_preview", "get_decision_plane", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_concurrency_admission", "get_personal_knowledge", "search_personal_knowledge", "search_knowledge"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "search_project":
@@ -291,6 +300,21 @@ class AtlasContextTools:
                     for h in hits
                 ],
             )
+
+        if tool_name == "search_knowledge":
+            if self._knowledge_search_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:search_knowledge")
+            try:
+                project_ids = _required_project_ids(args, "project_ids")
+                query = _required_text(args, "query")
+                source_class = (_optional_text(args, "source_class") or "all").lower()
+                limit_per_project = _positive_limit(args.get("limit_per_project", 5))
+                payload = self._knowledge_search_factory(
+                    query, project_ids, source_class, limit_per_project
+                )
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
 
         if tool_name == "get_instruction_governance":
             if self._instruction_governance_factory is None:

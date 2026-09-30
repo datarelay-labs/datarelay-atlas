@@ -258,7 +258,32 @@ class WebUiTests(unittest.TestCase):
         hit = SimpleNamespace(title="Note", path="ideas.md", content="needle", identity="idea@local", provenance={
             "repository": "local://atlas-personal", "ref": "local", "source_path": "ideas.md",
             "source_revision": "c" * 40, "source_class": "personal", "canonical": False, "derived": True})
-        service = SimpleNamespace(list_projects=lambda: [project], search=lambda project_id, query, limit: [hit])
+        service = SimpleNamespace(
+            list_projects=lambda: [project],
+            search_across_projects=lambda query, project_ids, source_class, limit_per_project: {
+                "query": query,
+                "source_class": source_class,
+                "project_ids": project_ids,
+                "total": 1,
+                "class_counts": {"engineering": 0, "personal": 1},
+                "groups": [{
+                    "project_id": "notes",
+                    "display_name": "Notes",
+                    "repository": "local/markdown",
+                    "result_count": 1,
+                    "hits": [{
+                        "project_id": hit.project_id if hasattr(hit, "project_id") else "notes",
+                        "path": hit.path,
+                        "identity": hit.identity,
+                        "title": hit.title,
+                        "content": hit.content,
+                        "match": "classic",
+                        "score": 1.0,
+                        "provenance": hit.provenance,
+                    }],
+                }],
+            },
+        )
         body = render_cross_project_search(service, "needle").body.decode()
         self.assertIn("personal reference / non-authoritative", body)
         self.assertIn("DERIVED", body)
