@@ -155,3 +155,40 @@ PYTHONPATH=. python3 -m atlas usage provider-transition-plan \
 - An empty plan is invalid because planning requires at least one candidate.
 - No transport, provider adapter, Cursor process, GitHub mutation, or session
   control dependency exists in the broker module.
+
+## Exact-state transition effect authorization
+
+A transition recommendation remains `ADVISORY_ONLY`. Atlas has a separate
+provider-neutral authorization boundary before any future provider transition
+effect.
+
+The current-route state contract records only:
+
+- the current `route_id`;
+- a 64-hex immutable `state_revision`;
+- a bounded positive `effect_epoch`.
+
+The state has its own deterministic SHA-256 identity, which the consumer must
+retain out of band. Authorization consumes all of the following together:
+
+1. the transition plan and its trusted transition-plan digest;
+2. the explicit consumption time and trusted freshness policy already required
+   by the transition validator;
+3. the current-route state and its trusted state digest.
+
+`TRANSITION_RECOMMENDED / ELIGIBLE_FALLBACK` can become `AUTHORIZED` only when
+the current route exactly equals the plan's `from_route_id`. A different current
+route returns `HUMAN_REQUIRED / CURRENT_ROUTE_MISMATCH`. A transition plan that
+already requires a human remains `HUMAN_REQUIRED / PLAN_REQUIRES_HUMAN` and
+carries `NO_EFFECT_AUTHORITY`.
+
+An `AUTHORIZED` result carries only `EFFECT_AUTHORIZATION_ONLY`. It binds the
+transition-plan digest, current-state digest, state revision, effect epoch,
+from/to route ids, strategy, required capability, and attempt metadata. The
+authorization has a separate deterministic SHA-256 identity retained out of
+band.
+
+This boundary still performs **no provider call or state mutation**. A later
+effect adapter must freshly re-read the current route state and require the same
+state digest/revision/epoch before attempting one transition. A changed state
+therefore invalidates an earlier authorization rather than silently reusing it.

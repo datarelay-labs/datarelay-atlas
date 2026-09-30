@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datarelay.local/contracts/provider-transition-effect-state.schema.json",
+  "title": "DataRelay Atlas Provider Transition Effect State v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "route_id", "state_revision", "effect_epoch"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "provider_route_effect_state" },
+    "route_id": { "$ref": "#/$defs/routeId" },
+    "state_revision": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "effect_epoch": { "type": "integer", "minimum": 1, "maximum": 2147483647 }
+  },
+  "$defs": {
+    "routeId": {
+      "type": "string",
+      "pattern": "^(?!(?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))(?!.*[^A-Za-z0-9](?:sk-|ghp_|github_pat_|AKIA|-----BEGIN))[a-z0-9][a-z0-9._-]{0,63}$"
+    }
+  }
+}
