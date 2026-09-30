@@ -43,7 +43,7 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, instruction_governance_routing_factory=service.instruction_governance_routing, instruction_governance_disposition_factory=service.instruction_governance_disposition_dashboard, concurrency_factory=service.concurrency_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit), provider_route_quality_factory=service.provider_route_quality_dashboard, decision_canary_factory=service.decision_canary_readiness, decision_canary_admission_factory=service.decision_canary_dashboard)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, instruction_governance_routing_factory=service.instruction_governance_routing, instruction_governance_disposition_factory=service.instruction_governance_disposition_dashboard, instruction_governance_canary_factory=service.instruction_governance_canary_dashboard, concurrency_factory=service.concurrency_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit), provider_route_quality_factory=service.provider_route_quality_dashboard, decision_canary_factory=service.decision_canary_readiness, decision_canary_admission_factory=service.decision_canary_dashboard)
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
@@ -63,6 +63,7 @@ def build_mcp_application(
             "get_instruction_governance returns Engineering-System-referenced managed-surface audit history with no mutation authority; "
             "get_instruction_governance_routing derives current candidate routing without creating PRs or mutating instructions; "
             "get_instruction_governance_disposition reports digest-bound PR handoff evidence without PR/merge/release authority; "
+            "get_instruction_governance_canary reports canary/adoption-gate evidence without GitHub mutation authority; "
             "get_concurrency_admission returns advisory multi-node admission and measurement with no dispatch authority; "
             "get_personal_knowledge and search_personal_knowledge keep personal/reference content explicitly non-authoritative; "
             "search_knowledge requires explicit project_ids and supports all/engineering/personal source-class filtering."
@@ -310,6 +311,14 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     )
     async def get_instruction_governance_disposition() -> str:
         return _call_tool(tools, "get_instruction_governance_disposition", {})
+
+    @server.tool(
+        name="get_instruction_governance_canary",
+        description="Return instruction-governance canary/adoption-gate evidence without GitHub mutation authority",
+        structured_output=False,
+    )
+    async def get_instruction_governance_canary() -> str:
+        return _call_tool(tools, "get_instruction_governance_canary", {})
 
     @server.tool(
         name="get_concurrency_admission",

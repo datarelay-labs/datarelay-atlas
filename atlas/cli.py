@@ -348,6 +348,17 @@ def cmd_instruction_governance_disposition_show(args: argparse.Namespace) -> int
     return 0
 
 
+def cmd_instruction_governance_canary_record(args: argparse.Namespace) -> int:
+    observation = _read_json_file(args.observation, label="instruction governance canary observation")
+    _print_json(_service(args).record_instruction_governance_canary(observation))
+    return 0
+
+
+def cmd_instruction_governance_canary_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).instruction_governance_canary_dashboard())
+    return 0
+
+
 def cmd_instruction_governance_preflight(args: argparse.Namespace) -> int:
     profile = _read_json_file(args.profile, label="instruction governance profile")
     payload = _service(args).instruction_governance_preflight(
@@ -1039,6 +1050,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show derived instruction-governance disposition/PR-handoff ledger",
     )
     instruction_governance_disposition_show.set_defaults(func=cmd_instruction_governance_disposition_show)
+    instruction_governance_canary_record = instruction_governance_sub.add_parser(
+        "canary-record",
+        help="Record bounded canary evidence bound to one current PR_CANDIDATE handoff",
+    )
+    instruction_governance_canary_record.add_argument("--observation", required=True)
+    instruction_governance_canary_record.set_defaults(func=cmd_instruction_governance_canary_record)
+    instruction_governance_canary_show = instruction_governance_sub.add_parser(
+        "canary-show",
+        help="Show instruction-governance canary/adoption-gate evidence",
+    )
+    instruction_governance_canary_show.set_defaults(func=cmd_instruction_governance_canary_show)
     instruction_governance_profile = instruction_governance_sub.add_parser("profile-build", help="Build exact target/Engineering System/model/harness profile JSON")
     instruction_governance_profile.add_argument("--engineering-system-revision", required=True)
     instruction_governance_profile.add_argument("--agent-base", required=True)

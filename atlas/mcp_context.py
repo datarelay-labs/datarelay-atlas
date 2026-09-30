@@ -42,6 +42,7 @@ class AtlasContextTools:
         instruction_governance_factory: Callable[[], dict[str, object]] | None = None,
         instruction_governance_routing_factory: Callable[[], dict[str, object]] | None = None,
         instruction_governance_disposition_factory: Callable[[], dict[str, object]] | None = None,
+        instruction_governance_canary_factory: Callable[[], dict[str, object]] | None = None,
         concurrency_factory: Callable[[], dict[str, object]] | None = None,
         personal_knowledge_factory: Callable[[], dict[str, object]] | None = None,
         personal_search_factory: Callable[[str, str, int], list[Any]] | None = None,
@@ -66,6 +67,7 @@ class AtlasContextTools:
         self._instruction_governance_factory = instruction_governance_factory
         self._instruction_governance_routing_factory = instruction_governance_routing_factory
         self._instruction_governance_disposition_factory = instruction_governance_disposition_factory
+        self._instruction_governance_canary_factory = instruction_governance_canary_factory
         self._concurrency_factory = concurrency_factory
         self._personal_knowledge_factory = personal_knowledge_factory
         self._personal_search_factory = personal_search_factory
@@ -196,6 +198,13 @@ class AtlasContextTools:
                     "description": "Return audit-bound instruction disposition and PR handoff evidence without mutation authority",
                 }
             )
+        if self._instruction_governance_canary_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_instruction_governance_canary",
+                    "description": "Return instruction-governance canary/adoption-gate evidence without mutation authority",
+                }
+            )
         if self._concurrency_factory is not None and READ_SCOPE in scopes:
             tools.append(
                 {
@@ -243,7 +252,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_route_quality", "get_provider_transition_preview", "get_decision_plane", "get_decision_canary_readiness", "get_decision_plane_canary", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_instruction_governance_routing", "get_instruction_governance_disposition", "get_concurrency_admission", "get_personal_knowledge", "search_personal_knowledge", "search_knowledge"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_route_quality", "get_provider_transition_preview", "get_decision_plane", "get_decision_canary_readiness", "get_decision_plane_canary", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_instruction_governance_routing", "get_instruction_governance_disposition", "get_instruction_governance_canary", "get_concurrency_admission", "get_personal_knowledge", "search_personal_knowledge", "search_knowledge"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "search_project":
@@ -384,6 +393,15 @@ class AtlasContextTools:
                 return ToolResult(ok=False, data=None, error="unknown_tool:get_instruction_governance_disposition")
             try:
                 payload = self._instruction_governance_disposition_factory()
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_instruction_governance_canary":
+            if self._instruction_governance_canary_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_instruction_governance_canary")
+            try:
+                payload = self._instruction_governance_canary_factory()
             except ValidationError as exc:
                 return ToolResult(ok=False, data=None, error=str(exc))
             return ToolResult(ok=True, data=payload)
