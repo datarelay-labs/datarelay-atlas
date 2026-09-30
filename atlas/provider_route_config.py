@@ -205,6 +205,7 @@ def bind_configured_provider_route(
     gates: object,
     required_capability: str,
     capacity_attribution: object | None = None,
+    capacity_operational: object | None = None,
 ) -> dict[str, Any]:
     """Bind one configured route to existing dynamic evidence contracts."""
     normalized_set = validate_provider_route_set(route_set)
