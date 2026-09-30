@@ -215,3 +215,29 @@ A later executor must reject duplicate replay keys and re-read current state
 again immediately before one provider effect. Provider credentials, API calls,
 session/process control, retries, and partial-effect reconciliation remain out
 of scope for this boundary.
+
+## One-shot transition effect commit boundary
+
+A sealed effect request is still not proof of a provider transition. The
+one-shot effect boundary consumes the sealed request together with freshly
+revalidated current-route state and calls one provider-neutral effect port at
+most once.
+
+Pre-effect failures are fail-closed and invoke no effect. The current route,
+state revision, effect epoch, sealed-request digest, authorization digest, and
+state digest must still match the sealed request exactly.
+
+The effect port receives only bounded from/to route and expected state identity
+facts. It may return `COMMITTED`, `REFUSED`, or `UNKNOWN`; exceptions are also
+normalized. Atlas never retries in this slice.
+
+A `COMMITTED` result becomes `PASS / COMMITTED` only when the returned new
+state moves to the authorized target route, changes the state revision, and
+increments the effect epoch by exactly one. Refusal, ambiguity, errors, or an
+invalid committed state become `HUMAN_REQUIRED` and do not fabricate rollback
+or a new authoritative state.
+
+The receipt binds the sealed-request and authorization digests plus old/new
+state identities and is itself content-addressed with a deterministic SHA-256
+digest. No concrete provider SDK, credential, session transcript, prompt, or
+automatic retry is part of this boundary.
