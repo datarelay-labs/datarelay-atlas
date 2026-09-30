@@ -1569,8 +1569,9 @@ class RecordingWorkPacketHandoff:
             "head": packet.current_target_sha,
             "finding": safe_finding.to_dict(),
             "next_action": (
-                "Implement the bounded audit finding in Cursor; "
-                "do not modify product code from Chat."
+                "Continue the bounded audit finding through the authorized "
+                "ChatGPT Chat implementation Work Packet; re-audit exact HEAD "
+                "after the fix lands."
             ),
         }
         self.handoffs.append(record)
@@ -1643,8 +1644,9 @@ class FileWorkPacketHandoff:
             "head": packet.current_target_sha,
             "finding": safe_finding.to_dict(),
             "next_action": (
-                "Implement the bounded audit finding in Cursor; "
-                "do not modify product code from Chat."
+                "Continue the bounded audit finding through the authorized "
+                "ChatGPT Chat implementation Work Packet; re-audit exact HEAD "
+                "after the fix lands."
             ),
             "status": "OPEN",
             "finding_id": safe_finding.finding_id,

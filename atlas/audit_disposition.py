@@ -1,10 +1,10 @@
-"""Exact-HEAD audit disposition (Issue #47 slice D).
+"""Exact-HEAD audit disposition with provider-neutral REWORK continuation.
 
-Connects one completed audit claim to the canonical Work Packet and the
-host-local Cursor resume transport. REWORK mutates that packet once, then
-resumes the same project Chat ID. PASS writes a governance checkpoint only.
-HUMAN_REQUIRED retains a bounded reason and does not dispatch. This module
-does not merge, release, deploy, or activate another Work Packet.
+PASS and HUMAN_REQUIRED are transport-free. REWORK for CHATGPT_CHAT updates the
+canonical Work Packet to an authorized external handoff and launches no worker.
+The dormant Cursor resume transport is used only when the packet explicitly
+records IMPLEMENTER=CURSOR. This module does not merge, release, deploy, or
+activate another Work Packet.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ from atlas.work_controller import (
     redact_absolute_paths,
     render_dispatch_blocked_work_packet_body,
     render_pass_governance_work_packet_body,
+    render_rework_handoff_work_packet_body,
     render_rework_work_packet_body,
     sanitize_rework_findings,
     validate_clean_worktree_identity,
@@ -49,7 +50,13 @@ from atlas.work_controller import (
 
 Spawn = Callable[[list[str], str], int]
 _TERMINAL_ACTIONS = frozenset(
-    {"redispatched", "dispatch_blocked", "pass_checkpoint", "human_required"}
+    {
+        "rework_handoff",
+        "redispatched",
+        "dispatch_blocked",
+        "pass_checkpoint",
+        "human_required",
+    }
 )
 
 
@@ -273,7 +280,14 @@ def apply_exact_head_disposition(
     ):
         return _result("stale_packet")
 
-    if persistent_cursor_active(
+    implementer = str(
+        _packet_metadata_value(body, "IMPLEMENTER") or ""
+    ).strip()
+    if implementer not in {"CHATGPT_CHAT", "CURSOR"}:
+        return _result("implementer_refused", verdict=claim.verdict)
+    cursor_adapter_selected = implementer == "CURSOR"
+
+    if cursor_adapter_selected and persistent_cursor_active(
         worktree_path,
         list_sessions=list_sessions,
         list_processes=list_processes,
@@ -293,7 +307,7 @@ def apply_exact_head_disposition(
             findings=redact_sensitive_audit_text(str(exc)),
         )
 
-    chat_id = descriptor.cursor_chat_id
+    chat_id = descriptor.cursor_chat_id if cursor_adapter_selected else ""
     try:
         findings = _bounded_findings(
             claim.findings, chat_id=chat_id, worktree=worktree_path
@@ -367,6 +381,53 @@ def apply_exact_head_disposition(
             verdict="PASS",
             findings=findings,
             packet_mutations=packet_store.mutations,
+        )
+
+    if not cursor_adapter_selected:
+        if _packet_marker(
+            body, target, "WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF"
+        ):
+            return _result(
+                "duplicate",
+                verdict="REWORK",
+                findings=findings,
+                packet_mutations=packet_store.mutations,
+            )
+        rendered = render_rework_handoff_work_packet_body(
+            body,
+            repository=repo,
+            branch=branch_name,
+            workstream=workstream_name,
+            findings=findings,
+            attempt=int(attempt),
+            head=target,
+        )
+        again, token2 = packet_store.load()
+        if again != body or token2 != token:
+            return _result(
+                "packet_conflict", verdict="REWORK", findings=findings
+            )
+        packet_store.cas_save(
+            rendered, expected_body=body, expected_token=token
+        )
+        _remember(
+            ledger,
+            claim_key=expected_key,
+            repository=repo,
+            issue_number=issue_number,
+            action="rework_handoff",
+            verdict="REWORK",
+            target_sha=target,
+            findings=findings,
+            attempt=attempt,
+        )
+        claim_store.save(ledger, expected_sha=ledger_sha)
+        return _result(
+            "authorized_handoff",
+            cursor_calls=0,
+            packet_mutations=packet_store.mutations,
+            verdict="REWORK",
+            findings=findings,
         )
 
     if _packet_marker(body, target, "WORK_PACKET_MUTATION=DISPATCH_BLOCKED"):

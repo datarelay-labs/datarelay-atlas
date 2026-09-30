@@ -45,8 +45,9 @@ def _packet_body(
     repository: str = REPO,
     head: str = HEAD,
     status: str = "ACTIVE",
+    implementer: str = "CURSOR",
 ) -> str:
-    return f"""PACKET_VERSION=1
+    return f"""PACKET_VERSION=2
 TARGET_REPO={repository}
 WORKSTREAM={WORKSTREAM}
 STATUS={status}
@@ -54,7 +55,9 @@ QUEUE_STATE=NONE
 BRANCH={BRANCH}
 TASK_KIND=DEVELOPMENT
 OWNER_INTENT=Replace unreliable scheduled-Chat orchestration.
-IMPLEMENTER=CURSOR
+INTENT_REVISION=1
+CHANGE_RISK=HIGH
+IMPLEMENTER={implementer}
 LAST_VERIFIED_HEAD={head}
 GATE=IMPLEMENTATION
 NEXT_ACTION=CURSOR_IMPLEMENT_SLICE_E1
@@ -428,6 +431,69 @@ class SuperviseOnceTests(unittest.TestCase):
         self.assertEqual(outcome["model_calls"], 0)
         self.assertEqual(self.evidence_calls, [])
         self.assertEqual(self.spawned, [])
+
+    def test_chat_packet_ignores_cursor_probe_and_audits(self) -> None:
+        self.hub.add(
+            REPO,
+            87,
+            _packet_body(implementer="CHATGPT_CHAT"),
+        )
+
+        def cursor_probe_forbidden(*_args, **_kwargs):
+            raise AssertionError("Chat packet must not probe Cursor state")
+
+        outcome = self._run(
+            list_sessions=cursor_probe_forbidden,
+            list_processes=cursor_probe_forbidden,
+        )
+
+        row = self._row(outcome, REPO)
+        self.assertEqual(row["action"], "audited")
+        self.assertEqual(row["issue_number"], 87)
+        self.assertEqual(self.auditor.calls, 1)
+        self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertEqual(self.spawned, [])
+
+    def test_chat_completed_rework_becomes_handoff_without_cursor_probe(self) -> None:
+        self.hub.add(
+            REPO,
+            86,
+            _packet_body(implementer="CHATGPT_CHAT"),
+        )
+        self._seed(REPO, 86)
+        os.environ.pop("OPENAI_API_KEY", None)
+
+        def cursor_probe_forbidden(*_args, **_kwargs):
+            raise AssertionError("Chat REWORK must not probe Cursor state")
+
+        outcome = self._run(
+            list_sessions=cursor_probe_forbidden,
+            list_processes=cursor_probe_forbidden,
+        )
+
+        row = self._row(outcome, REPO)
+        self.assertEqual(row["action"], "authorized_handoff")
+        self.assertEqual(row["verdict"], "REWORK")
+        self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertEqual(self.spawned, [])
+        body = self.hub.issues[(REPO, 86)]["body"]
+        self.assertIn("WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF", body)
+        self.assertNotIn("/work-resume", body)
+
+    def test_missing_implementer_fails_closed_without_effects(self) -> None:
+        self.hub.add(
+            REPO,
+            85,
+            _packet_body().replace("IMPLEMENTER=CURSOR\n", ""),
+        )
+        outcome = self._run()
+
+        row = self._row(outcome, REPO)
+        self.assertEqual(row["action"], "implementer_refused")
+        self.assertEqual(self.auditor.calls, 0)
+        self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertEqual(self.spawned, [])
+        self.assertEqual(self.evidence_calls, [])
 
     def test_completed_claim_disposes_once_and_replay_does_not_respawn(self) -> None:
         self.hub.add(REPO, 88, _packet_body())
