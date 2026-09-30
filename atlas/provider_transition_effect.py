@@ -8,10 +8,11 @@ import re
 from typing import Any, Protocol
 
 from atlas.provider_transition_authorization import (
-    AUTHORIZED_AUTHORITY,
     provider_transition_effect_state_digest,
-    validate_provider_transition_effect_authorization,
     validate_provider_transition_effect_state,
+)
+from atlas.provider_transition_effect_request import (
+    validate_provider_transition_effect_request,
 )
 from atlas.provenance import ValidationError
 
@@ -21,7 +22,6 @@ OUTCOMES = frozenset({"PASS", "HUMAN_REQUIRED"})
 REASONS = frozenset(
     {
         "COMMITTED",
-        "AUTHORIZATION_REQUIRED",
         "EFFECT_REFUSED",
         "EFFECT_AMBIGUOUS",
         "EFFECT_ERROR",
@@ -35,6 +35,7 @@ _RECEIPT_KEYS = frozenset(
         "kind",
         "outcome",
         "reason",
+        "effect_request_digest",
         "authorization_digest",
         "old_state_digest",
         "new_state_digest",
@@ -82,10 +83,11 @@ def _receipt(
     *,
     outcome: str,
     reason: str,
+    effect_request_digest: str,
     authorization_digest: str,
     old_state_digest: str,
     from_route_id: str,
-    to_route_id: str | None,
+    to_route_id: str,
     old_state_revision: str,
     old_effect_epoch: int,
     new_state_digest: str | None = None,
@@ -97,6 +99,7 @@ def _receipt(
         "kind": KIND,
         "outcome": outcome,
         "reason": reason,
+        "effect_request_digest": effect_request_digest,
         "authorization_digest": authorization_digest,
         "old_state_digest": old_state_digest,
         "new_state_digest": new_state_digest,
@@ -113,11 +116,16 @@ def validate_provider_transition_effect_receipt(
     payload: object,
     *,
     expected_receipt_digest: str,
+    expected_request_digest: str,
     expected_authorization_digest: str,
 ) -> dict[str, Any]:
     receipt_digest = _trusted_digest(
         expected_receipt_digest,
         label="expected provider transition effect receipt digest",
+    )
+    request_digest = _trusted_digest(
+        expected_request_digest,
+        label="expected provider transition effect-request digest",
     )
     auth_digest = _trusted_digest(
         expected_authorization_digest,
@@ -129,14 +137,19 @@ def validate_provider_transition_effect_receipt(
         _reject("provider transition effect receipt digest does not match trusted identity")
     if payload.get("schema_version") != SCHEMA_VERSION or payload.get("kind") != KIND:
         _reject("provider transition effect receipt identity is invalid")
+    if payload.get("effect_request_digest") != request_digest:
+        _reject("provider transition receipt request digest is inconsistent")
+    if payload.get("authorization_digest") != auth_digest:
+        _reject("provider transition receipt authorization digest is inconsistent")
+
     outcome = payload.get("outcome")
     reason = payload.get("reason")
     if outcome not in OUTCOMES or reason not in REASONS:
         _reject("provider transition effect receipt outcome is invalid")
-    if payload.get("authorization_digest") != auth_digest:
-        _reject("provider transition receipt authorization digest is inconsistent")
-    old_digest = _trusted_digest(
-        payload.get("old_state_digest"), label="provider transition old state digest"
+
+    _trusted_digest(
+        payload.get("old_state_digest"),
+        label="provider transition old state digest",
     )
     old_revision = _trusted_digest(
         payload.get("old_state_revision"),
@@ -145,16 +158,19 @@ def validate_provider_transition_effect_receipt(
     old_epoch = payload.get("old_effect_epoch")
     if isinstance(old_epoch, bool) or not isinstance(old_epoch, int) or old_epoch < 1:
         _reject("provider transition old effect epoch is invalid")
+
     from_route = payload.get("from_route_id")
     to_route = payload.get("to_route_id")
-    if not isinstance(from_route, str):
-        _reject("provider transition receipt from route is invalid")
+    if not isinstance(from_route, str) or not isinstance(to_route, str):
+        _reject("provider transition receipt route identity is invalid")
+    if from_route == to_route:
+        _reject("provider transition receipt target equals current route")
 
     new_digest = payload.get("new_state_digest")
     new_revision = payload.get("new_state_revision")
     new_epoch = payload.get("new_effect_epoch")
     if outcome == "PASS":
-        if reason != "COMMITTED" or not isinstance(to_route, str):
+        if reason != "COMMITTED":
             _reject("provider transition PASS receipt is inconsistent")
         _trusted_digest(new_digest, label="provider transition new state digest")
         _trusted_digest(new_revision, label="provider transition new state revision")
@@ -176,16 +192,20 @@ def validate_provider_transition_effect_receipt(
 
 
 def commit_provider_transition_effect(
-    authorization: object,
+    effect_request: object,
     current_state: object,
     *,
+    expected_request_digest: str,
     expected_authorization_digest: str,
-    expected_transition_plan_digest: str,
     expected_current_state_digest: str,
     effect_port: ProviderTransitionEffectPort,
 ) -> dict[str, Any]:
-    """Validate exact state, invoke one effect once, and normalize the receipt."""
+    """Validate one sealed request, invoke one effect once, normalize receipt."""
 
+    request_digest = _trusted_digest(
+        expected_request_digest,
+        label="expected provider transition effect-request digest",
+    )
     auth_digest = _trusted_digest(
         expected_authorization_digest,
         label="expected provider transition authorization digest",
@@ -194,45 +214,32 @@ def commit_provider_transition_effect(
         expected_current_state_digest,
         label="expected provider transition current-state digest",
     )
-    auth = validate_provider_transition_effect_authorization(
-        authorization,
+    request = validate_provider_transition_effect_request(
+        effect_request,
+        expected_request_digest=request_digest,
         expected_authorization_digest=auth_digest,
-        expected_transition_plan_digest=expected_transition_plan_digest,
         expected_current_state_digest=state_digest,
     )
     state = validate_provider_transition_effect_state(
-        current_state, expected_state_digest=state_digest
+        current_state,
+        expected_state_digest=state_digest,
     )
 
     if (
-        auth["current_route_id"] != state["route_id"]
-        or auth["state_revision"] != state["state_revision"]
-        or auth["effect_epoch"] != state["effect_epoch"]
+        request["current_state_digest"] != state_digest
+        or request["from_route_id"] != state["route_id"]
+        or request["state_revision"] != state["state_revision"]
+        or request["effect_epoch"] != state["effect_epoch"]
     ):
-        _reject("provider transition current state changed after authorization")
+        _reject("provider transition current state changed after request sealing")
 
-    if auth["decision"] != "AUTHORIZED" or auth["authority"] != AUTHORIZED_AUTHORITY:
-        result = _receipt(
-            outcome="HUMAN_REQUIRED",
-            reason="AUTHORIZATION_REQUIRED",
-            authorization_digest=auth_digest,
-            old_state_digest=state_digest,
-            from_route_id=state["route_id"],
-            to_route_id=None,
-            old_state_revision=state["state_revision"],
-            old_effect_epoch=state["effect_epoch"],
-        )
-        return validate_provider_transition_effect_receipt(
-            result,
-            expected_receipt_digest=provider_transition_effect_receipt_digest(result),
-            expected_authorization_digest=auth_digest,
-        )
+    target = request["to_route_id"]
+    if target == state["route_id"]:
+        _reject("provider transition sealed target is invalid")
 
-    target = auth["plan_to_route_id"]
-    if not isinstance(target, str) or target == state["route_id"]:
-        _reject("provider transition authorized target is invalid")
-
-    request = {
+    effect_call = {
+        "effect_request_digest": request_digest,
+        "replay_key": request["replay_key"],
         "authorization_digest": auth_digest,
         "from_route_id": state["route_id"],
         "to_route_id": target,
@@ -241,70 +248,64 @@ def commit_provider_transition_effect(
         "expected_effect_epoch": state["effect_epoch"],
     }
     try:
-        raw = effect_port.commit(request)
+        raw = effect_port.commit(effect_call)
     except Exception:
-        result = _receipt(
-            outcome="HUMAN_REQUIRED",
-            reason="EFFECT_ERROR",
-            authorization_digest=auth_digest,
-            old_state_digest=state_digest,
-            from_route_id=state["route_id"],
-            to_route_id=target,
-            old_state_revision=state["state_revision"],
-            old_effect_epoch=state["effect_epoch"],
-        )
-        return validate_provider_transition_effect_receipt(
-            result,
-            expected_receipt_digest=provider_transition_effect_receipt_digest(result),
-            expected_authorization_digest=auth_digest,
-        )
-
-    if not isinstance(raw, dict) or set(raw) != {"outcome", "new_state"}:
-        reason = "EFFECT_RESULT_INVALID"
-    elif raw.get("outcome") == "REFUSED":
-        reason = "EFFECT_REFUSED"
-    elif raw.get("outcome") == "UNKNOWN":
-        reason = "EFFECT_AMBIGUOUS"
-    elif raw.get("outcome") != "COMMITTED":
-        reason = "EFFECT_RESULT_INVALID"
+        reason = "EFFECT_ERROR"
     else:
-        candidate = raw.get("new_state")
-        try:
-            candidate_digest = provider_transition_effect_state_digest(candidate)
-            new_state = validate_provider_transition_effect_state(
-                candidate, expected_state_digest=candidate_digest
-            )
-            if (
-                new_state["route_id"] != target
-                or new_state["state_revision"] == state["state_revision"]
-                or new_state["effect_epoch"] != state["effect_epoch"] + 1
-            ):
-                raise ValidationError("provider transition committed state is inconsistent")
-        except ValidationError:
+        if not isinstance(raw, dict) or set(raw) != {"outcome", "new_state"}:
+            reason = "EFFECT_RESULT_INVALID"
+        elif raw.get("outcome") == "REFUSED":
+            reason = "EFFECT_REFUSED"
+        elif raw.get("outcome") == "UNKNOWN":
+            reason = "EFFECT_AMBIGUOUS"
+        elif raw.get("outcome") != "COMMITTED":
             reason = "EFFECT_RESULT_INVALID"
         else:
-            result = _receipt(
-                outcome="PASS",
-                reason="COMMITTED",
-                authorization_digest=auth_digest,
-                old_state_digest=state_digest,
-                new_state_digest=candidate_digest,
-                from_route_id=state["route_id"],
-                to_route_id=target,
-                old_state_revision=state["state_revision"],
-                new_state_revision=new_state["state_revision"],
-                old_effect_epoch=state["effect_epoch"],
-                new_effect_epoch=new_state["effect_epoch"],
-            )
-            return validate_provider_transition_effect_receipt(
-                result,
-                expected_receipt_digest=provider_transition_effect_receipt_digest(result),
-                expected_authorization_digest=auth_digest,
-            )
+            candidate = raw.get("new_state")
+            try:
+                candidate_digest = provider_transition_effect_state_digest(candidate)
+                new_state = validate_provider_transition_effect_state(
+                    candidate,
+                    expected_state_digest=candidate_digest,
+                )
+                if (
+                    new_state["route_id"] != target
+                    or new_state["state_revision"] == state["state_revision"]
+                    or new_state["effect_epoch"] != state["effect_epoch"] + 1
+                ):
+                    raise ValidationError(
+                        "provider transition committed state is inconsistent"
+                    )
+            except ValidationError:
+                reason = "EFFECT_RESULT_INVALID"
+            else:
+                result = _receipt(
+                    outcome="PASS",
+                    reason="COMMITTED",
+                    effect_request_digest=request_digest,
+                    authorization_digest=auth_digest,
+                    old_state_digest=state_digest,
+                    new_state_digest=candidate_digest,
+                    from_route_id=state["route_id"],
+                    to_route_id=target,
+                    old_state_revision=state["state_revision"],
+                    new_state_revision=new_state["state_revision"],
+                    old_effect_epoch=state["effect_epoch"],
+                    new_effect_epoch=new_state["effect_epoch"],
+                )
+                return validate_provider_transition_effect_receipt(
+                    result,
+                    expected_receipt_digest=provider_transition_effect_receipt_digest(
+                        result
+                    ),
+                    expected_request_digest=request_digest,
+                    expected_authorization_digest=auth_digest,
+                )
 
     result = _receipt(
         outcome="HUMAN_REQUIRED",
         reason=reason,
+        effect_request_digest=request_digest,
         authorization_digest=auth_digest,
         old_state_digest=state_digest,
         from_route_id=state["route_id"],
@@ -315,5 +316,6 @@ def commit_provider_transition_effect(
     return validate_provider_transition_effect_receipt(
         result,
         expected_receipt_digest=provider_transition_effect_receipt_digest(result),
+        expected_request_digest=request_digest,
         expected_authorization_digest=auth_digest,
     )

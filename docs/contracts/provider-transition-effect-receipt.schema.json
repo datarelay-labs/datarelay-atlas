@@ -6,7 +6,8 @@
   "additionalProperties": false,
   "required": [
     "schema_version", "kind", "outcome", "reason",
-    "authorization_digest", "old_state_digest", "new_state_digest",
+    "effect_request_digest", "authorization_digest",
+    "old_state_digest", "new_state_digest",
     "from_route_id", "to_route_id",
     "old_state_revision", "new_state_revision",
     "old_effect_epoch", "new_effect_epoch"
@@ -18,19 +19,26 @@
     "reason": {
       "type": "string",
       "enum": [
-        "COMMITTED", "AUTHORIZATION_REQUIRED", "EFFECT_REFUSED",
-        "EFFECT_AMBIGUOUS", "EFFECT_ERROR", "EFFECT_RESULT_INVALID"
+        "COMMITTED", "EFFECT_REFUSED", "EFFECT_AMBIGUOUS",
+        "EFFECT_ERROR", "EFFECT_RESULT_INVALID"
       ]
     },
+    "effect_request_digest": { "$ref": "#/$defs/digest" },
     "authorization_digest": { "$ref": "#/$defs/digest" },
     "old_state_digest": { "$ref": "#/$defs/digest" },
-    "new_state_digest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "new_state_digest": {
+      "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+    },
     "from_route_id": { "$ref": "#/$defs/routeId" },
-    "to_route_id": { "oneOf": [{ "$ref": "#/$defs/routeId" }, { "type": "null" }] },
+    "to_route_id": { "$ref": "#/$defs/routeId" },
     "old_state_revision": { "$ref": "#/$defs/digest" },
-    "new_state_revision": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "new_state_revision": {
+      "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+    },
     "old_effect_epoch": { "type": "integer", "minimum": 1 },
-    "new_effect_epoch": { "oneOf": [{ "type": "integer", "minimum": 2 }, { "type": "null" }] }
+    "new_effect_epoch": {
+      "oneOf": [{ "type": "integer", "minimum": 2 }, { "type": "null" }]
+    }
   },
   "allOf": [
     {
@@ -38,7 +46,6 @@
       "then": {
         "properties": {
           "reason": { "const": "COMMITTED" },
-          "to_route_id": { "$ref": "#/$defs/routeId" },
           "new_state_digest": { "$ref": "#/$defs/digest" },
           "new_state_revision": { "$ref": "#/$defs/digest" },
           "new_effect_epoch": { "type": "integer", "minimum": 2 }
@@ -51,8 +58,8 @@
         "properties": {
           "reason": {
             "enum": [
-              "AUTHORIZATION_REQUIRED", "EFFECT_REFUSED",
-              "EFFECT_AMBIGUOUS", "EFFECT_ERROR", "EFFECT_RESULT_INVALID"
+              "EFFECT_REFUSED", "EFFECT_AMBIGUOUS",
+              "EFFECT_ERROR", "EFFECT_RESULT_INVALID"
             ]
           },
           "new_state_digest": { "type": "null" },
