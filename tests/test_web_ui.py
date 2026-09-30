@@ -134,6 +134,18 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("Unanswered questions", body)
         self.assertIn("no derived question analysis in this slice", body)
 
+    def test_lifecycle_detail_route_preserves_independent_truth(self):
+        state, body = self.get("/projects/demo/lifecycle")
+        self.assertEqual(state["status"], "200 OK")
+        self.assertIn("Lifecycle evidence", body)
+        self.assertIn("Work / PR", body)
+        self.assertIn("CI", body)
+        self.assertIn("Tests", body)
+        self.assertIn("Release", body)
+        self.assertIn("Browser gates", body)
+        self.assertIn("does not infer one channel from another", body)
+        self.assertNotIn(">PASS<", body)
+
     def test_lifecycle_evidence_is_bounded(self):
         _, body = self.get("/projects/demo")
         self.assertIn("Lifecycle evidence", body)

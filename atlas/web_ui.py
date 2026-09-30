@@ -100,6 +100,22 @@ def _adoption_projection_state(project, records: list[dict]) -> str:
     return "UNKNOWN"
 
 
+def render_lifecycle(service: AtlasService, project_id: str) -> UiResponse:
+    try:
+        project = service.registry.get(project_id)
+    except ValidationError as exc:
+        if str(exc).startswith("unknown project_id:"):
+            return _error("404 Not Found", "Project not found", "The requested project is not registered.")
+        return _error("500 Internal Server Error", "Atlas state unavailable", "Project registry state could not be read safely.")
+    lifecycle = lifecycle_view(service.data_root, project.repository)
+    rows = []
+    for label, value in (("Work / PR", lifecycle.work), ("CI", lifecycle.ci), ("Tests", lifecycle.tests), ("Release", lifecycle.release), ("Browser gates", lifecycle.browser)):
+        head = f' <code>{escape(value.candidate_head)}</code>' if value.candidate_head else ""
+        rows.append(f'<dt>{label}</dt><dd><span class="pill">{escape(value.state)}</span>{head}<br><span class="muted">{escape(value.detail)}</span></dd>')
+    body = f'<p><a href="/projects/{quote(project.project_id,safe="")}">← {escape(project.display_name)}</a></p><h1>Lifecycle evidence</h1><section class="card"><dl>{"".join(rows)}</dl></section><p class="muted">Read-only normalized evidence. Atlas does not infer one channel from another and does not become CI, GitHub, test, browser, or release authority.</p>'
+    return UiResponse("200 OK", _page(f"{project.display_name} lifecycle", body))
+
+
 def render_project(service: AtlasService, project_id: str, query: str = "") -> UiResponse:
     try:
         project = service.registry.get(project_id)
@@ -136,7 +152,7 @@ def render_project(service: AtlasService, project_id: str, query: str = "") -> U
         f'<dt>Tests</dt><dd><span class="pill">{escape(lifecycle.tests.state)}</span> <span class="muted">{escape(lifecycle.tests.detail)}</span></dd>'
         f'<dt>Release</dt><dd><span class="pill">{escape(lifecycle.release.state)}</span> <span class="muted">{escape(lifecycle.release.detail)}</span></dd>'
         f'<dt>Browser gates</dt><dd><span class="pill">{escape(lifecycle.browser.state)}</span> <span class="muted">{escape(lifecycle.browser.detail)}</span></dd>'
-        '</dl></section></div>'
+        f'</dl><p><a href="/projects/{pid}/lifecycle">Open lifecycle evidence →</a></p></section></div>'
     )
     projected_source_ids = {str(r.get("source_id", "")) for r in records if r.get("sync_state") in {"success", "unchanged", "ok"}}
     configured_source_ids = set(project.sources)
@@ -202,6 +218,9 @@ def create_app(data_root: Path):
             elif path == "/search":
                 query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True).get("q", [""])[0]
                 response = _error("400 Bad Request", "Invalid search", "Search query is too long.") if len(query) > _MAX_QUERY else render_cross_project_search(service, query.strip())
+            elif path.startswith("/projects/") and path.endswith("/lifecycle") and "/" not in path[len("/projects/"):-len("/lifecycle")]:
+                project_id = unquote(path[len("/projects/"):-len("/lifecycle")])
+                response = render_lifecycle(service, project_id)
             elif path.startswith("/projects/") and "/" not in path[len("/projects/"):]:
                 project_id = unquote(path[len("/projects/"):])
                 query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True).get("q", [""])[0]
