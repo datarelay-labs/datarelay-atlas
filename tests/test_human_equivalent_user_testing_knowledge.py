@@ -25,11 +25,15 @@ class HumanEquivalentUserTestingKnowledgeTests(unittest.TestCase):
         self.assertNotIn("For every user-facing product, release qualification uses", adr)
 
         project = PROJECT.read_text(encoding="utf-8")
-        self.assertIn("user_facing: false", project)
-        self.assertIn("primary_user_surface: none", project)
-
-        migration = (ROOT / "docs/migration/athena-capability-inventory.json").read_text(encoding="utf-8")
-        self.assertIn("Atlas human UI is a later phase", migration)
+        self.assertIn("user_facing: true", project)
+        self.assertIn("primary_user_surface: browser", project)
+        release = (ROOT / ".engineering/release.yaml").read_text(encoding="utf-8")
+        self.assertIn("human_equivalent_user_tests_required: true", release)
+        self.assertIn("actual_browser_process_required: true", release)
+        self.assertIn("docs/contracts/ATLAS_SURFACE_RECONCILIATION.md", release)
+        self.assertIn("docs/contracts/ATLAS_FULL_USER_E2E.md", release)
+        architecture = (ROOT / "docs/architecture/ARCHITECTURE.md").read_text(encoding="utf-8")
+        self.assertIn("python -m atlas web serve", architecture)
         self.assertIn("before any user-facing Atlas production release", roadmap)
 
 

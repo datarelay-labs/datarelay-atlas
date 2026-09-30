@@ -220,6 +220,13 @@ def cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web_serve(args: argparse.Namespace) -> int:
+    from atlas.web_ui import serve_ui
+
+    serve_ui(Path(args.data_root), host=args.host, port=args.port)
+    return 0
+
+
 def cmd_mcp_serve(args: argparse.Namespace) -> int:
     from atlas.mcp_config import resolve_mcp_serve_config
     from atlas.mcp_http import serve_mcp
@@ -698,6 +705,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Embeddings HTTP timeout in seconds.",
     )
     search.set_defaults(func=cmd_search)
+
+    web = sub.add_parser("web", help="Read-only Human UI")
+    web_sub = web.add_subparsers(dest="web_command", required=True)
+    web_serve = web_sub.add_parser("serve", help="Serve the loopback-only Web UI")
+    web_serve.add_argument("--host", default="127.0.0.1")
+    web_serve.add_argument("--port", type=int, default=8788)
+    web_serve.set_defaults(func=cmd_web_serve)
 
     mcp = sub.add_parser("mcp", help="Authenticated MCP resource server")
     mcp_sub = mcp.add_subparsers(dest="mcp_command", required=True)

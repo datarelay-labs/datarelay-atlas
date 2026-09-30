@@ -74,7 +74,12 @@ Exposes scoped retrieval to Cursor, ChatGPT, and other agents. Tool semantics st
 Atlas is an OAuth 2.1 resource server, not an authorization server. Bearer tokens are checked with RFC 7662 introspection configured at runtime. The SDK publishes RFC 9728 protected-resource metadata and rejects missing, invalid, or wrong-resource tokens. Read tools require `atlas.read`. `search_project` reads current projections for the requested project only. `get_provenance` resolves the search hit `identity` (`source_id@ref`) only when `identity` is supplied. A user-visible source path resolves by `source_path` only when one projection uses it; shared source paths fail closed as ambiguous. An explicit introspection issuer must match the configured issuer. A present blank, whitespace, or non-string issuer is rejected, and an omitted issuer stays acceptable. Conflicting audience and resource claims are rejected. The introspection client secret comes from the environment or a secret file, not from a command-line value. Canonical write tools are not mounted on this endpoint. Live ChatGPT/Cursor client certification is a later slice.
 
 ### Human UI
-Shows project inventory, lifecycle state, source provenance, knowledge coverage, gaps, and relationships.
+
+The first Atlas-owned Human UI is a read-only, server-rendered Python surface (`python -m atlas web serve`) bound to loopback only. It reuses `AtlasService`, registry, projection retrieval, provenance validation, and bounded content-free GitHub lifecycle snapshots rather than creating a second data model.
+
+The current UI provides project inventory/detail, source/projection health, project-scoped and cross-project attributable search, and observed/unknown lifecycle evidence. It performs no canonical writes and does not call GitHub on browser requests. Source-derived values are escaped and responses use a restrictive CSP.
+
+Remote exposure/authentication, richer lifecycle normalization, browser release contracts, and production Human UI deployment remain separate hardening work. Once Atlas declares this browser surface user-facing for release, actual-browser Surface Reconciliation and Full User E2E are mandatory on the same candidate (ADR-0016).
 
 ## Athena relationship (historical)
 
