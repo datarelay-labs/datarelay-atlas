@@ -490,6 +490,26 @@ def _load_ledger(data_root: Path) -> dict[str, object]:
         audits.append(dict(item))
     return {**_ledger_empty(), "audits": audits}
 
+
+def _load_ledger_for_fresh_record(data_root: Path) -> dict[str, object]:
+    """Treat corrupt regular cache bytes as replaceable only after fresh evidence."""
+    path = Path(data_root) / FILENAME
+    try:
+        return _load_ledger(Path(data_root))
+    except ValidationError:
+        # Path-boundary failures are not cache corruption and remain terminal.
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise
+        # A missing file races safely to an empty cache. A regular file with
+        # invalid JSON/schema/entries is derived evidence and may be rebuilt
+        # from the freshly validated result supplied to record().
+        if not path.exists():
+            return _ledger_empty()
+        if not path.is_file():
+            raise
+        return _ledger_empty()
+
+
 def instruction_governance_preflight(
     data_root: Path,
     *,
@@ -547,11 +567,10 @@ def instruction_governance_preflight(
         },
     }
     audit_identity = _canonical_digest(identity_payload)
-    # The local ledger is derived mutable cache evidence. It can be used for
-    # dashboards/routing after validation, but it must never suppress a fresh
-    # external behavior evaluation. Record-time idempotency is evaluated only
-    # after a fresh result is supplied and rebound to this preflight.
-    _load_ledger(Path(data_root))
+    # The local ledger is derived mutable cache evidence. Preflight must not
+    # read or validate it because corrupt cache bytes must never suppress a
+    # fresh external behavior evaluation. Cache validation/repair happens only
+    # after fresh result evidence is supplied at record time.
     return {
         "state": "AUDIT_REQUIRED",
         "authority": AUTHORITY,
@@ -727,7 +746,7 @@ def record_instruction_governance_audit(
     if root.is_symlink() or not root.is_dir():
         raise ValidationError("instruction governance data root is not a directory")
     with data_root_write_lock(root):
-        ledger = _load_ledger(root)
+        ledger = _load_ledger_for_fresh_record(root)
         existing_index = next(
             (
                 index

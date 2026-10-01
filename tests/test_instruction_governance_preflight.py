@@ -328,6 +328,76 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
             )
             self.assertEqual(duplicate["state"], "DUPLICATE_NOOP")
 
+    def test_corrupt_cache_never_suppresses_fresh_preflight_or_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            data_root = base / "data"
+            data_root.mkdir(parents=True, exist_ok=True)
+
+            corrupt_payloads = (
+                "{broken",
+                json.dumps({"schema_version": SCHEMA_VERSION, "kind": "wrong"}),
+                json.dumps({
+                    "schema_version": SCHEMA_VERSION,
+                    "kind": LEDGER_KIND,
+                    "authority": AUTHORITY,
+                    "audits": [
+                        {"audit_identity": "a" * 64},
+                        {"audit_identity": "a" * 64},
+                    ],
+                }),
+            )
+            for payload in corrupt_payloads:
+                with self.subTest(payload=payload[:32]):
+                    (data_root / FILENAME).write_text(payload, encoding="utf-8")
+                    preflight = instruction_governance_preflight(
+                        data_root,
+                        repo_root=repo,
+                        profile=profile,
+                        agent_base_path=agent_base,
+                        behavior_scenarios_path=scenarios,
+                    )
+                    self.assertEqual(preflight["state"], "AUDIT_REQUIRED")
+                    self.assertIsNone(preflight["existing_audit"])
+
+            (data_root / FILENAME).write_text("{broken", encoding="utf-8")
+            preflight = instruction_governance_preflight(
+                data_root,
+                repo_root=repo,
+                profile=profile,
+                agent_base_path=agent_base,
+                behavior_scenarios_path=scenarios,
+            )
+            fresh_result = {
+                "schema_version": SCHEMA_VERSION,
+                "kind": RESULT_KIND,
+                "audit_identity": preflight["audit_identity"],
+                "evaluated_at": "2026-10-01T00:03:00Z",
+                "behavior_results": [
+                    {"scenario_id": "scenario-1", "outcome": "PASS"}
+                ],
+                "candidate_changes": [],
+                "evaluation_ref": "github:issue-225",
+            }
+            recorded = record_instruction_governance_audit(
+                data_root,
+                repo_root=repo,
+                profile=profile,
+                agent_base_path=agent_base,
+                behavior_scenarios_path=scenarios,
+                result=fresh_result,
+            )
+            self.assertEqual(recorded["state"], "RECORDED")
+            repaired = json.loads(
+                (data_root / FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(repaired["audits"]), 1)
+            self.assertEqual(
+                repaired["audits"][0]["audit_identity"],
+                preflight["audit_identity"],
+            )
+
     def _assert_dirty_rejected(
         self,
         repo: Path,
