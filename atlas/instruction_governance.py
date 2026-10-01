@@ -608,10 +608,16 @@ def _validate_audit_result(payload: object) -> dict[str, object]:
     if not isinstance(changes, list) or len(changes) > _MAX_CHANGES:
         raise ValidationError("instruction governance candidate changes are invalid")
     normalized_changes = []
+    seen_paths: set[str] = set()
     for item in changes:
         if not isinstance(item, dict) or set(item) != {"path", "before_digest", "after_digest"}:
             raise ValidationError("instruction governance candidate change is invalid")
         path = _identity(item.get("path"), label="candidate path")
+        if path in seen_paths:
+            raise ValidationError(
+                "instruction governance candidate change path is duplicated"
+            )
+        seen_paths.add(path)
         before = item.get("before_digest")
         after = item.get("after_digest")
         if (

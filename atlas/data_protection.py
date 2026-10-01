@@ -82,6 +82,8 @@ _DERIVED_CACHE_FILES = frozenset(
         "chat-audit.json",
         "chat-audit.lock",
         "chat-audit.tmp",
+        "github-lifecycle.json",
+        "lifecycle-evidence.json",
         PROVIDER_DASHBOARD_FILENAME,
         PROVIDER_ROUTE_QUALITY_FILENAME,
         DECISION_PLANE_FILENAME,

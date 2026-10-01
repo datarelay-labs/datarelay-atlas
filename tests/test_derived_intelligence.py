@@ -83,6 +83,54 @@ class DerivedIntelligenceTests(unittest.TestCase):
                 payload["contradictions"]["detail"],
             )
 
+    def test_project_intelligence_does_not_leak_other_project_contradictions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = AtlasService(Path(tmp))
+            svc.register_project(
+                project_id="alpha",
+                repository="datarelay-labs/alpha",
+            )
+            svc.add_source(
+                "alpha",
+                source_id="alpha-note",
+                source_path="ALPHA.md",
+            )
+            svc.sync_project(
+                "alpha",
+                fetch=lambda s, t: FetchedSource(
+                    content="# Alpha",
+                    source_revision="a" * 40,
+                ),
+            )
+            svc.register_project(
+                project_id="beta",
+                repository="datarelay-labs/beta",
+            )
+            svc.add_source(
+                "beta",
+                source_id="beta-note",
+                source_path="BETA.md",
+            )
+            svc.sync_project(
+                "beta",
+                fetch=lambda s, t: FetchedSource(
+                    content="# Beta" + chr(10) + "CONTRADICTION: beta only",
+                    source_revision="b" * 40,
+                ),
+            )
+
+            alpha = svc.project_intelligence("alpha")
+            beta = svc.project_intelligence("beta")
+            self.assertEqual(alpha["contradictions"]["state"], "NONE_OBSERVED")
+            self.assertEqual(alpha["contradictions"]["items"], [])
+            self.assertEqual(beta["contradictions"]["state"], "DETECTED")
+            self.assertTrue(
+                all(
+                    item["source_project_id"] == "beta"
+                    for item in beta["contradictions"]["items"]
+                )
+            )
+
     def test_rebuild_is_deterministic(self):
         with tempfile.TemporaryDirectory() as tmp:
             svc=self.seed(tmp)

@@ -919,6 +919,10 @@ class AtlasService:
             for item in payload["items"]
             if item["source_project_id"] == project_id
         ]
+        project_contradictions = derived_intelligence_payload(
+            self.projections,
+            [project_id],
+        )["contradictions"]
         records = {
             str(record.get("source_id") or ""): record
             for record in self.projection_records(project_id)
@@ -994,7 +998,7 @@ class AtlasService:
             "derived": True,
             "canonical": False,
             "summary": summary,
-            "contradictions": payload["contradictions"],
+            "contradictions": project_contradictions,
             "knowledge_gaps": gaps,
             "concept_index": dict(sorted(concepts.items())),
             "entities": {

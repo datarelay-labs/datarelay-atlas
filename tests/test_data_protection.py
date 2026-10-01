@@ -464,6 +464,25 @@ class DataProtectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "not a regular file"):
                 backup_data_root(root, base / "link")
 
+    def test_backup_allows_and_excludes_lifecycle_projection_caches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "data"
+            _sample_root(root)
+            (root / "github-lifecycle.json").write_text(
+                json.dumps({"observed": True}),
+                encoding="utf-8",
+            )
+            (root / "lifecycle-evidence.json").write_text(
+                json.dumps({"observed": True}),
+                encoding="utf-8",
+            )
+            backup = base / "backup"
+            result = backup_data_root(root, backup)
+            self.assertEqual(result["status"], "ok")
+            self.assertFalse((backup / "github-lifecycle.json").exists())
+            self.assertFalse((backup / "lifecycle-evidence.json").exists())
+
     def test_backup_rejects_secret_like_projection_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

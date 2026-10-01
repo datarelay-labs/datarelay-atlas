@@ -19,8 +19,10 @@ from atlas.instruction_governance import (
     SCHEMA_VERSION,
     instruction_governance_dashboard,
     instruction_governance_routing,
+    _validate_audit_result,
 )
 from atlas.mcp_context import AtlasContextTools, default_read_scopes
+from atlas.provenance import ValidationError
 from atlas.service import AtlasService
 from atlas.web_ui import create_app
 
@@ -94,6 +96,30 @@ def _write_ledger(data_root: Path, audit: dict) -> None:
 
 
 class InstructionGovernanceRoutingTests(unittest.TestCase):
+    def test_duplicate_candidate_change_paths_fail_before_persistence(self):
+        payload = {
+            "schema_version": 1,
+            "kind": "instruction_governance_audit_result",
+            "audit_identity": "c" * 64,
+            "evaluated_at": "2026-09-30T12:00:00Z",
+            "behavior_results": [],
+            "candidate_changes": [
+                {
+                    "path": "AGENTS.md",
+                    "before_digest": "a" * 64,
+                    "after_digest": "b" * 64,
+                },
+                {
+                    "path": "AGENTS.md",
+                    "before_digest": "b" * 64,
+                    "after_digest": "c" * 64,
+                },
+            ],
+            "evaluation_ref": "github:issue-190",
+        }
+        with self.assertRaisesRegex(ValidationError, "path is duplicated"):
+            _validate_audit_result(payload)
+
     def test_public_schema_fixture(self):
         schema = json.loads(
             (CONTRACTS / "instruction-governance-routing.schema.json").read_text()
