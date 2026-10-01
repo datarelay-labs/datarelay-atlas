@@ -454,6 +454,7 @@ def instruction_governance_preflight(
         "status",
         "--porcelain=v1",
         "--untracked-files=all",
+        "--ignored=matching",
         "--",
         *surface_paths,
     )

@@ -111,6 +111,23 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
                 base / "data",
             )
 
+    def test_ignored_discovered_managed_surface_is_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            exclude = repo / ".git" / "info" / "exclude"
+            exclude.write_text("ai/\n", encoding="utf-8")
+            managed = repo / "ai" / "rules.md"
+            managed.parent.mkdir()
+            managed.write_text("# ignored local rules\n", encoding="utf-8")
+            self._assert_dirty_rejected(
+                repo,
+                agent_base,
+                scenarios,
+                profile,
+                base / "data",
+            )
+
     def test_staged_deleted_tracked_managed_surface_is_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
