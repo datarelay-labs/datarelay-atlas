@@ -365,6 +365,38 @@ def validate_concurrency_dispatch_authorization(payload: object) -> dict[str, ob
     return dict(payload)
 
 
+def revalidate_concurrency_dispatch_authorization_at(
+    data_root: Path,
+    authorization: object,
+    *,
+    effect_time: datetime,
+) -> dict[str, object]:
+    """Revalidate exact authorization bindings and evidence age at effect time."""
+    normalized = validate_concurrency_dispatch_authorization(authorization)
+    if (
+        not isinstance(effect_time, datetime)
+        or effect_time.utcoffset() is None
+        or effect_time.utcoffset().total_seconds() != 0
+    ):
+        _reject("concurrency authorization effect_time must be UTC")
+    snapshot = _load_snapshot(Path(data_root))
+    plan = plan_concurrency_admission(snapshot)
+    if (
+        plan["plan_digest"] != normalized["plan_digest"]
+        or plan["assignments"] != normalized["assignments"]
+        or len(plan["assignments"]) != normalized["assignment_count"]
+    ):
+        _reject("concurrency dispatch authorization is not current")
+    assignments = _revalidate_assignments(
+        snapshot,
+        plan,
+        evaluated_at=effect_time,
+    )
+    if assignments != normalized["assignments"]:
+        _reject("concurrency dispatch authorization assignments drifted")
+    return normalized
+
+
 def publish_concurrency_dispatch_authorization(
     data_root: Path,
     request: object,

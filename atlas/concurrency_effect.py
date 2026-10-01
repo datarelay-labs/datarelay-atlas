@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any, Protocol
 
 from atlas.concurrency_authorization import (
     concurrency_dispatch_authorization_dashboard,
+    revalidate_concurrency_dispatch_authorization_at,
     validate_concurrency_dispatch_authorization,
 )
 from atlas.cursor_usage import assert_content_free
@@ -32,6 +34,10 @@ _SECRET = re.compile(r"(?:^|[^A-Za-z0-9])(?:sk-|ghp_|github_pat_|AKIA|Bearer |--
 
 class ConcurrencyDispatchEffectPort(Protocol):
     def dispatch(self, request: dict[str, Any]) -> object: ...
+
+
+def _trusted_effect_time() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _reject(message: str) -> None:
@@ -416,6 +422,11 @@ def commit_concurrency_dispatch_effect(
         authorization = validate_concurrency_dispatch_authorization(authorization)
         if authorization["authorization_digest"] != trusted_auth_digest:
             _reject("concurrency dispatch authorization digest mismatch")
+        authorization = revalidate_concurrency_dispatch_authorization_at(
+            root,
+            authorization,
+            effect_time=_trusted_effect_time(),
+        )
         _reserve_effect(
             root,
             effect_id=effect_identity,

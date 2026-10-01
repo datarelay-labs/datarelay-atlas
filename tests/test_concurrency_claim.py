@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -87,6 +89,14 @@ def _request(handoff: dict, claim_id: str) -> dict:
 
 
 class ConcurrencyClaimTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = patch(
+            "atlas.concurrency_effect._trusted_effect_time",
+            return_value=datetime(2026, 9, 30, 12, 30, tzinfo=timezone.utc),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_public_request_receipt_schema_fixtures_and_runtime_parity(self) -> None:
         request_schema = json.loads(
             (CONTRACTS / "concurrency-handoff-claim-request.schema.json").read_text()

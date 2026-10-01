@@ -4,8 +4,10 @@ import contextlib
 import hashlib
 import io
 import json
+from datetime import datetime, timezone
 import tempfile
 import unittest
+from unittest.mock import patch
 from copy import deepcopy
 from pathlib import Path
 from wsgiref.util import setup_testing_defaults
@@ -120,6 +122,14 @@ def _resign(join: dict) -> dict:
 
 
 class ConcurrencyJoinTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = patch(
+            "atlas.concurrency_effect._trusted_effect_time",
+            return_value=datetime(2026, 9, 30, 12, 30, tzinfo=timezone.utc),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_public_schema_fixture_and_runtime_parity(self):
         schema = json.loads(
             (CONTRACTS / "concurrency-dispatch-join.schema.json").read_text()

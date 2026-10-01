@@ -2,7 +2,7 @@
 
 This contract consumes only a current exact-plan multi-node dispatch authorization. The effect boundary is provider-neutral: a caller must inject a dispatch port, and Atlas calls that port exactly once for each authorized assignment.
 
-Before any external call, Atlas validates current authorization binding and the trusted authorization digest, then records an IN_PROGRESS reservation keyed by effect id and authorization digest. This reservation blocks duplicate effects and also prevents unsafe replay after a process crash where some assignments may already have been dispatched.
+Before any external call, Atlas validates current authorization binding and the trusted authorization digest, then revalidates the admission snapshot and every selected slot against Atlas' trusted UTC effect time using the snapshot's bounded evidence-age policy. Stale or future evidence fails closed before an IN_PROGRESS reservation is written. Atlas then records the reservation keyed by effect id and authorization digest; it blocks duplicate effects and also prevents unsafe replay after a process crash where some assignments may already have been dispatched.
 
 Each effect call carries the exact authorized node repository/issue/branch/HEAD and slot/worker/provider/runtime/route/evidence attribution plus a deterministic per-node replay key. Atlas never substitutes another route, slot, worker, or provider and has no automatic retry loop.
 

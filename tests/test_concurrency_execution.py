@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from copy import deepcopy
 from pathlib import Path
 
@@ -123,6 +125,14 @@ def _join_observation(receipt: dict) -> dict:
 
 
 class ConcurrencyExecutionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = patch(
+            "atlas.concurrency_effect._trusted_effect_time",
+            return_value=datetime(2026, 9, 30, 12, 30, tzinfo=timezone.utc),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_execution_operation_dispatches_two_assignments_concurrently(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

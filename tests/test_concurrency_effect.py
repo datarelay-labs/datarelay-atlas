@@ -4,10 +4,12 @@ import contextlib
 import hashlib
 import io
 import json
+from datetime import datetime, timezone
 import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from copy import deepcopy
 from pathlib import Path
 from wsgiref.util import setup_testing_defaults
@@ -95,6 +97,14 @@ class BarrierPort:
 
 
 class ConcurrencyEffectTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = patch(
+            "atlas.concurrency_effect._trusted_effect_time",
+            return_value=datetime(2026, 9, 30, 12, 30, tzinfo=timezone.utc),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_public_receipt_schema_fixture(self):
         schema = json.loads(
             (ROOT / "docs/contracts/concurrency-dispatch-effect-receipt.schema.json").read_text()
@@ -234,6 +244,24 @@ class ConcurrencyEffectTests(unittest.TestCase):
                     effect_port=port,
                 )
             self.assertEqual(port.calls, [])
+
+    def test_stale_effect_time_causes_zero_calls_and_zero_reservation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            auth = _prepare(root)
+            port = RecordingPort([])
+            with patch(
+                "atlas.concurrency_effect._trusted_effect_time",
+                return_value=datetime(2026, 9, 30, 13, 30, 1, tzinfo=timezone.utc),
+            ), self.assertRaisesRegex(ValidationError, "stale"):
+                commit_concurrency_dispatch_effect(
+                    root,
+                    effect_id="stale-at-effect-time",
+                    expected_authorization_digest=auth["authorization_digest"],
+                    effect_port=port,
+                )
+            self.assertEqual(port.calls, [])
+            self.assertFalse((root / FILENAME).exists())
 
     def test_duplicate_effect_or_authorization_replay_is_blocked_before_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
