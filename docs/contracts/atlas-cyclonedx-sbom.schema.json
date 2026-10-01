@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/atlas-cyclonedx-sbom.schema.json",
+  "title": "DataRelay Atlas Deterministic CycloneDX SBOM v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bomFormat",
+    "specVersion",
+    "serialNumber",
+    "version",
+    "metadata",
+    "components"
+  ],
+  "properties": {
+    "bomFormat": {
+      "const": "CycloneDX"
+    },
+    "specVersion": {
+      "const": "1.6"
+    },
+    "serialNumber": {
+      "type": "string",
+      "pattern": "^urn:uuid:[0-9a-fA-F-]{36}$"
+    },
+    "version": {
+      "const": 1
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component",
+        "properties"
+      ],
+      "properties": {
+        "component": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "bom-ref",
+            "name",
+            "version",
+            "purl"
+          ],
+          "properties": {
+            "type": {
+              "const": "application"
+            },
+            "bom-ref": {
+              "type": "string",
+              "pattern": "^pkg:github/datarelay-labs/datarelay-atlas@"
+            },
+            "name": {
+              "const": "datarelay-atlas"
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "purl": {
+              "type": "string",
+              "pattern": "^pkg:github/datarelay-labs/datarelay-atlas@"
+            }
+          }
+        },
+        "properties": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "value"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "maxItems": 2048,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "bom-ref",
+          "name",
+          "version",
+          "purl",
+          "properties"
+        ],
+        "properties": {
+          "type": {
+            "const": "library"
+          },
+          "bom-ref": {
+            "type": "string",
+            "pattern": "^pkg:pypi/"
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9.-]{0,127}$"
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "purl": {
+            "type": "string",
+            "pattern": "^pkg:pypi/"
+          },
+          "properties": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "value"
+              ],
+              "properties": {
+                "name": {
+                  "const": "atlas:declared-direct"
+                },
+                "value": {
+                  "enum": [
+                    "true",
+                    "false"
+                  ]
+                }
+              }
+            }
+          },
+          "licenses": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "license"
+              ],
+              "properties": {
+                "license": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

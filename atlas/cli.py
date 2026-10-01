@@ -62,6 +62,7 @@ from atlas.instruction_governance import TRIGGERS
 from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
 from atlas.schema_compat import rollback_data_root, upgrade_data_root
+from atlas.sbom import publish_sbom_bundle
 from atlas.ops import (
     assess_service_environment,
     prod_launch_contract,
@@ -1698,7 +1699,27 @@ def build_parser() -> argparse.ArgumentParser:
         "readiness",
         help="Show read-only Phase 5 operations and release readiness",
     )
+    ops_readiness.add_argument(
+        "--sbom-bundle",
+        default=None,
+        help="Optional validated SBOM bundle directory to bind into readiness.",
+    )
     ops_readiness.set_defaults(func=cmd_ops_readiness)
+    ops_sbom = ops_sub.add_parser(
+        "sbom",
+        help="Generate a deterministic CycloneDX SBOM and provenance bundle",
+    )
+    ops_sbom.add_argument(
+        "--repo-root",
+        default=".",
+        help="Exact clean Atlas repository root. Defaults to the current directory.",
+    )
+    ops_sbom.add_argument(
+        "--dest",
+        required=True,
+        help="New absolute output directory; existing paths are refused.",
+    )
+    ops_sbom.set_defaults(func=cmd_ops_sbom)
     ops_check = ops_sub.add_parser(
         "check",
         help="Fail closed unless the service environment is ready",
@@ -2084,7 +2105,26 @@ def cmd_host_worker_supervise_once(args: argparse.Namespace) -> int:
 
 
 def cmd_ops_readiness(args: argparse.Namespace) -> int:
-    _print_json(_service(args).operations_readiness())
+    sbom_bundle = (
+        Path(args.sbom_bundle)
+        if getattr(args, "sbom_bundle", None)
+        else None
+    )
+    _print_json(
+        _service(args).operations_readiness(
+            sbom_bundle=sbom_bundle,
+        )
+    )
+    return 0
+
+
+def cmd_ops_sbom(args: argparse.Namespace) -> int:
+    _print_json(
+        publish_sbom_bundle(
+            Path(args.repo_root),
+            Path(args.dest),
+        )
+    )
     return 0
 
 
