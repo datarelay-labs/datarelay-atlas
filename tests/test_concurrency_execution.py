@@ -16,6 +16,7 @@ from atlas.concurrency_admission import (
 )
 from atlas.concurrency_effect import get_concurrency_dispatch_effect_entry
 from atlas.concurrency_execution import (
+    FILENAME,
     concurrency_execution_dashboard,
     start_concurrency_execution,
 )
@@ -125,6 +126,19 @@ def _join_observation(receipt: dict) -> dict:
 
 
 class ConcurrencyExecutionTests(unittest.TestCase):
+    def test_duplicate_execution_collection_key_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = (
+                '{"schema_version":1,'
+                '"kind":"concurrency_execution_cycle_ledger",'
+                '"authority":"ORCHESTRATION_EVIDENCE_ONLY",'
+                '"records":[{}],"records":[]}'
+            )
+            (root / FILENAME).write_text(raw, encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "duplicate JSON keys"):
+                concurrency_execution_dashboard(root)
+
     def setUp(self) -> None:
         patcher = patch(
             "atlas.concurrency_effect._trusted_effect_time",

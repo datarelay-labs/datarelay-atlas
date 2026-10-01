@@ -6856,28 +6856,37 @@ def drain_completion_inbox(controller: WorkController, data_root: Path) -> list[
             return []
         if not inbox.is_dir():
             raise ValidationError("completion inbox directory is unsafe")
-        pending = []
+        pending: list[tuple[Path, dict]] = []
         for path in sorted(inbox.glob("*.json")):
             if path.is_symlink() or not path.is_file():
                 raise ValidationError("completion event path is unsafe")
-            pending.append(path)
+            pending.append((path, load_completion_event(path)))
     outcomes: list[dict] = []
-    for path in pending:
-        event = load_completion_event(path)
+    for path, event in pending:
         outcome = controller.handle_completion(event)
         outcome = dict(outcome)
         outcome["inbox_file"] = path.name
         with data_root_write_lock(root):
-            if path.is_symlink() or not path.is_file():
+            if path.is_symlink():
                 raise ValidationError("completion event path is unsafe")
             dest = processed / path.name
-            if dest.is_symlink():
-                raise ValidationError("completion processed destination is unsafe")
-            if dest.exists():
-                dest = processed / f"{path.stem}-{os.getpid()}{path.suffix}"
+            if path.exists():
+                if not path.is_file():
+                    raise ValidationError("completion event path is unsafe")
+                if load_completion_event(path) != event:
+                    raise ValidationError("completion event changed during processing")
                 if dest.is_symlink():
                     raise ValidationError("completion processed destination is unsafe")
-            path.replace(dest)
+                if dest.exists():
+                    dest = processed / f"{path.stem}-{os.getpid()}{path.suffix}"
+                    if dest.is_symlink():
+                        raise ValidationError("completion processed destination is unsafe")
+                path.replace(dest)
+            else:
+                if dest.is_symlink() or not dest.is_file():
+                    raise ValidationError("completion event disappeared during processing")
+                if load_completion_event(dest) != event:
+                    raise ValidationError("completion processed event does not match source")
         outcomes.append(outcome)
     return outcomes
 

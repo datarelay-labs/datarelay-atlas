@@ -91,6 +91,19 @@ def _resign(evidence: dict) -> None:
 
 
 class ConcurrencyClaimBoundJoinTests(unittest.TestCase):
+    def test_duplicate_claim_join_collection_key_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = (
+                '{"schema_version":1,'
+                '"kind":"concurrency_claim_bound_join_ledger",'
+                '"authority":"MEASUREMENT_ONLY",'
+                '"joins":[{}],"joins":[]}'
+            )
+            (root / FILENAME).write_text(raw, encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "duplicate JSON keys"):
+                concurrency_claim_bound_join_dashboard(root)
+
     def setUp(self) -> None:
         patcher = patch(
             "atlas.concurrency_effect._trusted_effect_time",
