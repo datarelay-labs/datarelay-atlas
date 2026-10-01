@@ -1,10 +1,11 @@
 engineering_system:
   version: 1.7.0
   mode: adopted
-  baseline: 4e9555ea0783459469765a07cb20c5dbd6a1ceb0
+  baseline: 0b09d0ddea19aca804bfdcebb79332783bf64c5c
   ci_mode: shared
   native_ci_workflows: []
   merge_gate_status: unknown
+  policy_epoch: 1
 project:
   name: datarelay-atlas
   type: engineering-platform
