@@ -161,6 +161,8 @@ A Core release candidate must prove this one end-to-end journey:
 
 Only this journey, plus required security/compliance gates, determines Core product completion.
 
+Deterministic integrated pre-release evidence is defined by `docs/contracts/ATLAS_CORE_PRODUCT_E2E.md`. It validates the integrated Core planes but never substitutes for the exact-candidate actual-browser Surface Reconciliation / Full User E2E gates.
+
 # Automation Extension
 
 Automation extends Atlas Core; it does not define Atlas Core.
