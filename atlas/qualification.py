@@ -44,6 +44,25 @@ PROD_QUERY = "Engineering Knowledge & Lifecycle Platform"
 _PROJECT_ID = "qual"
 _QUERY = "qualification-marker"
 _REVISION = "rev-qual-1"
+_MULTI_QUERY = "multi-project-operational"
+_MULTI_PROJECTS = (
+    {
+        "project_id": "qual-alpha",
+        "repository": "datarelay-labs/qual-alpha",
+        "source_id": "alpha",
+        "source_path": "docs/alpha.md",
+        "unique_query": "alpha-only-marker",
+        "revision": "rev-multi-alpha",
+    },
+    {
+        "project_id": "qual-beta",
+        "repository": "datarelay-labs/qual-beta",
+        "source_id": "beta",
+        "source_path": "docs/beta.md",
+        "unique_query": "beta-only-marker",
+        "revision": "rev-multi-beta",
+    },
+)
 _SHELLS = {"sh", "bash", "dash", "zsh", "sudo"}
 _CODE_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 _SMOKE_BODY = b'{"jsonrpc":"2.0","id":1,"method":"ping"}'
@@ -56,7 +75,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("public-smoke")
     operational = sub.add_parser("operational-e2e")
-    operational.add_argument("--mode", choices=("local", "prod"), default="local")
+    operational.add_argument(
+        "--mode",
+        choices=("local", "multi-project-local", "prod"),
+        default="local",
+    )
     args = parser.parse_args(argv)
     repo_root = Path(__file__).resolve().parents[1]
     if args.command == "public-smoke":
@@ -81,6 +104,8 @@ def run_operational_e2e(
 ) -> dict:
     if mode == "local":
         return _local_operational_e2e(repo_root)
+    if mode == "multi-project-local":
+        return _multi_project_operational_e2e(repo_root)
     if mode == "prod":
         return _prod_operational_e2e(
             environ,
@@ -286,6 +311,302 @@ def _local_operational_e2e(repo_root: Path) -> dict:
         "local-deterministic",
         "PASS",
         "local qualification journey passed",
+        steps,
+    )
+
+
+def _multi_project_fetch(source, token):  # noqa: ARG001
+    if token:
+        raise ValidationError("local multi-project qualification does not accept a token")
+    fixture = next(
+        (
+            item
+            for item in _MULTI_PROJECTS
+            if item["project_id"] == source.project_id
+        ),
+        None,
+    )
+    if fixture is None:
+        raise ValidationError("multi-project qualification source is unknown")
+    return FetchedSource(
+        content=f"{_MULTI_QUERY} {fixture['unique_query']}\n",
+        source_revision=str(fixture["revision"]),
+    )
+
+
+def _multi_project_hit_matches(hit, fixture: dict[str, str]) -> bool:
+    provenance = hit.provenance if hasattr(hit, "provenance") else None
+    return (
+        isinstance(provenance, dict)
+        and hit.project_id == fixture["project_id"]
+        and provenance.get("repository") == fixture["repository"]
+        and provenance.get("source_path") == fixture["source_path"]
+        and provenance.get("source_revision") == fixture["revision"]
+    )
+
+
+def _multi_project_isolated(service: AtlasService) -> bool:
+    for fixture in _MULTI_PROJECTS:
+        own = service.search(
+            str(fixture["project_id"]),
+            str(fixture["unique_query"]),
+            limit=2,
+        )
+        if len(own) != 1 or not _multi_project_hit_matches(own[0], fixture):
+            return False
+        for peer in _MULTI_PROJECTS:
+            if peer["project_id"] == fixture["project_id"]:
+                continue
+            leaked = service.search(
+                str(fixture["project_id"]),
+                str(peer["unique_query"]),
+                limit=1,
+            )
+            if leaked:
+                return False
+    return True
+
+
+def _multi_project_revisions(payload: object) -> dict[str, str] | None:
+    if not isinstance(payload, dict):
+        return None
+    expected = {str(item["project_id"]): item for item in _MULTI_PROJECTS}
+    groups = payload.get("groups")
+    if (
+        payload.get("project_ids") != sorted(expected)
+        or payload.get("total") != len(expected)
+        or not isinstance(groups, list)
+        or len(groups) != len(expected)
+    ):
+        return None
+    revisions: dict[str, str] = {}
+    for group in groups:
+        if not isinstance(group, dict):
+            return None
+        project_id = group.get("project_id")
+        fixture = expected.get(str(project_id))
+        hits = group.get("hits")
+        if (
+            fixture is None
+            or group.get("result_count") != 1
+            or not isinstance(hits, list)
+            or len(hits) != 1
+            or not isinstance(hits[0], dict)
+        ):
+            return None
+        hit = hits[0]
+        provenance = hit.get("provenance")
+        if (
+            hit.get("project_id") != project_id
+            or not isinstance(provenance, dict)
+            or provenance.get("repository") != fixture["repository"]
+            or provenance.get("source_path") != fixture["source_path"]
+            or provenance.get("source_revision") != fixture["revision"]
+        ):
+            return None
+        revisions[str(project_id)] = str(fixture["revision"])
+    return revisions if set(revisions) == set(expected) else None
+
+
+def _multi_project_cross_search(service: AtlasService) -> dict[str, str] | None:
+    payload = service.search_across_projects(
+        _MULTI_QUERY,
+        project_ids=[str(item["project_id"]) for item in _MULTI_PROJECTS],
+        source_class="engineering",
+        limit_per_project=1,
+    )
+    return _multi_project_revisions(payload)
+
+
+def _multi_project_mcp_search(service: AtlasService) -> dict[str, str] | None:
+    tools = AtlasContextTools(
+        retriever_factory=service.project_retriever,
+        knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(
+            query,
+            project_ids=project_ids,
+            source_class=source_class,
+            limit_per_project=limit,
+        ),
+    )
+    result = tools.call(
+        "search_knowledge",
+        {
+            "query": _MULTI_QUERY,
+            "project_ids": [str(item["project_id"]) for item in _MULTI_PROJECTS],
+            "source_class": "engineering",
+            "limit_per_project": 1,
+        },
+        scopes=default_read_scopes(),
+    )
+    if not result.ok:
+        return None
+    return _multi_project_revisions(result.data)
+
+
+
+
+def _fresh_multi_project_search(
+    data_root: Path,
+    repo_root: Path,
+) -> dict[str, str] | None:
+    project_ids = [str(item["project_id"]) for item in _MULTI_PROJECTS]
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-c",
+            _FRESH_MULTI_PROJECT_SEARCH,
+            str(data_root),
+            _MULTI_QUERY,
+            json.dumps(project_ids),
+        ],
+        cwd=str(repo_root),
+        env={
+            "PYTHONPATH": str(repo_root),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PATH": os.environ.get("PATH", ""),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return None
+    if (
+        payload.get("ready") is not True
+        or payload.get("project_ids") != sorted(project_ids)
+        or payload.get("total") != len(project_ids)
+        or not isinstance(payload.get("revisions"), dict)
+    ):
+        return None
+    revisions = {
+        str(project_id): str(revision)
+        for project_id, revision in payload["revisions"].items()
+    }
+    expected = {
+        str(item["project_id"]): str(item["revision"])
+        for item in _MULTI_PROJECTS
+    }
+    return revisions if revisions == expected else None
+
+
+def _multi_project_operational_e2e(repo_root: Path) -> dict:
+    pin_reason = _pin_reason(repo_root)
+    mode = "multi-project-local-deterministic"
+    if pin_reason:
+        return _evidence("operational-e2e", mode, "FAIL_CLOSED", pin_reason, [])
+    steps: list[dict[str, str]] = []
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir(mode=0o700)
+            service = AtlasService(data)
+            for fixture in _MULTI_PROJECTS:
+                project_id = str(fixture["project_id"])
+                service.register_project(
+                    project_id=project_id,
+                    repository=str(fixture["repository"]),
+                )
+                service.add_source(
+                    project_id,
+                    source_id=str(fixture["source_id"]),
+                    source_path=str(fixture["source_path"]),
+                )
+                service.sync_project(project_id, fetch=_multi_project_fetch)
+            steps.append(_step("register_sync", "PASS", project_count="2"))
+
+            if not _multi_project_isolated(service):
+                steps.append(_step("project_isolation", "FAIL"))
+                return _evidence(
+                    "operational-e2e",
+                    mode,
+                    "FAIL",
+                    "multi-project scope isolation failed",
+                    steps,
+                )
+            steps.append(_step("project_isolation", "PASS", project_count="2"))
+
+            revisions = _multi_project_cross_search(service)
+            if revisions is None:
+                steps.append(_step("cross_project_search", "FAIL"))
+                return _evidence(
+                    "operational-e2e",
+                    mode,
+                    "FAIL",
+                    "explicit cross-project search is not attributable",
+                    steps,
+                )
+            steps.append(
+                _step(
+                    "cross_project_search",
+                    "PASS",
+                    project_count=str(len(revisions)),
+                )
+            )
+
+            mcp_revisions = _multi_project_mcp_search(service)
+            if mcp_revisions != revisions:
+                steps.append(_step("mcp_cross_project", "FAIL"))
+                return _evidence(
+                    "operational-e2e",
+                    mode,
+                    "FAIL",
+                    "MCP explicit multi-project scope is not attributable",
+                    steps,
+                )
+            steps.append(
+                _step(
+                    "mcp_cross_project",
+                    "PASS",
+                    project_count=str(len(mcp_revisions)),
+                )
+            )
+
+            if _fresh_multi_project_search(data, repo_root) != revisions:
+                steps.append(_step("restart_recovery", "FAIL"))
+                return _evidence(
+                    "operational-e2e",
+                    mode,
+                    "FAIL",
+                    "multi-project restart recovery failed",
+                    steps,
+                )
+            steps.append(_step("restart_recovery", "PASS", project_count="2"))
+
+            backup = root / "backup"
+            restored = root / "restored"
+            backup_data_root(data, backup)
+            restore_test(backup, restored)
+            if _fresh_multi_project_search(restored, repo_root) != revisions:
+                steps.append(_step("backup_restore", "FAIL"))
+                return _evidence(
+                    "operational-e2e",
+                    mode,
+                    "FAIL",
+                    "multi-project restore did not preserve provenance",
+                    steps,
+                )
+            steps.append(_step("backup_restore", "PASS", project_count="2"))
+    except (OSError, ValidationError, subprocess.SubprocessError):
+        steps.append(_step("harness", "FAIL"))
+        return _evidence(
+            "operational-e2e",
+            mode,
+            "FAIL",
+            "multi-project local qualification journey failed",
+            steps,
+        )
+    return _evidence(
+        "operational-e2e",
+        mode,
+        "PASS",
+        "multi-project local qualification journey passed",
         steps,
     )
 
@@ -1185,6 +1506,41 @@ def _step(name: str, status: str, **fields: str) -> dict[str, str]:
     step = {"name": name, "status": status}
     step.update(fields)
     return step
+
+
+_FRESH_MULTI_PROJECT_SEARCH = """
+import json
+import sys
+from pathlib import Path
+
+from atlas.ops import data_root_runtime_ready
+from atlas.service import AtlasService
+
+root = Path(sys.argv[1])
+query = sys.argv[2]
+project_ids = json.loads(sys.argv[3])
+payload = AtlasService(root).search_across_projects(
+    query,
+    project_ids=project_ids,
+    source_class="engineering",
+    limit_per_project=1,
+)
+revisions = {}
+for group in payload.get("groups", []):
+    hits = group.get("hits") if isinstance(group, dict) else None
+    if not isinstance(hits, list) or len(hits) != 1:
+        continue
+    provenance = hits[0].get("provenance") if isinstance(hits[0], dict) else None
+    if isinstance(provenance, dict):
+        revisions[str(group.get("project_id"))] = provenance.get("source_revision")
+result = {
+    "ready": data_root_runtime_ready(root),
+    "project_ids": payload.get("project_ids"),
+    "total": payload.get("total"),
+    "revisions": revisions,
+}
+sys.stdout.write(json.dumps(result, sort_keys=True))
+"""
 
 
 _FRESH_SEARCH = """
