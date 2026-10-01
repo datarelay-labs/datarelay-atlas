@@ -172,6 +172,21 @@ class PersonalKnowledgeTests(unittest.TestCase):
                 "OBSERVED",
             )
 
+            manifest["content"] = "raw rejected body must not enter backup"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(ValidationError):
+                backup_data_root(root, base / "invalid-backup")
+            del manifest["content"]
+
+            duplicate = json.dumps(manifest).replace(
+                '"source_system": "tela"',
+                '"source_system": "tela", "source_system": "tela"',
+                1,
+            )
+            manifest_path.write_text(duplicate, encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "duplicate JSON keys"):
+                backup_data_root(root, base / "duplicate-backup")
+
     def test_cli_and_mcp_have_dedicated_personal_surfaces(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

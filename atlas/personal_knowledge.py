@@ -53,7 +53,16 @@ def _snapshot_fact(snapshot_root: Path, project_id: str, source_id: str) -> dict
     }
 
 
-def _manifest(data_root: Path) -> dict[str, object]:
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValidationError("personal import manifest contains duplicate JSON keys")
+        result[key] = value
+    return result
+
+
+def validate_personal_import_manifest(data_root: Path) -> dict[str, object]:
     root = Path(data_root)
     snapshot_root = root / SNAPSHOT_DIRNAME
     if snapshot_root.is_symlink():
@@ -79,7 +88,12 @@ def _manifest(data_root: Path) -> dict[str, object]:
     if len(raw) > _MAX_MANIFEST_BYTES:
         raise ValidationError("personal import manifest exceeds bounded size")
     try:
-        payload = json.loads(raw.decode("utf-8"))
+        payload = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except ValidationError:
+        raise
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise ValidationError("personal import manifest is invalid JSON") from exc
     expected = {"schema_version", "kind", "source_system", "observed_at", "items"}
@@ -246,7 +260,7 @@ def personal_knowledge_dashboard(
                 "sources": rows,
             }
         )
-    manifest = _manifest(root)
+    manifest = validate_personal_import_manifest(root)
     return {
         "state": "OBSERVED",
         "authority": "PERSONAL_REFERENCE_ONLY",

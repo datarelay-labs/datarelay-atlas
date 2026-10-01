@@ -16,6 +16,10 @@ from pathlib import Path
 
 from atlas.data_lock import LOCK_NAME, data_root_write_lock
 from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
+from atlas.personal_knowledge import (
+    MANIFEST_FILENAME as PERSONAL_MANIFEST_FILENAME,
+    validate_personal_import_manifest,
+)
 from atlas.provider_dashboard import FILENAME as PROVIDER_DASHBOARD_FILENAME
 from atlas.provider_route_quality import FILENAME as PROVIDER_ROUTE_QUALITY_FILENAME
 from atlas.decision_plane import FILENAME as DECISION_PLANE_FILENAME
@@ -268,6 +272,10 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
         files.append(
             _SnapshotFile(name, "controller", _read_regular(root / name))
         )
+    personal_manifest = root / PERSONAL_MANIFEST_FILENAME
+    if personal_manifest.exists():
+        validate_personal_import_manifest(root)
+
     snapshot_root = root / SNAPSHOT_DIRNAME
     if snapshot_root.exists():
         for path in _tree_files(snapshot_root):
