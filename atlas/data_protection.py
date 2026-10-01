@@ -529,6 +529,7 @@ def _assert_backup_tree(backup: Path) -> list[_SnapshotFile]:
         if extra:
             raise ValidationError("backup contains unexpected files")
     _validate_snapshot_files(files)
+    validate_personal_import_manifest(backup)
     _load_projects(backup)
     _load_controller(backup)
     return files

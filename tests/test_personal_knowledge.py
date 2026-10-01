@@ -100,6 +100,12 @@ class PersonalKnowledgeTests(unittest.TestCase):
                 svc.personal_knowledge_dashboard()
             del manifest["content"]
 
+            manifest["schema_version"] = True
+            (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "unsupported"):
+                svc.personal_knowledge_dashboard()
+            manifest["schema_version"] = 1
+
             manifest["items"][1]["state"] = []
             (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "state is invalid"):
@@ -135,6 +141,11 @@ class PersonalKnowledgeTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 ValidationError, "contains unsafe secret metadata"
             ):
+                svc.personal_knowledge_dashboard()
+
+            (root / MANIFEST_FILENAME).unlink()
+            (root / MANIFEST_FILENAME).symlink_to(root / "missing-manifest.json")
+            with self.assertRaisesRegex(ValidationError, "manifest is unsafe"):
                 svc.personal_knowledge_dashboard()
 
     def test_import_manifest_is_preserved_by_existing_backup_restore(self):
@@ -186,6 +197,29 @@ class PersonalKnowledgeTests(unittest.TestCase):
             manifest_path.write_text(duplicate, encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "duplicate JSON keys"):
                 backup_data_root(root, base / "duplicate-backup")
+
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            valid_backup = base / "restore-validation-backup"
+            backup_data_root(root, valid_backup)
+            backed_manifest = valid_backup / MANIFEST_FILENAME
+            invalid_manifest = json.loads(backed_manifest.read_text(encoding="utf-8"))
+            invalid_manifest["content"] = "legacy raw body"
+            invalid_bytes = json.dumps(invalid_manifest).encode("utf-8")
+            backed_manifest.write_bytes(invalid_bytes)
+            backup_manifest_path = valid_backup / "manifest.json"
+            backup_manifest = json.loads(backup_manifest_path.read_text(encoding="utf-8"))
+            for entry in backup_manifest["files"]:
+                if entry["path"] == MANIFEST_FILENAME:
+                    import hashlib
+                    entry["bytes"] = len(invalid_bytes)
+                    entry["sha256"] = hashlib.sha256(invalid_bytes).hexdigest()
+                    break
+            backup_manifest_path.write_text(
+                json.dumps(backup_manifest, indent=2, sort_keys=True) + chr(10),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValidationError):
+                restore_test(valid_backup, base / "invalid-restore")
 
     def test_cli_and_mcp_have_dedicated_personal_surfaces(self):
         with tempfile.TemporaryDirectory() as tmp:

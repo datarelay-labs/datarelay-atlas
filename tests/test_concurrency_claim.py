@@ -89,6 +89,13 @@ def _request(handoff: dict, claim_id: str) -> dict:
 
 
 class ConcurrencyClaimTests(unittest.TestCase):
+    def test_dangling_claim_ledger_symlink_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            (data / CLAIM_FILENAME).symlink_to(data / "missing-claim-ledger.json")
+            with self.assertRaisesRegex(ValidationError, "ledger path is unsafe"):
+                get_concurrency_handoff_claim(data, "0" * 64)
+
     def setUp(self) -> None:
         patcher = patch(
             "atlas.concurrency_effect._trusted_effect_time",

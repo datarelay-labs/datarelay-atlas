@@ -316,9 +316,11 @@ def validate_concurrency_claim_ledger(payload: object) -> dict[str, object]:
 
 def _load_ledger(data_root: Path) -> dict[str, object]:
     path = Path(data_root) / FILENAME
+    if path.is_symlink():
+        _reject("concurrency claim ledger path is unsafe")
     if not path.exists():
         return _empty_ledger()
-    if path.is_symlink() or not path.is_file():
+    if not path.is_file():
         _reject("concurrency claim ledger path is unsafe")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))

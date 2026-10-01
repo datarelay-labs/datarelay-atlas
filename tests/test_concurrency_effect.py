@@ -97,6 +97,13 @@ class BarrierPort:
 
 
 class ConcurrencyEffectTests(unittest.TestCase):
+    def test_dangling_effect_ledger_symlink_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / FILENAME).symlink_to(root / "missing-effect-ledger.json")
+            with self.assertRaisesRegex(ValidationError, "ledger path is unsafe"):
+                concurrency_dispatch_effect_dashboard(root)
+
     def setUp(self) -> None:
         patcher = patch(
             "atlas.concurrency_effect._trusted_effect_time",

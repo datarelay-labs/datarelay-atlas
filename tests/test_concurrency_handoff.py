@@ -238,6 +238,14 @@ def _registry(base: Path, auth: dict) -> tuple[dict, dict[str, dict[str, str]]]:
 
 
 class ConcurrencyHandoffTests(unittest.TestCase):
+    def test_dangling_handoff_ledger_symlink_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            from atlas.concurrency_handoff import FILENAME
+            (root / FILENAME).symlink_to(root / "missing-handoff-ledger.json")
+            with self.assertRaisesRegex(ValidationError, "ledger path is unsafe"):
+                get_concurrency_handoff_authorization(root, "0" * 64)
+
     def setUp(self) -> None:
         patcher = patch(
             "atlas.concurrency_effect._trusted_effect_time",

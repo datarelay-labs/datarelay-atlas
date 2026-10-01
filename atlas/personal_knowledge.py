@@ -70,6 +70,8 @@ def validate_personal_import_manifest(data_root: Path) -> dict[str, object]:
     if snapshot_root.exists() and not snapshot_root.is_dir():
         raise ValidationError("personal import manifest root is unsafe")
     path = root / MANIFEST_FILENAME
+    if path.is_symlink():
+        raise ValidationError("personal import manifest is unsafe")
     if not path.exists():
         return {
             "state": "UNKNOWN",
@@ -79,7 +81,7 @@ def validate_personal_import_manifest(data_root: Path) -> dict[str, object]:
             "counts": {"total": 0, "imported": 0, "sanitized": 0, "quarantined": 0, "rejected": 0},
             "items": [],
         }
-    if path.is_symlink() or not path.is_file():
+    if not path.is_file():
         raise ValidationError("personal import manifest is unsafe")
     try:
         raw = path.read_bytes()
@@ -99,7 +101,11 @@ def validate_personal_import_manifest(data_root: Path) -> dict[str, object]:
     expected = {"schema_version", "kind", "source_system", "observed_at", "items"}
     if not isinstance(payload, dict) or set(payload) != expected:
         raise ValidationError("personal import manifest is invalid")
-    if payload.get("schema_version") != 1 or payload.get("kind") != _MANIFEST_KIND:
+    if (
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != 1
+        or payload.get("kind") != _MANIFEST_KIND
+    ):
         raise ValidationError("personal import manifest is unsupported")
     source_system = payload.get("source_system")
     observed_at = payload.get("observed_at")

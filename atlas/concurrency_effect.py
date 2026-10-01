@@ -173,6 +173,8 @@ def validate_concurrency_effect_ledger(payload: object) -> dict[str, object]:
 
 def _load_ledger(data_root: Path) -> dict[str, object]:
     path = Path(data_root) / FILENAME
+    if path.is_symlink():
+        _reject("concurrency effect ledger path is unsafe")
     if not path.exists():
         return _empty_ledger()
     return validate_concurrency_effect_ledger(_load_json(path))
