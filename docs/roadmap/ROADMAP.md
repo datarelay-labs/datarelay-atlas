@@ -141,6 +141,7 @@ Core capabilities:
 - dependency/SBOM/provenance policy
 - multi-project operational E2E
 - production restart/recovery evidence
+- loopback-only production Human UI with SSH-authenticated operator access
 - before any user-facing Atlas production release: mandatory actual-browser Surface Reconciliation and Full User E2E on the same exact release candidate under ADR-0016 and the active Engineering System release standard
 
 Exit: the self-hosted single-organization Core product is supportable in production.

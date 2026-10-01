@@ -1,10 +1,11 @@
 # Atlas MCP service runtime
 
-Install the existing authenticated MCP process as a non-root systemd service
-on hostname `prod-atlas`. The public MCP name is `mcp.atlas.datarelay.run`.
-`app.atlas.datarelay.run` is not required. This runbook does not prove that
-the host is serving, provision DNS, complete ChatGPT OAuth, or flip
-`production_oriented`. Issue #41 stays blocked and is not a launch gate.
+Install the authenticated MCP process and the read-only Human UI as non-root
+systemd services on hostname `prod-atlas`. The public MCP name is
+`mcp.atlas.datarelay.run`. The initial production Human UI remains loopback-only
+on `127.0.0.1:8788` and is reached through authenticated SSH local forwarding;
+a public `app.atlas.datarelay.run` surface is not required. This runbook does
+not provision DNS, complete ChatGPT OAuth, or flip `production_oriented`. Issue #41 stays blocked and is not a launch gate.
 Consistent backup, restore verification, upgrade, and rollback are ADR-0010
 and ADR-0011 (`docs/runbooks/phase2-data-protection.md`). The operations
 profile commands are those commands.
@@ -63,6 +64,7 @@ sudo install -m 0640 -o root -g atlas /path/outside/git/key.pem /etc/datarelay-a
 sudo install -m 0644 -o root -g atlas /path/outside/git/cert.pem /etc/datarelay-atlas/tls/cert.pem
 PYTHONPATH=. python3 -m atlas ops stage --dest /tmp/atlas-unit-stage
 sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas.service /etc/systemd/system/datarelay-atlas.service
+sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas-web.service /etc/systemd/system/datarelay-atlas-web.service
 sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas-ingress.socket /etc/systemd/system/datarelay-atlas-ingress.socket
 sudo install -m 0644 /tmp/atlas-unit-stage/datarelay-atlas-ingress.service /etc/systemd/system/datarelay-atlas-ingress.service
 sudo systemctl daemon-reload
@@ -71,6 +73,7 @@ sudo --user atlas --group atlas \
   /opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod \
   --env-file /etc/datarelay-atlas/service.env
 sudo systemctl enable --now datarelay-atlas.service
+sudo systemctl enable --now datarelay-atlas-web.service
 sudo systemctl enable --now datarelay-atlas-ingress.socket
 ```
 
@@ -105,11 +108,54 @@ or projection text. The command reads that file only, not the ambient shell.
 sudo systemctl start datarelay-atlas.service
 sudo systemctl stop datarelay-atlas.service
 sudo systemctl restart datarelay-atlas.service
+sudo systemctl restart datarelay-atlas-web.service
 sudo systemctl status datarelay-atlas.service
+sudo systemctl status datarelay-atlas-web.service
 sudo journalctl -u datarelay-atlas.service -n 100 --no-pager
+sudo journalctl -u datarelay-atlas-web.service -n 100 --no-pager
 ```
 
 Boot persistence is `WantedBy=multi-user.target`. The process user is `atlas`.
+
+
+## Production Human UI over authenticated SSH
+
+The initial production Human UI is intentionally **not public**.
+`datarelay-atlas-web.service` runs as `atlas:atlas`, reads the existing
+`/var/lib/datarelay-atlas` state, and binds only `127.0.0.1:8788`. The unit has
+no service env file, TLS key, OAuth secret, GitHub token, or write path to the
+data root.
+
+Remote access uses the operator's existing SSH authentication to `prod-atlas`.
+From the operator machine:
+
+```bash
+ssh -N -L 8788:127.0.0.1:8788 prod-atlas
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8788/
+```
+
+The browser sends the loopback Host authority that the Atlas Web UI already
+requires. Do not publish TCP 8788, bind the Web UI to `0.0.0.0`, or expose it
+through the MCP 443 ingress. Closing the SSH session removes remote access.
+
+On the production host, the local service can be checked without opening any
+new ingress:
+
+```bash
+curl --silent --show-error --fail http://127.0.0.1:8788/ >/dev/null
+ss -ltn | grep '127.0.0.1:8788'
+```
+
+Actual-browser Surface Reconciliation and Full User E2E should run against the
+SSH-forwarded loopback URL on the same deployed candidate. A deterministic or
+HTTP-only check never substitutes for those browser gates. A future public
+`app.atlas.datarelay.run` deployment requires a separate explicit
+authentication/exposure design.
 
 ## Health
 

@@ -28,6 +28,7 @@ from atlas.ops import (
     validate_ingress_socket_text,
     validate_prod_deployment_env,
     validate_unit_text,
+    validate_web_unit_text,
 )
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
@@ -195,6 +196,32 @@ class OpsCheckTests(unittest.TestCase):
             mode = stat.S_IMODE(target.stat().st_mode)
             self.assertEqual(mode, 0o644)
 
+    def test_staged_web_unit_is_loopback_non_root_and_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage_unit(Path(tmp))
+            target = Path(tmp) / "datarelay-atlas-web.service"
+            text = target.read_text(encoding="utf-8")
+            self.assertIn("User=atlas\n", text)
+            self.assertIn("Group=atlas\n", text)
+            self.assertIn("--host 127.0.0.1 --port 8788\n", text)
+            self.assertIn("ReadOnlyPaths=/var/lib/datarelay-atlas\n", text)
+            self.assertIn("IPAddressAllow=localhost\n", text)
+            self.assertIn("IPAddressDeny=any\n", text)
+            self.assertIn("NoNewPrivileges=true\n", text)
+            self.assertNotIn("EnvironmentFile=", text)
+            self.assertNotIn("User=root", text)
+            self.assertNotIn("0.0.0.0", text)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o644)
+            validate_web_unit_text(text)
+            with self.assertRaises(ValidationError):
+                validate_web_unit_text(text.replace("--host 127.0.0.1", "--host 0.0.0.0", 1))
+            with self.assertRaises(ValidationError):
+                validate_web_unit_text(text.replace("User=atlas", "User=root", 1))
+            with self.assertRaises(ValidationError):
+                validate_web_unit_text(text + "EnvironmentFile=/etc/datarelay-atlas/service.env\n")
+            with self.assertRaises(ValidationError):
+                validate_web_unit_text(text.replace("ReadOnlyPaths=/var/lib/datarelay-atlas", "ReadWritePaths=/var/lib/datarelay-atlas", 1))
+
     def test_production_profile_uses_audited_data_protection_commands(self):
         project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
         # The adoption upgrader may wrap long YAML scalars. Normalize only
@@ -237,6 +264,12 @@ class OpsCheckTests(unittest.TestCase):
         self.assertEqual(contract["ingress_listen"], "0.0.0.0:443")
         self.assertEqual(contract["ingress_target"], "127.0.0.1:8443")
         self.assertEqual(contract["resource_port"], 443)
+        self.assertEqual(contract["web_unit"], "datarelay-atlas-web.service")
+        self.assertEqual(contract["web_bind_host"], "127.0.0.1")
+        self.assertEqual(contract["web_bind_port"], 8788)
+        self.assertFalse(contract["web_public_exposure"])
+        self.assertEqual(contract["web_remote_access"], "ssh_local_forward")
+        self.assertEqual(contract["web_ssh_forward"], "127.0.0.1:8788:127.0.0.1:8788")
         self.assertEqual(contract["restart"], "on-failure")
         self.assertFalse(contract["chatgpt_mcp_required"])
         self.assertFalse(contract["production_evidence"])
@@ -251,6 +284,8 @@ class OpsCheckTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn('"production_evidence": false', stdout.getvalue())
         self.assertIn('"ingress_listen": "0.0.0.0:443"', stdout.getvalue())
+        self.assertIn('"web_remote_access": "ssh_local_forward"', stdout.getvalue())
+        self.assertIn('"web_public_exposure": false', stdout.getvalue())
         self.assertNotIn(SECRET, stdout.getvalue())
         with tempfile.TemporaryDirectory() as tmp:
             stage_unit(Path(tmp))
