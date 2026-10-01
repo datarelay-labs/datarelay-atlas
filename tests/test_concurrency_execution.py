@@ -126,6 +126,21 @@ def _join_observation(receipt: dict) -> dict:
 
 
 class ConcurrencyExecutionTests(unittest.TestCase):
+    def test_boolean_ledger_schema_version_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = {
+                "schema_version": True,
+                "kind": "concurrency_execution_cycle_ledger",
+                "authority": "ORCHESTRATION_EVIDENCE_ONLY",
+                "records": [],
+            }
+            (root / FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "schema"):
+                concurrency_execution_dashboard(root)
+
+
+
     def test_duplicate_execution_collection_key_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

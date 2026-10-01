@@ -6931,6 +6931,10 @@ def drain_completion_inbox(controller: WorkController, data_root: Path) -> list[
             outcome = dict(outcome)
             outcome["inbox_file"] = path.name
             with data_root_write_lock(root):
+                if inbox.is_symlink() or not inbox.is_dir():
+                    raise ValidationError("completion inbox directory is unsafe")
+                if processed.is_symlink() or not processed.is_dir():
+                    raise ValidationError("completion processed directory is unsafe")
                 if path.is_symlink() or not path.is_file():
                     raise ValidationError("completion event path is unsafe")
                 opened = os.fstat(event_fd)

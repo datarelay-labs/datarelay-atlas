@@ -122,6 +122,21 @@ def _resign(join: dict) -> dict:
 
 
 class ConcurrencyJoinTests(unittest.TestCase):
+    def test_boolean_ledger_schema_version_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = {
+                "schema_version": True,
+                "kind": "concurrency_dispatch_join_ledger",
+                "authority": "MEASUREMENT_ONLY",
+                "joins": [],
+            }
+            (root / FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "schema"):
+                concurrency_dispatch_join_dashboard(root)
+
+
+
     def test_duplicate_join_collection_key_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

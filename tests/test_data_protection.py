@@ -166,6 +166,18 @@ class DataProtectionTests(unittest.TestCase):
                     (root / name).read_bytes(),
                 )
 
+            duplicate_member_effect = (
+                '{"schema_version":1,'
+                '"kind":"concurrency_dispatch_effect_ledger",'
+                '"authority":"DISPATCH_EFFECT_RECEIPT_ONLY",'
+                '"effects":[{}],"effects":[]}\n'
+            )
+            (root / CONCURRENCY_EFFECTS_FILENAME).write_text(
+                duplicate_member_effect, encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "replay state"):
+                backup_data_root(root, base / "rejected-duplicate-member-effect")
+
             malformed_effect = json.loads(json.dumps(effect_payload))
             del malformed_effect["effects"][0]["effect_id"]
             (root / CONCURRENCY_EFFECTS_FILENAME).write_text(

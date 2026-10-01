@@ -97,6 +97,21 @@ class BarrierPort:
 
 
 class ConcurrencyEffectTests(unittest.TestCase):
+    def test_boolean_ledger_schema_version_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = {
+                "schema_version": True,
+                "kind": "concurrency_dispatch_effect_ledger",
+                "authority": "DISPATCH_EFFECT_RECEIPT_ONLY",
+                "effects": [],
+            }
+            (root / FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "schema"):
+                concurrency_dispatch_effect_dashboard(root)
+
+
+
     def test_dangling_effect_ledger_symlink_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

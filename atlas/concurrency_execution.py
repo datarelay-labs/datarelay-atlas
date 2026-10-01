@@ -204,6 +204,7 @@ def _load_ledger(root: Path) -> dict[str, object]:
         not isinstance(payload, dict)
         or set(payload)
         != {"schema_version", "kind", "authority", "records"}
+        or type(payload.get("schema_version")) is not int
         or payload.get("schema_version") != SCHEMA_VERSION
         or payload.get("kind") != LEDGER_KIND
         or payload.get("authority") != AUTHORITY

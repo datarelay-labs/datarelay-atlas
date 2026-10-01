@@ -236,6 +236,7 @@ def validate_concurrency_handoff_ledger(payload: object) -> dict[str, object]:
     """Validate the complete replay-blocking external handoff ledger."""
     if (
         not isinstance(payload, dict)
+        or type(payload.get("schema_version")) is not int
         or payload.get("schema_version") != SCHEMA_VERSION
         or payload.get("kind") != LEDGER_KIND
         or set(payload) != {"schema_version", "kind", "handoffs"}

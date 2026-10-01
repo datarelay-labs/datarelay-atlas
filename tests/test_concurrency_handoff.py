@@ -239,6 +239,20 @@ def _registry(base: Path, auth: dict) -> tuple[dict, dict[str, dict[str, str]]]:
 
 
 class ConcurrencyHandoffTests(unittest.TestCase):
+    def test_boolean_ledger_schema_version_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = {
+                "schema_version": True,
+                "kind": "concurrency_work_packet_handoff_ledger",
+                "handoffs": [],
+            }
+            (root / FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "schema"):
+                get_concurrency_handoff_authorization(root, "0" * 64)
+
+
+
     def test_dangling_handoff_ledger_symlink_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

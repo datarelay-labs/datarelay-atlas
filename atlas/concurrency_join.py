@@ -139,6 +139,7 @@ def _load_ledger(root: Path) -> dict[str, object]:
     if (
         not isinstance(payload, dict)
         or set(payload) != {"schema_version", "kind", "authority", "joins"}
+        or type(payload.get("schema_version")) is not int
         or payload.get("schema_version") != SCHEMA_VERSION
         or payload.get("kind") != LEDGER_KIND
         or payload.get("authority") != AUTHORITY
@@ -173,7 +174,8 @@ def validate_concurrency_dispatch_join(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict) or set(payload) != expected:
         _reject("concurrency dispatch join schema is invalid")
     if (
-        payload.get("schema_version") != SCHEMA_VERSION
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != SCHEMA_VERSION
         or payload.get("kind") != OBSERVATION_KIND
         or payload.get("result") not in RESULTS
         or payload.get("pass_authority") != PASS_AUTHORITY

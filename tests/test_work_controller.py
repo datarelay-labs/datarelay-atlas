@@ -899,6 +899,52 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(len(outcomes), 1)
             self.assertFalse(event_path.exists())
 
+    def test_completion_processed_parent_swap_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ctl, _dispatcher, _packets = self._ctl(tmp)
+            event_path = enqueue_completion_event(root, self._event())
+            original = ctl.handle_completion
+            outside = root / "outside-processed"
+            outside.mkdir()
+
+            def swap_processed(event):
+                outcome = original(event)
+                processed = root / "completion-processed"
+                real = root / "completion-processed-real"
+                processed.rename(real)
+                processed.symlink_to(outside, target_is_directory=True)
+                return outcome
+
+            ctl.handle_completion = swap_processed
+            with self.assertRaisesRegex(ValidationError, "processed directory is unsafe"):
+                drain_completion_inbox(ctl, root)
+            self.assertTrue(event_path.is_file())
+            self.assertFalse((outside / event_path.name).exists())
+
+    def test_completion_inbox_parent_swap_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ctl, _dispatcher, _packets = self._ctl(tmp)
+            event_path = enqueue_completion_event(root, self._event())
+            original = ctl.handle_completion
+            outside = root / "outside-inbox"
+            outside.mkdir()
+
+            def swap_inbox(event):
+                outcome = original(event)
+                inbox = root / "completion-inbox"
+                real = root / "completion-inbox-real"
+                inbox.rename(real)
+                inbox.symlink_to(outside, target_is_directory=True)
+                return outcome
+
+            ctl.handle_completion = swap_inbox
+            with self.assertRaisesRegex(ValidationError, "inbox directory is unsafe"):
+                drain_completion_inbox(ctl, root)
+            self.assertTrue((root / "completion-inbox-real" / event_path.name).is_file())
+            self.assertFalse((outside / event_path.name).exists())
+
     def test_completion_directories_and_events_reject_symlinks(self):
         event = self._event()
         with tempfile.TemporaryDirectory() as tmp:

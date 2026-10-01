@@ -89,6 +89,20 @@ def _request(handoff: dict, claim_id: str) -> dict:
 
 
 class ConcurrencyClaimTests(unittest.TestCase):
+    def test_boolean_ledger_schema_version_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = {
+                "schema_version": True,
+                "kind": "concurrency_handoff_claim_ledger",
+                "claims": [],
+            }
+            (root / CLAIM_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "schema"):
+                get_concurrency_handoff_claim(root, "0" * 64)
+
+
+
     def test_dangling_claim_ledger_symlink_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp)

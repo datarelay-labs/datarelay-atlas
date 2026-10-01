@@ -454,9 +454,20 @@ def _reject_secret(raw: bytes) -> None:
 
 
 def _json_object(raw: bytes, corrupt_message: str) -> dict:
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON member")
+            result[key] = value
+        return result
+
     try:
-        data = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
+        data = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_object,
+        )
+    except (UnicodeError, ValueError) as exc:
         raise ValidationError(corrupt_message) from exc
     if not isinstance(data, dict):
         raise ValidationError(corrupt_message)
