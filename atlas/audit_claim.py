@@ -3,7 +3,7 @@
 One GitHub Contents document per Work Packet remembers completed and live
 claims. A duplicate or stale claim does not call the auditor. Monthly spend
 lives on a repository-month document and survives a new worker process.
-REWORK redispatch lives in ``atlas.audit_disposition`` and is not done here.
+REWORK handoff disposition lives in ``atlas.audit_disposition`` and is not done here.
 """
 
 from __future__ import annotations
@@ -39,7 +39,6 @@ from atlas.final_audit import (
     build_final_audit_request,
     request_cost_ceiling_usd,
 )
-from atlas.host_worker import persistent_cursor_active
 from atlas.provenance import ValidationError
 from atlas.secrets import redact_sensitive_audit_text
 from atlas.work_controller import (
@@ -1026,14 +1025,8 @@ def run_exact_head_audit(
     ):
         return _result("stale_head")
     profile = str(execution_profile or "").strip()
-    if profile not in {"CHATGPT_CHAT", "CURSOR"}:
+    if profile != "CHATGPT_CHAT":
         return _result("implementer_refused")
-    if profile == "CURSOR" and persistent_cursor_active(
-        worktree_path,
-        list_sessions=list_sessions,
-        list_processes=list_processes,
-    ):
-        return _result("cursor_active_noop")
     try:
         validate_clean_worktree_identity(
             worktree_path,

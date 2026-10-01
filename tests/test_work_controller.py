@@ -254,53 +254,19 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(packets.updates, [])
             self.assertEqual(dispatcher.requests, [])
 
-    def test_resource_preflight_block_is_human_required_without_spawn(self):
-        from atlas.work_controller import PersistSession, PtyPersistCursorDispatcher
-
+    def test_rework_handoff_does_not_run_cursor_resource_preflight_or_spawn(self):
         with tempfile.TemporaryDirectory() as tmp:
             worktree = Path(tmp) / "wt"
             worktree.mkdir()
-            existing = [
-                PersistSession(session_id="keep-me", workspace="/tmp/unrelated")
-            ]
-            state = {"spawn": 0, "stopped": []}
+            state = {"preflight": 0, "spawn": 0}
 
-            def _refuse_spawn(_command: list[str], _worktree: str) -> int:
-                state["spawn"] += 1
-                return 1
+            class ForbiddenDispatcher:
+                requests = []
 
-            def fake_git(argv: list[str], cwd: str) -> str:
-                if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
-                    return cwd
-                mapping = {
-                    ("git", "remote", "get-url", "origin"): (
-                        "datarelay-labs/datarelay-atlas"
-                    ),
-                    ("git", "branch", "--show-current"): (
-                        "feature/autonomous-work-controller-poc"
-                    ),
-                    ("git", "rev-parse", "HEAD"): HEAD_A,
-                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
-                }
-                return mapping[tuple(argv)]
+                def start_resume(self, _request):
+                    state["spawn"] += 1
+                    raise AssertionError("Chat handoff must not dispatch Cursor")
 
-            def preflight() -> tuple[int, str]:
-                return (
-                    2,
-                    "RESULT=BLOCK\nEXIT_CODE=2\nREASON=persistent sessions reached block threshold\n",
-                )
-
-            dispatcher = PtyPersistCursorDispatcher(
-                list_sessions=lambda: list(existing),
-                list_target_procs=lambda _wt: [(111, "keep")],
-                spawn=_refuse_spawn,
-                git_runner=fake_git,
-                resource_preflight=preflight,
-                terminate_process_group=lambda pid: state["stopped"].append(pid),
-                poll_interval_sec=0.01,
-                poll_timeout_sec=0.05,
-                sleeper=lambda _s: None,
-            )
             packets = RecordingWorkPacketAdapter()
             ctl = WorkController(
                 Path(tmp) / "data",
@@ -308,9 +274,8 @@ class WorkControllerTests(unittest.TestCase):
                     AuditResult(verdict="REWORK", findings="fix gaps")
                 ),
                 work_packet=packets,
-                dispatcher=dispatcher,
-                enforce_worktree_identity=True,
-                git_runner=fake_git,
+                dispatcher=ForbiddenDispatcher(),
+                enforce_worktree_identity=False,
             )
             ctl.register_workstream(
                 workstream="awc-poc",
@@ -321,17 +286,13 @@ class WorkControllerTests(unittest.TestCase):
                 expected_head=HEAD_A,
             )
             outcome = ctl.handle_completion(self._event())
-            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
-            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
-            self.assertEqual(outcome["reason"], "resource_preflight_blocked")
-            self.assertEqual(outcome["resource_preflight_result"], "BLOCK")
-            self.assertIn("block threshold", outcome["resource_preflight_reason"])
+            self.assertEqual(outcome["state"], "REWORK_HANDOFF")
+            self.assertEqual(outcome["action"], "authorized_handoff")
+            self.assertFalse(outcome["spawned"])
+            self.assertEqual(outcome["adapter"], "EXTERNAL_HANDOFF")
             self.assertEqual(state["spawn"], 0)
-            self.assertEqual(state["stopped"], [])
-            self.assertEqual(existing[0].session_id, "keep-me")
-            self.assertTrue(
-                any(item.get("kind") == "dispatch_blocked" for item in packets.updates)
-            )
+            self.assertEqual(len(packets.updates), 1)
+
 
     def test_pass_rejected_when_worktree_already_dirty_before_finalize(self):
         """Dirty porcelain present for the whole PASS path still fails closed."""
@@ -409,45 +370,33 @@ class WorkControllerTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 ctl.handle_completion(self._event(issue_number=99))
 
-    def test_rework_dispatch(self):
+    def test_rework_becomes_chat_handoff_without_dispatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             ctl, dispatcher, packets = self._ctl(
                 tmp, verdict="REWORK", findings="fix gaps"
             )
             outcome = ctl.handle_completion(self._event())
             self.assertEqual(outcome["verdict"], "REWORK")
-            self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
-            self.assertEqual(outcome["action"], "rework_dispatched")
+            self.assertEqual(outcome["state"], "REWORK_HANDOFF")
+            self.assertEqual(outcome["action"], "authorized_handoff")
             self.assertEqual(outcome["next_attempt"], 2)
-            self.assertEqual(outcome["resume_prompt"], "/work-resume")
-            self.assertEqual(len(dispatcher.requests), 1)
-            req = dispatcher.requests[0]
-            self.assertEqual(req.resume_prompt, "/work-resume")
-            self.assertEqual(req.attempt, 2)
-            self.assertEqual(req.repository, "datarelay-labs/datarelay-atlas")
-            self.assertEqual(req.expected_head, HEAD_A)
-            self.assertEqual(
-                build_persist_resume_command(req),
-                ["agent", "persist", "--force", "--trust", "/work-resume"],
-            )
-            self.assertEqual(
-                build_persist_resume_command(req),
-                outcome["dispatch_command"],
-            )
+            self.assertEqual(outcome["execution_profile"], "CHATGPT_CHAT")
+            self.assertEqual(outcome["adapter"], "EXTERNAL_HANDOFF")
+            self.assertFalse(outcome["spawned"])
+            self.assertEqual(dispatcher.requests, [])
             self.assertEqual(len(packets.updates), 1)
             self.assertIn("fix gaps", packets.updates[0]["findings"])
             self.assertEqual(ctl.show("awc-poc")["attempt"], 2)
 
-    def test_dispatch_boundary_validation_error_finalizes_human_required(self):
-        """Dispatcher ValidationError after REWORK ⇒ HUMAN_REQUIRED, no dispatch."""
 
+    def test_rework_handoff_ignores_retired_dispatcher(self):
         class FailingDispatcher:
             def __init__(self) -> None:
                 self.requests = []
 
             def start_resume(self, request):
                 self.requests.append(request)
-                raise ValidationError("worktree is dirty; git status --porcelain is not empty")
+                raise AssertionError("retired dispatcher must not be called")
 
         with tempfile.TemporaryDirectory() as tmp:
             worktree = Path(tmp) / "wt"
@@ -474,19 +423,11 @@ class WorkControllerTests(unittest.TestCase):
                 max_attempts=3,
             )
             outcome = ctl.handle_completion(self._event())
-            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
-            self.assertEqual(outcome["verdict"], "HUMAN_REQUIRED")
-            self.assertEqual(outcome["action"], "stop")
-            self.assertEqual(outcome["reason"], "dispatch_boundary_failed")
-            self.assertIn("dispatch blocked at boundary", outcome["findings"])
-            self.assertEqual(len(dispatcher.requests), 1)
-            self.assertEqual(len(packets.updates), 2)
-            self.assertEqual(packets.updates[0]["kind"], "rework")
-            self.assertEqual(packets.updates[1]["kind"], "dispatch_blocked")
-            self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
-            shown = ctl.show("awc-poc")
-            self.assertEqual(shown["state"], "HUMAN_REQUIRED")
-            self.assertEqual(shown["attempt"], 0)
+            self.assertEqual(outcome["state"], "REWORK_HANDOFF")
+            self.assertEqual(outcome["action"], "authorized_handoff")
+            self.assertEqual(dispatcher.requests, [])
+            self.assertEqual([item["kind"] for item in packets.updates], ["rework"])
+
 
     def test_work_packet_mutation_failure_blocks_dispatch(self):
         """Work Packet mutation ValidationError ⇒ HUMAN_REQUIRED, no Cursor spawn."""
@@ -532,9 +473,7 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(dispatcher.requests, [])
             self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
 
-    def test_work_packet_mutation_happens_before_dispatch(self):
-        """REWORK ordering: mutate canonical packet, then dispatch Cursor."""
-
+    def test_work_packet_mutation_happens_before_chat_handoff(self):
         class OrderedProbe:
             def __init__(self) -> None:
                 self.order: list[str] = []
@@ -544,13 +483,11 @@ class WorkControllerTests(unittest.TestCase):
 
             def assert_cursor_dispatch_authorized(self, **kwargs):
                 self.order.append("authorize")
+                raise AssertionError("Cursor authorization must not run")
 
             def start_resume(self, request):
                 self.order.append("dispatch")
-                return DispatchResult(
-                    session_id="sess-ordered",
-                    command=build_persist_resume_command(request),
-                )
+                raise AssertionError("Cursor dispatcher must not run")
 
         with tempfile.TemporaryDirectory() as tmp:
             worktree = Path(tmp) / "wt"
@@ -576,28 +513,27 @@ class WorkControllerTests(unittest.TestCase):
                 max_attempts=3,
             )
             outcome = ctl.handle_completion(self._event())
-            self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
-            self.assertEqual(probe.order, ["packet", "authorize", "dispatch"])
+            self.assertEqual(outcome["state"], "REWORK_HANDOFF")
+            self.assertEqual(probe.order, ["packet"])
 
-    def test_spawned_but_unobserved_requires_human(self):
-        """Unobserved spawn is not a proven dispatch; compensate and stop."""
 
-        class ObservingFailDispatcher:
+    def test_retired_spawn_error_paths_are_not_reached_from_rework(self):
+        class ForbiddenDispatcher:
             def __init__(self) -> None:
-                self.requests = []
+                self.calls = 0
 
-            def start_resume(self, request):
-                self.requests.append(request)
+            def start_resume(self, _request):
+                self.calls += 1
                 raise DispatchSpawnedButUnobservedError(
-                    "session did not appear",
+                    "must not be reached",
                     session_hint="proc:4242",
-                    command=build_persist_resume_command(request),
+                    command=["agent", "persist"],
                 )
 
         with tempfile.TemporaryDirectory() as tmp:
             worktree = Path(tmp) / "wt"
             worktree.mkdir()
-            dispatcher = ObservingFailDispatcher()
+            dispatcher = ForbiddenDispatcher()
             packets = RecordingWorkPacketAdapter()
             ctl = WorkController(
                 Path(tmp) / "data",
@@ -619,62 +555,10 @@ class WorkControllerTests(unittest.TestCase):
                 max_attempts=3,
             )
             outcome = ctl.handle_completion(self._event())
-            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
-            self.assertEqual(outcome["reason"], "spawned_but_unobserved")
-            self.assertEqual(outcome["dispatch_session_hint"], "proc:4242")
-            # Packet mutation then compensating blocked update.
-            self.assertEqual(len(packets.updates), 2)
-            self.assertNotEqual(ctl.show("awc-poc")["state"], "REWORK_DISPATCHED")
-            replay = ctl.handle_completion(self._event())
-            self.assertTrue(replay["idempotent_replay"])
-            self.assertEqual(len(packets.updates), 2)
-            self.assertEqual(len(dispatcher.requests), 1)
+            self.assertEqual(outcome["state"], "REWORK_HANDOFF")
+            self.assertEqual(dispatcher.calls, 0)
+            self.assertEqual([item["kind"] for item in packets.updates], ["rework"])
 
-    def test_cleanup_uncertainty_does_not_compensate_packet(self):
-        """Termination failure must not rewrite the packet as safely blocked."""
-
-        class UncertainDispatcher:
-            def start_resume(self, request):
-                raise DispatchSpawnCleanupUncertainError(
-                    "owned spawn cleanup uncertain: operation not permitted",
-                    session_hint="proc:4242",
-                    command=build_persist_resume_command(request),
-                    cleanup_error="operation not permitted",
-                )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            worktree = Path(tmp) / "wt"
-            worktree.mkdir()
-            packets = RecordingWorkPacketAdapter()
-            ctl = WorkController(
-                Path(tmp) / "data",
-                audit=FixedAuditAdapter(
-                    AuditResult(verdict="REWORK", findings="fix gaps")
-                ),
-                work_packet=packets,
-                dispatcher=UncertainDispatcher(),
-                observer=RecordingObserver(),
-                enforce_worktree_identity=False,
-            )
-            ctl.register_workstream(
-                workstream="awc-poc",
-                repository="datarelay-labs/datarelay-atlas",
-                issue_number=12,
-                branch="feature/autonomous-work-controller-poc",
-                worktree_path=str(worktree),
-                expected_head=HEAD_A,
-                max_attempts=3,
-            )
-            outcome = ctl.handle_completion(self._event())
-            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
-            self.assertEqual(outcome["reason"], "spawn_cleanup_uncertain")
-            self.assertNotEqual(outcome["state"], "REWORK_DISPATCHED")
-            self.assertEqual(
-                [item["kind"] for item in packets.updates], ["rework"]
-            )
-            shown = ctl.show("awc-poc")
-            self.assertIn("not compensated", shown["last_findings"])
-            self.assertIn("proc:4242", shown["last_findings"])
 
     def test_secret_blocked_codex_audit_stops_without_reconcile_loop(self):
         from atlas.codex_audit import CodexAuditProvider
@@ -764,7 +648,7 @@ class WorkControllerTests(unittest.TestCase):
             )
             self.assertEqual(outcome["state"], "PASSED")
             self.assertEqual(outcome["head"], HEAD_B)
-            self.assertEqual(len(dispatcher.requests), 1)
+            self.assertEqual(dispatcher.requests, [])
             self.assertEqual(ctl.show("awc-poc")["expected_head"], HEAD_B)
 
     def test_reconcile_after_restart_mid_audit(self):
@@ -1017,24 +901,25 @@ class WorkControllerTests(unittest.TestCase):
                 outcome = ctl.handle_completion(self._event())
                 self.assertEqual(packets.cycle_calls, [])
                 if verdict == "REWORK":
-                    self.assertEqual(outcome["state"], "REWORK_DISPATCHED")
+                    self.assertEqual(outcome["state"], "REWORK_HANDOFF")
+                    self.assertEqual(outcome["action"], "authorized_handoff")
+                    self.assertEqual(dispatcher.requests, [])
                 else:
                     self.assertEqual(dispatcher.requests, [])
                     self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
 
-    def test_pass_activates_successor_and_dispatches_once(self):
+    def test_pass_activates_successor_and_handoffs_without_dispatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
             packets.cycle_script = [self._advanced()]
             outcome = ctl.handle_completion(self._event())
-            self.assertEqual(outcome["action"], "successor_dispatched")
-            self.assertEqual(outcome["state"], "SUCCESSOR_DISPATCHED")
-            self.assertEqual(len(dispatcher.requests), 1)
-            request = dispatcher.requests[0]
-            self.assertEqual(request.issue_number, 18)
-            self.assertEqual(request.attempt, 1)
-            self.assertEqual(request.resume_prompt, "/work-resume")
-            self.assertIn("/work-resume", outcome["dispatch_command"])
+            self.assertEqual(outcome["action"], "successor_handoff")
+            self.assertEqual(outcome["state"], "SUCCESSOR_HANDOFF")
+            self.assertEqual(outcome["successor_issue"], 18)
+            self.assertEqual(outcome["execution_profile"], "CHATGPT_CHAT")
+            self.assertEqual(outcome["adapter"], "EXTERNAL_HANDOFF")
+            self.assertFalse(outcome["spawned"])
+            self.assertEqual(dispatcher.requests, [])
             shown = ctl.show("awc-poc")
             self.assertEqual(shown["issue_number"], 18)
             self.assertEqual(shown["attempt"], 0)
@@ -1042,8 +927,9 @@ class WorkControllerTests(unittest.TestCase):
             self.assertIn("evt-1", shown["processed_event_ids"])
             replay = ctl.handle_completion(self._event())
             self.assertTrue(replay["idempotent_replay"])
-            self.assertEqual(len(dispatcher.requests), 1)
+            self.assertEqual(dispatcher.requests, [])
             self.assertEqual(len(packets.cycle_calls), 1)
+
 
     def test_ambiguous_cycle_does_not_dispatch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1058,7 +944,7 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(dispatcher.requests, [])
             self.assertEqual(ctl.show("awc-poc")["issue_number"], 12)
 
-    def test_dispatch_failure_leaves_one_active_successor_record(self):
+    def test_successor_handoff_never_calls_retired_dispatcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             ctl, _dispatcher, packets = self._ctl(tmp, verdict="PASS")
             packets.cycle_script = [self._advanced()]
@@ -1069,21 +955,22 @@ class WorkControllerTests(unittest.TestCase):
 
                 def start_resume(self, request):
                     self.calls += 1
-                    raise ValidationError("spawn refused")
+                    raise AssertionError("retired dispatcher must not run")
 
             refusing = RefusingDispatcher()
             ctl.dispatcher = refusing
             outcome = ctl.handle_completion(self._event())
-            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
-            self.assertEqual(outcome["reason"], "cycle_dispatch_blocked")
+            self.assertEqual(outcome["state"], "SUCCESSOR_HANDOFF")
+            self.assertEqual(outcome["action"], "successor_handoff")
             self.assertEqual(outcome["successor_issue"], 18)
-            self.assertEqual(refusing.calls, 1)
+            self.assertEqual(refusing.calls, 0)
             self.assertEqual(len(packets.cycle_calls), 1)
             self.assertEqual(ctl.show("awc-poc")["issue_number"], 18)
 
-    def test_reconcile_pending_dispatch_once_and_claimed_dispatch_stops(self):
+
+    def test_reconcile_historical_cursor_dispatch_states_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
+            ctl, dispatcher, _packets = self._ctl(tmp, verdict="PASS")
             record = ctl.store.get("awc-poc")
             record.state = "CYCLE_DISPATCH_PENDING"
             record.issue_number = 18
@@ -1091,9 +978,9 @@ class WorkControllerTests(unittest.TestCase):
             record.pending_event = self._event()
             ctl.store.put(record)
             outcome = ctl.reconcile("awc-poc")[0]
-            self.assertEqual(outcome["state"], "SUCCESSOR_DISPATCHED")
-            self.assertEqual(len(dispatcher.requests), 1)
-            self.assertEqual(dispatcher.requests[0].issue_number, 18)
+            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
+            self.assertEqual(outcome["reason"], "cursor_runtime_retired")
+            self.assertEqual(dispatcher.requests, [])
 
         with tempfile.TemporaryDirectory() as tmp:
             ctl, dispatcher, _packets = self._ctl(tmp, verdict="PASS")
@@ -1106,12 +993,13 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(dispatcher.requests, [])
             self.assertEqual(ctl.show("awc-poc")["state"], "HUMAN_REQUIRED")
 
+
     def test_successor_completion_accepts_new_head(self):
         with tempfile.TemporaryDirectory() as tmp:
             ctl, dispatcher, packets = self._ctl(tmp, verdict="PASS")
             packets.cycle_script = [self._advanced()]
             ctl.handle_completion(self._event())
-            self.assertEqual(len(dispatcher.requests), 1)
+            self.assertEqual(dispatcher.requests, [])
             outcome = ctl.handle_completion(
                 self._event(
                     event_id="evt-2",
@@ -1123,7 +1011,7 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(outcome["state"], "PASSED")
             self.assertEqual(outcome["cycle"], "no_successor")
             self.assertEqual(ctl.show("awc-poc")["expected_head"], HEAD_B)
-            self.assertEqual(len(dispatcher.requests), 1)
+            self.assertEqual(dispatcher.requests, [])
 
     def test_unusual_event_id_pass_does_not_dispatch(self):
         for event_id in ("evt with spaces", "e" * 300):

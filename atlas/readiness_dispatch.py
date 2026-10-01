@@ -1,9 +1,8 @@
-"""Provider-neutral single-worker activation with an explicit legacy Cursor adapter.
+"""Provider-neutral readiness activation and external handoff.
 
-This module composes the existing readiness activation primitive with the
-existing exact-head persistent dispatcher.  It deliberately has no retry loop:
-once a packet is activated, an uncertain or failed dispatch remains explicit
-operator recovery state rather than replayable authority.
+Current execution authorizes a CHATGPT_CHAT handoff after exact packet/worktree
+checks and launches no process or session. The legacy Cursor dispatch entry is
+retained only as a fail-closed compatibility symbol and performs no effects.
 """
 
 from __future__ import annotations
@@ -16,14 +15,7 @@ from typing import Any
 
 from atlas.provenance import ValidationError
 from atlas.work_controller import (
-    RESUME_PROMPT,
-    DispatchRequest,
-    DispatchResult,
-    DispatchSpawnCleanupUncertainError,
-    DispatchSpawnedButUnobservedError,
     GitHubWorkPacketAdapter,
-    PtyPersistCursorDispatcher,
-    ResourcePreflightBlocked,
     WORKSTREAM_RE,
     redact_absolute_paths,
     validate_clean_worktree_identity,
@@ -429,263 +421,14 @@ def activate_and_dispatch_single_worker(
     workstream: str,
     worktree_path: str,
     packet_adapter: GitHubWorkPacketAdapter,
-    dispatcher: PtyPersistCursorDispatcher,
+    dispatcher: object,
 ) -> dict[str, Any]:
-    """Activate one graph-selected packet and dispatch exactly once.
+    """Retired legacy effectful readiness entry.
 
-    There is intentionally no automatic retry.  The canonical packet becomes
-    ACTIVE before dispatch; any subsequent failure therefore remains visible
-    and cannot replay the PAUSED+QUEUED authorization.
+    Current Atlas execution is Chat-primary and provider-neutral.  The old
+    readiness path that activated a CURSOR packet and then probed/spawned an
+    ``agent persist`` session is intentionally unavailable.  Keep the symbol
+    only so historical callers fail closed before packet mutation, resource
+    preflight, session/process observation, or spawn.
     """
-    expected_workstream = (workstream or "").strip()
-    if not WORKSTREAM_RE.fullmatch(expected_workstream):
-        raise ValidationError("readiness dispatch workstream is invalid")
-    target_worktree = (worktree_path or "").strip()
-    if not target_worktree:
-        raise ValidationError("readiness dispatch worktree_path is required")
-    resolved_worktree = Path(target_worktree).resolve()
-    if not resolved_worktree.is_dir():
-        raise ValidationError("readiness dispatch worktree_path is not a directory")
-    target_worktree = str(resolved_worktree)
-    if not isinstance(packet_adapter, GitHubWorkPacketAdapter):
-        raise ValidationError(
-            "readiness dispatch requires GitHubWorkPacketAdapter"
-        )
-    if not isinstance(dispatcher, PtyPersistCursorDispatcher):
-        raise ValidationError(
-            "readiness dispatch requires PtyPersistCursorDispatcher"
-        )
-
-    try:
-        preauthorization = packet_adapter.authorize_readiness_single_effect(
-            Path(graph_path)
-        )
-    except ValidationError:
-        return _human_required("AUTHORIZATION_FAILED")
-    if not isinstance(preauthorization, dict):
-        return _human_required("AUTHORIZATION_RESULT_INVALID")
-    if preauthorization.get("decision") != "ALLOW":
-        return {
-            "action": "denied",
-            "authorization": preauthorization,
-        }
-    pre_digest = preauthorization.get("plan_digest")
-    if (
-        not isinstance(pre_digest, str)
-        or not re.fullmatch(r"[0-9a-f]{64}", pre_digest)
-    ):
-        return _human_required("AUTHORIZATION_RESULT_INVALID")
-    try:
-        preselected = _selected_node(
-            preauthorization.get("selected_node")
-        )
-    except ValidationError:
-        return _human_required(
-            "AUTHORIZATION_RESULT_INVALID",
-            plan_digest=pre_digest,
-        )
-    try:
-        queued = packet_adapter.reread_trusted_queued_execution_packet(
-            preselected["repository"],
-            preselected["issue_number"],
-        )
-    except ValidationError:
-        return _human_required(
-            "QUEUED_EXECUTION_PACKET_RECHECK_FAILED",
-            selected_node=preselected,
-            plan_digest=pre_digest,
-        )
-    expected_queued = {
-        "repository": preselected["repository"],
-        "issue_number": preselected["issue_number"],
-        "branch": preselected["branch"],
-        "workstream": expected_workstream,
-        "head": preselected["head"],
-        "packet_status": "PAUSED",
-        "queue_state": "QUEUED",
-    }
-    if not isinstance(queued, dict) or any(
-        queued.get(key) != value
-        for key, value in expected_queued.items()
-    ):
-        return _human_required(
-            "QUEUED_PACKET_DRIFT",
-            selected_node=preselected,
-            plan_digest=pre_digest,
-        )
-    if queued.get("implementer") != "CURSOR":
-        return _human_required(
-            "IMPLEMENTER_PROFILE_MISMATCH",
-            selected_node=preselected,
-            plan_digest=pre_digest,
-        )
-
-    try:
-        activation = packet_adapter.activate_authorized_readiness_packet(
-            Path(graph_path)
-        )
-    except ValidationError:
-        return _human_required(
-            "ACTIVATION_FAILED",
-            selected_node=preselected,
-            plan_digest=pre_digest,
-        )
-
-    if not isinstance(activation, dict):
-        return _human_required("ACTIVATION_RESULT_INVALID")
-    action = activation.get("action")
-    if action == "denied":
-        authorization = activation.get("authorization")
-        if not isinstance(authorization, dict):
-            return _human_required("ACTIVATION_RESULT_INVALID")
-        return {
-            "action": "denied",
-            "authorization": authorization,
-        }
-    if action != "activated":
-        return _human_required("ACTIVATION_RESULT_INVALID")
-
-    plan_digest = activation.get("plan_digest")
-    if (
-        not isinstance(plan_digest, str)
-        or not re.fullmatch(r"[0-9a-f]{64}", plan_digest)
-    ):
-        return _human_required("ACTIVATION_RESULT_INVALID")
-    if plan_digest != pre_digest:
-        return _human_required(
-            "ACTIVATION_AUTHORIZATION_DRIFT",
-            selected_node=preselected,
-            plan_digest=plan_digest,
-        )
-    try:
-        selected = _selected_node(activation.get("selected_node"))
-    except ValidationError:
-        return _human_required(
-            "ACTIVATION_RESULT_INVALID",
-            plan_digest=plan_digest,
-        )
-    if selected != preselected:
-        return _human_required(
-            "ACTIVATION_AUTHORIZATION_DRIFT",
-            selected_node=selected,
-            plan_digest=plan_digest,
-        )
-
-    try:
-        fresh = packet_adapter.reread_trusted_active_execution_packet(
-            selected["repository"],
-            selected["issue_number"],
-        )
-    except ValidationError:
-        return _human_required(
-            "ACTIVE_PACKET_RECHECK_FAILED",
-            selected_node=selected,
-            plan_digest=plan_digest,
-        )
-
-    expected_active = {
-        "repository": selected["repository"],
-        "issue_number": selected["issue_number"],
-        "branch": selected["branch"],
-        "workstream": expected_workstream,
-        "head": selected["head"],
-        "status": "ACTIVE",
-        "queue_state": "NONE",
-    }
-    if not isinstance(fresh, dict) or any(
-        fresh.get(key) != value for key, value in expected_active.items()
-    ):
-        return _human_required(
-            "ACTIVE_PACKET_DRIFT",
-            selected_node=selected,
-            plan_digest=plan_digest,
-        )
-    if fresh.get("implementer") != "CURSOR":
-        return _human_required(
-            "IMPLEMENTER_PROFILE_MISMATCH",
-            selected_node=selected,
-            plan_digest=plan_digest,
-        )
-
-    try:
-        packet_adapter.require_unique_active_readiness_packet(
-            selected["repository"],
-            issue_number=selected["issue_number"],
-            branch=selected["branch"],
-        )
-    except ValidationError:
-        return _human_required(
-            "ACTIVE_PACKET_UNIQUENESS_FAILED",
-            selected_node=selected,
-            plan_digest=plan_digest,
-        )
-
-    request = DispatchRequest(
-        workstream=expected_workstream,
-        worktree_path=target_worktree,
-        branch=selected["branch"],
-        issue_number=selected["issue_number"],
-        attempt=1,
-        repository=selected["repository"],
-        expected_head=selected["head"],
-        resume_prompt=RESUME_PROMPT,
-        cursor_opt_in=True,
-    )
-    try:
-        dispatched = dispatcher.start_resume(request)
-    except ResourcePreflightBlocked as exc:
-        return _human_required(
-            "RESOURCE_PREFLIGHT_BLOCKED",
-            selected_node=selected,
-            plan_digest=plan_digest,
-            preflight_result=exc.preflight_result,
-            preflight_reason=exc.preflight_reason,
-        )
-    except DispatchSpawnCleanupUncertainError as exc:
-        return _human_required(
-            "SPAWN_CLEANUP_UNCERTAIN",
-            selected_node=selected,
-            plan_digest=plan_digest,
-            session_hint=exc.session_hint,
-        )
-    except DispatchSpawnedButUnobservedError as exc:
-        return _human_required(
-            "SPAWNED_BUT_UNOBSERVED",
-            selected_node=selected,
-            plan_digest=plan_digest,
-            session_hint=exc.session_hint,
-        )
-    except ValidationError:
-        return _human_required(
-            "DISPATCH_BLOCKED",
-            selected_node=selected,
-            plan_digest=plan_digest,
-        )
-
-    if not isinstance(dispatched, DispatchResult) or not dispatched.session_id.strip():
-        return _human_required(
-            "DISPATCH_RESULT_INVALID",
-            selected_node=selected,
-            plan_digest=plan_digest,
-        )
-
-    result: dict[str, Any] = {
-        "schema_version": _EXECUTION_RESULT_SCHEMA_VERSION,
-        "kind": "provider_neutral_execution_result",
-        "result": "DISPATCHED",
-        "action": "dispatched",
-        "plan_digest": plan_digest,
-        "selected_node": selected,
-        "execution_profile": "CURSOR",
-        "provider_attribution": "CURSOR",
-        "adapter": "PTY_PERSIST_CURSOR",
-        "spawned": True,
-        "session_id": dispatched.session_id.strip(),
-        "resume_prompt": RESUME_PROMPT,
-    }
-    if dispatched.resource_preflight_result:
-        result["resource_preflight_result"] = dispatched.resource_preflight_result
-        result["resource_preflight_reason"] = redact_absolute_paths(
-            dispatched.resource_preflight_reason or ""
-        )[:300]
-    return result
+    return _human_required("CURSOR_RUNTIME_RETIRED")

@@ -6,13 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from atlas.readiness_dispatch import activate_and_dispatch_single_worker
+from atlas.readiness_dispatch import activate_and_authorize_single_worker_handoff
 from atlas.readiness_graph import plan_readiness
-from atlas.work_controller import (
-    GitHubWorkPacketAdapter,
-    PersistSession,
-    PtyPersistCursorDispatcher,
-)
+from atlas.work_controller import GitHubWorkPacketAdapter
 
 REPO = "datarelay-labs/datarelay-atlas"
 WORKSTREAM = "readiness-multinode-e2e"
@@ -56,7 +52,7 @@ def _packet_body(
         "TASK_KIND=DEVELOPMENT\n"
         "OWNER_INTENT=Readiness multi-node deterministic E2E.\n"
         f"LAST_VERIFIED_HEAD={head}\n"
-        "IMPLEMENTER=CURSOR\n"
+        "IMPLEMENTER=CHATGPT_CHAT\n"
         "CHANGE_RISK=HIGH\n"
         "INTENT_REVISION=1\n"
         f"{after}"
@@ -287,36 +283,9 @@ class MultiNodeGitHubRunner:
         raise AssertionError(f"unexpected GitHub command: {argv}")
 
 
-class PersistentHarness:
+class GitHarness:
     def __init__(self, *, worktree: str) -> None:
         self.worktree = str(Path(worktree).resolve())
-        self.spawned = False
-        self.spawn_count = 0
-        self.command: list[str] | None = None
-
-    def list_sessions(self) -> list[PersistSession]:
-        if not self.spawned:
-            return []
-        return [
-            PersistSession(
-                session_id="e2e-persist-session",
-                workspace=self.worktree,
-                status="running",
-                task="/work-resume",
-            )
-        ]
-
-    def spawn(self, command: list[str], cwd: str) -> int:
-        if str(Path(cwd).resolve()) != self.worktree:
-            raise AssertionError("dispatcher used unexpected worktree")
-        self.command = list(command)
-        self.spawn_count += 1
-        self.spawned = True
-        return 4242
-
-    @staticmethod
-    def owned_session_ids(_pid: int, candidates: set[str]) -> set[str]:
-        return set(candidates)
 
     def git_runner(self, argv: list[str], cwd: str) -> str:
         if str(Path(cwd).resolve()) != self.worktree:
@@ -373,42 +342,29 @@ class ReadinessMultiNodeE2ETests(unittest.TestCase):
         adapter = GitHubWorkPacketAdapter(command_runner=runner)
 
         with tempfile.TemporaryDirectory() as worktree:
-            harness = PersistentHarness(worktree=worktree)
-            dispatcher = PtyPersistCursorDispatcher(
-                list_sessions=harness.list_sessions,
-                spawn=harness.spawn,
-                list_target_procs=lambda _path: [],
-                git_runner=harness.git_runner,
-                resource_preflight=lambda: (
-                    0,
-                    "RESULT=PASS\nEXIT_CODE=0\nREASON=deterministic e2e\n",
-                ),
-                owned_session_ids=harness.owned_session_ids,
-                poll_interval_sec=0.001,
-                poll_timeout_sec=1.0,
-                sleeper=lambda _seconds: None,
-            )
+            harness = GitHarness(worktree=worktree)
             graph_path = Path(worktree) / "effect-graph.json"
             graph_path.write_text(
                 json.dumps(_graph(max_wip=1), sort_keys=True),
                 encoding="utf-8",
             )
 
-            first = activate_and_dispatch_single_worker(
+            first = activate_and_authorize_single_worker_handoff(
                 graph_path=graph_path,
                 workstream=WORKSTREAM,
                 worktree_path=worktree,
                 packet_adapter=adapter,
-                dispatcher=dispatcher,
+                git_runner=harness.git_runner,
             )
-            self.assertEqual(first["action"], "dispatched")
+            self.assertEqual(first["action"], "authorized_handoff")
+            self.assertEqual(first["result"], "AUTHORIZED_HANDOFF")
             self.assertEqual(first["selected_node"]["node_id"], "a-ready")
-            self.assertEqual(first["session_id"], "e2e-persist-session")
-            self.assertEqual(harness.spawn_count, 1)
-            self.assertEqual(
-                harness.command,
-                ["agent", "persist", "--force", "--trust", "/work-resume"],
-            )
+            self.assertEqual(first["execution_profile"], "CHATGPT_CHAT")
+            self.assertEqual(first["adapter"], "EXTERNAL_HANDOFF")
+            self.assertFalse(first["spawned"])
+            self.assertEqual(first["resume_payload"]["issue_number"], READY_A)
+            self.assertEqual(first["resume_payload"]["branch"], BRANCH_SHARED)
+            self.assertEqual(first["resume_payload"]["head"], HEAD_A)
             self.assertEqual(runner.edit_count, 1)
             self.assertIn(
                 "STATUS=ACTIVE",
@@ -433,19 +389,16 @@ class ReadinessMultiNodeE2ETests(unittest.TestCase):
                     runner.packets[issue_number]["body"],
                 )
 
-            replay = activate_and_dispatch_single_worker(
+            replay = activate_and_authorize_single_worker_handoff(
                 graph_path=graph_path,
                 workstream=WORKSTREAM,
                 worktree_path=worktree,
                 packet_adapter=adapter,
-                dispatcher=dispatcher,
+                git_runner=harness.git_runner,
             )
-            self.assertEqual(replay["action"], "denied")
-            self.assertEqual(
-                replay["authorization"]["decision"],
-                "DENY",
-            )
-            self.assertEqual(harness.spawn_count, 1)
+            self.assertEqual(replay["action"], "human_required")
+            self.assertEqual(replay["reason"], "ACTIVATION_DENIED")
+            self.assertEqual(replay["authorization"]["decision"], "DENY")
             self.assertEqual(runner.edit_count, 1)
 
 

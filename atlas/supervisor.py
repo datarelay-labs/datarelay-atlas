@@ -30,9 +30,7 @@ from atlas.host_worker import (
     actual_host_id,
     host_worker_run_lock,
     normalize_host_id,
-    persistent_cursor_active,
     require_external_state_root,
-    spawn_agent_argv,
 )
 from atlas.provenance import ValidationError
 from atlas.secrets import redact_sensitive_audit_text
@@ -241,22 +239,10 @@ def _supervise_project(
             worktree=worktree,
         )
     execution_profile = str(fresh.get("implementer") or "").strip()
-    if execution_profile not in {"CHATGPT_CHAT", "CURSOR"}:
+    if execution_profile != "CHATGPT_CHAT":
         return _project_result(
             repository,
             "implementer_refused",
-            issue_number=int(fresh["issue_number"]),
-            chat_id=chat_id,
-            worktree=worktree,
-        )
-    if execution_profile == "CURSOR" and persistent_cursor_active(
-        worktree,
-        list_sessions=list_sessions,
-        list_processes=list_processes,
-    ):
-        return _project_result(
-            repository,
-            "cursor_active_noop",
             issue_number=int(fresh["issue_number"]),
             chat_id=chat_id,
             worktree=worktree,
@@ -409,8 +395,8 @@ def supervise_once(
     )
 
     def default_spawn(argv: list[str], cwd: str) -> int:
-        return spawn_agent_argv(
-            argv, cwd, timeout_sec=config.cursor_resume_timeout_sec
+        raise ValidationError(
+            "CURSOR_RUNTIME_RETIRED: supervisor worker spawning is disabled"
         )
 
     effect_spawn = spawn or default_spawn

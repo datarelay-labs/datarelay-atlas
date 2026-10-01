@@ -36,6 +36,9 @@ STATUS=ACTIVE
 BRANCH={BRANCH}
 TASK_KIND=DEVELOPMENT
 OWNER_INTENT=Complete the AWC PoC safely.
+INTENT_REVISION=1
+CHANGE_RISK=HIGH
+IMPLEMENTER=CHATGPT_CHAT
 LAST_VERIFIED_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 ## Goal
@@ -1136,23 +1139,24 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
 
     def test_dispatch_blocked_compensates_unchanged_pending_packet(self):
         issue, edits, adapter = self._stateful_issue()
-        self.assertIn("WORK_PACKET_MUTATION=PENDING_DISPATCH", issue["body"])
-        adapter.apply_dispatch_blocked(**self._blocked_kwargs())
-        self.assertEqual(len(edits), 2)
-        self.assertIn("WORK_PACKET_MUTATION=DISPATCH_BLOCKED", issue["body"])
+        self.assertIn("WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF", issue["body"])
         self.assertNotIn("WORK_PACKET_MUTATION=PENDING_DISPATCH", issue["body"])
+        with self.assertRaisesRegex(
+            ValidationError, "without a controller-owned pending dispatch"
+        ):
+            adapter.apply_dispatch_blocked(**self._blocked_kwargs())
+        self.assertEqual(len(edits), 1)
+        self.assertNotIn("WORK_PACKET_MUTATION=DISPATCH_BLOCKED", issue["body"])
 
     def test_dispatch_blocked_refuses_intervening_edit(self):
         issue, edits, adapter = self._stateful_issue()
-        issue["body"] = issue["body"].replace(
-            "Canonical Work Packet mutated before `/work-resume` dispatch.",
-            "Owner note added before compensation.",
-        )
-        with self.assertRaises(ValidationError) as ctx:
+        issue["body"] += "\nOwner note after authorized handoff.\n"
+        with self.assertRaisesRegex(
+            ValidationError, "without a controller-owned pending dispatch"
+        ):
             adapter.apply_dispatch_blocked(**self._blocked_kwargs())
-        self.assertIn("no longer matches", str(ctx.exception))
         self.assertEqual(len(edits), 1)
-        self.assertIn("Owner note added before compensation.", issue["body"])
+        self.assertIn("Owner note after authorized handoff.", issue["body"])
         self.assertNotIn("WORK_PACKET_MUTATION=DISPATCH_BLOCKED", issue["body"])
 
     def test_dispatch_blocked_refuses_pause_or_blocked_status(self):
@@ -1162,9 +1166,10 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                 issue["body"] = issue["body"].replace(
                     "STATUS=ACTIVE", f"STATUS={status}", 1
                 )
-                with self.assertRaises(ValidationError) as ctx:
+                with self.assertRaisesRegex(
+                    ValidationError, "without a controller-owned pending dispatch"
+                ):
                     adapter.apply_dispatch_blocked(**self._blocked_kwargs())
-                self.assertIn(f"STATUS={status}", str(ctx.exception))
                 self.assertEqual(len(edits), 1)
                 self.assertIn(f"STATUS={status}", issue["body"])
                 self.assertNotIn(
@@ -1172,32 +1177,31 @@ class GitHubWorkPacketAdapterTests(unittest.TestCase):
                 )
 
     def test_dispatch_blocked_refuses_head_or_attempt_drift(self):
-        drifted_head = "c" * 40
-        issue, edits, adapter = self._stateful_issue()
-        issue["body"] = issue["body"].replace(HEAD_B, drifted_head)
-        with self.assertRaises(ValidationError) as ctx:
-            adapter.apply_dispatch_blocked(**self._blocked_kwargs())
-        self.assertIn("HEAD", str(ctx.exception))
-        self.assertEqual(len(edits), 1)
-        self.assertIn(drifted_head, issue["body"])
-
-        issue, edits, adapter = self._stateful_issue()
-        issue["body"] = issue["body"].replace("ATTEMPT=2", "ATTEMPT=9")
-        with self.assertRaises(ValidationError) as ctx:
-            adapter.apply_dispatch_blocked(**self._blocked_kwargs())
-        self.assertIn("ATTEMPT", str(ctx.exception))
-        self.assertEqual(len(edits), 1)
-        self.assertIn("ATTEMPT=9", issue["body"])
-        self.assertNotIn("WORK_PACKET_MUTATION=DISPATCH_BLOCKED", issue["body"])
+        for mutation in (
+            lambda body: body.replace(HEAD_B, "c" * 40),
+            lambda body: body.replace("ATTEMPT=2", "ATTEMPT=9"),
+        ):
+            issue, edits, adapter = self._stateful_issue()
+            issue["body"] = mutation(issue["body"])
+            with self.assertRaisesRegex(
+                ValidationError, "without a controller-owned pending dispatch"
+            ):
+                adapter.apply_dispatch_blocked(**self._blocked_kwargs())
+            self.assertEqual(len(edits), 1)
+            self.assertNotIn(
+                "WORK_PACKET_MUTATION=DISPATCH_BLOCKED", issue["body"]
+            )
 
     def test_dispatch_blocked_replay_is_idempotent(self):
         issue, edits, adapter = self._stateful_issue()
-        adapter.apply_dispatch_blocked(**self._blocked_kwargs())
-        adapter.apply_dispatch_blocked(**self._blocked_kwargs())
-        self.assertEqual(len(edits), 2)
-        self.assertEqual(
-            issue["body"].count("WORK_PACKET_MUTATION=DISPATCH_BLOCKED"), 1
-        )
+        for _ in range(2):
+            with self.assertRaisesRegex(
+                ValidationError, "without a controller-owned pending dispatch"
+            ):
+                adapter.apply_dispatch_blocked(**self._blocked_kwargs())
+        self.assertEqual(len(edits), 1)
+        self.assertIn("WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF", issue["body"])
+        self.assertNotIn("WORK_PACKET_MUTATION=DISPATCH_BLOCKED", issue["body"])
 
     def test_run_permission_error_is_validation_error(self):
         adapter = GitHubWorkPacketAdapter()
@@ -1737,60 +1741,24 @@ class SelectedPacketProjectionTests(unittest.TestCase):
         head = "c" * 40
         branch = "feature/cursor-opt-in"
         workstream = "cursor-opt-in-test"
-        base_body = self._body(
+        body = self._body(
             status="ACTIVE",
             branch=branch,
             head=head,
             workstream=workstream,
         )
-        cursor_body = base_body.replace(
-            f"LAST_VERIFIED_HEAD={head}\n\n",
-            f"IMPLEMENTER=CURSOR\nLAST_VERIFIED_HEAD={head}\n\n",
-        )
-        chat_body = cursor_body.replace("IMPLEMENTER=CURSOR", "IMPLEMENTER=CHATGPT_CHAT")
-
-        allowed, _calls = self._adapter(
-            {12: self._issue(12, state="OPEN", body=cursor_body)}
-        )
-        with mock.patch.object(
-            allowed, "_require_unique_active_packet", return_value=None
-        ):
-            allowed.assert_cursor_dispatch_authorized(
-                repository=self.REPO,
-                issue_number=12,
-                branch=branch,
-                workstream=workstream,
-                head=head,
+        for implementer in ("CURSOR", "CHATGPT_CHAT"):
+            candidate_body = body.replace(
+                f"LAST_VERIFIED_HEAD={head}\n\n",
+                f"IMPLEMENTER={implementer}\nLAST_VERIFIED_HEAD={head}\n\n",
             )
-
-        denied, _calls = self._adapter(
-            {12: self._issue(12, state="OPEN", body=chat_body)}
-        )
-        with mock.patch.object(
-            denied, "_require_unique_active_packet", return_value=None
-        ):
-            with self.assertRaisesRegex(ValidationError, "IMPLEMENTER=CURSOR"):
-                denied.assert_cursor_dispatch_authorized(
-                    repository=self.REPO,
-                    issue_number=12,
-                    branch=branch,
-                    workstream=workstream,
-                    head=head,
-                )
-
-        incomplete_cases = {
-            "packet version": cursor_body.replace("PACKET_VERSION=2\n", "PACKET_VERSION=1\n"),
-            "intent revision": cursor_body.replace("INTENT_REVISION=1\n", ""),
-            "change risk": cursor_body.replace("CHANGE_RISK=HIGH\n", ""),
-        }
-        for label, body in incomplete_cases.items():
-            candidate, _calls = self._adapter(
-                {12: self._issue(12, state="OPEN", body=body)}
+            candidate, calls = self._adapter(
+                {12: self._issue(12, state="OPEN", body=candidate_body)}
             )
-            with self.subTest(label=label), mock.patch.object(
-                candidate, "_require_unique_active_packet", return_value=None
-            ):
-                with self.assertRaises(ValidationError):
+            with self.subTest(implementer=implementer):
+                with self.assertRaisesRegex(
+                    ValidationError, "CURSOR_RUNTIME_RETIRED"
+                ):
                     candidate.assert_cursor_dispatch_authorized(
                         repository=self.REPO,
                         issue_number=12,
@@ -1798,6 +1766,7 @@ class SelectedPacketProjectionTests(unittest.TestCase):
                         workstream=workstream,
                         head=head,
                     )
+                self.assertEqual(calls, [])
 
     def test_selected_projection_reads_only_explicit_packets(self) -> None:
         complete = self._issue(
@@ -2096,7 +2065,6 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
             self.assertIsInstance(ctl.dispatcher, atlas_cli.AuditOnlyCursorDispatcher)
 
     def test_audit_only_rework_does_not_claim_dispatch(self):
-        """Recording + AuditOnlyCursorDispatcher must not claim REWORK_DISPATCHED."""
         from atlas.work_controller import (
             AuditOnlyCursorDispatcher,
             AuditResult,
@@ -2123,30 +2091,26 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
                 issue_number=12,
                 branch="feature/x",
                 worktree_path=str(worktree),
-                expected_head="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                expected_head="a" * 40,
                 max_attempts=3,
             )
             outcome = ctl.handle_completion(
                 {
                     "event_id": "evt-1",
                     "workstream": "awc-poc",
-                    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "head": "a" * 40,
                     "branch": "feature/x",
                     "issue_number": 12,
                     "attempt": 1,
                 }
             )
-            self.assertEqual(outcome["state"], "HUMAN_REQUIRED")
-            self.assertNotEqual(outcome["action"], "rework_dispatched")
-            findings = str(ctl.show("awc-poc").get("last_findings") or "")
-            self.assertIn("audit-only", findings.lower())
+            self.assertEqual(outcome["state"], "REWORK_HANDOFF")
+            self.assertEqual(outcome["action"], "authorized_handoff")
+            self.assertFalse(outcome["spawned"])
+            self.assertEqual(outcome["execution_profile"], "CHATGPT_CHAT")
 
     def test_codex_with_spawn_defaults_to_github_adapter(self):
         from atlas import cli as atlas_cli
-        from atlas.work_controller import (
-            GitHubWorkPacketAdapter,
-            PtyPersistCursorDispatcher,
-        )
 
         parser = build_parser()
         args = parser.parse_args(
@@ -2161,9 +2125,10 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             args.data_root = tmp
-            ctl = atlas_cli._controller_from_args(args)
-            self.assertIsInstance(ctl.work_packet, atlas_cli.GitHubWorkPacketAdapter)
-            self.assertIsInstance(ctl.dispatcher, atlas_cli.PtyPersistCursorDispatcher)
+            with self.assertRaisesRegex(
+                ValidationError, "CURSOR_RUNTIME_RETIRED"
+            ):
+                atlas_cli._controller_from_args(args)
 
     def test_codex_without_spawn_defaults_to_recording_audit_only(self):
         from atlas import cli as atlas_cli
@@ -2186,7 +2151,6 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
             self.assertIsInstance(ctl.dispatcher, atlas_cli.AuditOnlyCursorDispatcher)
 
     def test_explicit_fixed_spawn_defaults_to_github_packet_gate(self):
-        """Explicit spawn selects GitHub; packet IMPLEMENTER gate still runs later."""
         from atlas import cli as atlas_cli
 
         parser = build_parser()
@@ -2204,9 +2168,10 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             args.data_root = tmp
-            ctl = atlas_cli._controller_from_args(args)
-            self.assertIsInstance(ctl.work_packet, atlas_cli.GitHubWorkPacketAdapter)
-            self.assertIsInstance(ctl.dispatcher, atlas_cli.PtyPersistCursorDispatcher)
+            with self.assertRaisesRegex(
+                ValidationError, "CURSOR_RUNTIME_RETIRED"
+            ):
+                atlas_cli._controller_from_args(args)
 
     def test_explicit_recording_with_spawn_dispatch_fails_closed(self):
         from atlas import cli as atlas_cli
@@ -2226,9 +2191,10 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             args.data_root = tmp
-            with self.assertRaises(ValidationError) as ctx:
+            with self.assertRaisesRegex(
+                ValidationError, "CURSOR_RUNTIME_RETIRED"
+            ):
                 atlas_cli._controller_from_args(args)
-            self.assertIn("recording", str(ctx.exception).lower())
 
     def test_openai_cannot_mutate_github_or_spawn(self):
         from atlas import cli as atlas_cli
@@ -2241,7 +2207,6 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
         for extra in (
             ["--spawn-dispatch"],
             ["--work-packet-adapter", "github", "--spawn-dispatch"],
-            ["--work-packet-adapter", "github"],
         ):
             args = parser.parse_args(
                 [
@@ -2255,9 +2220,26 @@ class CliWorkPacketAdapterSelectionTests(unittest.TestCase):
             )
             with tempfile.TemporaryDirectory() as tmp:
                 args.data_root = tmp
-                with self.assertRaises(ValidationError) as ctx:
+                with self.assertRaisesRegex(
+                    ValidationError, "CURSOR_RUNTIME_RETIRED"
+                ):
                     atlas_cli._controller_from_args(args)
-                self.assertIn("metadata-only", str(ctx.exception))
+
+        github_only = parser.parse_args(
+            [
+                "work-controller",
+                "completion",
+                "/tmp/event.json",
+                "--audit-adapter",
+                "openai",
+                "--work-packet-adapter",
+                "github",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            github_only.data_root = tmp
+            with self.assertRaisesRegex(ValidationError, "metadata-only"):
+                atlas_cli._controller_from_args(github_only)
 
         recording = parser.parse_args(
             [
@@ -2317,7 +2299,7 @@ def _queued_successor_body(
     workstream: str = WORKSTREAM,
     task_kind: str = "DEVELOPMENT",
     owner_intent: str = "Advance the next cycle safely.",
-    implementer: str = "CURSOR",
+    implementer: str = "CHATGPT_CHAT",
     intent_revision: str = "1",
     change_risk: str = "HIGH",
 ) -> str:
@@ -2521,17 +2503,17 @@ class QueuedCycleAdapterTests(unittest.TestCase):
         self.assertEqual(result.kind, "no_successor")
         self.assertEqual(edits, [])
 
-    def test_chatgpt_successor_is_rejected_before_predecessor_mutation(self):
+    def test_cursor_successor_is_rejected_before_predecessor_mutation(self):
         issues = {
             12: _ai_issue(12, SAMPLE_BODY),
             18: _ai_issue(
                 18,
-                _queued_successor_body(implementer="CHATGPT_CHAT"),
+                _queued_successor_body(implementer="CURSOR"),
             ),
         }
         result, edits = self._run(issues)
         self.assertEqual(result.kind, "human_required")
-        self.assertIn("IMPLEMENTER=CURSOR", result.reason)
+        self.assertIn("CHATGPT_CHAT", result.reason)
         self.assertEqual(edits, [])
         self.assertIn("STATUS=ACTIVE", issues[12]["body"].split("\n\n", 1)[0])
         self.assertIn("STATUS=PAUSED", issues[18]["body"].split("\n\n", 1)[0])

@@ -205,16 +205,19 @@ class SliceCClaimTests(unittest.TestCase):
         self.assertEqual(auditor.calls, 0)
         self.assertEqual(self.store.writes, 0)
 
-    def test_active_cursor_skips_auditor(self) -> None:
+    def test_cursor_profile_is_retired_before_probe_or_auditor(self) -> None:
         auditor = ScriptAuditor("PASS")
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("retired Cursor profile must not probe host state")
+
         outcome = self._run(
             auditor=auditor,
             execution_profile="CURSOR",
-            list_sessions=lambda: [
-                PersistSession(session_id="s", workspace=self.worktree, status="Attached")
-            ],
+            list_sessions=forbidden,
+            list_processes=forbidden,
         )
-        self.assertEqual(outcome["action"], "cursor_active_noop")
+        self.assertEqual(outcome["action"], "implementer_refused")
         self.assertEqual(auditor.calls, 0)
         self.assertEqual(self.store.writes, 0)
 
