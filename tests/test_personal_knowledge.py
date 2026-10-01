@@ -101,6 +101,13 @@ class PersonalKnowledgeTests(unittest.TestCase):
             ):
                 svc.personal_knowledge_dashboard()
 
+            manifest["items"][1]["title"] = "Be" + "arer" + "\n " + "abc.def"
+            (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "contains unsafe secret metadata"
+            ):
+                svc.personal_knowledge_dashboard()
+
             manifest["items"][1]["title"] = "Rejected"
             manifest["source_system"] = "Authorization: Bearer abc.def"
             (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")

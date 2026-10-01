@@ -136,15 +136,15 @@ def _manifest(data_root: Path) -> dict[str, object]:
         "observed_at": observed_at,
         "items": normalized,
     }
-    if contains_unsafe_secret(
-        json.dumps(
-            exposed_manifest,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
-    ):
-        raise ValidationError("personal import manifest contains unsafe secret metadata")
+    stack: list[object] = [exposed_manifest]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+        elif isinstance(value, str) and contains_unsafe_secret(value):
+            raise ValidationError("personal import manifest contains unsafe secret metadata")
 
     return {
         "state": "OBSERVED",
