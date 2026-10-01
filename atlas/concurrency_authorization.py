@@ -132,6 +132,8 @@ def validate_concurrency_authorization_request(payload: object) -> dict[str, str
 
 def _load_snapshot(data_root: Path) -> dict[str, object]:
     path = Path(data_root) / SNAPSHOT_FILENAME
+    if path.is_symlink():
+        _reject("concurrency authorization admission snapshot path is unsafe")
     if not path.exists():
         _reject("concurrency authorization snapshot is not loaded")
     return validate_concurrency_snapshot(_load_json(path, label="admission snapshot"))
@@ -415,6 +417,8 @@ def publish_concurrency_dispatch_authorization(
 
 def _load_authorization(data_root: Path) -> dict[str, object] | None:
     path = Path(data_root) / FILENAME
+    if path.is_symlink():
+        _reject("concurrency authorization dispatch authorization path is unsafe")
     if not path.exists():
         return None
     return validate_concurrency_dispatch_authorization(

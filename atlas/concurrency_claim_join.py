@@ -417,6 +417,8 @@ def _validate_binding(
 
 def _load_ledger(root: Path) -> dict[str, object]:
     path = Path(root) / FILENAME
+    if path.is_symlink():
+        _reject("concurrency claim-bound join ledger path is unsafe")
     if not path.exists():
         return _empty_ledger()
     payload = _load_json(path)

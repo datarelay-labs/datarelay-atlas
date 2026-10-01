@@ -25,6 +25,8 @@ from atlas.work_controller import (
     WorkControllerStore,
     WorkstreamRecord,
     build_persist_resume_command,
+    drain_completion_inbox,
+    enqueue_completion_event,
 )
 
 
@@ -798,6 +800,59 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(outcomes[0]["state"], "PASSED")
             self.assertEqual(ctl.show("awc-poc")["state"], "PASSED")
             self.assertIsNone(ctl.show("awc-poc")["pending_event"])
+
+    def test_controller_store_rejects_symlink_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            external = root / "external.json"
+            external.write_text(
+                json.dumps({"schema_version": 1, "workstreams": {}}),
+                encoding="utf-8",
+            )
+            state = root / "work-controller.json"
+            state.symlink_to(external)
+            store = WorkControllerStore(root)
+            with self.assertRaisesRegex(ValidationError, "path is unsafe"):
+                store.list_workstreams()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "work-controller.json"
+            state.symlink_to(root / "missing-controller.json")
+            store = WorkControllerStore(root)
+            with self.assertRaisesRegex(ValidationError, "path is unsafe"):
+                store.list_workstreams()
+
+    def test_completion_directories_and_events_reject_symlinks(self):
+        event = self._event()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            external = root / "external-inbox"
+            external.mkdir()
+            (root / "completion-inbox").symlink_to(external, target_is_directory=True)
+            with self.assertRaisesRegex(ValidationError, "inbox directory is unsafe"):
+                enqueue_completion_event(root, event)
+            self.assertEqual(list(external.iterdir()), [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "completion-inbox").symlink_to(
+                root / "missing-inbox", target_is_directory=True
+            )
+            ctl, _dispatcher, _packets = self._ctl(tmp)
+            with self.assertRaisesRegex(ValidationError, "inbox directory is unsafe"):
+                drain_completion_inbox(ctl, root)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inbox = root / "completion-inbox"
+            inbox.mkdir()
+            target = root / "external-event.json"
+            target.write_text(json.dumps(event), encoding="utf-8")
+            (inbox / "evt-1.json").symlink_to(target)
+            ctl, _dispatcher, _packets = self._ctl(tmp)
+            with self.assertRaisesRegex(ValidationError, "event path is unsafe"):
+                drain_completion_inbox(ctl, root)
 
     def test_unsupported_schema_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:

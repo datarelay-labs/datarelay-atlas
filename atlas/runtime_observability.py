@@ -84,9 +84,11 @@ def _observed_at(value: str | None) -> str:
 
 def _completion_count(root: Path, dirname: str) -> int:
     directory = root / dirname
+    if directory.is_symlink():
+        _reject("runtime observability completion queue is unsafe")
     if not directory.exists():
         return 0
-    if directory.is_symlink() or not directory.is_dir():
+    if not directory.is_dir():
         _reject("runtime observability completion queue is unsafe")
     count = 0
     for entry in sorted(directory.iterdir(), key=lambda item: item.name):

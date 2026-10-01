@@ -400,6 +400,8 @@ def publish_concurrency_snapshot(data_root: Path, snapshot: object) -> dict[str,
 
 def _load_snapshot(data_root: Path) -> dict[str, object] | None:
     path = Path(data_root) / SNAPSHOT_FILENAME
+    if path.is_symlink():
+        raise ValidationError("concurrency snapshot path is unsafe")
     if not path.exists():
         return None
     return validate_concurrency_snapshot(_load_json(path, label="snapshot"))
@@ -416,6 +418,8 @@ def _empty_runs() -> dict[str, object]:
 
 def _load_runs(data_root: Path) -> dict[str, object]:
     path = Path(data_root) / RUNS_FILENAME
+    if path.is_symlink():
+        raise ValidationError("concurrency run ledger path is unsafe")
     if not path.exists():
         return _empty_runs()
     payload = _load_json(path, label="run ledger")

@@ -461,9 +461,11 @@ def _ledger_empty() -> dict[str, object]:
 
 def _load_ledger(data_root: Path) -> dict[str, object]:
     path = Path(data_root) / FILENAME
+    if path.is_symlink():
+        raise ValidationError("instruction governance ledger path is unsafe")
     if not path.exists():
         return _ledger_empty()
-    if path.is_symlink() or not path.is_file():
+    if not path.is_file():
         raise ValidationError("instruction governance ledger path is unsafe")
     payload = _load_json(path, label="ledger", max_bytes=_MAX_LEDGER_BYTES)
     if (
@@ -1161,9 +1163,11 @@ def validate_instruction_governance_disposition(payload: object) -> dict[str, ob
 
 def _load_disposition_ledger(data_root: Path) -> dict[str, object]:
     path = Path(data_root) / DISPOSITION_FILENAME
+    if path.is_symlink():
+        raise ValidationError("instruction governance disposition ledger path is unsafe")
     if not path.exists():
         return _empty_disposition_ledger()
-    if path.is_symlink() or not path.is_file():
+    if not path.is_file():
         raise ValidationError("instruction governance disposition ledger path is unsafe")
     payload = _load_json(path, label="disposition ledger", max_bytes=_MAX_LEDGER_BYTES)
     if (

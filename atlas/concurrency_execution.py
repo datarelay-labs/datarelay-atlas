@@ -181,6 +181,8 @@ def validate_concurrency_execution_record(
 
 def _load_ledger(root: Path) -> dict[str, object]:
     path = root / FILENAME
+    if path.is_symlink():
+        _reject("concurrency execution ledger path is unsafe")
     if not path.exists():
         return _empty_ledger()
     payload = _load_json(path)

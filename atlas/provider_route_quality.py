@@ -433,6 +433,8 @@ def publish_provider_route_quality_snapshot(
 
 def provider_route_quality_dashboard(data_root: Path) -> dict[str, object]:
     path = Path(data_root) / FILENAME
+    if path.is_symlink():
+        _reject("provider route quality snapshot file is unsafe")
     if not path.exists():
         return {
             "state": "UNKNOWN",

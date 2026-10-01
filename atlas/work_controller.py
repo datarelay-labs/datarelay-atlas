@@ -5950,8 +5950,12 @@ class WorkControllerStore:
         return {"schema_version": CONTROLLER_SCHEMA_VERSION, "workstreams": {}}
 
     def _load(self) -> dict:
+        if self.path.is_symlink():
+            raise ValidationError("work-controller.json path is unsafe")
         if not self.path.exists():
             return self._empty()
+        if not self.path.is_file():
+            raise ValidationError("work-controller.json path is unsafe")
         data = json.loads(self.path.read_text(encoding="utf-8"))
         version = data.get("schema_version")
         if version != CONTROLLER_SCHEMA_VERSION:
@@ -6791,7 +6795,10 @@ def default_data_root() -> Path:
 
 
 def load_completion_event(path: Path) -> dict:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    source = Path(path)
+    if source.is_symlink() or not source.is_file():
+        raise ValidationError("completion event path is unsafe")
+    raw = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValidationError("completion event must be a JSON object")
     return raw
@@ -6815,9 +6822,13 @@ def enqueue_completion_event(data_root: Path, event: dict, *, filename: str | No
     text = json.dumps(event, indent=2, sort_keys=True) + "\n"
     with data_root_write_lock(root):
         inbox = completion_inbox_dir(root)
+        if inbox.is_symlink() or (inbox.exists() and not inbox.is_dir()):
+            raise ValidationError("completion inbox directory is unsafe")
         inbox.mkdir(parents=True, exist_ok=True)
+        if inbox.is_symlink() or not inbox.is_dir():
+            raise ValidationError("completion inbox directory is unsafe")
         path = inbox / name
-        if path.exists():
+        if path.is_symlink() or path.exists():
             raise ValidationError(f"completion inbox file already exists: {path.name}")
         atomic_write_text(path, text)
     return path
@@ -6834,10 +6845,22 @@ def drain_completion_inbox(controller: WorkController, data_root: Path) -> list[
     inbox = completion_inbox_dir(root)
     processed = completion_processed_dir(root)
     with data_root_write_lock(root):
+        if processed.is_symlink() or (processed.exists() and not processed.is_dir()):
+            raise ValidationError("completion processed directory is unsafe")
         processed.mkdir(parents=True, exist_ok=True)
+        if processed.is_symlink() or not processed.is_dir():
+            raise ValidationError("completion processed directory is unsafe")
+        if inbox.is_symlink():
+            raise ValidationError("completion inbox directory is unsafe")
         if not inbox.exists():
             return []
-        pending = sorted(path for path in inbox.glob("*.json") if path.is_file())
+        if not inbox.is_dir():
+            raise ValidationError("completion inbox directory is unsafe")
+        pending = []
+        for path in sorted(inbox.glob("*.json")):
+            if path.is_symlink() or not path.is_file():
+                raise ValidationError("completion event path is unsafe")
+            pending.append(path)
     outcomes: list[dict] = []
     for path in pending:
         event = load_completion_event(path)
@@ -6845,11 +6868,16 @@ def drain_completion_inbox(controller: WorkController, data_root: Path) -> list[
         outcome = dict(outcome)
         outcome["inbox_file"] = path.name
         with data_root_write_lock(root):
-            if path.is_file():
-                dest = processed / path.name
-                if dest.exists():
-                    dest = processed / f"{path.stem}-{os.getpid()}{path.suffix}"
-                path.replace(dest)
+            if path.is_symlink() or not path.is_file():
+                raise ValidationError("completion event path is unsafe")
+            dest = processed / path.name
+            if dest.is_symlink():
+                raise ValidationError("completion processed destination is unsafe")
+            if dest.exists():
+                dest = processed / f"{path.stem}-{os.getpid()}{path.suffix}"
+                if dest.is_symlink():
+                    raise ValidationError("completion processed destination is unsafe")
+            path.replace(dest)
         outcomes.append(outcome)
     return outcomes
 

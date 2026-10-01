@@ -326,6 +326,8 @@ def _empty_ledger() -> dict[str, Any]:
 
 
 def _load_ledger(path: Path) -> dict[str, Any]:
+    if path.is_symlink():
+        raise ValidationError("decision plane ledger path is unsafe")
     if not path.exists():
         return _empty_ledger()
     if path.is_symlink() or not path.is_file():

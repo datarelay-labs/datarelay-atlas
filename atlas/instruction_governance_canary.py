@@ -297,6 +297,8 @@ def validate_instruction_governance_canary_record(payload: object) -> dict[str, 
 
 def _load_ledger(root: Path) -> dict[str, object]:
     path = root / FILENAME
+    if path.is_symlink():
+        _reject("instruction governance canary ledger path is unsafe")
     if not path.exists():
         return _empty_ledger()
     payload = _load_json(path)

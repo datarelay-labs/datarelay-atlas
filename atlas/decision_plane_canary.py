@@ -282,6 +282,8 @@ def publish_decision_canary_admission(data_root: Path, request: object) -> dict[
 
 
 def _load_admission(path: Path) -> dict[str, object] | None:
+    if path.is_symlink():
+        _reject("decision plane canary snapshot path is unsafe")
     if not path.exists():
         return None
     if path.is_symlink() or not path.is_file():

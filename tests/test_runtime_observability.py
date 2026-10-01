@@ -17,7 +17,7 @@ from atlas.projection import ProjectionStore
 from atlas.provenance import ValidationError
 from atlas.provider_dashboard import FILENAME as PROVIDER_DASHBOARD_FILENAME
 from atlas.registry import ProjectRegistry
-from atlas.runtime_observability import runtime_observability_snapshot
+from atlas.runtime_observability import _completion_count, runtime_observability_snapshot
 from atlas.service import AtlasService
 from atlas.web_ui import render_operations
 from atlas.work_controller import (
@@ -183,6 +183,20 @@ class RuntimeObservabilityTests(unittest.TestCase):
                 self._snapshot(root)
             self.assertNotIn(secret, str(caught.exception))
             self.assertNotIn("unexpected.bin", str(caught.exception))
+
+    def test_broken_completion_queue_symlink_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            inbox = root / "completion-inbox"
+            for entry in inbox.iterdir():
+                entry.unlink()
+            inbox.rmdir()
+            inbox.symlink_to(root / "missing-completion-inbox", target_is_directory=True)
+            with self.assertRaisesRegex(ValidationError, "completion queue is unsafe"):
+                _completion_count(root, "completion-inbox")
+            with self.assertRaises(ValidationError):
+                self._snapshot(root)
 
     def test_broken_derived_cache_symlink_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:

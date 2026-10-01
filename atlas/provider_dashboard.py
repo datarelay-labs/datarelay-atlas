@@ -251,6 +251,8 @@ def publish_provider_dashboard_snapshot(
 
 def _validated_snapshot_inputs(data_root: Path) -> dict[str, object] | None:
     path = Path(data_root) / FILENAME
+    if path.is_symlink():
+        raise ValidationError("provider dashboard snapshot path is unsafe")
     if not path.exists():
         return None
     if path.is_symlink() or not path.is_file():
