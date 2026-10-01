@@ -128,6 +128,42 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
                 base / "data",
             )
 
+    def test_untracked_symlink_managed_surface_is_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            managed = repo / "ai" / "rules.md"
+            managed.parent.mkdir()
+            target = base / "alternate-rules.md"
+            target.write_text("# alternate\n", encoding="utf-8")
+            managed.symlink_to(target)
+            self._assert_dirty_rejected(
+                repo,
+                agent_base,
+                scenarios,
+                profile,
+                base / "data",
+            )
+
+    def test_ignored_untracked_symlink_managed_surface_is_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            exclude = repo / ".git" / "info" / "exclude"
+            exclude.write_text("ai/\n", encoding="utf-8")
+            managed = repo / "ai" / "rules.md"
+            managed.parent.mkdir()
+            target = base / "alternate-rules.md"
+            target.write_text("# alternate\n", encoding="utf-8")
+            managed.symlink_to(target)
+            self._assert_dirty_rejected(
+                repo,
+                agent_base,
+                scenarios,
+                profile,
+                base / "data",
+            )
+
     def test_staged_deleted_tracked_managed_surface_is_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

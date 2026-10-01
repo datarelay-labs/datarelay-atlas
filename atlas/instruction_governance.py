@@ -170,6 +170,23 @@ def _tracked_managed_surface_paths(root: Path) -> list[str]:
     return sorted(paths)
 
 
+
+
+def _worktree_managed_surface_paths(root: Path) -> list[str]:
+    paths: set[str] = set()
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        if (
+            relative.startswith(".git/")
+            or relative.startswith(".venv/")
+            or relative.startswith("tests/")
+        ):
+            continue
+        if _surface_category(relative) is not None:
+            paths.add(relative)
+    return sorted(paths)
+
+
 def discover_managed_surfaces(repo_root: Path) -> list[dict[str, object]]:
     root = Path(repo_root).resolve()
     surfaces: list[dict[str, object]] = []
@@ -448,6 +465,7 @@ def instruction_governance_preflight(
     surface_paths = sorted(
         set(str(item["path"]) for item in surfaces)
         | set(_tracked_managed_surface_paths(root))
+        | set(_worktree_managed_surface_paths(root))
     )
     dirty = _git(
         root,
