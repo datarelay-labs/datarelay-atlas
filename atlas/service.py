@@ -147,9 +147,16 @@ class AtlasService:
         )
 
 
-    def operations_readiness(self) -> dict[str, object]:
+    def operations_readiness(
+        self,
+        *,
+        sbom_bundle: Path | None = None,
+    ) -> dict[str, object]:
         """Return read-only Phase 5 operations/release readiness."""
-        return operations_readiness(self.data_root)
+        return operations_readiness(
+            self.data_root,
+            sbom_bundle=sbom_bundle,
+        )
 
     def provider_dashboard(self) -> dict[str, object]:
         """Return read-only provider capacity/broker dashboard state."""

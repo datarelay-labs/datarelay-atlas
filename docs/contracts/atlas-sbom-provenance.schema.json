@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/atlas-sbom-provenance.schema.json",
+  "title": "DataRelay Atlas SBOM Provenance Evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "authority",
+    "generator",
+    "repository",
+    "source_revision",
+    "source_clean",
+    "python_implementation",
+    "python_version",
+    "component_count",
+    "declared_direct_dependency_count",
+    "requirements_sha256",
+    "third_party_sha256",
+    "sbom_filename",
+    "sbom_sha256",
+    "sbom_serial_number",
+    "provenance_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "atlas_sbom_provenance"
+    },
+    "authority": {
+      "const": "EVIDENCE_ONLY"
+    },
+    "generator": {
+      "const": "atlas.sbom.v1"
+    },
+    "repository": {
+      "const": "datarelay-labs/datarelay-atlas"
+    },
+    "source_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "source_clean": {
+      "const": true
+    },
+    "python_implementation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "python_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "component_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2048
+    },
+    "declared_direct_dependency_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2048
+    },
+    "requirements_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "third_party_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sbom_filename": {
+      "const": "bom.cdx.json"
+    },
+    "sbom_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sbom_serial_number": {
+      "type": "string",
+      "pattern": "^urn:uuid:"
+    },
+    "provenance_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
