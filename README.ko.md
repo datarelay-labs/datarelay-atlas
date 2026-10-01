@@ -1,7 +1,7 @@
 <h1 align="center">DataRelay Atlas</h1>
 
 <p align="center">
-  <strong>Engineering Knowledge & Lifecycle Platform</strong>
+  <strong>Trusted Engineering Context & Lifecycle Control Plane</strong>
 </p>
 
 <p align="center">
@@ -18,28 +18,29 @@
 
 ## DataRelay Atlas란?
 
-DataRelay Atlas는 프로젝트 지식, Engineering 방법론, 라이프사이클 상태, AI Context를 연결하는 AI-assisted Engineering Platform입니다.
+DataRelay Atlas는 AI-assisted Engineering Knowledge & Lifecycle Platform입니다. **Atlas Core**는 사람과 AI 클라이언트가 동일한 최신 Engineering 상태를 출처와 함께 보도록 만드는 신뢰 가능한 Engineering Context & Lifecycle Control Plane입니다.
 
-사람과 AI가 Engineering 방법론, 제품/저장소, Architecture/Specification/ADR, 테스트·릴리즈 증적, 현재 개발 상태, 프로젝트 간 지식, MCP 기반 AI Context를 일관되게 이해하도록 만드는 것이 목적입니다.
+Atlas는 Engineering 방법론, 등록된 제품/저장소, Architecture/Specification/ADR, 테스트·릴리즈 증적, 현재 라이프사이클 상태, 프로젝트 간 지식, MCP 기반 AI Context를 연결·검증·검색합니다.
 
-Atlas는 GitHub, CI/CD, Issue Tracker, Coding Agent를 대체하지 않습니다. 기존 시스템에 존재하는 Engineering State를 연결하고 검증하고 검색 가능하게 만들며 설명합니다.
+Atlas는 GitHub, CI/CD, Issue Tracker, Coding Agent를 대체하지 않습니다. 선택적인 **Automation Extension**은 Atlas Core의 신뢰 상태를 사용해 AI-assisted Engineering 작업을 조정할 수 있지만, 자동화나 Provider 최적화는 Atlas Core 완성의 필수 조건이 아닙니다.
 
 ## 핵심 모델
 
 ```text
 Canonical Engineering State
-GitHub / OpenSpec / Code / Tests / ADR / CI
+GitHub / Specs / Code / Tests / ADR / CI
                     |
                     v
-              DataRelay Atlas
-       Methodology + Project State
-       Knowledge + AI Context
+             DataRelay Atlas Core
+       Knowledge + Lifecycle + Trust
                     |
           +---------+---------+
           |                   |
           v                   v
       Human UI           AI / MCP Clients
-                         Cursor / ChatGPT
+                         ChatGPT / approved clients
+                    |
+                    +---- optional ----> Automation Extension
 ```
 
 ## 제품 원칙
@@ -50,10 +51,14 @@ GitHub / OpenSpec / Code / Tests / ADR / CI
 4. **Provenance는 필수입니다.** Derived knowledge에는 가능한 경우 repository/ref/path/source revision을 유지합니다.
 5. **초기 범위는 self-hosted single-organization입니다.** Multi-organization/SaaS는 향후 범위이며 MVP 전제가 아닙니다.
 6. **이미 잘 동작하는 도구를 다시 만들지 않습니다.** Git hosting, CI/CD, Coding Agent, Issue Tracking은 명시적인 제품 요구가 생기기 전까지 외부 시스템으로 유지합니다.
+7. **Core가 automation보다 우선입니다.** Dependency scheduling, Provider routing, Decision Plane, concurrency는 Core state를 소비하는 확장 기능이며 명시적 승격 없이는 Core release blocker가 아닙니다.
+8. **Search는 generic chat이 아닙니다.** Atlas는 attributable retrieval/context packaging을 소유하고, 일반적인 답변 합성은 승인된 MCP 클라이언트가 담당합니다.
 
 ## 현재 상태
 
-DataRelay Atlas는 Engineering Knowledge PoC에서 필요한 능력을 Atlas 소유 코드로 흡수하고, Athena를 제품 의존성에서 제거하는 작업 중입니다 (ADR-0004). Phase 1은 로컬 Project Registry와 authenticated canonical sync를 추가합니다 (ADR-0005).
+Atlas는 Registry, canonical sync, projection/retrieval, authenticated HTTPS MCP, lifecycle/control-plane foundation, 첫 read-only Human UI를 소유합니다. Athena는 historical migration evidence이며 runtime dependency가 아닙니다.
+
+로드맵은 **Atlas Core / Automation Extension / Experimental-Optional** 세 계층으로 분리됩니다. Core 완성은 기능 개수가 아니라 등록 → sync → attributable retrieval → Human UI/MCP 일치 → lifecycle/release evidence → derived intelligence → production recovery → exact-candidate user-surface gate로 이어지는 end-to-end journey로 판정합니다.
 
 Milestone:
 
