@@ -12,6 +12,7 @@ from atlas.ops import (
     validate_unit_text,
 )
 from atlas.provenance import ValidationError
+from atlas.sbom import validate_sbom_bundle
 
 try:
     import yaml  # type: ignore
@@ -78,7 +79,11 @@ def _safe_runbook(root: Path, value: object) -> dict[str, object]:
     }
 
 
-def _dependency_inventory(root: Path) -> dict[str, object]:
+def _dependency_inventory(
+    root: Path,
+    *,
+    sbom_bundle: Path | None = None,
+) -> dict[str, object]:
     requirements = root / "requirements.txt"
     third_party = root / "THIRD_PARTY.md"
     dependencies: list[str] = []
@@ -87,6 +92,34 @@ def _dependency_inventory(root: Path) -> dict[str, object]:
             line = raw.strip()
             if line and not line.startswith("#"):
                 dependencies.append(line)
+
+    sbom_state = "NOT_GENERATED"
+    sbom_evidence: dict[str, object] | None = None
+    detail = (
+        "requirements and third-party records are declarations; "
+        "they are not an SBOM"
+    )
+    if sbom_bundle is not None:
+        try:
+            sbom_evidence = validate_sbom_bundle(
+                Path(sbom_bundle),
+                repo_root=root,
+                require_current_source=True,
+                require_current_runtime=True,
+            )
+        except ValidationError:
+            sbom_state = "INVALID_EVIDENCE"
+            detail = (
+                "explicit SBOM evidence is invalid, stale, or does not "
+                "match the current clean source"
+            )
+        else:
+            sbom_state = "VALIDATED_EVIDENCE"
+            detail = (
+                "explicit CycloneDX SBOM and provenance evidence validate "
+                "against the current clean source"
+            )
+
     return {
         "state": "DECLARED" if requirements.is_file() else "UNAVAILABLE",
         "requirements_path": "requirements.txt",
@@ -94,8 +127,9 @@ def _dependency_inventory(root: Path) -> dict[str, object]:
         "declared_dependencies": dependencies,
         "third_party_path": "THIRD_PARTY.md",
         "third_party_state": "PRESENT" if third_party.is_file() else "MISSING",
-        "sbom_state": "NOT_GENERATED",
-        "detail": "requirements and third-party records are declarations; they are not an SBOM",
+        "sbom_state": sbom_state,
+        "sbom_evidence": sbom_evidence,
+        "detail": detail,
     }
 
 
@@ -129,7 +163,11 @@ def _deployment_contract(root: Path) -> dict[str, object]:
     }
 
 
-def operations_readiness(data_root: Path) -> dict[str, object]:
+def operations_readiness(
+    data_root: Path,
+    *,
+    sbom_bundle: Path | None = None,
+) -> dict[str, object]:
     repo_root = Path(__file__).resolve().parents[1]
     project = _mapping(repo_root / ".engineering" / "project.yaml")
     release = _mapping(repo_root / ".engineering" / "release.yaml")
@@ -171,7 +209,10 @@ def operations_readiness(data_root: Path) -> dict[str, object]:
         "rollback": _command_state(operations.get("rollback_command")),
     }
     deployment = _deployment_contract(repo_root)
-    dependencies = _dependency_inventory(repo_root)
+    dependencies = _dependency_inventory(
+        repo_root,
+        sbom_bundle=sbom_bundle,
+    )
 
     public_smoke_required = _bool(
         release.get("public_smoke_required"),

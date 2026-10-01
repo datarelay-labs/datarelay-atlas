@@ -25,11 +25,11 @@ States intentionally distinguish:
 - SBOM, provenance, and artifact-hash policy state;
 - standalone security-review truth remains UNKNOWN without explicit evidence.
 
-The dependency declaration is not an SBOM. A configured browser contract is not browser execution evidence. A valid systemd unit is not proof that production is deployed.
+The dependency declaration is not an SBOM. Atlas reports SBOM state as NOT_GENERATED unless an explicit SBOM bundle is supplied. VALIDATED_EVIDENCE requires the CycloneDX document and provenance evidence to match the current clean source and the current resolved Python runtime. A configured browser contract is not browser execution evidence. A valid systemd unit is not proof that production is deployed.
 ## Surfaces
 
 - Web UI: `/operations`
 - CLI: `python -m atlas ops readiness`
 - Authenticated MCP: `get_operations_readiness` with `atlas.read`
 
-Browser and MCP surfaces are read-only. They do not invoke backup, restore, upgrade, rollback, smoke, E2E, SBOM generation, provenance generation, or security-review actions.
+Browser and MCP surfaces are read-only. They do not invoke backup, restore, upgrade, rollback, smoke, E2E, SBOM generation, provenance generation, or security-review actions. The operator CLI may generate an explicit SBOM bundle with atlas ops sbom and may bind that bundle into a read-only readiness query.
