@@ -159,6 +159,63 @@ class QualificationTests(unittest.TestCase):
         self.assertNotIn("rev-multi-beta", rendered)
         self._assert_release_flags_unchanged()
 
+    def test_core_local_journey_integrates_core_planes_without_release_claim(self):
+        evidence = run_operational_e2e(
+            "core-local",
+            {},
+            repo_root=ROOT,
+        )
+        self.assertEqual(evidence["status"], "PASS")
+        self.assertFalse(evidence["production_claim"])
+        self.assertEqual(evidence["mode"], "core-local-deterministic")
+        self.assertEqual(
+            [step["name"] for step in evidence["steps"]],
+            [
+                "register_sync",
+                "keyword_semantic_retrieval",
+                "cross_project_search",
+                "ui_mcp_context",
+                "lifecycle_visibility",
+                "derived_intelligence",
+                "restart_recovery",
+                "backup_restore",
+                "upgrade_rollback",
+                "release_gate_boundary",
+            ],
+        )
+        self.assertTrue(all(step["status"] == "PASS" for step in evidence["steps"]))
+        self.assertEqual(evidence["steps"][3]["provenance_agreement"], "true")
+        self.assertEqual(evidence["steps"][4]["observed_preserved"], "true")
+        self.assertEqual(evidence["steps"][4]["stale_preserved"], "true")
+        self.assertEqual(evidence["steps"][4]["unknown_preserved"], "true")
+        self.assertEqual(evidence["steps"][5]["contradiction"], "DETECTED")
+        self.assertEqual(evidence["steps"][-1]["external_browser_gates"], "required")
+        rendered = json.dumps(evidence)
+        for forbidden in (
+            "core-product-e2e-marker",
+            "semantic-only-core-e2e",
+            "deterministic-core-e2e-conflict",
+            "1111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ):
+            self.assertNotIn(forbidden, rendered)
+        self._assert_release_flags_unchanged()
+
+    def test_core_local_ui_mcp_mismatch_fails_without_release_claim(self):
+        with patch("atlas.qualification._core_mcp_snapshot", return_value=None):
+            evidence = run_operational_e2e(
+                "core-local",
+                {},
+                repo_root=ROOT,
+            )
+        self.assertEqual(evidence["status"], "FAIL")
+        self.assertFalse(evidence["production_claim"])
+        self.assertEqual(evidence["reason"], "Human UI or MCP Core context is unavailable")
+        self.assertEqual(evidence["steps"][-1], {"name": "ui_mcp_context", "status": "FAIL"})
+        self._assert_release_flags_unchanged()
+
     def test_multi_project_scope_leakage_fails_closed(self):
         with patch(
             "atlas.qualification._multi_project_isolated",
@@ -717,6 +774,21 @@ class QualificationTests(unittest.TestCase):
             "multi-project-local-deterministic",
         )
         self.assertFalse(payload["production_claim"])
+        self._assert_release_flags_unchanged()
+
+    def test_cli_core_local_mode_exits_zero_without_release_claim(self):
+        from io import StringIO
+        from unittest.mock import patch
+
+        buffer = StringIO()
+        with patch("sys.stdout", buffer):
+            code = main(["operational-e2e", "--mode", "core-local"])
+        self.assertEqual(code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["status"], "PASS")
+        self.assertEqual(payload["mode"], "core-local-deterministic")
+        self.assertFalse(payload["production_claim"])
+        self.assertEqual(payload["steps"][-1]["external_browser_gates"], "required")
         self._assert_release_flags_unchanged()
 
     def _write_profile(self, root: Path, text: str) -> None:

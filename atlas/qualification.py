@@ -26,11 +26,14 @@ from urllib.parse import urlsplit
 from atlas.data_protection import backup_data_root, restore_test
 from atlas.github_sync import FetchedSource, FetchFn, fetch_github_file
 from atlas.mcp_context import AtlasContextTools, default_read_scopes
+from atlas.lifecycle_intelligence import lifecycle_view
 from atlas.ops import data_root_runtime_ready
 from atlas.provenance import ValidationError
 from atlas.schema_compat import rollback_data_root, upgrade_data_root
 from atlas.secrets import contains_unsafe_secret
+from atlas.semantic_retrieval import EmbeddingConfig
 from atlas.service import AtlasService
+from atlas.web_ui import render_intelligence, render_lifecycle, render_project
 
 PIN_VERSION = "1.7.0"
 PIN_BASELINE = "0b09d0ddea19aca804bfdcebb79332783bf64c5c"
@@ -63,6 +66,41 @@ _MULTI_PROJECTS = (
         "revision": "rev-multi-beta",
     },
 )
+_CORE_PROJECT_ID = "core-alpha"
+_CORE_PEER_ID = "core-beta"
+_CORE_QUERY = "core-product-e2e-marker"
+_CORE_SEMANTIC_QUERY = "semantic-only-core-e2e"
+_CORE_DECISION = "ADR-9001"
+_CORE_REVISION = "1" * 40
+_CORE_ADR_REVISION = "2" * 40
+_CORE_METADATA_REVISION = "3" * 40
+_CORE_PEER_REVISION = "4" * 40
+_CORE_GAP_SOURCE_ID = "missing-runbook"
+_CORE_ADOPTION_YAML = f"""engineering_system:
+  version: "{PIN_VERSION}"
+  mode: adopted
+  baseline: "{PIN_BASELINE}"
+  ci_mode: shared
+project:
+  name: "{_CORE_PROJECT_ID}"
+  type: "engineering-platform"
+"""
+_CORE_ARCHITECTURE = f"""# Core product qualification
+
+{_CORE_QUERY}
+semantic-target-marker
+See {_CORE_DECISION}.
+CONTRADICTION: deterministic-core-e2e-conflict
+"""
+_CORE_ADR = f"""# {_CORE_DECISION}: Core product qualification decision
+
+Deterministic qualification target.
+"""
+_CORE_PEER_NOTE = f"""# Peer project
+
+{_CORE_QUERY}
+"""
+
 _SHELLS = {"sh", "bash", "dash", "zsh", "sudo"}
 _CODE_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 _SMOKE_BODY = b'{"jsonrpc":"2.0","id":1,"method":"ping"}'
@@ -77,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     operational = sub.add_parser("operational-e2e")
     operational.add_argument(
         "--mode",
-        choices=("local", "multi-project-local", "prod"),
+        choices=("local", "multi-project-local", "core-local", "prod"),
         default="local",
     )
     args = parser.parse_args(argv)
@@ -106,6 +144,8 @@ def run_operational_e2e(
         return _local_operational_e2e(repo_root)
     if mode == "multi-project-local":
         return _multi_project_operational_e2e(repo_root)
+    if mode == "core-local":
+        return _core_local_operational_e2e(repo_root)
     if mode == "prod":
         return _prod_operational_e2e(
             environ,
@@ -204,6 +244,352 @@ def _public_smoke_after_restart(
         time.sleep(1)
         last = run_public_smoke(environ, repo_root=repo_root, smoke_client=smoke_client)
     return last
+
+
+class _CoreDeterministicEmbedder:
+    """Harness-only embedding client exercising the production semantic contract."""
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for text in texts:
+            if text.strip() == _CORE_SEMANTIC_QUERY or "semantic-target-marker" in text:
+                vectors.append([1.0, 0.0])
+            else:
+                vectors.append([0.0, 1.0])
+        return vectors
+
+
+def _core_fetch(source, token):  # noqa: ARG001
+    if token:
+        raise ValidationError("core-local qualification does not accept a token")
+    key = (source.project_id, source.source_id)
+    fixtures = {
+        (_CORE_PROJECT_ID, "engineering-system"): (_CORE_ADOPTION_YAML, _CORE_METADATA_REVISION),
+        (_CORE_PROJECT_ID, "architecture"): (_CORE_ARCHITECTURE, _CORE_REVISION),
+        (_CORE_PROJECT_ID, "decision"): (_CORE_ADR, _CORE_ADR_REVISION),
+        (_CORE_PEER_ID, "peer-note"): (_CORE_PEER_NOTE, _CORE_PEER_REVISION),
+    }
+    fixture = fixtures.get(key)
+    if fixture is None:
+        raise ValidationError("core-local qualification source is unknown")
+    return FetchedSource(content=fixture[0], source_revision=fixture[1])
+
+
+def _core_mcp_snapshot(service: AtlasService) -> dict[str, object] | None:
+    tools = AtlasContextTools(
+        retriever_factory=service.project_retriever,
+        intelligence_factory=service.project_intelligence,
+        intelligence_overview_factory=service.intelligence_overview,
+        knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(
+            query,
+            project_ids=project_ids,
+            source_class=source_class,
+            limit_per_project=limit,
+        ),
+    )
+    found = tools.call(
+        "search_project",
+        {"project_id": _CORE_PROJECT_ID, "query": _CORE_QUERY, "limit": 4},
+        scopes=default_read_scopes(),
+    )
+    if not found.ok or not isinstance(found.data, list):
+        return None
+    hit = next(
+        (
+            item for item in found.data
+            if isinstance(item, dict)
+            and isinstance(item.get("provenance"), dict)
+            and item["provenance"].get("source_revision") == _CORE_REVISION
+        ),
+        None,
+    )
+    if hit is None:
+        return None
+    proven = tools.call(
+        "get_provenance",
+        {"project_id": _CORE_PROJECT_ID, "identity": hit.get("identity")},
+        scopes=default_read_scopes(),
+    )
+    intelligence = tools.call(
+        "get_project_intelligence",
+        {"project_id": _CORE_PROJECT_ID},
+        scopes=default_read_scopes(),
+    )
+    if not proven.ok or not isinstance(proven.data, dict) or not intelligence.ok or not isinstance(intelligence.data, dict):
+        return None
+    return {
+        "identity": hit.get("identity"),
+        "revision": proven.data.get("source_revision"),
+        "intelligence": intelligence.data,
+    }
+
+
+def _write_core_lifecycle_fixture(data_root: Path) -> None:
+    current_head = "a" * 40
+    stale_head = "b" * 40
+    snapshot = {
+        "schema_version": 1,
+        "kind": "cursor_github_reconciliation",
+        "observed_at": "2026-10-01T00:00:00Z",
+        "repositories": ["datarelay-labs/core-alpha"],
+        "observations": [
+            {
+                "repository": "datarelay-labs/core-alpha",
+                "issue_number": 238,
+                "issue_state": "OPEN",
+                "issue_updated_at": "2026-10-01T00:00:00Z",
+                "author_trust": "trusted",
+                "packet_status": "ACTIVE",
+                "branch": "feat/core-product-e2e-qualification",
+                "head": current_head,
+                "pr_number": None,
+                "pr_state": "NONE",
+                "pr_head": None,
+                "canonical_fact": True,
+                "reasons": [],
+            }
+        ],
+        "summary": {
+            "observed_count": 1,
+            "canonical_count": 1,
+            "noncanonical_count": 0,
+        },
+    }
+    evidence = {
+        "schema_version": 2,
+        "kind": "atlas_lifecycle_evidence",
+        "observed_at": "2026-10-01T00:01:00Z",
+        "repository": "datarelay-labs/core-alpha",
+        "candidate_head": stale_head,
+        "channels": {
+            "ci": {
+                "outcome": "PASS",
+                "detail": "deterministic stale-candidate fixture",
+                "evidence_ref": "ci:core-e2e-stale",
+            }
+        },
+        "human_equivalent_user_tests": {},
+    }
+    (data_root / "github-lifecycle.json").write_text(
+        json.dumps(snapshot, sort_keys=True),
+        encoding="utf-8",
+    )
+    (data_root / "lifecycle-evidence.json").write_text(
+        json.dumps(evidence, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _core_cross_project_ok(service: AtlasService) -> bool:
+    payload = service.search_across_projects(
+        _CORE_QUERY,
+        project_ids=[_CORE_PROJECT_ID, _CORE_PEER_ID],
+        source_class="engineering",
+        limit_per_project=4,
+    )
+    if payload.get("project_ids") != sorted([_CORE_PROJECT_ID, _CORE_PEER_ID]):
+        return False
+    found: dict[str, str] = {}
+    for group in payload.get("groups", []):
+        if not isinstance(group, dict):
+            return False
+        project_id = str(group.get("project_id") or "")
+        for hit in group.get("hits", []):
+            if not isinstance(hit, dict) or not isinstance(hit.get("provenance"), dict):
+                continue
+            revision = hit["provenance"].get("source_revision")
+            if project_id == _CORE_PROJECT_ID and revision == _CORE_REVISION:
+                found[project_id] = str(revision)
+            elif project_id == _CORE_PEER_ID and revision == _CORE_PEER_REVISION:
+                found[project_id] = str(revision)
+    return found == {_CORE_PROJECT_ID: _CORE_REVISION, _CORE_PEER_ID: _CORE_PEER_REVISION}
+
+
+def _fresh_core_snapshot(data_root: Path, repo_root: Path) -> bool:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-c",
+            _FRESH_CORE_SNAPSHOT,
+            str(data_root),
+            _CORE_PROJECT_ID,
+            _CORE_QUERY,
+            _CORE_REVISION,
+            _CORE_DECISION,
+            _CORE_GAP_SOURCE_ID,
+        ],
+        cwd=str(repo_root),
+        env={
+            "PYTHONPATH": str(repo_root),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PATH": os.environ.get("PATH", ""),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return False
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return False
+    return payload == {
+        "backlink": True,
+        "contradiction": "DETECTED",
+        "gap": True,
+        "ready": True,
+        "revision": _CORE_REVISION,
+    }
+
+
+def _core_local_operational_e2e(repo_root: Path) -> dict:
+    pin_reason = _pin_reason(repo_root)
+    mode = "core-local-deterministic"
+    if pin_reason:
+        return _evidence("operational-e2e", mode, "FAIL_CLOSED", pin_reason, [])
+    steps: list[dict[str, str]] = []
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir(mode=0o700)
+            service = AtlasService(data)
+            service.register_project(
+                project_id=_CORE_PROJECT_ID,
+                repository="datarelay-labs/core-alpha",
+                display_name="Core Alpha",
+            )
+            for source_id, source_path in (
+                ("engineering-system", ".engineering/project.yaml"),
+                ("architecture", "docs/architecture.md"),
+                ("decision", "docs/decisions/ADR-9001-core-e2e.md"),
+            ):
+                service.add_source(_CORE_PROJECT_ID, source_id=source_id, source_path=source_path)
+            service.sync_project(_CORE_PROJECT_ID, fetch=_core_fetch)
+            service.add_source(
+                _CORE_PROJECT_ID,
+                source_id=_CORE_GAP_SOURCE_ID,
+                source_path="docs/runbooks/missing-core-e2e.md",
+            )
+            service.register_project(
+                project_id=_CORE_PEER_ID,
+                repository="datarelay-labs/core-beta",
+                display_name="Core Beta",
+            )
+            service.add_source(_CORE_PEER_ID, source_id="peer-note", source_path="docs/peer.md")
+            service.sync_project(_CORE_PEER_ID, fetch=_core_fetch)
+            engineering = service.engineering_system_observation(_CORE_PROJECT_ID)
+            if engineering.get("state") != "OBSERVED" or engineering.get("baseline") != PIN_BASELINE:
+                steps.append(_step("register_sync", "FAIL"))
+                return _evidence("operational-e2e", mode, "FAIL", "Engineering System projection is not observed", steps)
+            steps.append(_step("register_sync", "PASS", project_count="2"))
+
+            keyword_hits = service.search(_CORE_PROJECT_ID, _CORE_QUERY, limit=4)
+            keyword_ok = any(hit.provenance.get("source_revision") == _CORE_REVISION for hit in keyword_hits)
+            semantic_hits = service.search(
+                _CORE_PROJECT_ID,
+                _CORE_SEMANTIC_QUERY,
+                limit=4,
+                embedding=EmbeddingConfig(endpoint="http://127.0.0.1:9", model="core-e2e"),
+                embedder=_CoreDeterministicEmbedder(),
+            )
+            semantic_ok = bool(semantic_hits) and semantic_hits[0].provenance.get("source_revision") == _CORE_REVISION and semantic_hits[0].match in {"semantic", "both"}
+            if not keyword_ok or not semantic_ok:
+                steps.append(_step("keyword_semantic_retrieval", "FAIL"))
+                return _evidence("operational-e2e", mode, "FAIL", "Core keyword/semantic retrieval is not attributable", steps)
+            steps.append(_step("keyword_semantic_retrieval", "PASS"))
+
+            if not _core_cross_project_ok(service):
+                steps.append(_step("cross_project_search", "FAIL"))
+                return _evidence("operational-e2e", mode, "FAIL", "Core cross-project retrieval is not attributable", steps)
+            steps.append(_step("cross_project_search", "PASS", project_count="2"))
+
+            _write_core_lifecycle_fixture(data)
+            mcp = _core_mcp_snapshot(service)
+            project_ui = render_project(service, _CORE_PROJECT_ID, _CORE_QUERY)
+            if mcp is None or project_ui.status != "200 OK":
+                steps.append(_step("ui_mcp_context", "FAIL"))
+                return _evidence("operational-e2e", mode, "FAIL", "Human UI or MCP Core context is unavailable", steps)
+            ui_body = project_ui.body.decode("utf-8")
+            if mcp.get("identity") not in ui_body or mcp.get("revision") != _CORE_REVISION or _CORE_REVISION not in ui_body:
+                steps.append(_step("ui_mcp_context", "FAIL"))
+                return _evidence("operational-e2e", mode, "FAIL", "Human UI and MCP provenance disagree", steps)
+            steps.append(_step("ui_mcp_context", "PASS", provenance_agreement="true"))
+
+            lifecycle = lifecycle_view(data, "datarelay-labs/core-alpha")
+            lifecycle_ui = render_lifecycle(service, _CORE_PROJECT_ID)
+            lifecycle_states = {
+                lifecycle.work.state, lifecycle.ci.state, lifecycle.tests.state, lifecycle.release.state,
+                lifecycle.surface_reconciliation.state, lifecycle.full_user_e2e.state,
+            }
+            required_states = {"OBSERVED", "STALE", "UNKNOWN"}
+            if (
+                lifecycle_ui.status != "200 OK"
+                or not required_states.issubset(lifecycle_states)
+                or b"Engineering System compliance" not in lifecycle_ui.body
+                or b"STALE" not in lifecycle_ui.body
+            ):
+                steps.append(_step("lifecycle_visibility", "FAIL"))
+                return _evidence("operational-e2e", mode, "FAIL", "Lifecycle observed/stale/unknown state is not visible", steps)
+            steps.append(
+                _step(
+                    "lifecycle_visibility",
+                    "PASS",
+                    observed_preserved="true",
+                    stale_preserved="true",
+                    unknown_preserved="true",
+                )
+            )
+
+            intelligence = service.project_intelligence(_CORE_PROJECT_ID)
+            intelligence_ui = render_intelligence(service, _CORE_PROJECT_ID)
+            gaps = {item.get("source_id") for item in intelligence.get("knowledge_gaps", []) if isinstance(item, dict)}
+            mcp_intelligence = mcp.get("intelligence") if isinstance(mcp.get("intelligence"), dict) else {}
+            derived_ok = (
+                intelligence.get("contradictions", {}).get("state") == "DETECTED"
+                and _CORE_DECISION in intelligence.get("decision_backlinks", {})
+                and _CORE_GAP_SOURCE_ID in gaps
+                and mcp_intelligence.get("contradictions", {}).get("state") == "DETECTED"
+                and intelligence_ui.status == "200 OK"
+                and _CORE_DECISION.encode("utf-8") in intelligence_ui.body
+            )
+            if not derived_ok:
+                steps.append(_step("derived_intelligence", "FAIL"))
+                return _evidence("operational-e2e", mode, "FAIL", "Core derived intelligence is incomplete", steps)
+            steps.append(_step("derived_intelligence", "PASS", contradiction="DETECTED", knowledge_gap="observed", decision_backlink="observed"))
+
+            if not _fresh_core_snapshot(data, repo_root):
+                steps.append(_step("restart_recovery", "FAIL"))
+                return _evidence("operational-e2e", mode, "FAIL", "Core restart recovery lost attributable state", steps)
+            steps.append(_step("restart_recovery", "PASS"))
+
+            backup = root / "backup"
+            restored = root / "restored"
+            backup_data_root(data, backup)
+            restore_test(backup, restored)
+            if not _fresh_core_snapshot(restored, repo_root):
+                steps.append(_step("backup_restore", "FAIL"))
+                return _evidence("operational-e2e", mode, "FAIL", "Core restore lost attributable state", steps)
+            steps.append(_step("backup_restore", "PASS"))
+
+            upgrade = upgrade_data_root(data)
+            rollback = rollback_data_root(data, repo_root)
+            if upgrade.get("status") != "ok" or rollback.get("status") != "ok" or not _fresh_core_snapshot(data, repo_root):
+                steps.append(_step("upgrade_rollback", "FAIL"))
+                return _evidence("operational-e2e", mode, "FAIL", "Core upgrade/rollback did not preserve state", steps)
+            steps.append(_step("upgrade_rollback", "PASS"))
+
+            if lifecycle.surface_reconciliation.state != "UNKNOWN" or lifecycle.full_user_e2e.state != "UNKNOWN":
+                steps.append(_step("release_gate_boundary", "FAIL"))
+                return _evidence("operational-e2e", mode, "FAIL", "Deterministic Core qualification must not synthesize browser release PASS", steps)
+            steps.append(_step("release_gate_boundary", "PASS", external_browser_gates="required"))
+    except (OSError, ValidationError, subprocess.SubprocessError, UnicodeError):
+        steps.append(_step("harness", "FAIL"))
+        return _evidence("operational-e2e", mode, "FAIL", "Core qualification journey failed", steps)
+    return _evidence("operational-e2e", mode, "PASS", "Core qualification journey passed without a production or browser-release claim", steps)
 
 
 def _local_operational_e2e(repo_root: Path) -> dict:
@@ -1506,6 +1892,39 @@ def _step(name: str, status: str, **fields: str) -> dict[str, str]:
     step = {"name": name, "status": status}
     step.update(fields)
     return step
+
+
+_FRESH_CORE_SNAPSHOT = """
+import json
+import sys
+from pathlib import Path
+
+from atlas.ops import data_root_runtime_ready
+from atlas.service import AtlasService
+
+root = Path(sys.argv[1])
+project_id, query, revision, decision, gap_source = sys.argv[2:7]
+service = AtlasService(root)
+hits = service.search(project_id, query, limit=4)
+matched = any(
+    isinstance(hit.provenance, dict) and hit.provenance.get("source_revision") == revision
+    for hit in hits
+)
+intelligence = service.project_intelligence(project_id)
+gaps = {
+    item.get("source_id")
+    for item in intelligence.get("knowledge_gaps", [])
+    if isinstance(item, dict)
+}
+payload = {
+    "ready": data_root_runtime_ready(root),
+    "revision": revision if matched else None,
+    "contradiction": intelligence.get("contradictions", {}).get("state"),
+    "backlink": decision in intelligence.get("decision_backlinks", {}),
+    "gap": gap_source in gaps,
+}
+sys.stdout.write(json.dumps(payload, sort_keys=True))
+"""
 
 
 _FRESH_MULTI_PROJECT_SEARCH = """

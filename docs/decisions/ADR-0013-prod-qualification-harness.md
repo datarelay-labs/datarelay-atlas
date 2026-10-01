@@ -66,6 +66,12 @@ a project profile that disagrees with the approved pin still fails closed.
    when required inputs are absent. Release and project production flags stay
    false.
 
+## Core-local integrated qualification
+
+The qualification harness also provides `operational-e2e --mode core-local` as the deterministic integrated proof for the Atlas Core finish line. It composes existing Registry/Sync, keyword+semantic retrieval, explicit cross-project search, Human UI, MCP provenance, Lifecycle Intelligence, Derived Intelligence, restart/recovery, backup/restore, and upgrade/rollback behavior. The detailed contract is `docs/contracts/ATLAS_CORE_PRODUCT_E2E.md`.
+
+`core-local` is deliberately non-production. Its deterministic embedding client is injected only through the existing semantic interface, and its PASS cannot set production release state or satisfy Surface Reconciliation / Full User E2E.
+
 ## Decision
 
 Ship the harness as an isolated script and module. Local mode is the
