@@ -174,25 +174,33 @@ def _tracked_managed_surface_paths(root: Path) -> list[str]:
 
 
 
-def _nonregular_managed_ancestor_paths(
+def _assert_managed_path_types(
     root: Path,
     tracked_paths: list[str],
-) -> list[str]:
-    seeds = set(_EXACT_SURFACES)
-    seeds.update(prefix.rstrip("/") for prefix, _category in _PREFIX_SURFACES)
-    seeds.update(tracked_paths)
-    found: set[str] = set()
-    for relative in sorted(seeds):
+) -> None:
+    def require_directory_chain(relative: str, *, include_leaf: bool) -> None:
         parts = Path(relative).parts
-        for depth in range(1, len(parts) + 1):
+        limit = len(parts) if include_leaf else max(0, len(parts) - 1)
+        for depth in range(1, limit + 1):
             candidate = root.joinpath(*parts[:depth])
-            if candidate.is_symlink():
-                found.add(Path(*parts[:depth]).as_posix())
-                break
-            if candidate.exists() and not candidate.is_dir():
-                found.add(Path(*parts[:depth]).as_posix())
-                break
-    return sorted(found)
+            if candidate.is_symlink() or (
+                candidate.exists() and not candidate.is_dir()
+            ):
+                _reject("instruction governance managed surfaces are dirty")
+
+    for relative in sorted(_EXACT_SURFACES):
+        require_directory_chain(relative, include_leaf=False)
+        candidate = root / relative
+        if candidate.is_symlink() or (
+            candidate.exists() and not candidate.is_file()
+        ):
+            _reject("instruction governance managed surfaces are dirty")
+
+    for prefix, _category in _PREFIX_SURFACES:
+        require_directory_chain(prefix.rstrip("/"), include_leaf=True)
+
+    for relative in tracked_paths:
+        require_directory_chain(relative, include_leaf=False)
 
 
 def _worktree_managed_surface_paths(root: Path) -> list[str]:
@@ -494,11 +502,11 @@ def instruction_governance_preflight(
 
     surfaces = discover_managed_surfaces(root)
     tracked_paths = _tracked_managed_surface_paths(root)
+    _assert_managed_path_types(root, tracked_paths)
     surface_paths = sorted(
         set(str(item["path"]) for item in surfaces)
         | set(tracked_paths)
         | set(_worktree_managed_surface_paths(root))
-        | set(_nonregular_managed_ancestor_paths(root, tracked_paths))
     )
     dirty = _git(
         root,
