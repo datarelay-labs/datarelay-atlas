@@ -495,7 +495,10 @@ def _load_ledger_for_fresh_record(data_root: Path) -> dict[str, object]:
     """Treat corrupt regular cache bytes as replaceable only after fresh evidence."""
     path = Path(data_root) / FILENAME
     try:
-        return _load_ledger(Path(data_root))
+        ledger = _load_ledger(Path(data_root))
+        for item in ledger["audits"]:
+            _validated_routing_audit(item)
+        return ledger
     except ValidationError:
         # Path-boundary failures are not cache corruption and remain terminal.
         if path.is_symlink() or (path.exists() and not path.is_file()):
@@ -659,12 +662,8 @@ def _validate_audit_result(payload: object) -> dict[str, object]:
     }
 
 def _audit_semantic_replay_key(audit: dict[str, object]) -> dict[str, object]:
-    """Compare stored/fresh audit meaning without timestamp-only drift."""
-    return {
-        key: value
-        for key, value in audit.items()
-        if key != "evaluated_at"
-    }
+    """Compare the complete validated audit, including its evidence timestamp."""
+    return dict(audit)
 
 
 def record_instruction_governance_audit(

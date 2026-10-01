@@ -317,7 +317,28 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
                 expected_after,
             )
 
-            fresh_result["evaluated_at"] = "2026-10-01T00:02:00Z"
+            repaired_ledger["audits"][0]["evaluated_at"] = "2099-01-01T00:00:00Z"
+            (data_root / FILENAME).write_text(
+                json.dumps(repaired_ledger),
+                encoding="utf-8",
+            )
+            timestamp_repaired = record_instruction_governance_audit(
+                data_root,
+                repo_root=repo,
+                profile=profile,
+                agent_base_path=agent_base,
+                behavior_scenarios_path=scenarios,
+                result=fresh_result,
+            )
+            self.assertEqual(timestamp_repaired["state"], "RECORDED")
+            after_timestamp_repair = json.loads(
+                (data_root / FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                after_timestamp_repair["audits"][0]["evaluated_at"],
+                "2026-10-01T00:01:00Z",
+            )
+
             duplicate = record_instruction_governance_audit(
                 data_root,
                 repo_root=repo,
@@ -361,7 +382,15 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
                     self.assertEqual(preflight["state"], "AUDIT_REQUIRED")
                     self.assertIsNone(preflight["existing_audit"])
 
-            (data_root / FILENAME).write_text("{broken", encoding="utf-8")
+            (data_root / FILENAME).write_text(
+                json.dumps({
+                    "schema_version": SCHEMA_VERSION,
+                    "kind": LEDGER_KIND,
+                    "authority": AUTHORITY,
+                    "audits": [{"audit_identity": "b" * 64}],
+                }),
+                encoding="utf-8",
+            )
             preflight = instruction_governance_preflight(
                 data_root,
                 repo_root=repo,
