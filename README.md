@@ -1,7 +1,7 @@
 <h1 align="center">DataRelay Atlas</h1>
 
 <p align="center">
-  <strong>Engineering Knowledge & Lifecycle Platform</strong>
+  <strong>Trusted Engineering Context & Lifecycle Control Plane</strong>
 </p>
 
 <p align="center">
@@ -18,28 +18,29 @@
 
 ## What is DataRelay Atlas?
 
-DataRelay Atlas is an AI-assisted engineering platform that connects project knowledge, methodology, lifecycle state, and AI context.
+DataRelay Atlas is an AI-assisted Engineering Knowledge & Lifecycle Platform. Its Core product is the trusted engineering context and lifecycle control plane shared by humans and AI clients.
 
-Atlas gives humans and AI agents one consistent view of engineering methodology, registered products and repositories, architecture/specifications/ADRs, validation and release evidence, current lifecycle state, searchable cross-project knowledge, and trusted context for MCP-capable AI clients.
+Atlas gives humans and AI clients one consistent view of engineering methodology, registered products and repositories, architecture/specifications/ADRs, validation and release evidence, current lifecycle state, searchable cross-project knowledge, and attributable context for MCP-capable clients.
 
-Atlas does **not** replace GitHub, CI/CD, issue trackers, or coding agents. It connects, validates, indexes, and explains the engineering state that already exists in those systems.
+Atlas does **not** replace GitHub, CI/CD, issue trackers, or coding agents. It connects, validates, indexes, and explains the engineering state that already exists in those systems. Optional automation can coordinate AI-assisted engineering work on top of that trusted state, but automation/provider optimization is not required for Atlas Core to be complete.
 
 ## Core model
 
 ```text
 Canonical Engineering State
-GitHub / OpenSpec / Code / Tests / ADR / CI
+GitHub / Specs / Code / Tests / ADR / CI
                     |
                     v
-              DataRelay Atlas
-       Methodology + Project State
-       Knowledge + AI Context
+             DataRelay Atlas Core
+       Knowledge + Lifecycle + Trust
                     |
           +---------+---------+
           |                   |
           v                   v
       Human UI           AI / MCP Clients
-                         Cursor / ChatGPT
+                         ChatGPT / approved clients
+                    |
+                    +---- optional ----> Automation Extension
 ```
 
 ## Local Human UI
@@ -60,10 +61,14 @@ The first slice binds to `127.0.0.1:8788` by default and is intentionally not a 
 4. **Provenance is mandatory.** Derived knowledge keeps repository, ref, path, and source revision where applicable.
 5. **Start self-hosted and single-organization.** Multi-organization/SaaS behavior is future scope, not an MVP assumption.
 6. **Do not rebuild tools that already work.** Git hosting, CI/CD, coding agents, and issue tracking remain external unless an explicit product requirement changes that boundary.
+7. **Core before automation.** Dependency scheduling, provider routing, decision models, and other automation consume Core state; they are not Core release prerequisites unless explicitly promoted.
+8. **Search is not generic chat.** Atlas owns attributable retrieval/context packaging; answer synthesis is normally performed by the approved MCP client.
 
 ## Current status
 
-Atlas owns its registry, canonical sync, projection/retrieval, authenticated HTTPS MCP, lifecycle/control-plane foundations, and the first read-only Human UI. Athena remains historical migration evidence only and is not a runtime dependency. The browser surface is local/loopback in the current slice; remote UI authentication/exposure and same-candidate human-equivalent release execution remain explicit follow-up gates.
+Atlas owns its registry, canonical sync, projection/retrieval, authenticated HTTPS MCP, lifecycle/control-plane foundations, and the first read-only Human UI. Athena remains historical migration evidence only and is not a runtime dependency. The browser surface is local/loopback in the current slice; remote UI authentication/exposure and same-candidate human-equivalent release execution remain explicit Core hardening gates.
+
+The roadmap separates **Atlas Core** from the optional **Automation Extension** and **Experimental/Optional** work. Core completion is judged by one end-to-end attributable knowledge + lifecycle + operations journey, not by completing every provider, automation, or research experiment.
 
 Milestones:
 
@@ -111,23 +116,13 @@ Search JSON includes `path` (the source path) and `identity` (`source_id@ref`). 
 
 `python -m atlas mcp serve` exposes `search_project` and `get_provenance` on Streamable HTTP `/mcp` over TLS. Atlas checks bearer tokens as an OAuth resource server; it does not issue them. See ADR-0008 and `docs/runbooks/phase2-authenticated-https-mcp.md`.
 
-## Autonomous Work Controller PoC
+## Automation Extension
 
-Persist one local workstream, accept an idempotent Cursor completion event, run a
-replaceable audit adapter, and stop or dispatch a fresh `/work-resume` on rework.
-See ADR-0006 and `docs/runbooks/autonomous-work-controller-poc.md`.
+Atlas includes Work Controller and audit foundations for durable AI-engineering coordination. This is an **optional extension** built on Atlas Core, not part of the Core product finish line.
 
-```bash
-PYTHONPATH=. python3 -m atlas work-controller register <workstream> \
-  --repository datarelay-labs/datarelay-atlas \
-  --issue-number <n> \
-  --branch <branch> \
-  --worktree "$(pwd)" \
-  --expected-head "$(git rev-parse HEAD)"
-PYTHONPATH=. python3 -m atlas work-controller completion /path/to/event.json \
-  --audit-adapter fixed \
-  --audit-verdict PASS
-```
+The original ADR-0006 PoC modeled Cursor completion/resume transport. Current product direction is Chat-primary and provider-neutral: GitHub Work Packets remain durable coordination authority, independent verification remains explicit, and no provider-specific runtime may become hidden execution authority. Historical Cursor evidence may remain for compatibility/audit purposes while current execution contracts are retired or migrated.
+
+See ADR-0006, the active Automation Extension roadmap, and docs/runbooks/autonomous-work-controller-poc.md for implementation history.
 
 ## Engineering
 

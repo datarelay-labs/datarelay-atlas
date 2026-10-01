@@ -1,4 +1,4 @@
-# DataRelay Atlas — Initial Architecture
+# DataRelay Atlas — Canonical Architecture
 
 ## Architecture boundary
 
@@ -7,19 +7,29 @@ Atlas owns its runtime, contracts, and tests. `datarelay-labs/athena` is migrati
 input only and is not a build/test/deploy/runtime dependency (ADR-0004).
 
 ```text
-                 DataRelay Atlas
-                       |
-      +----------------+----------------+
-      |                |                |
- Methodology      Project State      Knowledge
- Engineering      GitHub / Specs     Projection
- System            PR / CI / Test     Search / Vector
-      |                |                |
-      +----------------+----------------+
-                       |
-                 AI Context Layer
-              Cursor / ChatGPT / MCP
+                         DataRelay Atlas Core
+                                  |
+        +-------------------------+-------------------------+
+        |                         |                         |
+  Knowledge Plane           Lifecycle Plane       AI Context & Trust
+ registry / sync /          PR / CI / test /      provenance / scope /
+ retrieval / derived        release / compliance   authenticated MCP
+        |                         |                         |
+        +-------------------------+-------------------------+
+                                  |
+                        Human Interface & Ops
+                                  |
+                                  v
+                        complete Core product
+                                  |
+                                  +---- optional ----+
+                                                    |
+                                           Automation Extension
+                                  dependency / handoff / audit /
+                                  concurrency / provider routing
 ```
+
+The optional Automation Extension consumes Atlas Core state and trust boundaries. It is not required for Atlas Core product completion unless an explicit future product decision promotes a capability into Core.
 
 ## Canonical vs derived
 
@@ -60,24 +70,28 @@ Provides exact/keyword retrieval and hybrid fusion with a pluggable semantic pro
 
 The Operational Phase 2 operator slice (`python -m atlas search <project_id> <query>`) rebuilds a project-scoped keyword `Retriever` in memory from ProjectionStore documents whose sync state is `success`, `unchanged`, or `ok`. Hit provenance is copied from that projection metadata. Distinct projections that share a `source_path` stay independently searchable when their `source_id` and `ref` differ. No separate search index is stored. Failed, disabled, and other non-successful projections are excluded. Missing projection bytes, unsafe projection paths, a mismatch against the stored `content_digest`, disagreement between record and provenance identity, a rendered-projection identity that does not match that provenance, and malformed provenance fail closed with a deterministic diagnostic.
 
-When `--embedding-endpoint` and `--embedding-model` are set, search also ranks those same integrity-checked texts through an external OpenAI-compatible `POST /v1/embeddings` endpoint (Hugging Face Text Embeddings Inference, or another self-hosted compatible server). Atlas ranks the returned vectors with cosine similarity, higher score first and projection identity as the tie break, then fuses them with keyword hits using the existing reciprocal rank fusion path. Query and document prefixes are optional operator configuration and default to empty; Atlas does not hardcode a model's prefix rules. Embeddings are not persisted. With no embedding endpoint, search stays keyword-only. Timeout, connection failure, a truncated response body, non-2xx responses, redirects, malformed JSON, missing or empty embeddings, non-numeric or non-finite values, zero-norm query or document vectors, oversized responses, and dimension mismatch fail closed. Each embeddings request contains at most 32 inputs, matching TEI's default `max-client-batch-size`, and Atlas concatenates those responses in input order. Batched `/v1/embeddings` results are bound by response cardinality and per-item `index` (unique, in range, and complete), not by raw array order. Dimension mismatch is rejected within a response and across responses. Semantic hit keys stay on the projection identity used by keyword fusion; the user-visible path still comes from provenance after fusion. Each hit also carries `identity` (`source_id@ref`) so a later provenance lookup can name one projection when several share a `source_path`. The endpoint is an http(s) URL without query, fragment, or userinfo. A root or `/v1` base resolves to `/v1/embeddings`; an explicit `/v1/embeddings` URL is unchanged. Cross-project search, pgvector, and a human UI remain outside this slice.
+When `--embedding-endpoint` and `--embedding-model` are set, search also ranks those same integrity-checked texts through an external OpenAI-compatible `POST /v1/embeddings` endpoint (Hugging Face Text Embeddings Inference, or another self-hosted compatible server). Atlas ranks the returned vectors with cosine similarity, higher score first and projection identity as the tie break, then fuses them with keyword hits using the existing reciprocal rank fusion path. Query and document prefixes are optional operator configuration and default to empty; Atlas does not hardcode a model's prefix rules. Embeddings are not persisted. With no embedding endpoint, search stays keyword-only. Timeout, connection failure, a truncated response body, non-2xx responses, redirects, malformed JSON, missing or empty embeddings, non-numeric or non-finite values, zero-norm query or document vectors, oversized responses, and dimension mismatch fail closed. Each embeddings request contains at most 32 inputs, matching TEI's default `max-client-batch-size`, and Atlas concatenates those responses in input order. Batched `/v1/embeddings` results are bound by response cardinality and per-item `index` (unique, in range, and complete), not by raw array order. Dimension mismatch is rejected within a response and across responses. Semantic hit keys stay on the projection identity used by keyword fusion; the user-visible path still comes from provenance after fusion. Each hit also carries `identity` (`source_id@ref`) so a later provenance lookup can name one projection when several share a `source_path`. The endpoint is an http(s) URL without query, fragment, or userinfo. A root or `/v1` base resolves to `/v1/embeddings`; an explicit `/v1/embeddings` URL is unchanged. This paragraph describes the original single-project operator slice; later Core capabilities add explicitly scoped cross-project retrieval and the Human UI without changing these integrity rules.
 
 ### Derived Synthesis
-Future bounded layer for concepts, entities, cross-project links, contradiction detection, and knowledge-gap detection. Synthesized content is always marked derived and attributable.
+Bounded layer for concepts/entities, cross-project links, decision backlinks, contradiction/stale/unknown detection, and knowledge-gap detection. Core-derived intelligence stays attributable and never becomes a competing source of truth; richer summaries and question workflows remain optional.
 
 ### Lifecycle State
 Normalizes observable GitHub/CI/test/release evidence into project status. It must distinguish observed fact from inferred/unknown state.
 
 ### AI Context / MCP
-Exposes scoped retrieval to Cursor, ChatGPT, and other agents. Tool semantics stay Atlas-owned (`atlas/mcp_context.py`). `python -m atlas mcp serve` mounts the official MCP Python SDK Streamable HTTP endpoint at `/mcp` and terminates TLS in-process (ADR-0008).
+Exposes scoped retrieval to ChatGPT and other approved MCP-capable clients. No specific coding-agent runtime is a Core dependency. Tool semantics stay Atlas-owned (`atlas/mcp_context.py`). `python -m atlas mcp serve` mounts the official MCP Python SDK Streamable HTTP endpoint at `/mcp` and terminates TLS in-process (ADR-0008).
 
-Atlas is an OAuth 2.1 resource server, not an authorization server. Bearer tokens are checked with RFC 7662 introspection configured at runtime. The SDK publishes RFC 9728 protected-resource metadata and rejects missing, invalid, or wrong-resource tokens. Read tools require `atlas.read`. `search_project` reads current projections for the requested project only. `get_provenance` resolves the search hit `identity` (`source_id@ref`) only when `identity` is supplied. A user-visible source path resolves by `source_path` only when one projection uses it; shared source paths fail closed as ambiguous. An explicit introspection issuer must match the configured issuer. A present blank, whitespace, or non-string issuer is rejected, and an omitted issuer stays acceptable. Conflicting audience and resource claims are rejected. The introspection client secret comes from the environment or a secret file, not from a command-line value. Canonical write tools are not mounted on this endpoint. Live ChatGPT/Cursor client certification is a later slice.
+Atlas Core owns retrieval, provenance, integrity, scope, and bounded context packaging. Generic answer synthesis belongs to the MCP client unless a future Atlas-native synthesis contract is explicitly approved. This keeps search/context distinct from a general-purpose ask/chat product surface.
+
+Atlas is an OAuth 2.1 resource server, not an authorization server. Bearer tokens are checked with RFC 7662 introspection configured at runtime. The SDK publishes RFC 9728 protected-resource metadata and rejects missing, invalid, or wrong-resource tokens. Read tools require `atlas.read`. `search_project` reads current projections for the requested project only. `get_provenance` resolves the search hit `identity` (`source_id@ref`) only when `identity` is supplied. A user-visible source path resolves by `source_path` only when one projection uses it; shared source paths fail closed as ambiguous. An explicit introspection issuer must match the configured issuer. A present blank, whitespace, or non-string issuer is rejected, and an omitted issuer stays acceptable. Conflicting audience and resource claims are rejected. The introspection client secret comes from the environment or a secret file, not from a command-line value. Canonical write tools are not mounted on this endpoint. Live approved-client certification remains a bounded integration/release concern; no provider-specific coding-agent client is required by the Core architecture.
 
 ### Human UI
 
 The first Atlas-owned Human UI is a read-only, server-rendered Python surface (`python -m atlas web serve`) bound to loopback only. It reuses `AtlasService`, registry, projection retrieval, provenance validation, and bounded content-free GitHub lifecycle snapshots rather than creating a second data model.
 
 The current UI provides project inventory/detail, source/projection health, project-scoped and cross-project attributable search, and observed/unknown lifecycle evidence. It performs no canonical writes and does not call GitHub on browser requests. Source-derived values are escaped and responses use a restrictive CSP.
+
+The product boundary is intentionally read-mostly/read-only for Core: canonical project/source/policy mutation remains in explicit operator interfaces such as GitHub and Atlas CLI until a separate management-write contract is approved. A richer web management surface is not implicitly required for Core completion.
 
 Remote exposure/authentication and production Human UI deployment remain separate hardening work. Lifecycle Intelligence normalizes bounded local Work/PR and exact-candidate CI/test/release/browser evidence for display without making Atlas authoritative for those systems; see `docs/contracts/ATLAS_LIFECYCLE_EVIDENCE.md`. Actual-browser Surface Reconciliation and Full User E2E remain mandatory on the same clean candidate (ADR-0016).
 
@@ -118,6 +132,8 @@ Source/provider/provenance **semantics** are frozen by ADR-0003. Phase 1 durable
 Autonomous Work Controller PoC state (ADR-0006) extends the same data root with
 `work-controller.json` (one local workstream control loop). It does not replace
 GitHub AI Work Packets as canonical coordination state.
+
+The Work Controller belongs to the optional Automation Extension, not to the Atlas Core completion boundary. Current product direction is Chat-primary and provider-neutral: provider-specific Cursor transport from the original PoC is historical/compatibility evidence and must not become hidden execution authority.
 
 Continuous Chat Audit Supervisor PoC state (ADR-0007) extends the same data root
 with `chat-audit.json` (derived cache) and a GitHub Contents API Audit Control
