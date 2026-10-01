@@ -113,6 +113,30 @@ def _append(items, seen, kind, value, project_id, identity, provenance):
 def _sort_key(item: DerivedItem):
     return (item.kind,item.value,item.source_project_id,item.source_identity)
 
+def _index_row_sort_key(row: dict[str, object]) -> tuple[str, str, str]:
+    return (
+        str(row.get("source_project_id") or row.get("project_id") or ""),
+        str(row.get("source_identity") or ""),
+        str(row.get("value") or ""),
+    )
+
+
+def _bounded_index(
+    index: dict[str, list[dict[str, object]]],
+) -> dict[str, list[dict[str, object]]]:
+    bounded: dict[str, list[dict[str, object]]] = {}
+    remaining = _MAX_ITEMS
+    for key in sorted(index):
+        if remaining <= 0:
+            break
+        rows = sorted(index[key], key=_index_row_sort_key)
+        selected = rows[:remaining]
+        if selected:
+            bounded[key] = selected
+            remaining -= len(selected)
+    return bounded
+
+
 def derived_intelligence_payload(
     store: ProjectionStore,
     project_ids: list[str],
@@ -175,15 +199,12 @@ def derived_intelligence_payload(
                 }
             )
 
-    for index in (backlinks, concepts, questions, decision_targets, repository_entities, source_entities):
-        for value in index.values():
-            value.sort(
-                key=lambda row: (
-                    str(row.get("source_project_id") or row.get("project_id") or ""),
-                    str(row.get("source_identity") or ""),
-                    str(row.get("value") or ""),
-                )
-            )
+    backlinks = _bounded_index(backlinks)
+    concepts = _bounded_index(concepts)
+    questions = _bounded_index(questions)
+    decision_targets = _bounded_index(decision_targets)
+    repository_entities = _bounded_index(repository_entities)
+    source_entities = _bounded_index(source_entities)
 
     contradiction_items = [
         item for item in items if item.kind == "contradiction_evidence"

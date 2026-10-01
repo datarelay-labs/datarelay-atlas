@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import tempfile
@@ -144,6 +145,95 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
                     agent_base_path=agent_base,
                     behavior_scenarios_path=scenarios,
                 )
+
+    def test_matching_stored_audit_rebinds_fresh_preflight_facts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            data_root = base / "data"
+            first = instruction_governance_preflight(
+                data_root,
+                repo_root=repo,
+                profile=profile,
+                agent_base_path=agent_base,
+                behavior_scenarios_path=scenarios,
+            )
+            data_root.mkdir(parents=True, exist_ok=True)
+            agent_surface = next(
+                item for item in first["managed_surfaces"]
+                if item["path"] == "AGENTS.md"
+            )
+            after_digest = "f" * 64
+            if after_digest == agent_surface["content_digest"]:
+                after_digest = "e" * 64
+            audit = {
+                "audit_identity": first["audit_identity"],
+                "evaluated_at": "2026-10-01T00:00:00Z",
+                "authority": AUTHORITY,
+                "outcome": "CANARY_READY",
+                "target_repository": first["target_repository"],
+                "target_head": first["target_head"],
+                "engineering_system_revision": first["engineering_system_revision"],
+                "model_provider": first["model_provider"],
+                "model_name": first["model_name"],
+                "model_profile": first["model_profile"],
+                "harness_id": first["harness_id"],
+                "harness_revision": first["harness_revision"],
+                "trigger_kind": first["trigger_kind"],
+                "trigger_revision": first["trigger_revision"],
+                "inventory_digest": first["inventory_digest"],
+                "behavior_results": [{"scenario_id": "scenario-1", "outcome": "PASS"}],
+                "missing_mandatory_scenarios": [],
+                "candidate_changes": [{
+                    "path": "AGENTS.md",
+                    "before_digest": agent_surface["content_digest"],
+                    "after_digest": after_digest,
+                }],
+                "evaluation_ref": "github:issue-225",
+                "canonical_mutation": False,
+            }
+
+            variants = []
+            changed = copy.deepcopy(audit)
+            changed["target_head"] = "d" * 40
+            variants.append(("target-head", changed))
+            changed = copy.deepcopy(audit)
+            changed["model_name"] = "changed-model"
+            variants.append(("model-profile", changed))
+            changed = copy.deepcopy(audit)
+            changed["inventory_digest"] = "d" * 64
+            variants.append(("inventory", changed))
+            changed = copy.deepcopy(audit)
+            changed["outcome"] = "NO_CHANGE"
+            variants.append(("outcome", changed))
+            changed = copy.deepcopy(audit)
+            changed["candidate_changes"][0]["path"] = ".engineering/project.yaml"
+            variants.append(("candidate-path", changed))
+            changed = copy.deepcopy(audit)
+            changed["candidate_changes"][0]["before_digest"] = "d" * 64
+            variants.append(("candidate-before-digest", changed))
+
+            for label, stored in variants:
+                with self.subTest(label=label):
+                    (data_root / FILENAME).write_text(
+                        json.dumps({
+                            "schema_version": SCHEMA_VERSION,
+                            "kind": LEDGER_KIND,
+                            "authority": AUTHORITY,
+                            "audits": [stored],
+                        }),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(
+                        ValidationError, "matching stored audit is invalid"
+                    ):
+                        instruction_governance_preflight(
+                            data_root,
+                            repo_root=repo,
+                            profile=profile,
+                            agent_base_path=agent_base,
+                            behavior_scenarios_path=scenarios,
+                        )
 
     def _assert_dirty_rejected(
         self,

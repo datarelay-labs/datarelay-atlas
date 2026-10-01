@@ -555,6 +555,16 @@ def instruction_governance_preflight(
     if existing is not None:
         try:
             existing = _validated_routing_audit(existing)
+            _assert_stored_audit_matches_preflight(
+                existing,
+                audit_identity=audit_identity,
+                repository=repository,
+                head=head,
+                profile=normalized_profile,
+                inventory_digest=inventory_digest,
+                surfaces=surfaces,
+                scenarios=scenarios,
+            )
         except ValidationError as exc:
             raise ValidationError(
                 "instruction governance matching stored audit is invalid"
@@ -851,6 +861,68 @@ def _validated_routing_audit(payload: object) -> dict[str, object]:
     if len(paths) != len(set(paths)):
         raise ValidationError("instruction governance stored audit candidate paths are duplicated")
     return dict(payload)
+
+
+def _assert_stored_audit_matches_preflight(
+    audit: dict[str, object],
+    *,
+    audit_identity: str,
+    repository: str,
+    head: str,
+    profile: dict[str, object],
+    inventory_digest: str,
+    surfaces: list[dict[str, object]],
+    scenarios: list[dict[str, object]],
+) -> None:
+    expected = {
+        "audit_identity": audit_identity,
+        "target_repository": repository,
+        "target_head": head,
+        "engineering_system_revision": profile["engineering_system_revision"],
+        "model_provider": profile["model_provider"],
+        "model_name": profile["model_name"],
+        "model_profile": profile["model_profile"],
+        "harness_id": profile["harness_id"],
+        "harness_revision": profile["harness_revision"],
+        "trigger_kind": profile["trigger_kind"],
+        "trigger_revision": profile["trigger_revision"],
+        "inventory_digest": inventory_digest,
+    }
+    if any(audit.get(key) != value for key, value in expected.items()):
+        raise ValidationError("instruction governance stored audit preflight binding is invalid")
+
+    scenario_by_id = {str(item["id"]): item for item in scenarios}
+    behavior = list(audit["behavior_results"])
+    behavior_ids = {str(item["scenario_id"]) for item in behavior}
+    if not behavior_ids.issubset(scenario_by_id):
+        raise ValidationError("instruction governance stored audit scenario binding is invalid")
+    mandatory = {
+        scenario_id
+        for scenario_id, item in scenario_by_id.items()
+        if item["mandatory"] is True
+    }
+    expected_missing = sorted(mandatory - behavior_ids)
+    if list(audit["missing_mandatory_scenarios"]) != expected_missing:
+        raise ValidationError("instruction governance stored audit missing-scenario binding is invalid")
+
+    surface_by_path = {str(item["path"]): item for item in surfaces}
+    changes = list(audit["candidate_changes"])
+    for change in changes:
+        current = surface_by_path.get(str(change["path"]))
+        if current is None or change["before_digest"] != current["content_digest"]:
+            raise ValidationError("instruction governance stored audit candidate binding is invalid")
+
+    outcomes = [str(item["outcome"]) for item in behavior]
+    if "FAIL" in outcomes:
+        expected_outcome = "REJECTED"
+    elif "UNKNOWN" in outcomes or expected_missing:
+        expected_outcome = "HUMAN_REQUIRED"
+    elif changes:
+        expected_outcome = "CANARY_READY"
+    else:
+        expected_outcome = "NO_CHANGE"
+    if audit["outcome"] != expected_outcome:
+        raise ValidationError("instruction governance stored audit outcome binding is invalid")
 
 
 def _routing_fail_closed(

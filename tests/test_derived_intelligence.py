@@ -184,6 +184,42 @@ class DerivedIntelligenceTests(unittest.TestCase):
                 "beta",
             )
 
+    def test_projection_backed_indexes_are_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = AtlasService(Path(tmp))
+            svc.register_project(
+                project_id="alpha",
+                repository="datarelay-labs/alpha",
+            )
+            for index in range(501):
+                svc.add_source(
+                    "alpha",
+                    source_id=f"decision-{index:03d}",
+                    source_path=f"docs/decisions/ADR-{index:04d}.md",
+                )
+            svc.sync_project(
+                "alpha",
+                fetch=lambda source, target: FetchedSource(
+                    content=f"# {source.source_id}",
+                    source_revision="d" * 40,
+                ),
+            )
+
+            payload = derived_intelligence_payload(svc.projections, ["alpha"])
+            indexes = {
+                "source_entities": payload["entities"]["source_paths"],
+                "repository_entities": payload["entities"]["repositories"],
+                "decision_targets": payload["decision_targets"],
+            }
+            for name, index_payload in indexes.items():
+                with self.subTest(index=name):
+                    row_count = sum(len(rows) for rows in index_payload.values())
+                    self.assertEqual(row_count, 500)
+            self.assertEqual(
+                payload,
+                derived_intelligence_payload(svc.projections, ["alpha"]),
+            )
+
     def test_rebuild_is_deterministic(self):
         with tempfile.TemporaryDirectory() as tmp:
             svc=self.seed(tmp)
