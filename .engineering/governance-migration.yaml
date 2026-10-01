@@ -1,5 +1,5 @@
 contract_version: 1
-base_sha: 6e3bb66d7d7dfc0ad2d58b6ea3eda4fb011fd7bc
+base_sha: 0fa108c559fc3a00fbf7a4e3b3286bbf28013e9c
 from_policy_epoch: 1
 to_policy_epoch: 2
 requires_exact_head_validate: true
