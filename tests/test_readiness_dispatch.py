@@ -445,99 +445,28 @@ class ReadinessAuthorizedHandoffTests(unittest.TestCase):
 
 
 class ReadinessAuthorizedDispatchTests(unittest.TestCase):
-    def test_denied_activation_dispatches_nothing(self) -> None:
-        adapter = FakePacketAdapter(
-            activation={
-                "action": "denied",
-                "authorization": {
-                    "decision": "DENY",
-                    "reasons": ["GRAPH_NOT_READY"],
-                },
-            }
-        )
-        dispatcher = FakePersistentDispatcher()
+    def test_current_cursor_dispatch_entry_is_retired_before_any_effect(self) -> None:
+        class BoomAdapter:
+            def __getattr__(self, _name):
+                raise AssertionError("retired dispatch must not touch packet adapter")
+
+        class BoomDispatcher:
+            def start_resume(self, _request):
+                raise AssertionError("retired dispatch must not spawn")
 
         result = activate_and_dispatch_single_worker(
-            graph_path=Path("/tmp/graph.json"),
+            graph_path=Path("/tmp/unused.json"),
             workstream=WORKSTREAM,
             worktree_path=WORKTREE,
-            packet_adapter=adapter,  # type: ignore[arg-type]
-            dispatcher=dispatcher,
+            packet_adapter=BoomAdapter(),  # type: ignore[arg-type]
+            dispatcher=BoomDispatcher(),  # type: ignore[arg-type]
         )
-
-        self.assertEqual(result["action"], "denied")
-        self.assertEqual(adapter.authorization_calls, 1)
-        self.assertEqual(adapter.activation_calls, 0)
-        self.assertEqual(adapter.queued_calls, 0)
-        self.assertEqual(adapter.fresh_calls, 0)
-        self.assertEqual(dispatcher.requests, [])
-
-    def test_activation_failure_is_human_required_without_dispatch(self) -> None:
-        adapter = FakePacketAdapter(activation_error=True)
-        dispatcher = FakePersistentDispatcher()
-
-        result = activate_and_dispatch_single_worker(
-            graph_path=Path("/tmp/graph.json"),
-            workstream=WORKSTREAM,
-            worktree_path=WORKTREE,
-            packet_adapter=adapter,  # type: ignore[arg-type]
-            dispatcher=dispatcher,
-        )
-
         self.assertEqual(result["action"], "human_required")
-        self.assertEqual(result["reason"], "ACTIVATION_FAILED")
-        self.assertEqual(adapter.authorization_calls, 1)
-        self.assertEqual(adapter.queued_calls, 1)
-        self.assertEqual(adapter.activation_calls, 1)
-        self.assertEqual(adapter.fresh_calls, 0)
-        self.assertEqual(dispatcher.requests, [])
+        self.assertEqual(result["reason"], "CURSOR_RUNTIME_RETIRED")
 
-    def test_confirmed_activation_dispatches_exactly_once(self) -> None:
-        adapter = FakePacketAdapter()
-        dispatcher = FakePersistentDispatcher(session_prefix="ready")
-
-        result = activate_and_dispatch_single_worker(
-            graph_path=Path("/tmp/graph.json"),
-            workstream=WORKSTREAM,
-            worktree_path=WORKTREE,
-            packet_adapter=adapter,  # type: ignore[arg-type]
-            dispatcher=dispatcher,
-        )
-
-        self.assertEqual(result["action"], "dispatched")
-        self.assertEqual(result["result"], "DISPATCHED")
-        self.assertEqual(result["execution_profile"], "CURSOR")
-        self.assertEqual(result["adapter"], "PTY_PERSIST_CURSOR")
-        self.assertTrue(result["spawned"])
-        self.assertEqual(result["session_id"], "ready-1")
-        self.assertEqual(result["resume_prompt"], "/work-resume")
-        self.assertEqual(adapter.authorization_calls, 1)
-        self.assertEqual(adapter.queued_calls, 1)
-        self.assertEqual(adapter.activation_calls, 1)
-        self.assertEqual(adapter.fresh_calls, 1)
-        self.assertEqual(adapter.uniqueness_calls, 1)
-        self.assertEqual(
-            adapter.last_unique_identity, (REPO, ISSUE, BRANCH)
-        )
-        self.assertEqual(len(dispatcher.requests), 1)
-        request = dispatcher.requests[0]
-        self.assertEqual(request.workstream, WORKSTREAM)
-        self.assertEqual(request.worktree_path, WORKTREE)
-        self.assertEqual(request.repository, REPO)
-        self.assertEqual(request.issue_number, ISSUE)
-        self.assertEqual(request.branch, BRANCH)
-        self.assertEqual(request.expected_head, HEAD)
-        self.assertEqual(request.attempt, 1)
-        self.assertEqual(request.resume_prompt, "/work-resume")
-        self.assertTrue(request.cursor_opt_in)
-        encoded = json.dumps(result)
-        for forbidden in ("body", "OWNER_INTENT", "prompt_text", "transcript"):
-            self.assertNotIn(forbidden, encoded)
-
-    def test_chat_packet_cannot_enter_legacy_cursor_adapter(self) -> None:
-        adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
+    def test_retired_dispatch_does_not_activate_cursor_packet(self) -> None:
+        adapter = FakePacketAdapter(implementer="CURSOR")
         dispatcher = FakePersistentDispatcher()
-
         result = activate_and_dispatch_single_worker(
             graph_path=Path("/tmp/graph.json"),
             workstream=WORKSTREAM,
@@ -545,209 +474,7 @@ class ReadinessAuthorizedDispatchTests(unittest.TestCase):
             packet_adapter=adapter,
             dispatcher=dispatcher,
         )
-
-        self.assertEqual(result["action"], "human_required")
-        self.assertEqual(result["reason"], "IMPLEMENTER_PROFILE_MISMATCH")
-        self.assertEqual(adapter.authorization_calls, 1)
-        self.assertEqual(adapter.queued_calls, 1)
-        self.assertEqual(adapter.activation_calls, 0)
-        self.assertEqual(dispatcher.requests, [])
-
-    def test_active_packet_drift_or_recheck_failure_never_dispatches(self) -> None:
-        for adapter, expected_reason in (
-            (
-                FakePacketAdapter(
-                    fresh=active_fact(workstream="different-workstream")
-                ),
-                "ACTIVE_PACKET_DRIFT",
-            ),
-            (
-                FakePacketAdapter(fresh_error=True),
-                "ACTIVE_PACKET_RECHECK_FAILED",
-            ),
-        ):
-            with self.subTest(reason=expected_reason):
-                dispatcher = FakePersistentDispatcher()
-                result = activate_and_dispatch_single_worker(
-                    graph_path=Path("/tmp/graph.json"),
-                    workstream=WORKSTREAM,
-                    worktree_path=WORKTREE,
-                    packet_adapter=adapter,  # type: ignore[arg-type]
-                    dispatcher=dispatcher,
-                )
-                self.assertEqual(result["action"], "human_required")
-                self.assertEqual(result["reason"], expected_reason)
-                self.assertEqual(dispatcher.requests, [])
-
-    def test_chatgpt_primary_packet_never_dispatches_cursor(self) -> None:
-        adapter = FakePacketAdapter(implementer="CHATGPT_CHAT")
-        dispatcher = FakePersistentDispatcher()
-
-        result = activate_and_dispatch_single_worker(
-            graph_path=Path("/tmp/graph.json"),
-            workstream=WORKSTREAM,
-            worktree_path=WORKTREE,
-            packet_adapter=adapter,  # type: ignore[arg-type]
-            dispatcher=dispatcher,
-        )
-
-        self.assertEqual(result["action"], "human_required")
-        self.assertEqual(result["reason"], "IMPLEMENTER_PROFILE_MISMATCH")
-        self.assertEqual(adapter.activation_calls, 0)
-        self.assertEqual(adapter.fresh_calls, 0)
-        self.assertEqual(adapter.uniqueness_calls, 0)
-        self.assertEqual(dispatcher.requests, [])
-
-    def test_active_uniqueness_failure_never_dispatches(self) -> None:
-        adapter = FakePacketAdapter(uniqueness_error=True)
-        dispatcher = FakePersistentDispatcher()
-
-        result = activate_and_dispatch_single_worker(
-            graph_path=Path("/tmp/graph.json"),
-            workstream=WORKSTREAM,
-            worktree_path=WORKTREE,
-            packet_adapter=adapter,  # type: ignore[arg-type]
-            dispatcher=dispatcher,
-        )
-
-        self.assertEqual(result["action"], "human_required")
-        self.assertEqual(result["reason"], "ACTIVE_PACKET_UNIQUENESS_FAILED")
-        self.assertEqual(adapter.activation_calls, 1)
-        self.assertEqual(adapter.fresh_calls, 1)
-        self.assertEqual(adapter.uniqueness_calls, 1)
-        self.assertEqual(dispatcher.requests, [])
-
-    def test_success_preflight_reason_redacts_absolute_paths(self) -> None:
-        adapter = FakePacketAdapter()
-        dispatcher = SuccessfulPreflightDispatcher()
-
-        result = activate_and_dispatch_single_worker(
-            graph_path=Path("/tmp/graph.json"),
-            workstream=WORKSTREAM,
-            worktree_path=WORKTREE,
-            packet_adapter=adapter,  # type: ignore[arg-type]
-            dispatcher=dispatcher,
-        )
-
-        self.assertEqual(result["action"], "dispatched")
-        self.assertEqual(result["resource_preflight_result"], "PASS")
-        reason = result["resource_preflight_reason"]
-        self.assertNotIn("/home/aella/private/worktree", reason)
-        self.assertIn("<local-path>", reason)
-        self.assertIn("https://example.invalid/health", reason)
-
-    def test_dispatch_failures_are_terminal_for_this_invocation(self) -> None:
-        cases = [
-            (
-                ResourcePreflightBlocked(
-                    "blocked",
-                    result="BLOCK",
-                    reason="capacity unavailable",
-                    exit_code=3,
-                ),
-                "RESOURCE_PREFLIGHT_BLOCKED",
-            ),
-            (
-                DispatchSpawnedButUnobservedError(
-                    "unobserved",
-                    session_hint="proc:123",
-                    command=["agent", "persist"],
-                ),
-                "SPAWNED_BUT_UNOBSERVED",
-            ),
-            (
-                DispatchSpawnCleanupUncertainError(
-                    "uncertain",
-                    session_hint="proc:124",
-                    command=["agent", "persist"],
-                    cleanup_error="permission denied",
-                ),
-                "SPAWN_CLEANUP_UNCERTAIN",
-            ),
-            (ValidationError("identity drift"), "DISPATCH_BLOCKED"),
-        ]
-        for error, expected_reason in cases:
-            with self.subTest(reason=expected_reason):
-                adapter = FakePacketAdapter()
-                dispatcher = RaisingDispatcher(error)
-                result = activate_and_dispatch_single_worker(
-                    graph_path=Path("/tmp/graph.json"),
-                    workstream=WORKSTREAM,
-                    worktree_path=WORKTREE,
-                    packet_adapter=adapter,  # type: ignore[arg-type]
-                    dispatcher=dispatcher,
-                )
-                self.assertEqual(result["action"], "human_required")
-                self.assertEqual(result["reason"], expected_reason)
-                self.assertEqual(adapter.activation_calls, 1)
-                self.assertEqual(adapter.fresh_calls, 1)
-                self.assertEqual(len(dispatcher.calls), 1)
-
-    def test_invalid_dispatch_result_does_not_retry(self) -> None:
-        adapter = FakePacketAdapter()
-        dispatcher = InvalidDispatcher()
-        result = activate_and_dispatch_single_worker(
-            graph_path=Path("/tmp/graph.json"),
-            workstream=WORKSTREAM,
-            worktree_path=WORKTREE,
-            packet_adapter=adapter,  # type: ignore[arg-type]
-            dispatcher=dispatcher,
-        )
-        self.assertEqual(result["action"], "human_required")
-        self.assertEqual(result["reason"], "DISPATCH_RESULT_INVALID")
-        self.assertEqual(dispatcher.calls, 1)
-
-    def test_dispatch_boundary_requires_canonical_adapter_and_dispatcher(self) -> None:
-        adapter = FakePacketAdapter()
-        with self.assertRaisesRegex(
-            ValidationError, "requires GitHubWorkPacketAdapter"
-        ):
-            activate_and_dispatch_single_worker(
-                graph_path=Path("/tmp/graph.json"),
-                workstream=WORKSTREAM,
-                worktree_path=WORKTREE,
-                packet_adapter=object(),  # type: ignore[arg-type]
-                dispatcher=FakePersistentDispatcher(),
-            )
-        with self.assertRaisesRegex(
-            ValidationError, "requires PtyPersistCursorDispatcher"
-        ):
-            activate_and_dispatch_single_worker(
-                graph_path=Path("/tmp/graph.json"),
-                workstream=WORKSTREAM,
-                worktree_path=WORKTREE,
-                packet_adapter=adapter,
-                dispatcher=object(),  # type: ignore[arg-type]
-            )
-        self.assertEqual(adapter.activation_calls, 0)
-
-    def test_invalid_local_inputs_fail_before_activation(self) -> None:
-        adapter = FakePacketAdapter()
-        dispatcher = FakePersistentDispatcher()
-        with self.assertRaises(ValidationError):
-            activate_and_dispatch_single_worker(
-                graph_path=Path("/tmp/graph.json"),
-                workstream="invalid workstream",
-                worktree_path=WORKTREE,
-                packet_adapter=adapter,  # type: ignore[arg-type]
-                dispatcher=dispatcher,
-            )
-        with self.assertRaises(ValidationError):
-            activate_and_dispatch_single_worker(
-                graph_path=Path("/tmp/graph.json"),
-                workstream=WORKSTREAM,
-                worktree_path="",
-                packet_adapter=adapter,  # type: ignore[arg-type]
-                dispatcher=dispatcher,
-            )
-        with self.assertRaisesRegex(ValidationError, "not a directory"):
-            activate_and_dispatch_single_worker(
-                graph_path=Path("/tmp/graph.json"),
-                workstream=WORKSTREAM,
-                worktree_path="/tmp/atlas-definitely-missing-worktree",
-                packet_adapter=adapter,  # type: ignore[arg-type]
-                dispatcher=dispatcher,
-            )
+        self.assertEqual(result["reason"], "CURSOR_RUNTIME_RETIRED")
         self.assertEqual(adapter.activation_calls, 0)
         self.assertEqual(dispatcher.requests, [])
 
@@ -949,8 +676,20 @@ class ActivePacketDispatchBoundaryTests(unittest.TestCase):
                     )
 
     def test_queued_execution_profile_is_bounded_and_explicit(self) -> None:
-        body = (
+        retired = (
             self._body(implementer="CURSOR")
+            .replace("STATUS=ACTIVE", "STATUS=PAUSED", 1)
+            .replace("QUEUE_STATE=NONE", "QUEUE_STATE=QUEUED", 1)
+        )
+        with self.assertRaisesRegex(
+            ValidationError, "IMPLEMENTER must be CHATGPT_CHAT"
+        ):
+            self._adapter(
+                body=retired
+            ).reread_trusted_queued_execution_packet(REPO, ISSUE)
+
+        body = (
+            self._body(implementer="CHATGPT_CHAT")
             .replace("STATUS=ACTIVE", "STATUS=PAUSED", 1)
             .replace("QUEUE_STATE=NONE", "QUEUE_STATE=QUEUED", 1)
         )
@@ -965,10 +704,11 @@ class ActivePacketDispatchBoundaryTests(unittest.TestCase):
         self.assertEqual(fact["head"], HEAD)
         self.assertEqual(fact["packet_status"], "PAUSED")
         self.assertEqual(fact["queue_state"], "QUEUED")
-        self.assertEqual(fact["implementer"], "CURSOR")
+        self.assertEqual(fact["implementer"], "CHATGPT_CHAT")
         encoded = json.dumps(fact)
         for forbidden in ("OWNER_INTENT", "body", "## Goal", "prompt"):
             self.assertNotIn(forbidden, encoded)
+
 
     def test_queued_execution_profile_rejects_missing_or_chat_drift(self) -> None:
         missing = (

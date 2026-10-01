@@ -1,10 +1,9 @@
-"""Host-local Cursor resume worker (Issue #47 slice A).
+"""Host-local audit/disposition compatibility worker (Issue #47 lineage).
 
-Maps a repository to a local worktree and a durable Cursor Chat ID. The Chat
-ID, worktree, and host id stay in host-local configuration. Canonical branch
-and a self-contained prompt are supplied at runtime. ``--resume`` names a
-transport slot; it does not prove that a chat exists, and chat history is
-not authority. This module does not call a model and does not create a chat.
+Current Atlas has no host-local Cursor resume authority. Descriptor parsing and
+historical Cursor evidence helpers remain available for bounded compatibility,
+but resume requests fail closed before Git, session/process probes, or spawn.
+Idle/audit paths do not make chat history authoritative.
 """
 
 from __future__ import annotations
@@ -308,44 +307,12 @@ def _bounded_cursor_diagnostic(value: object) -> str:
 def spawn_agent_argv(
     argv: list[str],
     cwd: str,
-    *,
     timeout_sec: int = DEFAULT_CURSOR_RESUME_TIMEOUT_SEC,
 ) -> int:
-    """Run a fixed argv list. Nonzero, timeout, and start failure fail closed."""
-    timeout_sec = _require_resume_timeout(timeout_sec)
-    if not isinstance(argv, list) or not argv or not all(isinstance(part, str) for part in argv):
-        raise ValidationError("cursor invocation requires an argv list")
-    if any("\x00" in part for part in argv):
-        raise ValidationError("refusing non-literal cursor argv")
-    if _CREATE_ARGV_TOKENS.intersection(argv):
-        raise ValidationError("refusing to create a new Cursor chat")
-    if "--workspace" not in argv:
-        raise ValidationError("cursor argv missing --workspace")
-    workspace = argv[argv.index("--workspace") + 1]
-    if str(Path(workspace).resolve()) != str(Path(cwd).resolve()):
-        raise ValidationError("cursor workspace does not match the validated worktree")
-    try:
-        completed = subprocess.run(
-            argv,
-            cwd=cwd,
-            shell=False,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-        )
-    except subprocess.TimeoutExpired as exc:
-        detail = _bounded_cursor_diagnostic(exc.stderr or exc.stdout)
-        raise ValidationError(f"cursor resume timed out: {detail}") from exc
-    except OSError as exc:
-        detail = _bounded_cursor_diagnostic(exc)
-        raise ValidationError(f"cursor resume failed to start: {detail}") from exc
-    if completed.returncode != 0:
-        detail = _bounded_cursor_diagnostic(completed.stderr or completed.stdout)
-        raise ValidationError(
-            f"cursor resume exited {completed.returncode}: {detail}"
-        )
-    return 0
+    """Retired compatibility entry: current Atlas never spawns Cursor."""
+    raise ValidationError(
+        "CURSOR_RUNTIME_RETIRED: agent process spawning is disabled"
+    )
 
 
 @contextmanager
@@ -427,34 +394,9 @@ class HeadlessCursorDispatcher:
         git_runner: GitRunner,
         cursor_opt_in: bool = False,
     ) -> list[str]:
-        if cursor_opt_in is not True:
-            raise ValidationError(
-                "cursor resume disabled by default; require validated "
-                "Work Packet IMPLEMENTER=CURSOR opt-in"
-            )
-        identity = validate_clean_worktree_identity(
-            descriptor.worktree,
-            repository=descriptor.repository,
-            branch=branch,
-            expected_head=expected_head,
-            git_runner=git_runner,
+        raise ValidationError(
+            "CURSOR_RUNTIME_RETIRED: host Cursor resume is disabled"
         )
-        argv = build_headless_resume_argv(
-            descriptor.cursor_chat_id,
-            workspace=identity.worktree_path,
-            prompt=prompt,
-        )
-        if (
-            argv[0] != "agent"
-            or "--resume" not in argv
-            or _CREATE_ARGV_TOKENS.intersection(argv)
-        ):
-            raise ValidationError("refusing to create a new Cursor chat")
-        code = self._spawn(argv, identity.worktree_path)
-        if code != 0:
-            raise ValidationError(f"cursor resume exited {code}")
-        self.invocations.append(list(argv))
-        return argv
 
 
 def _bind_checkpoint(
@@ -496,81 +438,19 @@ def run_once(
     list_processes: ProcessList | None = None,
     cursor_opt_in: bool = False,
 ) -> dict[str, Any]:
-    """Run one pass. Idle does no git, model, or Cursor work.
-
-    One Chat ID has one host-wide lock domain, plus the configured state-root
-    lock. A caller cannot choose a different lock path. A live persist session
-    on the target worktree is a no-op and is not stopped. Nonzero Cursor
-    status is not ``resumed``.
-    """
+    """Run one host-worker pass without any current Cursor resume authority."""
+    if resume_requested:
+        raise ValidationError(
+            "CURSOR_RUNTIME_RETIRED: host worker resume is disabled"
+        )
     observed_host = normalize_host_id((host_probe or actual_host_id)())
     if observed_host != config.host_id:
         raise ValidationError(
             f"host identity mismatch: observed={observed_host} expected={config.host_id}"
         )
-    if not resume_requested:
-        return {
-            "action": "idle_noop",
-            "cursor_calls": 0,
-            "model_calls": 0,
-            "checkpoint_writes": 0,
-        }
-    if not repository or not str(canonical_branch or "").strip() or not expected_head:
-        raise ValidationError(
-            "resume requires repository, canonical_branch, and expected_head"
-        )
-    if prompt is None:
-        raise ValidationError(
-            "resume requires an explicit self-contained canonical prompt"
-        )
-    branch = str(canonical_branch).strip()
-    canonical_prompt = _require_bounded_prompt(prompt)
-    descriptor = _select_descriptor(config.projects, repository=repository)
-    with host_worker_run_lock(chat_domain_lock_path(descriptor.cursor_chat_id)):
-        with host_worker_run_lock(
-            chat_lock_path(config.state_root, descriptor.cursor_chat_id)
-        ):
-            if store is not None:
-                _bind_checkpoint(
-                    store,
-                    repository=repository,
-                    branch=branch,
-                    expected_head=expected_head,
-                )
-            if persistent_cursor_active(
-                descriptor.worktree,
-                list_sessions=list_sessions,
-                list_processes=list_processes,
-            ):
-                return {
-                    "action": "cursor_active_noop",
-                    "cursor_calls": 0,
-                    "model_calls": 0,
-                    "checkpoint_writes": 0,
-                    "sessions_stopped": 0,
-                }
-            if git_runner is None:
-                raise ValidationError("resume requires a git runner")
-            dispatcher = HeadlessCursorDispatcher(
-                spawn=spawn,
-                timeout_sec=config.cursor_resume_timeout_sec,
-            )
-            argv = dispatcher.resume(
-                descriptor,
-                branch=branch,
-                expected_head=expected_head,
-                prompt=canonical_prompt,
-                git_runner=git_runner,
-                cursor_opt_in=cursor_opt_in,
-            )
-        projection = descriptor.github_projection()
-        if descriptor.cursor_chat_id in json.dumps(projection, sort_keys=True):
-            raise ValidationError("refusing to project Cursor chat id to GitHub")
-        return {
-            "action": "resumed",
-            "cursor_calls": len(dispatcher.invocations),
-            "model_calls": 0,
-            "checkpoint_writes": 0,
-            "argv": argv,
-            "github_projection": projection,
-        }
+    return {
+        "action": "idle_noop",
+        "cursor_calls": 0,
+        "model_calls": 0,
+        "checkpoint_writes": 0,
+    }

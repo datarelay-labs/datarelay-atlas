@@ -1,7 +1,9 @@
-"""Autonomous Work Controller PoC v0 (ADR-0006).
+"""Autonomous Work Controller lineage with provider-neutral handoff (ADR-0006).
 
-Persists one local workstream, accepts idempotent Cursor completion events,
-runs an independent audit, and either stops or dispatches a fresh /work-resume.
+Persists durable workstream state, accepts idempotent completion evidence, runs
+independent audit/disposition logic, and emits CHATGPT_CHAT handoff state for
+REWORK or successor continuation. Legacy Cursor transport structures are
+historical compatibility only and fail closed before any runtime effect.
 """
 
 from __future__ import annotations
@@ -60,6 +62,8 @@ ALLOWED_STATES = frozenset(
         "CYCLE_DISPATCHING",
         "SUCCESSOR_DISPATCHED",
         "REWORK_DISPATCHED",
+        "SUCCESSOR_HANDOFF",
+        "REWORK_HANDOFF",
         "PASSED",
         "HUMAN_REQUIRED",
     }
@@ -1185,25 +1189,33 @@ def _require_v2_packet_metadata(body: str) -> None:
             )
 
 
-def _require_cursor_authority_metadata(body: str) -> dict[str, str]:
-    """Require complete v2 authority metadata before any Cursor lifecycle effect."""
+def _require_chat_execution_authority_metadata(body: str) -> dict[str, str]:
+    """Require the current Chat-primary execution authority metadata."""
     meta = _parse_leading_packet_metadata(body)
     version_text = str(meta.get("PACKET_VERSION") or "").strip()
     if not re.fullmatch(r"[1-9][0-9]{0,2}", version_text) or int(version_text) < 2:
-        raise ValidationError("cursor dispatch requires PACKET_VERSION>=2")
+        raise ValidationError("execution requires PACKET_VERSION>=2")
     _require_v2_packet_metadata(body)
     revision_text = str(meta.get("INTENT_REVISION") or "").strip()
     if not re.fullmatch(r"[1-9][0-9]{0,8}", revision_text):
-        raise ValidationError("cursor dispatch INTENT_REVISION is invalid")
+        raise ValidationError("execution INTENT_REVISION is invalid")
     change_risk = str(meta.get("CHANGE_RISK") or "").strip()
     if change_risk not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
-        raise ValidationError("cursor dispatch CHANGE_RISK is invalid")
-    if meta.get("IMPLEMENTER") != "CURSOR":
+        raise ValidationError("execution CHANGE_RISK is invalid")
+    if meta.get("IMPLEMENTER") != "CHATGPT_CHAT":
         raise ValidationError(
-            "cursor dispatch disabled: active Work Packet must explicitly set "
-            "IMPLEMENTER=CURSOR"
+            "execution implementer retired or unsupported; require "
+            "IMPLEMENTER=CHATGPT_CHAT"
         )
     return meta
+
+
+def _require_cursor_authority_metadata(body: str) -> dict[str, str]:
+    """Compatibility entry point that cannot grant current execution authority."""
+    raise ValidationError(
+        "CURSOR_RUNTIME_RETIRED: current Atlas execution requires "
+        "IMPLEMENTER=CHATGPT_CHAT"
+    )
 
 
 def _replace_packet_section(body: str, heading: str, content: str) -> str:
@@ -2196,33 +2208,10 @@ class GitHubWorkPacketAdapter:
         workstream: str,
         head: str,
     ) -> None:
-        repo = normalize_github_repository(repository)
-        expected_branch = branch.strip()
-        expected_workstream = workstream.strip()
-        expected_head = str(head or "").strip().lower()
-        if not expected_branch or not expected_workstream:
-            raise ValidationError("cursor dispatch requires branch and workstream")
-        if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
-            raise ValidationError("cursor dispatch requires exact 40-char head")
-        self._require_unique_active_packet(
-            repo,
-            issue_number=int(issue_number),
-            branch=expected_branch,
+        raise ValidationError(
+            "CURSOR_RUNTIME_RETIRED: current Atlas execution requires "
+            "IMPLEMENTER=CHATGPT_CHAT"
         )
-        payload = self._view_issue(repo, int(issue_number))
-        self._assert_ai_work_issue(payload, issue_number=int(issue_number))
-        self._require_trusted_issue_author(repo, payload)
-        body = str(payload.get("body") or "")
-        meta = _require_cursor_authority_metadata(body)
-        require_canonical_target_repo(meta.get("TARGET_REPO", ""), repo)
-        if meta.get("STATUS") != "ACTIVE":
-            raise ValidationError("cursor dispatch requires STATUS=ACTIVE")
-        if meta.get("BRANCH") != expected_branch:
-            raise ValidationError("cursor dispatch Work Packet branch mismatch")
-        if meta.get("WORKSTREAM") != expected_workstream:
-            raise ValidationError("cursor dispatch Work Packet workstream mismatch")
-        if str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower() != expected_head:
-            raise ValidationError("cursor dispatch Work Packet head mismatch")
 
     def apply_rework_findings(
         self,
@@ -2257,7 +2246,10 @@ class GitHubWorkPacketAdapter:
         )
         self._assert_ai_work_issue(payload, issue_number=int(issue_number))
         self._require_trusted_issue_author(repo, payload)
-        new_body = render_rework_work_packet_body(
+        _require_chat_execution_authority_metadata(
+            str(payload.get("body") or "")
+        )
+        new_body = render_rework_handoff_work_packet_body(
             original_body,
             repository=repo,
             branch=expected_branch,
@@ -2314,15 +2306,6 @@ class GitHubWorkPacketAdapter:
                 if "timed out" in str(exc).lower():
                     landed = self._view_issue(repo, int(issue_number))
                     if str(landed.get("body") or "") == new_body:
-                        self._remember_owned_pending_dispatch(
-                            repository=repo,
-                            issue_number=int(issue_number),
-                            branch=expected_branch,
-                            workstream=expected_workstream,
-                            attempt=int(attempt),
-                            head=head,
-                            body=new_body,
-                        )
                         return
                 raise
         finally:
@@ -2333,15 +2316,6 @@ class GitHubWorkPacketAdapter:
                 detail[:500]
                 or f"gh issue edit failed with exit {edit.returncode}"
             )
-        self._remember_owned_pending_dispatch(
-            repository=repo,
-            issue_number=int(issue_number),
-            branch=expected_branch,
-            workstream=expected_workstream,
-            attempt=int(attempt),
-            head=head,
-            body=new_body,
-        )
 
     def commit_unchanged_body(
         self,
@@ -2945,10 +2919,10 @@ class GitHubWorkPacketAdapter:
             successor.get("updatedAt") or successor.get("updated_at") or ""
         )
         try:
-            _require_cursor_authority_metadata(successor_body)
+            _require_chat_execution_authority_metadata(successor_body)
         except ValidationError as exc:
             return self._cycle_human(
-                "successor Cursor authorization failed before activation: "
+                "successor Chat execution authorization failed before activation: "
                 f"{exc}",
                 transition_id,
             )
@@ -4143,9 +4117,9 @@ class GitHubWorkPacketAdapter:
         workstream = str(meta.get("WORKSTREAM") or "").strip()
         head_raw = str(meta.get("LAST_VERIFIED_HEAD") or "").strip().lower()
         implementer = str(meta.get("IMPLEMENTER") or "").strip()
-        if implementer not in {"CHATGPT_CHAT", "CURSOR"}:
+        if implementer != "CHATGPT_CHAT":
             raise ValidationError(
-                "canonical readiness packet IMPLEMENTER is missing or invalid"
+                "canonical readiness packet IMPLEMENTER must be CHATGPT_CHAT"
             )
         if (
             not _valid_git_branch_ref(branch)
@@ -4267,9 +4241,9 @@ class GitHubWorkPacketAdapter:
             )
 
         implementer = str(meta.get("IMPLEMENTER") or "").strip()
-        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", implementer):
+        if implementer != "CHATGPT_CHAT":
             raise ValidationError(
-                "canonical execution packet IMPLEMENTER is invalid"
+                "canonical execution packet IMPLEMENTER must be CHATGPT_CHAT"
             )
         change_risk = str(meta.get("CHANGE_RISK") or "").strip()
         if change_risk not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
@@ -4496,9 +4470,9 @@ class GitHubWorkPacketAdapter:
                 "branch, workstream, or head"
             )
         implementer = str(meta.get("IMPLEMENTER") or "").strip()
-        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", implementer):
+        if implementer != "CHATGPT_CHAT":
             raise ValidationError(
-                "canonical queued execution packet IMPLEMENTER is invalid"
+                "canonical queued execution packet IMPLEMENTER must be CHATGPT_CHAT"
             )
         change_risk = str(meta.get("CHANGE_RISK") or "").strip()
         if change_risk not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
@@ -5398,17 +5372,9 @@ class SubprocessCursorDispatcher:
         self.requests: list[DispatchRequest] = []
 
     def start_resume(self, request: DispatchRequest) -> DispatchResult:
-        if request.cursor_opt_in is not True:
-            raise ValidationError(
-                "cursor dispatch disabled by default; require explicit validated "
-                "Work Packet IMPLEMENTER=CURSOR opt-in"
-            )
-        self.requests.append(request)
-        command = build_persist_resume_command(request)
-        session_id = self._runner(command, request.worktree_path)
-        if not session_id or not str(session_id).strip():
-            raise ValidationError("cursor dispatcher returned empty session id")
-        return DispatchResult(session_id=str(session_id).strip(), command=command)
+        raise ValidationError(
+            "CURSOR_RUNTIME_RETIRED: external Cursor dispatch is disabled"
+        )
 
 
 class PtyPersistCursorDispatcher:
@@ -5495,137 +5461,9 @@ class PtyPersistCursorDispatcher:
         ) from cause
 
     def start_resume(self, request: DispatchRequest) -> DispatchResult:
-        if request.cursor_opt_in is not True:
-            raise ValidationError(
-                "cursor dispatch disabled by default; require explicit validated "
-                "Work Packet IMPLEMENTER=CURSOR opt-in"
-            )
-        self.requests.append(request)
-        worktree = str(Path(request.worktree_path).resolve())
-        if not Path(worktree).is_dir():
-            raise ValidationError(f"worktree_path is not a directory: {worktree}")
-        if not str(request.repository or "").strip():
-            raise ValidationError("dispatch request missing repository")
-        if not str(request.expected_head or "").strip():
-            raise ValidationError("dispatch request missing expected_head")
-        command = build_persist_resume_command(request)
-        try:
-            before_ids = {
-                item.session_id
-                for item in sessions_for_worktree(self._list_sessions(), worktree)
-            }
-            before_pids = {pid for pid, _cmd in self._list_target_procs(worktree)}
-            try:
-                exit_code, output = self._resource_preflight()
-            except Exception as exc:
-                exit_code, output = (
-                    3,
-                    "RESULT=BLOCK\nEXIT_CODE=3\nREASON="
-                    + _bounded_preflight_reason(
-                        f"cursor resource preflight failed to start: {exc}"
-                    )
-                    + "\n",
-                )
-            may_spawn, result, reason = interpret_resource_preflight(exit_code, output)
-            reason = _bounded_preflight_reason(reason)
-            self.last_resource_preflight = {
-                "result": result,
-                "reason": reason,
-                "exit_code": str(exit_code),
-            }
-            if not may_spawn:
-                raise ResourcePreflightBlocked(
-                    f"resource preflight RESULT={result} REASON={reason}",
-                    result=result,
-                    reason=reason,
-                    exit_code=exit_code,
-                )
-            # Final identity/porcelain check immediately before spawn — no external
-            # observation between this validation and _spawn (TOCTOU close).
-            validate_clean_worktree_identity(
-                worktree,
-                repository=request.repository,
-                branch=request.branch,
-                expected_head=request.expected_head,
-                git_runner=self._git_runner,
-            )
-            pid = self._spawn(command, worktree)
-        except DispatchSpawnedButUnobservedError:
-            raise
-        except ValidationError:
-            raise
-        except OSError as exc:
-            # Pre-spawn OS failures (missing agent/script, denied exec, etc.) must
-            # remain boundary ValidationErrors so the controller can compensate the
-            # Work Packet away from PENDING_DISPATCH.
-            raise ValidationError(f"cursor spawn failed before start: {exc}") from exc
-        self.spawned_pids.append(pid)
-        seen_process = ""
-        unattributed: list[str] = []
-        deadline = time.monotonic() + self._poll_timeout_sec
-        while time.monotonic() < deadline:
-            try:
-                current = sessions_for_worktree(self._list_sessions(), worktree)
-                new_sessions = [
-                    item for item in current if item.session_id not in before_ids
-                ]
-                if new_sessions:
-                    owned = self._owned_session_ids(
-                        pid, {item.session_id for item in new_sessions}
-                    )
-                    attributed = [
-                        item for item in new_sessions if item.session_id in owned
-                    ]
-                    if attributed:
-                        chosen = attributed[-1]
-                        return DispatchResult(
-                            session_id=chosen.session_id,
-                            command=command,
-                            resource_preflight_result=self.last_resource_preflight.get(
-                                "result", ""
-                            ),
-                            resource_preflight_reason=self.last_resource_preflight.get(
-                                "reason", ""
-                            ),
-                        )
-                    for item in new_sessions:
-                        if item.session_id not in unattributed:
-                            unattributed.append(item.session_id)
-                for proc_pid, cmd in self._list_target_procs(worktree):
-                    if proc_pid not in before_pids:
-                        seen_process = f"proc:{proc_pid} {cmd}".strip()
-                        self.last_process_observation = seen_process
-            except DispatchSpawnedButUnobservedError:
-                raise
-            except Exception as exc:
-                self._fail_unobserved(
-                    pid,
-                    message=(
-                        f"post-spawn observation failed after pid={pid}: {exc}"
-                    ),
-                    command=command,
-                    cause=exc,
-                )
-            self._sleep(self._poll_interval_sec)
-        diagnostic = ""
-        if seen_process:
-            diagnostic = f"; process observation {seen_process} is diagnostic only"
-        if unattributed:
-            diagnostic += (
-                "; unattributed same-worktree session(s) "
-                + ",".join(unattributed)
-                + " are not the owned spawn"
-            )
-        self._fail_unobserved(
-            pid,
-            message=(
-                "agent persist list did not show a session owned by the spawned "
-                f"process for the target worktree within {self._poll_timeout_sec}s"
-                f"{diagnostic} (cwd={worktree}, argv={command!r}, pid={pid})"
-            ),
-            command=command,
+        raise ValidationError(
+            "CURSOR_RUNTIME_RETIRED: external Cursor dispatch is disabled"
         )
-        raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _live_process_group_members(pgid: int) -> list[int]:
@@ -5872,65 +5710,16 @@ def default_list_persist_sessions() -> list[PersistSession]:
 
 
 def script_pty_spawn_persist(command: list[str], worktree_path: str) -> int:
-    """Spawn argv under `script(1)` PTY in the target worktree (host-proven).
-
-    Live Cursor CLI sessions are started as:
-    `script -qec 'agent persist --force --trust <prompt>' /dev/null` with
-    cwd=worktree. ``--force`` is Run Everything.
-    """
-    if not command or command[0] != "agent":
-        raise ValidationError(f"refusing to spawn non-agent command: {command!r}")
-    quoted = " ".join(shlex.quote(part) for part in command)
-    script_cmd = ["script", "-qec", quoted, "/dev/null"]
-    try:
-        proc = subprocess.Popen(
-            script_cmd,
-            cwd=worktree_path,
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-        )
-    except OSError as exc:
-        raise ValidationError(
-            f"script pty spawn failed to start agent persist: {exc}"
-        ) from exc
-    if proc.pid <= 0:
-        raise ValidationError("script pty spawn failed to start agent persist")
-    return int(proc.pid)
-
+    """Retired compatibility entry: current Atlas never spawns Cursor."""
+    raise ValidationError(
+        "CURSOR_RUNTIME_RETIRED: agent persist spawning is disabled"
+    )
 
 def pty_spawn_persist(command: list[str], worktree_path: str) -> int:
-    """Spawn argv under a raw PTY in the target worktree; do not wait for exit."""
-    if not command or command[0] != "agent":
-        raise ValidationError(f"refusing to spawn non-agent command: {command!r}")
-    try:
-        master_fd, slave_fd = pty.openpty()
-    except OSError as exc:
-        raise ValidationError(f"pty open failed: {exc}") from exc
-    try:
-        try:
-            proc = subprocess.Popen(
-                command,
-                cwd=worktree_path,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                start_new_session=True,
-                close_fds=True,
-            )
-        except OSError as exc:
-            raise ValidationError(
-                f"pty spawn failed to start agent persist: {exc}"
-            ) from exc
-    finally:
-        os.close(slave_fd)
-        os.close(master_fd)
-    if proc.pid <= 0:
-        raise ValidationError("pty spawn failed to start agent persist")
-    return int(proc.pid)
-
+    """Retired compatibility entry: current Atlas never spawns Cursor."""
+    raise ValidationError(
+        "CURSOR_RUNTIME_RETIRED: agent persist spawning is disabled"
+    )
 
 def _default_spawn_runner(command: list[str], worktree_path: str) -> str:
     """Fail closed unless a real runner/dispatcher is injected."""
@@ -6141,10 +5930,9 @@ class WorkController:
     def reconcile(self, workstream: str | None = None) -> list[dict]:
         """Recover after controller restart.
 
-        Unfinished audit and cycle-activation states re-run the pending event
-        once. A pending successor dispatch starts Cursor once. A dispatch that
-        was already claimed is not started again. Terminal and
-        REWORK_DISPATCHED states are left unchanged.
+        Unfinished audit and cycle-activation states re-run the pending event.
+        Historical pending Cursor-dispatch states fail closed and are never
+        resumed. Terminal and completed handoff states are left unchanged.
         """
         targets = (
             [self.store.get(workstream)]
@@ -6164,8 +5952,8 @@ class WorkController:
                 event = CompletionEvent.from_dict(record.pending_event)
                 record.last_findings = (
                     f"{record.last_findings}\n"
-                    "cycle dispatch uncertain after restart; refusing a second "
-                    "Cursor spawn"
+                    "historical Cursor cycle dispatch is retired; refusing "
+                    "any resume or spawn"
                 ).strip()
                 outcomes.append(
                     self._finalize(
@@ -6295,154 +6083,24 @@ class WorkController:
                             extra={"reason": "work_packet_mutation_failed"},
                         )
                     else:
-                        try:
-                            self.work_packet.assert_cursor_dispatch_authorized(
-                                repository=record.repository,
-                                issue_number=record.issue_number,
-                                branch=record.branch,
-                                workstream=record.workstream,
-                                head=event.head,
-                            )
-                            dispatch = self.dispatcher.start_resume(
-                                DispatchRequest(
-                                    workstream=record.workstream,
-                                    worktree_path=record.worktree_path,
-                                    branch=record.branch,
-                                    issue_number=record.issue_number,
-                                    attempt=next_attempt,
-                                    repository=record.repository,
-                                    expected_head=event.head,
-                                    resume_prompt=RESUME_PROMPT,
-                                    cursor_opt_in=True,
-                                )
-                            )
-                        except DispatchSpawnCleanupUncertainError as exc:
-                            # The owned process may still be alive. Do not
-                            # rewrite the packet into a dispatch-blocked state.
-                            boundary_reason = redact_absolute_paths(str(exc))
-                            record.last_findings = (
-                                f"{audit_result.findings}\n"
-                                "rework spawn cleanup uncertain; canonical packet "
-                                "was not compensated because the owned process may "
-                                "still become a session: "
-                                f"{boundary_reason} "
-                                f"(session_hint={exc.session_hint})"
-                            ).strip()
-                            outcome = self._finalize(
-                                record,
-                                event,
-                                state="HUMAN_REQUIRED",
-                                action="stop",
-                                verdict="HUMAN_REQUIRED",
-                                extra={
-                                    "reason": "spawn_cleanup_uncertain",
-                                    "dispatch_session_hint": exc.session_hint,
-                                    "dispatch_command": exc.command,
-                                    "cleanup_error": exc.cleanup_error,
-                                },
-                            )
-                        except DispatchSpawnedButUnobservedError as exc:
-                            # Wrapper may exist, but no Cursor session/process was
-                            # confirmed — compensate the packet and stop for human.
-                            boundary_reason = redact_absolute_paths(str(exc))
-                            try:
-                                self.work_packet.apply_dispatch_blocked(
-                                    repository=record.repository,
-                                    issue_number=record.issue_number,
-                                    branch=record.branch,
-                                    workstream=record.workstream,
-                                    findings=audit_result.findings,
-                                    attempt=next_attempt,
-                                    head=event.head,
-                                    reason=boundary_reason,
-                                )
-                            except ValidationError as packet_exc:
-                                boundary_reason = (
-                                    f"{boundary_reason}; compensating packet update "
-                                    f"also failed: {packet_exc}"
-                                )
-                            record.last_findings = (
-                                f"{audit_result.findings}\n"
-                                f"rework spawn unobserved (no confirmed session): "
-                                f"{boundary_reason}"
-                            ).strip()
-                            outcome = self._finalize(
-                                record,
-                                event,
-                                state="HUMAN_REQUIRED",
-                                action="stop",
-                                verdict="HUMAN_REQUIRED",
-                                extra={
-                                    "reason": "spawned_but_unobserved",
-                                    "dispatch_session_hint": exc.session_hint,
-                                    "dispatch_command": exc.command,
-                                },
-                            )
-                        except ValidationError as exc:
-                            boundary_reason = redact_absolute_paths(str(exc))
-                            try:
-                                self.work_packet.apply_dispatch_blocked(
-                                    repository=record.repository,
-                                    issue_number=record.issue_number,
-                                    branch=record.branch,
-                                    workstream=record.workstream,
-                                    findings=audit_result.findings,
-                                    attempt=next_attempt,
-                                    head=event.head,
-                                    reason=boundary_reason,
-                                )
-                            except ValidationError as packet_exc:
-                                boundary_reason = (
-                                    f"{boundary_reason}; compensating packet update "
-                                    f"also failed: {packet_exc}"
-                                )
-                            record.last_findings = (
-                                f"{audit_result.findings}\n"
-                                f"rework dispatch blocked at boundary: {boundary_reason}"
-                            ).strip()
-                            extra = {"reason": "dispatch_boundary_failed"}
-                            if isinstance(exc, ResourcePreflightBlocked):
-                                extra = {
-                                    "reason": "resource_preflight_blocked",
-                                    "resource_preflight_result": exc.preflight_result,
-                                    "resource_preflight_reason": _bounded_preflight_reason(
-                                        exc.preflight_reason
-                                    ),
-                                }
-                            outcome = self._finalize(
-                                record,
-                                event,
-                                state="HUMAN_REQUIRED",
-                                action="stop",
-                                verdict="HUMAN_REQUIRED",
-                                extra=extra,
-                            )
-                        else:
-                            record.attempt = next_attempt
-                            record.last_session_id = dispatch.session_id
-                            record.expected_head = event.head
-                            record.last_findings = audit_result.findings
-                            extra = {
-                                "dispatch_session_id": dispatch.session_id,
-                                "dispatch_command": dispatch.command,
+                        record.attempt = next_attempt
+                        record.expected_head = event.head
+                        record.last_session_id = ""
+                        record.last_findings = audit_result.findings
+                        outcome = self._finalize(
+                            record,
+                            event,
+                            state="REWORK_HANDOFF",
+                            action="authorized_handoff",
+                            verdict="REWORK",
+                            extra={
                                 "next_attempt": next_attempt,
-                                "resume_prompt": RESUME_PROMPT,
-                            }
-                            if dispatch.resource_preflight_result:
-                                extra["resource_preflight_result"] = (
-                                    dispatch.resource_preflight_result
-                                )
-                                extra["resource_preflight_reason"] = (
-                                    dispatch.resource_preflight_reason
-                                )
-                            outcome = self._finalize(
-                                record,
-                                event,
-                                state="REWORK_DISPATCHED",
-                                action="rework_dispatched",
-                                verdict="REWORK",
-                                extra=extra,
-                            )
+                                "execution_profile": "CHATGPT_CHAT",
+                                "provider_attribution": "CHATGPT",
+                                "adapter": "EXTERNAL_HANDOFF",
+                                "spawned": False,
+                            },
+                        )
         self.observer.observe("completion_handled", outcome)
         return outcome
 
@@ -6559,101 +6217,50 @@ class WorkController:
         record.attempt = 0
         record.expected_head = event.head
         record.last_findings = findings
-        record.state = "CYCLE_DISPATCH_PENDING"
         record.last_outcome = {
             "cycle": result.kind,
             "transition_id": result.transition_id,
             "successor_issue": record.issue_number,
             "successor_branch": record.branch,
         }
-        self.store.put(record)
-        return self._dispatch_activated_successor(workstream)
-
-    def _dispatch_activated_successor(self, workstream: str) -> dict:
-        """Start one `/work-resume` after successor activation is already durable."""
-        record = self.store.get(workstream)
-        if record.state != "CYCLE_DISPATCH_PENDING" or not record.pending_event:
-            raise ValidationError(
-                f"workstream {workstream} has no pending successor dispatch"
-            )
-        event = CompletionEvent.from_dict(record.pending_event)
-        record.state = "CYCLE_DISPATCHING"
-        self.store.put(record)
-        try:
-            self.work_packet.assert_cursor_dispatch_authorized(
-                repository=record.repository,
-                issue_number=record.issue_number,
-                branch=record.branch,
-                workstream=record.workstream,
-                head=record.expected_head,
-            )
-            dispatch = self.dispatcher.start_resume(
-                DispatchRequest(
-                    workstream=record.workstream,
-                    worktree_path=record.worktree_path,
-                    branch=record.branch,
-                    issue_number=record.issue_number,
-                    attempt=1,
-                    repository=record.repository,
-                    expected_head=record.expected_head,
-                    resume_prompt=RESUME_PROMPT,
-                    cursor_opt_in=True,
-                )
-            )
-        except ValidationError as exc:
-            record = self.store.get(workstream)
-            boundary_reason = redact_absolute_paths(str(exc))[:500]
-            record.last_findings = (
-                f"{record.last_findings}\n"
-                f"successor dispatch blocked: {boundary_reason}"
-            ).strip()
-            extra: dict = {
-                "reason": "cycle_dispatch_blocked",
-                "successor_issue": record.issue_number,
-            }
-            if isinstance(exc, ResourcePreflightBlocked):
-                extra = {
-                    "reason": "resource_preflight_blocked",
-                    "resource_preflight_result": exc.preflight_result,
-                    "resource_preflight_reason": _bounded_preflight_reason(
-                        exc.preflight_reason
-                    ),
-                    "successor_issue": record.issue_number,
-                }
-            elif isinstance(exc, DispatchSpawnCleanupUncertainError):
-                extra["reason"] = "spawn_cleanup_uncertain"
-                extra["dispatch_session_hint"] = exc.session_hint
-            elif isinstance(exc, DispatchSpawnedButUnobservedError):
-                extra["reason"] = "spawned_but_unobserved"
-                extra["dispatch_session_hint"] = exc.session_hint
-            return self._finalize(
-                record,
-                event,
-                state="HUMAN_REQUIRED",
-                action="stop",
-                verdict="HUMAN_REQUIRED",
-                extra=extra,
-            )
-        record = self.store.get(workstream)
-        record.attempt = 0
-        record.last_session_id = dispatch.session_id
-        extra = {
-            "cycle": "successor_dispatched",
-            "dispatch_session_id": dispatch.session_id,
-            "dispatch_command": dispatch.command,
-            "successor_issue": record.issue_number,
-            "resume_prompt": RESUME_PROMPT,
-        }
-        if dispatch.resource_preflight_result:
-            extra["resource_preflight_result"] = dispatch.resource_preflight_result
-            extra["resource_preflight_reason"] = dispatch.resource_preflight_reason
         return self._finalize(
             record,
             event,
-            state="SUCCESSOR_DISPATCHED",
-            action="successor_dispatched",
+            state="SUCCESSOR_HANDOFF",
+            action="successor_handoff",
             verdict="PASS",
-            extra=extra,
+            extra={
+                "cycle": result.kind,
+                "transition_id": result.transition_id,
+                "successor_issue": record.issue_number,
+                "successor_branch": record.branch,
+                "execution_profile": "CHATGPT_CHAT",
+                "provider_attribution": "CHATGPT",
+                "adapter": "EXTERNAL_HANDOFF",
+                "spawned": False,
+            },
+        )
+
+    def _dispatch_activated_successor(self, workstream: str) -> dict:
+        """Fail closed for historical pending Cursor-dispatch controller state."""
+        record = self.store.get(workstream)
+        if not record.pending_event:
+            raise ValidationError(
+                f"workstream {workstream} has no pending successor state"
+            )
+        event = CompletionEvent.from_dict(record.pending_event)
+        record.last_findings = (
+            f"{record.last_findings}\n"
+            "CURSOR_RUNTIME_RETIRED: historical pending successor dispatch "
+            "requires explicit migration to CHATGPT_CHAT handoff"
+        ).strip()
+        return self._finalize(
+            record,
+            event,
+            state="HUMAN_REQUIRED",
+            action="stop",
+            verdict="HUMAN_REQUIRED",
+            extra={"reason": "cursor_runtime_retired"},
         )
 
     def _reject_if_unclean_snapshot(
@@ -6746,10 +6353,13 @@ class WorkController:
                 expected_head=event.head,
                 git_runner=self._git_runner,
             )
-        if record.state in {"REWORK_DISPATCHED", "SUCCESSOR_DISPATCHED"}:
+        if record.state in {
+            "REWORK_DISPATCHED", "SUCCESSOR_DISPATCHED",
+            "REWORK_HANDOFF", "SUCCESSOR_HANDOFF",
+        }:
             # Rework and a newly activated successor may produce a new HEAD.
             # Lock it as expected_head once this event is accepted.
-            if record.state == "SUCCESSOR_DISPATCHED":
+            if record.state in {"SUCCESSOR_DISPATCHED", "SUCCESSOR_HANDOFF"}:
                 if event.attempt != 1:
                     raise ValidationError(
                         "successor first completion attempt must be 1, "

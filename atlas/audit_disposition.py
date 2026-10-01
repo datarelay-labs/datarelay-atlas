@@ -2,9 +2,9 @@
 
 PASS and HUMAN_REQUIRED are transport-free. REWORK for CHATGPT_CHAT updates the
 canonical Work Packet to an authorized external handoff and launches no worker.
-The dormant Cursor resume transport is used only when the packet explicitly
-records IMPLEMENTER=CURSOR. This module does not merge, release, deploy, or
-activate another Work Packet.
+Current runtime rejects retired Cursor implementers before any host/session/process
+probe. Historical Cursor transport mechanics remain private test-only compatibility.
+This module does not merge, release, deploy, or activate another Work Packet.
 """
 
 from __future__ import annotations
@@ -28,9 +28,6 @@ from atlas.host_worker import (
     _select_descriptor,
     actual_host_id,
     normalize_host_id,
-    persistent_cursor_active,
-    require_external_state_root,
-    run_once,
 )
 from atlas.provenance import ValidationError
 from atlas.secrets import redact_sensitive_audit_text
@@ -40,10 +37,8 @@ from atlas.work_controller import (
     _packet_metadata_value,
     normalize_github_repository,
     redact_absolute_paths,
-    render_dispatch_blocked_work_packet_body,
     render_pass_governance_work_packet_body,
     render_rework_handoff_work_packet_body,
-    render_rework_work_packet_body,
     sanitize_rework_findings,
     validate_clean_worktree_identity,
 )
@@ -239,12 +234,6 @@ def apply_exact_head_disposition(
         return _result("descriptor_refused")
     if str(observed_host or "").strip().lower() != str(expected_host or "").strip().lower():
         return _result("host_refused")
-    try:
-        external_root = require_external_state_root(
-            state_root, [worktree_path, descriptor.worktree]
-        )
-    except ValidationError:
-        return _result("state_root_refused")
 
     prior = ledger.dispositions.get(expected_key)
     if isinstance(prior, dict):
@@ -283,16 +272,8 @@ def apply_exact_head_disposition(
     implementer = str(
         _packet_metadata_value(body, "IMPLEMENTER") or ""
     ).strip()
-    if implementer not in {"CHATGPT_CHAT", "CURSOR"}:
+    if implementer != "CHATGPT_CHAT":
         return _result("implementer_refused", verdict=claim.verdict)
-    cursor_adapter_selected = implementer == "CURSOR"
-
-    if cursor_adapter_selected and persistent_cursor_active(
-        worktree_path,
-        list_sessions=list_sessions,
-        list_processes=list_processes,
-    ):
-        return _result("cursor_active_noop", verdict=claim.verdict)
     try:
         validate_clean_worktree_identity(
             worktree_path,
@@ -307,7 +288,7 @@ def apply_exact_head_disposition(
             findings=redact_sensitive_audit_text(str(exc)),
         )
 
-    chat_id = descriptor.cursor_chat_id if cursor_adapter_selected else ""
+    chat_id = ""
     try:
         findings = _bounded_findings(
             claim.findings, chat_id=chat_id, worktree=worktree_path
@@ -335,7 +316,7 @@ def apply_exact_head_disposition(
             attempt=attempt,
         )
         claim_store.save(ledger, expected_sha=ledger_sha)
-        if chat_id in (ledger.dispositions[expected_key].get("findings") or ""):
+        if chat_id and chat_id in (ledger.dispositions[expected_key].get("findings") or ""):
             raise ValidationError("refusing to persist a Cursor chat id")
         return _result(
             "human_required",
@@ -358,7 +339,7 @@ def apply_exact_head_disposition(
             gate_summary="tests PASS; ci OK; review current; governance current",
             advisory=advisory,
         )
-        if chat_id in rendered:
+        if chat_id and chat_id in rendered:
             raise ValidationError("refusing to project Cursor chat id to GitHub")
         again, token2 = packet_store.load()
         if again != body or token2 != token:
@@ -383,255 +364,16 @@ def apply_exact_head_disposition(
             packet_mutations=packet_store.mutations,
         )
 
-    if not cursor_adapter_selected:
-        if _packet_marker(
-            body, target, "WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF"
-        ):
-            return _result(
-                "duplicate",
-                verdict="REWORK",
-                findings=findings,
-                packet_mutations=packet_store.mutations,
-            )
-        rendered = render_rework_handoff_work_packet_body(
-            body,
-            repository=repo,
-            branch=branch_name,
-            workstream=workstream_name,
-            findings=findings,
-            attempt=int(attempt),
-            head=target,
-        )
-        again, token2 = packet_store.load()
-        if again != body or token2 != token:
-            return _result(
-                "packet_conflict", verdict="REWORK", findings=findings
-            )
-        packet_store.cas_save(
-            rendered, expected_body=body, expected_token=token
-        )
-        _remember(
-            ledger,
-            claim_key=expected_key,
-            repository=repo,
-            issue_number=issue_number,
-            action="rework_handoff",
+    if _packet_marker(
+        body, target, "WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF"
+    ):
+        return _result(
+            "duplicate",
             verdict="REWORK",
-            target_sha=target,
-            findings=findings,
-            attempt=attempt,
-        )
-        claim_store.save(ledger, expected_sha=ledger_sha)
-        return _result(
-            "authorized_handoff",
-            cursor_calls=0,
-            packet_mutations=packet_store.mutations,
-            verdict="REWORK",
-            findings=findings,
-        )
-
-    if _packet_marker(body, target, "WORK_PACKET_MUTATION=DISPATCH_BLOCKED"):
-        return _result("duplicate", verdict="REWORK", findings=findings)
-
-    if _packet_metadata_value(body, "IMPLEMENTER") != "CURSOR":
-        blocked_findings = _bounded_findings(
-            findings
-            + "\nCursor dispatch disabled: active Work Packet must explicitly set "
-            "IMPLEMENTER=CURSOR.",
-            chat_id=chat_id,
-            worktree=worktree_path,
-        )
-        _remember(
-            ledger,
-            claim_key=expected_key,
-            repository=repo,
-            issue_number=issue_number,
-            action="human_required",
-            verdict="HUMAN_REQUIRED",
-            target_sha=target,
-            findings=blocked_findings,
-            attempt=attempt,
-        )
-        claim_store.save(ledger, expected_sha=ledger_sha)
-        return _result(
-            "cursor_opt_in_required",
-            verdict="HUMAN_REQUIRED",
-            findings=blocked_findings,
-            packet_mutations=packet_store.mutations,
-        )
-
-    collapsed = " ".join(findings.split())
-    prompt = (
-        "Address the exact-HEAD REWORK findings on this worktree. "
-        "Re-run the affected deterministic checks. "
-        "Do not merge, release, or deploy. "
-        f"Findings: {collapsed}"
-    )
-
-    def _compensate(reason: str) -> dict[str, Any]:
-        safe_reason = redact_absolute_paths(redact_sensitive_audit_text(reason or "dispatch blocked"))
-        if chat_id:
-            safe_reason = safe_reason.replace(chat_id, "[redacted-chat]")
-        current, current_token = packet_store.load()
-        try:
-            blocked = render_dispatch_blocked_work_packet_body(
-                current,
-                repository=repo,
-                branch=branch_name,
-                workstream=workstream_name,
-                findings=findings,
-                attempt=int(attempt),
-                head=target,
-                reason=safe_reason or "dispatch blocked",
-            )
-        except ValidationError:
-            _remember(
-                ledger,
-                claim_key=expected_key,
-            repository=repo,
-            issue_number=issue_number,
-                action="dispatch_blocked",
-                verdict="HUMAN_REQUIRED",
-                target_sha=target,
-                findings=findings,
-                attempt=attempt,
-            )
-            return _result(
-                "compensation_failed",
-                verdict="HUMAN_REQUIRED",
-                findings=findings,
-                packet_mutations=packet_store.mutations,
-            )
-        if chat_id in blocked:
-            raise ValidationError("refusing to project Cursor chat id to GitHub")
-        try:
-            packet_store.cas_save(
-                blocked, expected_body=current, expected_token=current_token
-            )
-        except (CheckpointCasConflict, ValidationError):
-            _remember(
-                ledger,
-                claim_key=expected_key,
-            repository=repo,
-            issue_number=issue_number,
-                action="dispatch_blocked",
-                verdict="HUMAN_REQUIRED",
-                target_sha=target,
-                findings=findings,
-                attempt=attempt,
-            )
-            try:
-                claim_store.save(ledger, expected_sha=ledger_sha)
-            except CheckpointCasConflict:
-                pass
-            return _result(
-                "compensation_failed",
-                verdict="HUMAN_REQUIRED",
-                findings=findings,
-                packet_mutations=packet_store.mutations,
-            )
-        _remember(
-            ledger,
-            claim_key=expected_key,
-            repository=repo,
-            issue_number=issue_number,
-            action="dispatch_blocked",
-            verdict="HUMAN_REQUIRED",
-            target_sha=target,
-            findings=findings,
-            attempt=attempt,
-        )
-        claim_store.save(ledger, expected_sha=ledger_sha)
-        return _result(
-            "dispatch_blocked",
-            verdict="HUMAN_REQUIRED",
             findings=findings,
             packet_mutations=packet_store.mutations,
         )
-
-    def _dispatch_and_record() -> dict[str, Any]:
-        nonlocal ledger_sha
-        if isinstance(prior, dict) and str(prior.get("action") or "") == "dispatch_started":
-            return _compensate("prior cursor resume effect is unconfirmed")
-        _remember(
-            ledger,
-            claim_key=expected_key,
-            repository=repo,
-            issue_number=issue_number,
-            action="dispatch_started",
-            verdict="REWORK",
-            target_sha=target,
-            findings=findings,
-            attempt=attempt,
-        )
-        try:
-            ledger_sha = claim_store.save(ledger, expected_sha=ledger_sha)
-        except CheckpointCasConflict:
-            return _result(
-                "disposition_persist_failed",
-                verdict="REWORK",
-                findings=findings,
-                packet_mutations=packet_store.mutations,
-            )
-        config = HostWorkerConfig(
-            state_root=external_root,
-            host_id=normalize_host_id(expected_host),
-            projects=(descriptor,),
-        )
-        probe = host_probe or actual_host_id
-        try:
-            outcome = run_once(
-                config=config,
-                resume_requested=True,
-                repository=repo,
-                canonical_branch=branch_name,
-                expected_head=target,
-                prompt=prompt,
-                git_runner=git_runner,
-                spawn=spawn,
-                host_probe=probe,
-                list_sessions=list_sessions,
-                list_processes=list_processes,
-                cursor_opt_in=True,
-            )
-        except ValidationError as exc:
-            return _compensate(str(exc))
-        calls = int(outcome.get("cursor_calls") or 0)
-        if outcome.get("action") == "resumed" and calls > 0:
-            _remember(
-                ledger,
-                claim_key=expected_key,
-                repository=repo,
-                issue_number=issue_number,
-                action="redispatched",
-                verdict="REWORK",
-                target_sha=target,
-                findings=findings,
-                attempt=attempt,
-            )
-            try:
-                claim_store.save(ledger, expected_sha=ledger_sha)
-            except CheckpointCasConflict:
-                return _result(
-                    "dispatch_unconfirmed",
-                    cursor_calls=calls,
-                    packet_mutations=packet_store.mutations,
-                    verdict="REWORK",
-                    findings=findings,
-                )
-            return _result(
-                "redispatched",
-                cursor_calls=calls,
-                packet_mutations=packet_store.mutations,
-                verdict="REWORK",
-                findings=findings,
-            )
-        return _compensate(str(outcome.get("action") or "dispatch blocked"))
-
-    if _packet_marker(body, target, "WORK_PACKET_MUTATION=PENDING_DISPATCH"):
-        return _dispatch_and_record()
-
-    rendered = render_rework_work_packet_body(
+    rendered = render_rework_handoff_work_packet_body(
         body,
         repository=repo,
         branch=branch_name,
@@ -640,13 +382,34 @@ def apply_exact_head_disposition(
         attempt=int(attempt),
         head=target,
     )
-    if chat_id in rendered:
-        raise ValidationError("refusing to project Cursor chat id to GitHub")
     again, token2 = packet_store.load()
     if again != body or token2 != token:
-        return _result("packet_conflict", verdict="REWORK", findings=findings)
-    packet_store.cas_save(rendered, expected_body=body, expected_token=token)
-    return _dispatch_and_record()
+        return _result(
+            "packet_conflict", verdict="REWORK", findings=findings
+        )
+    packet_store.cas_save(
+        rendered, expected_body=body, expected_token=token
+    )
+    _remember(
+        ledger,
+        claim_key=expected_key,
+        repository=repo,
+        issue_number=issue_number,
+        action="rework_handoff",
+        verdict="REWORK",
+        target_sha=target,
+        findings=findings,
+        attempt=attempt,
+    )
+    claim_store.save(ledger, expected_sha=ledger_sha)
+    return _result(
+        "authorized_handoff",
+        cursor_calls=0,
+        packet_mutations=packet_store.mutations,
+        verdict="REWORK",
+        findings=findings,
+    )
+
 
 
 class GitHubIssuePacketStore:

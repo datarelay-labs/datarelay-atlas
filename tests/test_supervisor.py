@@ -45,7 +45,7 @@ def _packet_body(
     repository: str = REPO,
     head: str = HEAD,
     status: str = "ACTIVE",
-    implementer: str = "CURSOR",
+    implementer: str = "CHATGPT_CHAT",
 ) -> str:
     return f"""PACKET_VERSION=2
 TARGET_REPO={repository}
@@ -420,15 +420,20 @@ class SuperviseOnceTests(unittest.TestCase):
         self.assertEqual(self.evidence_calls, [])
 
     def test_live_cursor_makes_no_model_call(self) -> None:
-        self.hub.add(REPO, 88, _packet_body())
+        self.hub.add(REPO, 88, _packet_body(implementer="CURSOR"))
         self._seed(REPO, 88)
-        self.sessions.append(
-            PersistSession(session_id="live-session", workspace=str(self.worktree))
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("retired Cursor packet must not probe host state")
+
+        outcome = self._run(
+            list_sessions=forbidden,
+            list_processes=forbidden,
         )
-        outcome = self._run()
-        self.assertEqual(self._row(outcome, REPO)["action"], "cursor_active_noop")
+        self.assertEqual(self._row(outcome, REPO)["action"], "implementer_refused")
         self.assertEqual(self.auditor.calls, 0)
         self.assertEqual(outcome["model_calls"], 0)
+        self.assertEqual(outcome["cursor_calls"], 0)
         self.assertEqual(self.evidence_calls, [])
         self.assertEqual(self.spawned, [])
 
@@ -484,7 +489,7 @@ class SuperviseOnceTests(unittest.TestCase):
         self.hub.add(
             REPO,
             85,
-            _packet_body().replace("IMPLEMENTER=CURSOR\n", ""),
+            _packet_body().replace("IMPLEMENTER=CHATGPT_CHAT\n", ""),
         )
         outcome = self._run()
 
@@ -500,15 +505,14 @@ class SuperviseOnceTests(unittest.TestCase):
         self._seed(REPO, 88)
         os.environ.pop("OPENAI_API_KEY", None)
         first = self._run()
-        self.assertEqual(self._row(first, REPO)["action"], "redispatched")
-        self.assertEqual(first["cursor_calls"], 1)
+        self.assertEqual(self._row(first, REPO)["action"], "authorized_handoff")
+        self.assertEqual(first["cursor_calls"], 0)
         self.assertEqual(self.auditor.calls, 0)
-        self.assertEqual(len(self.spawned), 1)
-        self.assertEqual(self.spawned[0][0][:4], ["agent", "--print", "--resume", CHAT])
+        self.assertEqual(self.spawned, [])
         second = self._run()
         self.assertEqual(self._row(second, REPO)["action"], "duplicate")
         self.assertEqual(second["cursor_calls"], 0)
-        self.assertEqual(len(self.spawned), 1)
+        self.assertEqual(self.spawned, [])
         self.assertEqual(self.evidence_calls, [])
 
     def test_audit_ready_head_claims_once_and_replay_does_not_reaudit(self) -> None:
@@ -647,12 +651,11 @@ class SuperviseOnceTests(unittest.TestCase):
             )
         )
         self.assertEqual(self._row(outcome, REPO)["action"], "refused")
-        self.assertEqual(self._row(outcome, REPO_B)["action"], "redispatched")
-        self.assertEqual(len(self.spawned), 1)
-        argv, cwd = self.spawned[0]
-        self.assertEqual(Path(cwd).resolve(), self.worktree_b.resolve())
-        self.assertIn(CHAT_B, argv)
-        self.assertNotIn(CHAT, argv)
+        self.assertEqual(
+            self._row(outcome, REPO_B)["action"], "authorized_handoff"
+        )
+        self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertEqual(self.spawned, [])
         self.assertEqual(self.auditor.calls, 0)
 
     def test_listed_packet_drift_makes_no_effect(self) -> None:
