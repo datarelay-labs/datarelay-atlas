@@ -7,6 +7,7 @@ runs an independent audit, and either stops or dispatches a fresh /work-resume.
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import pty
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -6804,6 +6806,56 @@ def load_completion_event(path: Path) -> dict:
     return raw
 
 
+def _claim_completion_event(path: Path) -> tuple[int, dict] | None:
+    """Claim one inbox event without holding the data-root lock during audit.
+
+    A non-blocking advisory lock on the opened regular inode makes cooperating
+    drainers single-consumer. The descriptor stays open until the event is moved
+    after processing, so a process crash releases the claim automatically while
+    leaving the inbox file available for retry.
+    """
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise ValidationError("completion event cannot be claimed safely")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValidationError("completion event path is unsafe") from exc
+    locked = False
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValidationError("completion event path is unsafe")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            return None
+        locked = True
+        try:
+            current = path.lstat()
+        except FileNotFoundError:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+            return None
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode):
+            raise ValidationError("completion event path is unsafe")
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValidationError("completion event path changed during claim")
+        with os.fdopen(os.dup(fd), "r", encoding="utf-8") as source:
+            raw = json.load(source)
+        if not isinstance(raw, dict):
+            raise ValidationError("completion event must be a JSON object")
+        return fd, raw
+    except Exception:
+        if locked:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        raise
+
+
 def completion_inbox_dir(data_root: Path) -> Path:
     return Path(data_root) / COMPLETION_INBOX_DIRNAME
 
@@ -6862,19 +6914,32 @@ def drain_completion_inbox(controller: WorkController, data_root: Path) -> list[
                 raise ValidationError("completion event path is unsafe")
             pending.append((path, load_completion_event(path)))
     outcomes: list[dict] = []
-    for path, event in pending:
-        outcome = controller.handle_completion(event)
-        outcome = dict(outcome)
-        outcome["inbox_file"] = path.name
+    for path, _listed_event in pending:
         with data_root_write_lock(root):
             if path.is_symlink():
                 raise ValidationError("completion event path is unsafe")
-            dest = processed / path.name
-            if path.exists():
-                if not path.is_file():
+            if not path.exists():
+                continue
+            if not path.is_file():
+                raise ValidationError("completion event path is unsafe")
+            claim = _claim_completion_event(path)
+        if claim is None:
+            continue
+        event_fd, event = claim
+        try:
+            outcome = controller.handle_completion(event)
+            outcome = dict(outcome)
+            outcome["inbox_file"] = path.name
+            with data_root_write_lock(root):
+                if path.is_symlink() or not path.is_file():
                     raise ValidationError("completion event path is unsafe")
+                opened = os.fstat(event_fd)
+                current = path.stat(follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise ValidationError("completion event path changed after claim")
                 if load_completion_event(path) != event:
                     raise ValidationError("completion event changed during processing")
+                dest = processed / path.name
                 if dest.is_symlink():
                     raise ValidationError("completion processed destination is unsafe")
                 if dest.exists():
@@ -6882,12 +6947,12 @@ def drain_completion_inbox(controller: WorkController, data_root: Path) -> list[
                     if dest.is_symlink():
                         raise ValidationError("completion processed destination is unsafe")
                 path.replace(dest)
-            else:
-                if dest.is_symlink() or not dest.is_file():
-                    raise ValidationError("completion event disappeared during processing")
-                if load_completion_event(dest) != event:
-                    raise ValidationError("completion processed event does not match source")
-        outcomes.append(outcome)
+            outcomes.append(outcome)
+        finally:
+            try:
+                fcntl.flock(event_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(event_fd)
     return outcomes
 
 

@@ -824,18 +824,25 @@ class WorkControllerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "path is unsafe"):
                 store.list_workstreams()
 
-    def test_concurrent_completion_drain_is_idempotent(self):
+    def test_concurrent_completion_drain_is_single_consumer(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             ctl, dispatcher, packets = self._ctl(tmp)
             event_path = enqueue_completion_event(root, self._event())
             original = ctl.handle_completion
-            barrier = threading.Barrier(2)
+            entered = threading.Event()
+            release = threading.Event()
+            handle_calls = 0
+            handle_guard = threading.Lock()
             errors: list[BaseException] = []
             results: list[list[dict]] = []
 
             def synchronized_handle(event):
-                barrier.wait(timeout=5)
+                nonlocal handle_calls
+                with handle_guard:
+                    handle_calls += 1
+                entered.set()
+                self.assertTrue(release.wait(timeout=5))
                 return original(event)
 
             ctl.handle_completion = synchronized_handle
@@ -846,15 +853,21 @@ class WorkControllerTests(unittest.TestCase):
                 except BaseException as exc:
                     errors.append(exc)
 
-            workers = [threading.Thread(target=worker) for _ in range(2)]
-            for worker_thread in workers:
-                worker_thread.start()
-            for worker_thread in workers:
-                worker_thread.join(timeout=10)
-                self.assertFalse(worker_thread.is_alive())
+            first = threading.Thread(target=worker)
+            second = threading.Thread(target=worker)
+            first.start()
+            self.assertTrue(entered.wait(timeout=5))
+            second.start()
+            second.join(timeout=5)
+            self.assertFalse(second.is_alive())
+            release.set()
+            first.join(timeout=10)
+            self.assertFalse(first.is_alive())
 
             self.assertEqual(errors, [])
-            self.assertEqual(sum(len(batch) for batch in results), 2)
+            self.assertEqual(handle_calls, 1)
+            self.assertEqual(len(ctl.audit.calls), 1)
+            self.assertEqual(sorted(len(batch) for batch in results), [0, 1])
             self.assertFalse(event_path.exists())
             processed = root / "completion-processed" / event_path.name
             self.assertTrue(processed.is_file())
@@ -865,6 +878,26 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(len(dispatcher.requests), 0)
             self.assertEqual(len(packets.updates), 0)
             self.assertEqual(drain_completion_inbox(ctl, root), [])
+
+    def test_completion_event_claim_releases_after_handler_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ctl, _dispatcher, _packets = self._ctl(tmp)
+            event_path = enqueue_completion_event(root, self._event())
+            original = ctl.handle_completion
+
+            def fail_before_processing(_event):
+                raise RuntimeError("synthetic handler failure")
+
+            ctl.handle_completion = fail_before_processing
+            with self.assertRaisesRegex(RuntimeError, "synthetic handler failure"):
+                drain_completion_inbox(ctl, root)
+            self.assertTrue(event_path.is_file())
+
+            ctl.handle_completion = original
+            outcomes = drain_completion_inbox(ctl, root)
+            self.assertEqual(len(outcomes), 1)
+            self.assertFalse(event_path.exists())
 
     def test_completion_directories_and_events_reject_symlinks(self):
         event = self._event()
