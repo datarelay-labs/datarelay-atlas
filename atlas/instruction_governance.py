@@ -172,6 +172,29 @@ def _tracked_managed_surface_paths(root: Path) -> list[str]:
 
 
 
+
+
+def _nonregular_managed_ancestor_paths(
+    root: Path,
+    tracked_paths: list[str],
+) -> list[str]:
+    seeds = set(_EXACT_SURFACES)
+    seeds.update(prefix.rstrip("/") for prefix, _category in _PREFIX_SURFACES)
+    seeds.update(tracked_paths)
+    found: set[str] = set()
+    for relative in sorted(seeds):
+        parts = Path(relative).parts
+        for depth in range(1, len(parts) + 1):
+            candidate = root.joinpath(*parts[:depth])
+            if candidate.is_symlink():
+                found.add(Path(*parts[:depth]).as_posix())
+                break
+            if candidate.exists() and not candidate.is_dir():
+                found.add(Path(*parts[:depth]).as_posix())
+                break
+    return sorted(found)
+
+
 def _worktree_managed_surface_paths(root: Path) -> list[str]:
     paths: set[str] = set()
     for path in root.rglob("*"):
@@ -183,6 +206,14 @@ def _worktree_managed_surface_paths(root: Path) -> list[str]:
         ):
             continue
         if _surface_category(relative) is not None:
+            paths.add(relative)
+            continue
+        if path.is_symlink() and (
+            relative == ".github"
+            or relative.startswith(".github/")
+            or relative == "scripts"
+            or relative.startswith("scripts/")
+        ):
             paths.add(relative)
     return sorted(paths)
 
@@ -462,10 +493,12 @@ def instruction_governance_preflight(
     scenarios = _behavior_scenarios(scenarios_data)
 
     surfaces = discover_managed_surfaces(root)
+    tracked_paths = _tracked_managed_surface_paths(root)
     surface_paths = sorted(
         set(str(item["path"]) for item in surfaces)
-        | set(_tracked_managed_surface_paths(root))
+        | set(tracked_paths)
         | set(_worktree_managed_surface_paths(root))
+        | set(_nonregular_managed_ancestor_paths(root, tracked_paths))
     )
     dirty = _git(
         root,

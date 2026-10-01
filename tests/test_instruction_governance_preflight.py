@@ -177,6 +177,65 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
                 base / "data",
             )
 
+    def test_symlinked_managed_prefix_root_is_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            target = base / "alternate-ai"
+            target.mkdir()
+            (target / "rules.md").write_text(
+                "# alternate managed tree\n",
+                encoding="utf-8",
+            )
+            (repo / "ai").symlink_to(target, target_is_directory=True)
+            self._assert_dirty_rejected(
+                repo,
+                agent_base,
+                scenarios,
+                profile,
+                base / "data",
+            )
+
+    def test_symlinked_dynamic_managed_container_is_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            scripts = repo / "scripts"
+            scripts.mkdir()
+            target = base / "alternate-scripts"
+            target.mkdir()
+            (target / "runtime-hook.sh").write_text(
+                "#!/bin/sh\n",
+                encoding="utf-8",
+            )
+            (scripts / "generated").symlink_to(
+                target,
+                target_is_directory=True,
+            )
+            self._assert_dirty_rejected(
+                repo,
+                agent_base,
+                scenarios,
+                profile,
+                base / "data",
+            )
+
+    def test_symlinked_managed_parent_directory_is_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            engineering = repo / ".engineering"
+            target = base / "alternate-engineering"
+            engineering.rename(target)
+            engineering.symlink_to(target, target_is_directory=True)
+            self._assert_dirty_rejected(
+                repo,
+                agent_base,
+                scenarios,
+                profile,
+                base / "data",
+            )
+
     def test_symlink_replaced_tracked_managed_surface_is_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
