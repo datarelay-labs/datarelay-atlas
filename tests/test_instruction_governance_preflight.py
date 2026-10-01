@@ -13,9 +13,11 @@ from atlas.instruction_governance import (
     AUTHORITY,
     FILENAME,
     LEDGER_KIND,
+    RESULT_KIND,
     SCHEMA_VERSION,
     build_instruction_governance_profile,
     instruction_governance_preflight,
+    record_instruction_governance_audit,
 )
 from atlas.provenance import ValidationError
 
@@ -135,16 +137,15 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(
-                ValidationError, "matching stored audit is invalid"
-            ):
-                instruction_governance_preflight(
-                    data_root,
-                    repo_root=repo,
-                    profile=profile,
-                    agent_base_path=agent_base,
-                    behavior_scenarios_path=scenarios,
-                )
+            result = instruction_governance_preflight(
+                data_root,
+                repo_root=repo,
+                profile=profile,
+                agent_base_path=agent_base,
+                behavior_scenarios_path=scenarios,
+            )
+            self.assertEqual(result["state"], "AUDIT_REQUIRED")
+            self.assertIsNone(result["existing_audit"])
 
     def test_matching_stored_audit_rebinds_fresh_preflight_facts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -212,6 +213,9 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
             changed = copy.deepcopy(audit)
             changed["candidate_changes"][0]["before_digest"] = "d" * 64
             variants.append(("candidate-before-digest", changed))
+            changed = copy.deepcopy(audit)
+            changed["candidate_changes"][0]["after_digest"] = "d" * 64
+            variants.append(("candidate-after-digest", changed))
 
             for label, stored in variants:
                 with self.subTest(label=label):
@@ -224,16 +228,105 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
                         }),
                         encoding="utf-8",
                     )
-                    with self.assertRaisesRegex(
-                        ValidationError, "matching stored audit is invalid"
-                    ):
-                        instruction_governance_preflight(
-                            data_root,
-                            repo_root=repo,
-                            profile=profile,
-                            agent_base_path=agent_base,
-                            behavior_scenarios_path=scenarios,
-                        )
+                    result = instruction_governance_preflight(
+                        data_root,
+                        repo_root=repo,
+                        profile=profile,
+                        agent_base_path=agent_base,
+                        behavior_scenarios_path=scenarios,
+                    )
+                    self.assertEqual(result["state"], "AUDIT_REQUIRED")
+                    self.assertIsNone(result["existing_audit"])
+
+    def test_fresh_record_repairs_tampered_cached_after_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            data_root = base / "data"
+            preflight = instruction_governance_preflight(
+                data_root,
+                repo_root=repo,
+                profile=profile,
+                agent_base_path=agent_base,
+                behavior_scenarios_path=scenarios,
+            )
+            data_root.mkdir(parents=True, exist_ok=True)
+            surface = next(
+                item for item in preflight["managed_surfaces"]
+                if item["path"] == "AGENTS.md"
+            )
+            expected_after = "f" * 64
+            if expected_after == surface["content_digest"]:
+                expected_after = "e" * 64
+            fresh_result = {
+                "schema_version": SCHEMA_VERSION,
+                "kind": RESULT_KIND,
+                "audit_identity": preflight["audit_identity"],
+                "evaluated_at": "2026-10-01T00:00:00Z",
+                "behavior_results": [
+                    {"scenario_id": "scenario-1", "outcome": "PASS"}
+                ],
+                "candidate_changes": [{
+                    "path": "AGENTS.md",
+                    "before_digest": surface["content_digest"],
+                    "after_digest": expected_after,
+                }],
+                "evaluation_ref": "github:issue-225",
+            }
+            first = record_instruction_governance_audit(
+                data_root,
+                repo_root=repo,
+                profile=profile,
+                agent_base_path=agent_base,
+                behavior_scenarios_path=scenarios,
+                result=fresh_result,
+            )
+            self.assertEqual(first["state"], "RECORDED")
+
+            ledger = json.loads((data_root / FILENAME).read_text(encoding="utf-8"))
+            ledger["audits"][0]["candidate_changes"][0]["after_digest"] = "d" * 64
+            (data_root / FILENAME).write_text(
+                json.dumps(ledger),
+                encoding="utf-8",
+            )
+
+            preflight_again = instruction_governance_preflight(
+                data_root,
+                repo_root=repo,
+                profile=profile,
+                agent_base_path=agent_base,
+                behavior_scenarios_path=scenarios,
+            )
+            self.assertEqual(preflight_again["state"], "AUDIT_REQUIRED")
+
+            fresh_result["evaluated_at"] = "2026-10-01T00:01:00Z"
+            repaired = record_instruction_governance_audit(
+                data_root,
+                repo_root=repo,
+                profile=profile,
+                agent_base_path=agent_base,
+                behavior_scenarios_path=scenarios,
+                result=fresh_result,
+            )
+            self.assertEqual(repaired["state"], "RECORDED")
+            repaired_ledger = json.loads(
+                (data_root / FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                repaired_ledger["audits"][0]["candidate_changes"][0]["after_digest"],
+                expected_after,
+            )
+
+            fresh_result["evaluated_at"] = "2026-10-01T00:02:00Z"
+            duplicate = record_instruction_governance_audit(
+                data_root,
+                repo_root=repo,
+                profile=profile,
+                agent_base_path=agent_base,
+                behavior_scenarios_path=scenarios,
+                result=fresh_result,
+            )
+            self.assertEqual(duplicate["state"], "DUPLICATE_NOOP")
 
     def _assert_dirty_rejected(
         self,

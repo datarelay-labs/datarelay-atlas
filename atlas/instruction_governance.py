@@ -547,30 +547,13 @@ def instruction_governance_preflight(
         },
     }
     audit_identity = _canonical_digest(identity_payload)
-    ledger = _load_ledger(Path(data_root))
-    existing = next(
-        (item for item in ledger["audits"] if item.get("audit_identity") == audit_identity),
-        None,
-    )
-    if existing is not None:
-        try:
-            existing = _validated_routing_audit(existing)
-            _assert_stored_audit_matches_preflight(
-                existing,
-                audit_identity=audit_identity,
-                repository=repository,
-                head=head,
-                profile=normalized_profile,
-                inventory_digest=inventory_digest,
-                surfaces=surfaces,
-                scenarios=scenarios,
-            )
-        except ValidationError as exc:
-            raise ValidationError(
-                "instruction governance matching stored audit is invalid"
-            ) from exc
+    # The local ledger is derived mutable cache evidence. It can be used for
+    # dashboards/routing after validation, but it must never suppress a fresh
+    # external behavior evaluation. Record-time idempotency is evaluated only
+    # after a fresh result is supplied and rebound to this preflight.
+    _load_ledger(Path(data_root))
     return {
-        "state": "DUPLICATE_NOOP" if existing is not None else "AUDIT_REQUIRED",
+        "state": "AUDIT_REQUIRED",
         "authority": AUTHORITY,
         "audit_identity": audit_identity,
         "target_repository": repository,
@@ -586,7 +569,7 @@ def instruction_governance_preflight(
         "inventory_digest": inventory_digest,
         "managed_surfaces": surfaces,
         "behavior_scenarios": scenarios,
-        "existing_audit": existing,
+        "existing_audit": None,
     }
 
 def _validate_audit_result(payload: object) -> dict[str, object]:
@@ -656,6 +639,15 @@ def _validate_audit_result(payload: object) -> dict[str, object]:
         "evaluation_ref": evaluation_ref,
     }
 
+def _audit_semantic_replay_key(audit: dict[str, object]) -> dict[str, object]:
+    """Compare stored/fresh audit meaning without timestamp-only drift."""
+    return {
+        key: value
+        for key, value in audit.items()
+        if key != "evaluated_at"
+    }
+
+
 def record_instruction_governance_audit(
     data_root: Path,
     *,
@@ -672,13 +664,6 @@ def record_instruction_governance_audit(
         agent_base_path=agent_base_path,
         behavior_scenarios_path=behavior_scenarios_path,
     )
-    if preflight["state"] == "DUPLICATE_NOOP":
-        return {
-            "state": "DUPLICATE_NOOP",
-            "authority": AUTHORITY,
-            "audit": preflight["existing_audit"],
-        }
-
     normalized = _validate_audit_result(result)
     if normalized["audit_identity"] != preflight["audit_identity"]:
         raise ValidationError("instruction governance result is bound to a different audit identity")
@@ -743,13 +728,55 @@ def record_instruction_governance_audit(
         raise ValidationError("instruction governance data root is not a directory")
     with data_root_write_lock(root):
         ledger = _load_ledger(root)
-        if len(ledger["audits"]) >= _MAX_AUDITS:
-            raise ValidationError("instruction governance ledger audit limit reached")
-        if any(item.get("audit_identity") == audit["audit_identity"] for item in ledger["audits"]):
-            return {"state": "DUPLICATE_NOOP", "authority": AUTHORITY, "audit": audit}
-        ledger["audits"].append(audit)
-        ledger["audits"].sort(key=lambda item: (str(item.get("evaluated_at", "")), str(item["audit_identity"])))
-        atomic_write_text(root / FILENAME, json.dumps(ledger, indent=2, sort_keys=True) + "\n")
+        existing_index = next(
+            (
+                index
+                for index, item in enumerate(ledger["audits"])
+                if item.get("audit_identity") == audit["audit_identity"]
+            ),
+            None,
+        )
+        if existing_index is not None:
+            stored = ledger["audits"][existing_index]
+            try:
+                validated_stored = _validated_routing_audit(stored)
+                _assert_stored_audit_matches_preflight(
+                    validated_stored,
+                    audit_identity=str(preflight["audit_identity"]),
+                    repository=str(preflight["target_repository"]),
+                    head=str(preflight["target_head"]),
+                    profile=validate_instruction_profile(profile),
+                    inventory_digest=str(preflight["inventory_digest"]),
+                    surfaces=list(preflight["managed_surfaces"]),
+                    scenarios=list(preflight["behavior_scenarios"]),
+                )
+            except ValidationError:
+                validated_stored = None
+            if (
+                validated_stored is not None
+                and _audit_semantic_replay_key(validated_stored)
+                == _audit_semantic_replay_key(audit)
+            ):
+                return {
+                    "state": "DUPLICATE_NOOP",
+                    "authority": AUTHORITY,
+                    "audit": validated_stored,
+                }
+            ledger["audits"][existing_index] = audit
+        else:
+            if len(ledger["audits"]) >= _MAX_AUDITS:
+                raise ValidationError("instruction governance ledger audit limit reached")
+            ledger["audits"].append(audit)
+        ledger["audits"].sort(
+            key=lambda item: (
+                str(item.get("evaluated_at", "")),
+                str(item["audit_identity"]),
+            )
+        )
+        atomic_write_text(
+            root / FILENAME,
+            json.dumps(ledger, indent=2, sort_keys=True) + "\n",
+        )
     return {"state": "RECORDED", "authority": AUTHORITY, "audit": audit}
 
 def instruction_governance_dashboard(data_root: Path, *, repo_root: Path) -> dict[str, object]:
