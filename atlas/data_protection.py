@@ -421,15 +421,53 @@ def _validate_replay_blobs(blobs: dict[str, bytes]) -> None:
             "concurrency execution replay state",
         ),
     )
+    validated: dict[str, dict[str, object]] = {}
     for filename, validator, label in validators:
         raw = blobs.get(filename)
         if raw is None:
             continue
         payload = _json_object(raw, f"{label} is corrupt")
         try:
-            validator(payload)
+            validated[filename] = validator(payload)
         except ValidationError as exc:
             raise ValidationError(f"{label} is unsupported") from exc
+
+    executions = validated.get(CONCURRENCY_EXECUTIONS_FILENAME)
+    if executions is not None:
+        effects = validated.get(CONCURRENCY_EFFECTS_FILENAME)
+        effect_by_id = {
+            str(item["effect_id"]): item
+            for item in ((effects or {}).get("effects") or [])
+            if isinstance(item, dict)
+        }
+        for record in executions["records"]:
+            if record.get("state") != "TERMINAL":
+                continue
+            entry = effect_by_id.get(str(record["effect_id"]))
+            if (
+                entry is None
+                or entry.get("state") != "TERMINAL"
+                or entry.get("authorization_digest")
+                != record.get("authorization_digest")
+                or entry.get("receipt_digest")
+                != record.get("effect_receipt_digest")
+            ):
+                raise ValidationError(
+                    "concurrency execution replay binding is unsupported"
+                )
+            receipt = entry.get("receipt")
+            if (
+                not isinstance(receipt, dict)
+                or receipt.get("effect_id") != record.get("effect_id")
+                or receipt.get("authorization_id")
+                != record.get("authorization_id")
+                or receipt.get("assignment_count")
+                != record.get("assignment_count")
+                or receipt.get("result") != record.get("effect_result")
+            ):
+                raise ValidationError(
+                    "concurrency execution replay attribution is unsupported"
+                )
 
 
 def _role_matches(path: str, role: str) -> bool:

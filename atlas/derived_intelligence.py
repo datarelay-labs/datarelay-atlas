@@ -27,6 +27,8 @@ class DerivedItem:
 def _build_derived_intelligence(
     store: ProjectionStore,
     project_ids: list[str],
+    *,
+    repository_project_ids: list[str] | None = None,
 ) -> tuple[list[DerivedItem], bool]:
     items: list[DerivedItem] = []
     seen: set[tuple[str,str,str,str]] = set()
@@ -36,9 +38,23 @@ def _build_derived_intelligence(
         for project_id in sorted(set(project_ids))
         for projection in iter_validated_projections(store, project_id)
     ]
+    repository_scope = (
+        sorted(set(repository_project_ids))
+        if repository_project_ids is not None
+        else sorted(set(project_ids))
+    )
+    repository_projections = (
+        projections
+        if repository_scope == sorted(set(project_ids))
+        else [
+            projection
+            for project_id in repository_scope
+            for projection in iter_validated_projections(store, project_id)
+        ]
+    )
     known_repositories = {
         projection.provenance.repository
-        for projection in projections
+        for projection in repository_projections
         if projection.provenance.engineering_authority
     }
     for projection in projections:
@@ -97,10 +113,17 @@ def _append(items, seen, kind, value, project_id, identity, provenance):
 def _sort_key(item: DerivedItem):
     return (item.kind,item.value,item.source_project_id,item.source_identity)
 
-def derived_intelligence_payload(store: ProjectionStore, project_ids: list[str]) -> dict[str, object]:
+def derived_intelligence_payload(
+    store: ProjectionStore,
+    project_ids: list[str],
+    *,
+    repository_project_ids: list[str] | None = None,
+) -> dict[str, object]:
     normalized_ids = sorted(set(project_ids))
     items, contradiction_detected = _build_derived_intelligence(
-        store, normalized_ids
+        store,
+        normalized_ids,
+        repository_project_ids=repository_project_ids,
     )
     backlinks: dict[str, list[dict[str, str]]] = {}
     concepts: dict[str, list[dict[str, str]]] = {}

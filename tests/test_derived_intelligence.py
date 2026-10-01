@@ -131,6 +131,59 @@ class DerivedIntelligenceTests(unittest.TestCase):
                 )
             )
 
+    def test_project_items_and_contradictions_share_project_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = AtlasService(Path(tmp))
+            svc.register_project(
+                project_id="alpha",
+                repository="datarelay-labs/alpha",
+            )
+            svc.add_source(
+                "alpha",
+                source_id="alpha-dense",
+                source_path="ALPHA.md",
+            )
+            alpha_body = chr(10).join(
+                f"## Alpha {index:03d}" for index in range(500)
+            )
+            svc.sync_project(
+                "alpha",
+                fetch=lambda s, t: FetchedSource(
+                    content="# Alpha" + chr(10) + alpha_body,
+                    source_revision="a" * 40,
+                ),
+            )
+            svc.register_project(
+                project_id="beta",
+                repository="datarelay-labs/beta",
+            )
+            svc.add_source(
+                "beta",
+                source_id="beta-note",
+                source_path="BETA.md",
+            )
+            svc.sync_project(
+                "beta",
+                fetch=lambda s, t: FetchedSource(
+                    content="# Beta" + chr(10) + "CONTRADICTION: beta scoped",
+                    source_revision="b" * 40,
+                ),
+            )
+
+            beta = svc.project_intelligence("beta")
+            contradiction_items = [
+                item
+                for item in beta["items"]
+                if item["kind"] == "contradiction_evidence"
+            ]
+            self.assertEqual(beta["contradictions"]["state"], "DETECTED")
+            self.assertEqual(beta["summary"]["counts"]["contradiction_evidence"], 1)
+            self.assertEqual(len(contradiction_items), 1)
+            self.assertEqual(
+                beta["contradictions"]["items"][0]["source_project_id"],
+                "beta",
+            )
+
     def test_rebuild_is_deterministic(self):
         with tempfile.TemporaryDirectory() as tmp:
             svc=self.seed(tmp)

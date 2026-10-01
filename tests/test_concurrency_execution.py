@@ -220,6 +220,28 @@ class ConcurrencyExecutionTests(unittest.TestCase):
                 )
             self.assertEqual(replay.calls, [])
 
+    def test_backup_rejects_terminal_execution_without_effect_replay_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "data"
+            root.mkdir()
+            plan = _write_snapshot(root, _snapshot())
+            start_concurrency_execution(
+                root,
+                cycle_id="missing-effect-cycle",
+                authorization_request=_request(
+                    plan, authorization_id="missing-effect-auth"
+                ),
+                effect_id="missing-effect-id",
+                effect_port=RecordingPort(),
+            )
+            from atlas.concurrency_effect import FILENAME as EFFECT_FILENAME
+            (root / EFFECT_FILENAME).unlink()
+            with self.assertRaisesRegex(
+                ValidationError, "execution replay binding"
+            ):
+                backup_data_root(root, base / "invalid-backup")
+
     def test_same_plan_replay_is_rejected_before_new_port_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

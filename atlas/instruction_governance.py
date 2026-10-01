@@ -552,6 +552,13 @@ def instruction_governance_preflight(
         (item for item in ledger["audits"] if item.get("audit_identity") == audit_identity),
         None,
     )
+    if existing is not None:
+        try:
+            existing = _validated_routing_audit(existing)
+        except ValidationError as exc:
+            raise ValidationError(
+                "instruction governance matching stored audit is invalid"
+            ) from exc
     return {
         "state": "DUPLICATE_NOOP" if existing is not None else "AUDIT_REQUIRED",
         "authority": AUTHORITY,

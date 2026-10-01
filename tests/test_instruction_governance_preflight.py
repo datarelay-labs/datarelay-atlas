@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from atlas.instruction_governance import (
+    AUTHORITY,
+    FILENAME,
+    LEDGER_KIND,
+    SCHEMA_VERSION,
     build_instruction_governance_profile,
     instruction_governance_preflight,
 )
@@ -78,6 +83,68 @@ def _repo_fixture(base: Path) -> tuple[Path, Path, Path, dict[str, object]]:
 
 
 class InstructionGovernancePreflightTests(unittest.TestCase):
+    def test_matching_invalid_stored_audit_is_not_duplicate_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            data_root = base / "data"
+            first = instruction_governance_preflight(
+                data_root,
+                repo_root=repo,
+                profile=profile,
+                agent_base_path=agent_base,
+                behavior_scenarios_path=scenarios,
+            )
+            data_root.mkdir(parents=True, exist_ok=True)
+            duplicate_change = {
+                "path": "AGENTS.md",
+                "before_digest": "a" * 64,
+                "after_digest": "b" * 64,
+            }
+            audit = {
+                "audit_identity": first["audit_identity"],
+                "evaluated_at": "2026-10-01T00:00:00Z",
+                "authority": AUTHORITY,
+                "outcome": "CANARY_READY",
+                "target_repository": first["target_repository"],
+                "target_head": first["target_head"],
+                "engineering_system_revision": first["engineering_system_revision"],
+                "model_provider": first["model_provider"],
+                "model_name": first["model_name"],
+                "model_profile": first["model_profile"],
+                "harness_id": first["harness_id"],
+                "harness_revision": first["harness_revision"],
+                "trigger_kind": first["trigger_kind"],
+                "trigger_revision": first["trigger_revision"],
+                "inventory_digest": first["inventory_digest"],
+                "behavior_results": [],
+                "missing_mandatory_scenarios": [],
+                "candidate_changes": [duplicate_change, dict(duplicate_change)],
+                "evaluation_ref": "github:issue-225",
+                "canonical_mutation": False,
+            }
+            (data_root / FILENAME).write_text(
+                json.dumps(
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "kind": LEDGER_KIND,
+                        "authority": AUTHORITY,
+                        "audits": [audit],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "matching stored audit is invalid"
+            ):
+                instruction_governance_preflight(
+                    data_root,
+                    repo_root=repo,
+                    profile=profile,
+                    agent_base_path=agent_base,
+                    behavior_scenarios_path=scenarios,
+                )
+
     def _assert_dirty_rejected(
         self,
         repo: Path,

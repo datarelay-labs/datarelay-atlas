@@ -910,19 +910,18 @@ class AtlasService:
         """Build deterministic Phase 4 intelligence for one registered project."""
         project = self.registry.get(project_id)
         projects = [item for item in self.list_projects() if item.enabled]
+        enabled_project_ids = [item.project_id for item in projects]
+        global_payload = derived_intelligence_payload(
+            self.projections,
+            enabled_project_ids,
+        )
         payload = derived_intelligence_payload(
             self.projections,
-            [item.project_id for item in projects],
-        )
-        items = [
-            item
-            for item in payload["items"]
-            if item["source_project_id"] == project_id
-        ]
-        project_contradictions = derived_intelligence_payload(
-            self.projections,
             [project_id],
-        )["contradictions"]
+            repository_project_ids=enabled_project_ids,
+        )
+        items = list(payload["items"])
+        project_contradictions = payload["contradictions"]
         records = {
             str(record.get("source_id") or ""): record
             for record in self.projection_records(project_id)
@@ -1005,13 +1004,13 @@ class AtlasService:
                 "repositories": dict(sorted(repository_entities.items())),
                 "source_paths": dict(sorted(source_entities.items())),
                 "decisions": {
-                    adr: payload["decision_targets"].get(adr, [])
+                    adr: global_payload["decision_targets"].get(adr, [])
                     for adr in sorted(referenced_adrs)
                 },
             },
             "decision_backlinks": dict(sorted(backlinks.items())),
             "decision_targets": {
-                adr: payload["decision_targets"].get(adr, [])
+                adr: global_payload["decision_targets"].get(adr, [])
                 for adr in sorted(referenced_adrs)
             },
             "unanswered_questions": payload["unanswered_questions"].get(project_id, []),
