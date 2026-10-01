@@ -166,13 +166,42 @@ class DataProtectionTests(unittest.TestCase):
                     (root / name).read_bytes(),
                 )
 
-            effect_payload["effects"][0]["state"] = "BROKEN"
+            malformed_effect = json.loads(json.dumps(effect_payload))
+            del malformed_effect["effects"][0]["effect_id"]
+            (root / CONCURRENCY_EFFECTS_FILENAME).write_text(
+                json.dumps(malformed_effect) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "replay state"):
+                backup_data_root(root, base / "rejected-effect")
+
             (root / CONCURRENCY_EFFECTS_FILENAME).write_text(
                 json.dumps(effect_payload) + "\n",
                 encoding="utf-8",
             )
+            duplicate_claim = json.loads(json.dumps(claim_payload))
+            duplicate_claim["claims"].append(
+                dict(duplicate_claim["claims"][0])
+            )
+            (root / CONCURRENCY_CLAIMS_FILENAME).write_text(
+                json.dumps(duplicate_claim) + "\n",
+                encoding="utf-8",
+            )
             with self.assertRaisesRegex(ValidationError, "replay state"):
-                backup_data_root(root, base / "rejected-replay")
+                backup_data_root(root, base / "rejected-claim")
+
+            (root / CONCURRENCY_CLAIMS_FILENAME).write_text(
+                json.dumps(claim_payload) + "\n",
+                encoding="utf-8",
+            )
+            malformed_handoff = dict(handoff_payload)
+            malformed_handoff["handoffs"] = [{}]
+            (root / CONCURRENCY_HANDOFFS_FILENAME).write_text(
+                json.dumps(malformed_handoff) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "replay state"):
+                backup_data_root(root, base / "rejected-handoff")
 
     def test_cli_backup_includes_controller_state_and_skips_chat_audit_cache(self):
         with tempfile.TemporaryDirectory() as tmp:

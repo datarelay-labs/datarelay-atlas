@@ -158,14 +158,16 @@ def _surface_category(path: str) -> str | None:
 
 
 def _tracked_managed_surface_paths(root: Path) -> list[str]:
-    raw = _git(root, "ls-files", "-z")
-    paths = []
-    for relative in raw.split("\0"):
-        if not relative:
-            continue
-        if _surface_category(relative) is not None:
-            paths.append(relative)
-    return sorted(set(paths))
+    paths: set[str] = set()
+    for args in (
+        ("ls-tree", "-r", "--name-only", "-z", "HEAD"),
+        ("ls-files", "-z"),
+    ):
+        raw = _git(root, *args)
+        for relative in raw.split("\0"):
+            if relative and _surface_category(relative) is not None:
+                paths.add(relative)
+    return sorted(paths)
 
 
 def discover_managed_surfaces(repo_root: Path) -> list[dict[str, object]]:

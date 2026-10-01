@@ -31,23 +31,18 @@ from atlas.concurrency_admission import (
 )
 from atlas.concurrency_authorization import FILENAME as CONCURRENCY_AUTHORIZATION_FILENAME
 from atlas.concurrency_effect import (
-    AUTHORITY as CONCURRENCY_EFFECT_AUTHORITY,
     FILENAME as CONCURRENCY_EFFECTS_FILENAME,
-    LEDGER_KIND as CONCURRENCY_EFFECT_LEDGER_KIND,
-    SCHEMA_VERSION as CONCURRENCY_EFFECT_SCHEMA_VERSION,
+    validate_concurrency_effect_ledger,
 )
 from atlas.concurrency_join import FILENAME as CONCURRENCY_JOINS_FILENAME
 from atlas.concurrency_execution import FILENAME as CONCURRENCY_EXECUTIONS_FILENAME
 from atlas.concurrency_handoff import (
     FILENAME as CONCURRENCY_HANDOFFS_FILENAME,
-    LEDGER_KIND as CONCURRENCY_HANDOFF_LEDGER_KIND,
-    SCHEMA_VERSION as CONCURRENCY_HANDOFF_SCHEMA_VERSION,
-    validate_concurrency_handoff_authorization,
+    validate_concurrency_handoff_ledger,
 )
 from atlas.concurrency_claim import (
     FILENAME as CONCURRENCY_CLAIMS_FILENAME,
-    LEDGER_KIND as CONCURRENCY_CLAIM_LEDGER_KIND,
-    SCHEMA_VERSION as CONCURRENCY_CLAIM_SCHEMA_VERSION,
+    validate_concurrency_claim_ledger,
 )
 from atlas.concurrency_claim_join import FILENAME as CONCURRENCY_CLAIM_JOINS_FILENAME
 from atlas.provenance import ValidationError
@@ -391,77 +386,32 @@ def _validate_controller_blobs(blobs: dict[str, bytes]) -> None:
 
 
 def _validate_replay_blobs(blobs: dict[str, bytes]) -> None:
-    effect_raw = blobs.get(CONCURRENCY_EFFECTS_FILENAME)
-    if effect_raw is not None:
-        effect = _json_object(
-            effect_raw,
-            "concurrency effect replay state is corrupt",
-        )
-        if (
-            set(effect) != {"schema_version", "kind", "authority", "effects"}
-            or effect.get("schema_version") != CONCURRENCY_EFFECT_SCHEMA_VERSION
-            or effect.get("kind") != CONCURRENCY_EFFECT_LEDGER_KIND
-            or effect.get("authority") != CONCURRENCY_EFFECT_AUTHORITY
-            or not isinstance(effect.get("effects"), list)
-        ):
-            raise ValidationError("concurrency effect replay state is unsupported")
-        for item in effect["effects"]:
-            if not isinstance(item, dict):
-                raise ValidationError("concurrency effect replay state is unsupported")
-            state = item.get("state")
-            if state not in {"IN_PROGRESS", "TERMINAL"}:
-                raise ValidationError("concurrency effect replay state is unsupported")
-            if state == "IN_PROGRESS" and (
-                item.get("receipt") is not None
-                or item.get("receipt_digest") is not None
-            ):
-                raise ValidationError("concurrency effect replay state is unsupported")
-
-    handoff_raw = blobs.get(CONCURRENCY_HANDOFFS_FILENAME)
-    if handoff_raw is not None:
-        handoff = _json_object(
-            handoff_raw,
-            "concurrency handoff replay state is corrupt",
-        )
-        if (
-            set(handoff) != {"schema_version", "kind", "handoffs"}
-            or handoff.get("schema_version") != CONCURRENCY_HANDOFF_SCHEMA_VERSION
-            or handoff.get("kind") != CONCURRENCY_HANDOFF_LEDGER_KIND
-            or not isinstance(handoff.get("handoffs"), list)
-        ):
-            raise ValidationError("concurrency handoff replay state is unsupported")
+    validators = (
+        (
+            CONCURRENCY_EFFECTS_FILENAME,
+            validate_concurrency_effect_ledger,
+            "concurrency effect replay state",
+        ),
+        (
+            CONCURRENCY_HANDOFFS_FILENAME,
+            validate_concurrency_handoff_ledger,
+            "concurrency handoff replay state",
+        ),
+        (
+            CONCURRENCY_CLAIMS_FILENAME,
+            validate_concurrency_claim_ledger,
+            "concurrency claim replay state",
+        ),
+    )
+    for filename, validator, label in validators:
+        raw = blobs.get(filename)
+        if raw is None:
+            continue
+        payload = _json_object(raw, f"{label} is corrupt")
         try:
-            for item in handoff["handoffs"]:
-                validate_concurrency_handoff_authorization(item)
+            validator(payload)
         except ValidationError as exc:
-            raise ValidationError(
-                "concurrency handoff replay state is unsupported"
-            ) from exc
-
-    claim_raw = blobs.get(CONCURRENCY_CLAIMS_FILENAME)
-    if claim_raw is not None:
-        claim = _json_object(
-            claim_raw,
-            "concurrency claim replay state is corrupt",
-        )
-        if (
-            set(claim) != {"schema_version", "kind", "claims"}
-            or claim.get("schema_version") != CONCURRENCY_CLAIM_SCHEMA_VERSION
-            or claim.get("kind") != CONCURRENCY_CLAIM_LEDGER_KIND
-            or not isinstance(claim.get("claims"), list)
-        ):
-            raise ValidationError("concurrency claim replay state is unsupported")
-        for item in claim["claims"]:
-            if not isinstance(item, dict):
-                raise ValidationError("concurrency claim replay state is unsupported")
-            state = item.get("state")
-            if state not in {"IN_PROGRESS", "TERMINAL"}:
-                raise ValidationError("concurrency claim replay state is unsupported")
-            if state == "IN_PROGRESS" and (
-                item.get("receipt") is not None
-                or item.get("claim_digest") is not None
-            ):
-                raise ValidationError("concurrency claim replay state is unsupported")
+            raise ValidationError(f"{label} is unsupported") from exc
 
 
 def _role_matches(path: str, role: str) -> bool:

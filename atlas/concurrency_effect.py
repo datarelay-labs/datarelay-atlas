@@ -94,11 +94,8 @@ def _load_json(path: Path) -> object:
     return payload
 
 
-def _load_ledger(data_root: Path) -> dict[str, object]:
-    path = Path(data_root) / FILENAME
-    if not path.exists():
-        return _empty_ledger()
-    payload = _load_json(path)
+def validate_concurrency_effect_ledger(payload: object) -> dict[str, object]:
+    """Validate the complete replay-blocking dispatch-effect ledger."""
     if (
         not isinstance(payload, dict)
         or set(payload) != {"schema_version", "kind", "authority", "effects"}
@@ -166,6 +163,13 @@ def _load_ledger(data_root: Path) -> dict[str, object]:
         seen_authorizations.add(auth_digest)
         effects.append(dict(item))
     return {**_empty_ledger(), "effects": effects}
+
+
+def _load_ledger(data_root: Path) -> dict[str, object]:
+    path = Path(data_root) / FILENAME
+    if not path.exists():
+        return _empty_ledger()
+    return validate_concurrency_effect_ledger(_load_json(path))
 
 
 def _replay_key(authorization_digest: str, node_id: str) -> str:

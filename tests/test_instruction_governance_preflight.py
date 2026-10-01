@@ -111,6 +111,19 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
                 base / "data",
             )
 
+    def test_staged_deleted_tracked_managed_surface_is_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            _git(repo, "rm", "AGENTS.md")
+            self._assert_dirty_rejected(
+                repo,
+                agent_base,
+                scenarios,
+                profile,
+                base / "data",
+            )
+
     def test_symlink_replaced_tracked_managed_surface_is_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

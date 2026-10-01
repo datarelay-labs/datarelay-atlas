@@ -223,27 +223,19 @@ def validate_concurrency_handoff_authorization(
     return dict(payload)
 
 
-def _load_ledger(data_root: Path) -> dict[str, object]:
-    path = Path(data_root) / FILENAME
-    if not path.exists():
-        return _empty_ledger()
-    if path.is_symlink() or not path.is_file():
-        _reject("concurrency handoff ledger path is unsafe")
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeError) as exc:
-        raise ValidationError("concurrency handoff ledger is unreadable") from exc
+def validate_concurrency_handoff_ledger(payload: object) -> dict[str, object]:
+    """Validate the complete replay-blocking external handoff ledger."""
     if (
-        not isinstance(raw, dict)
-        or raw.get("schema_version") != SCHEMA_VERSION
-        or raw.get("kind") != LEDGER_KIND
-        or set(raw) != {"schema_version", "kind", "handoffs"}
-        or not isinstance(raw.get("handoffs"), list)
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != SCHEMA_VERSION
+        or payload.get("kind") != LEDGER_KIND
+        or set(payload) != {"schema_version", "kind", "handoffs"}
+        or not isinstance(payload.get("handoffs"), list)
     ):
         _reject("concurrency handoff ledger schema is invalid")
     handoffs = [
         validate_concurrency_handoff_authorization(item)
-        for item in raw["handoffs"]
+        for item in payload["handoffs"]
     ]
     refs = [str(item["handoff_digest"]) for item in handoffs]
     replay_keys = [str(item["replay_key"]) for item in handoffs]
@@ -258,6 +250,19 @@ def _load_ledger(data_root: Path) -> dict[str, object]:
     if len(effect_nodes) != len(set(effect_nodes)):
         _reject("concurrency handoff ledger contains duplicate effect nodes")
     return {**_empty_ledger(), "handoffs": handoffs}
+
+
+def _load_ledger(data_root: Path) -> dict[str, object]:
+    path = Path(data_root) / FILENAME
+    if not path.exists():
+        return _empty_ledger()
+    if path.is_symlink() or not path.is_file():
+        _reject("concurrency handoff ledger path is unsafe")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise ValidationError("concurrency handoff ledger is unreadable") from exc
+    return validate_concurrency_handoff_ledger(payload)
 
 
 def get_concurrency_handoff_authorization(

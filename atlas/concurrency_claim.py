@@ -257,29 +257,21 @@ def _empty_ledger() -> dict[str, object]:
     }
 
 
-def _load_ledger(data_root: Path) -> dict[str, object]:
-    path = Path(data_root) / FILENAME
-    if not path.exists():
-        return _empty_ledger()
-    if path.is_symlink() or not path.is_file():
-        _reject("concurrency claim ledger path is unsafe")
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeError) as exc:
-        raise ValidationError("concurrency claim ledger is unreadable") from exc
+def validate_concurrency_claim_ledger(payload: object) -> dict[str, object]:
+    """Validate the complete replay-blocking handoff-claim ledger."""
     if (
-        not isinstance(raw, dict)
-        or set(raw) != {"schema_version", "kind", "claims"}
-        or raw.get("schema_version") != SCHEMA_VERSION
-        or raw.get("kind") != LEDGER_KIND
-        or not isinstance(raw.get("claims"), list)
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "kind", "claims"}
+        or payload.get("schema_version") != SCHEMA_VERSION
+        or payload.get("kind") != LEDGER_KIND
+        or not isinstance(payload.get("claims"), list)
     ):
         _reject("concurrency claim ledger schema is invalid")
     claims: list[dict[str, object]] = []
     claim_ids: set[str] = set()
     handoff_digests: set[str] = set()
     claim_digests: set[str] = set()
-    for item in raw["claims"]:
+    for item in payload["claims"]:
         expected = {
             "claim_id",
             "handoff_digest",
@@ -320,6 +312,19 @@ def _load_ledger(data_root: Path) -> dict[str, object]:
         handoff_digests.add(handoff_digest)
         claims.append(dict(item))
     return {**_empty_ledger(), "claims": claims}
+
+
+def _load_ledger(data_root: Path) -> dict[str, object]:
+    path = Path(data_root) / FILENAME
+    if not path.exists():
+        return _empty_ledger()
+    if path.is_symlink() or not path.is_file():
+        _reject("concurrency claim ledger path is unsafe")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise ValidationError("concurrency claim ledger is unreadable") from exc
+    return validate_concurrency_claim_ledger(payload)
 
 
 def _validate_request_matches_handoff(
