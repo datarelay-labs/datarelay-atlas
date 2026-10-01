@@ -746,51 +746,39 @@ def record_instruction_governance_audit(
         raise ValidationError("instruction governance data root is not a directory")
     with data_root_write_lock(root):
         ledger = _load_ledger_for_fresh_record(root)
-        existing_index = next(
-            (
-                index
-                for index, item in enumerate(ledger["audits"])
-                if item.get("audit_identity") == audit["audit_identity"]
-            ),
-            None,
-        )
-        if existing_index is not None:
-            stored = ledger["audits"][existing_index]
-            try:
-                validated_stored = _validated_routing_audit(stored)
-                _assert_stored_audit_matches_preflight(
-                    validated_stored,
-                    audit_identity=str(preflight["audit_identity"]),
-                    repository=str(preflight["target_repository"]),
-                    head=str(preflight["target_head"]),
-                    profile=validate_instruction_profile(profile),
-                    inventory_digest=str(preflight["inventory_digest"]),
-                    surfaces=list(preflight["managed_surfaces"]),
-                    scenarios=list(preflight["behavior_scenarios"]),
-                )
-            except ValidationError:
-                validated_stored = None
-            if (
-                validated_stored is not None
-                and _audit_semantic_replay_key(validated_stored)
-                == _audit_semantic_replay_key(audit)
-            ):
-                return {
-                    "state": "DUPLICATE_NOOP",
-                    "authority": AUTHORITY,
-                    "audit": validated_stored,
-                }
-            ledger["audits"][existing_index] = audit
-        else:
-            if len(ledger["audits"]) >= _MAX_AUDITS:
-                raise ValidationError("instruction governance ledger audit limit reached")
-            ledger["audits"].append(audit)
-        ledger["audits"].sort(
-            key=lambda item: (
-                str(item.get("evaluated_at", "")),
-                str(item["audit_identity"]),
-            )
-        )
+        if len(ledger["audits"]) == 1:
+            stored = ledger["audits"][0]
+            if stored.get("audit_identity") == audit["audit_identity"]:
+                try:
+                    validated_stored = _validated_routing_audit(stored)
+                    _assert_stored_audit_matches_preflight(
+                        validated_stored,
+                        audit_identity=str(preflight["audit_identity"]),
+                        repository=str(preflight["target_repository"]),
+                        head=str(preflight["target_head"]),
+                        profile=validate_instruction_profile(profile),
+                        inventory_digest=str(preflight["inventory_digest"]),
+                        surfaces=list(preflight["managed_surfaces"]),
+                        scenarios=list(preflight["behavior_scenarios"]),
+                    )
+                except ValidationError:
+                    validated_stored = None
+                if (
+                    validated_stored is not None
+                    and _audit_semantic_replay_key(validated_stored)
+                    == _audit_semantic_replay_key(audit)
+                ):
+                    return {
+                        "state": "DUPLICATE_NOOP",
+                        "authority": AUTHORITY,
+                        "audit": validated_stored,
+                    }
+
+        # The ledger is a mutable derived cache, not durable history. A fresh
+        # validated evaluation replaces all prior cached identities so stale or
+        # tampered timestamps can never shadow the result just recorded.
+        ledger = _ledger_empty()
+        ledger["audits"] = [audit]
         atomic_write_text(
             root / FILENAME,
             json.dumps(ledger, indent=2, sort_keys=True) + "\n",
@@ -800,23 +788,41 @@ def record_instruction_governance_audit(
 def instruction_governance_dashboard(data_root: Path, *, repo_root: Path) -> dict[str, object]:
     surfaces = discover_managed_surfaces(Path(repo_root))
     ledger = _load_ledger(Path(data_root))
-    audits = list(ledger["audits"])
+    cached = list(ledger["audits"])
+    validated: list[dict[str, object]] = []
+    for item in cached:
+        try:
+            validated.append(_validated_routing_audit(item))
+        except ValidationError:
+            continue
+
+    # Mutable cache history is never an authority selector. Only one fully
+    # validated cached audit is eligible for current routing/display; legacy
+    # multi-entry or partly corrupt caches fall back to inventory-only until a
+    # fresh record rebuilds the cache to one exact audit.
+    current = validated[0] if len(cached) == 1 and len(validated) == 1 else None
+    cache_invalid = bool(cached) and len(validated) != len(cached)
     outcome_counts = {outcome: 0 for outcome in sorted(OUTCOMES)}
-    for audit in audits:
-        outcome = audit.get("outcome")
+    if current is not None:
+        outcome = current.get("outcome")
         if outcome in outcome_counts:
             outcome_counts[outcome] += 1
-    latest = audits[-1] if audits else None
     return {
-        "state": "OBSERVED" if audits else "INVENTORY_ONLY",
+        "state": (
+            "OBSERVED"
+            if current is not None
+            else "CACHE_INVALID"
+            if cache_invalid
+            else "INVENTORY_ONLY"
+        ),
         "authority": AUTHORITY,
         "managed_surface_count": len(surfaces),
         "managed_surfaces": surfaces,
         "inventory_digest": _canonical_digest(surfaces),
-        "audit_count": len(audits),
+        "audit_count": 1 if current is not None else 0,
         "outcome_counts": outcome_counts,
-        "latest_audit": latest,
-        "audits": audits[-50:],
+        "latest_audit": current,
+        "audits": [current] if current is not None else [],
         "mutation_authority": "NONE",
     }
 
@@ -1013,7 +1019,12 @@ def instruction_governance_routing(
     dashboard = instruction_governance_dashboard(Path(data_root), repo_root=root)
     latest = dashboard["latest_audit"]
     if not isinstance(latest, dict):
-        return _routing_fail_closed(root, dashboard, reason="NO_AUDIT_EVIDENCE")
+        reason = (
+            "AUDIT_EVIDENCE_INVALID"
+            if dashboard.get("state") == "CACHE_INVALID"
+            else "NO_AUDIT_EVIDENCE"
+        )
+        return _routing_fail_closed(root, dashboard, reason=reason)
     try:
         latest = _validated_routing_audit(latest)
     except ValidationError:
