@@ -30,9 +30,7 @@ The audit identity binds:
 - provider/model/profile;
 - harness id/revision.
 
-After a completed audit is recorded, the exact same identity returns `DUPLICATE_NOOP` before another behavior evaluation is needed.
-
-The ledger is a derived local evidence cache and is excluded from durable Atlas backups.
+The ledger is a derived local evidence cache and is excluded from durable Atlas backups. Because that local cache is mutable evidence, preflight never lets a stored audit suppress a fresh external behavior evaluation. `DUPLICATE_NOOP` is decided only at record time, after a fresh result has been validated and rebound to the current preflight. The cache retains exactly one fully validated fresh audit; a drifted, corrupt, or multi-entry legacy cache is rebuilt from the fresh result. Read-only routing also fails closed on multi-entry or invalid cache state instead of selecting an audit by mutable timestamps.
 ## Candidate diff and behavior evidence
 
 Candidate changes contain only:

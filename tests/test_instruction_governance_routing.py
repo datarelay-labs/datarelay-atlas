@@ -179,6 +179,31 @@ class InstructionGovernanceRoutingTests(unittest.TestCase):
             self.assertEqual(stale_inventory["route_action"], "HUMAN_REQUIRED")
             self.assertIn("MANAGED_INVENTORY_STALE", stale_inventory["reasons"])
 
+    def test_multi_entry_cache_cannot_select_current_routing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = _audit(root, "NO_CHANGE")
+            second = dict(_audit(root, "CANARY_READY"))
+            second["audit_identity"] = "e" * 64
+            second["evaluated_at"] = "2099-01-01T00:00:00Z"
+            (root / FILENAME).write_text(
+                json.dumps({
+                    "schema_version": SCHEMA_VERSION,
+                    "kind": LEDGER_KIND,
+                    "authority": AUTHORITY,
+                    "audits": [first, second],
+                }),
+                encoding="utf-8",
+            )
+            dashboard = instruction_governance_dashboard(root, repo_root=ROOT)
+            self.assertEqual(dashboard["state"], "INVENTORY_ONLY")
+            self.assertIsNone(dashboard["latest_audit"])
+            self.assertEqual(dashboard["audit_count"], 0)
+            result = instruction_governance_routing(root, repo_root=ROOT)
+            self.assertEqual(result["route_action"], "HUMAN_REQUIRED")
+            self.assertEqual(result["reasons"], ["NO_AUDIT_EVIDENCE"])
+
+
     def test_tampered_stored_audit_cannot_mint_canary_route(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
