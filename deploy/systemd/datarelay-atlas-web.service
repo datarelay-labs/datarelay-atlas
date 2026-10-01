@@ -1,0 +1,33 @@
+[Unit]
+Description=DataRelay Atlas read-only Human UI
+Documentation=file:/opt/datarelay-atlas/docs/runbooks/phase2-production-service.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atlas
+Group=atlas
+UMask=0077
+Environment=PYTHONPATH=/opt/datarelay-atlas
+Environment=PYTHONDONTWRITEBYTECODE=1
+WorkingDirectory=/opt/datarelay-atlas
+ExecStart=/opt/datarelay-atlas/.venv/bin/python -m atlas --data-root /var/lib/datarelay-atlas web serve --host 127.0.0.1 --port 8788
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+ReadOnlyPaths=/var/lib/datarelay-atlas
+IPAddressAllow=localhost
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target

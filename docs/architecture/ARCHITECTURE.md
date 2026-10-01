@@ -93,7 +93,7 @@ The current UI provides project inventory/detail, source/projection health, proj
 
 The product boundary is intentionally read-mostly/read-only for Core: canonical project/source/policy mutation remains in explicit operator interfaces such as GitHub and Atlas CLI until a separate management-write contract is approved. A richer web management surface is not implicitly required for Core completion.
 
-Remote exposure/authentication and production Human UI deployment remain separate hardening work. Lifecycle Intelligence normalizes bounded local Work/PR and exact-candidate CI/test/release/browser evidence for display without making Atlas authoritative for those systems; see `docs/contracts/ATLAS_LIFECYCLE_EVIDENCE.md`. Actual-browser Surface Reconciliation and Full User E2E remain mandatory on the same clean candidate (ADR-0016).
+Initial production Human UI access is an SSH-authenticated local forward to the loopback-only `datarelay-atlas-web.service` (ADR-0017). A public Web UI remains separate future hardening work. Lifecycle Intelligence normalizes bounded local Work/PR and exact-candidate CI/test/release/browser evidence for display without making Atlas authoritative for those systems; see `docs/contracts/ATLAS_LIFECYCLE_EVIDENCE.md`. Actual-browser Surface Reconciliation and Full User E2E remain mandatory on the same clean candidate (ADR-0016).
 
 ## Athena relationship (historical)
 

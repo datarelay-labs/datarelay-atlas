@@ -41,6 +41,7 @@ ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 UNIT_NAME = "datarelay-atlas.service"
 INGRESS_SOCKET_NAME = "datarelay-atlas-ingress.socket"
 INGRESS_UNIT_NAME = "datarelay-atlas-ingress.service"
+WEB_UNIT_NAME = "datarelay-atlas-web.service"
 PROD_HOSTNAME = "prod-atlas"
 PROD_MCP_DNS = "mcp.atlas.datarelay.run"
 PROD_RESOURCE_URL = "https://mcp.atlas.datarelay.run/mcp"
@@ -49,6 +50,9 @@ PROD_BIND_PORT = 8443
 PROD_INGRESS_LISTEN = "0.0.0.0:443"
 PROD_INGRESS_PROXY = "/usr/lib/systemd/systemd-socket-proxyd"
 PROD_INGRESS_TARGET = "127.0.0.1:8443"
+PROD_WEB_BIND_HOST = "127.0.0.1"
+PROD_WEB_BIND_PORT = 8788
+PROD_WEB_REMOTE_ACCESS = "ssh_local_forward"
 
 _REQUIRED_KEYS = (
     "ATLAS_DATA_ROOT",
@@ -102,6 +106,12 @@ def prod_launch_contract() -> dict:
         "ingress_target": PROD_INGRESS_TARGET,
         "ingress_unit": INGRESS_UNIT_NAME,
         "mcp_dns": PROD_MCP_DNS,
+        "web_unit": WEB_UNIT_NAME,
+        "web_bind_host": PROD_WEB_BIND_HOST,
+        "web_bind_port": PROD_WEB_BIND_PORT,
+        "web_public_exposure": False,
+        "web_remote_access": PROD_WEB_REMOTE_ACCESS,
+        "web_ssh_forward": "127.0.0.1:8788:127.0.0.1:8788",
         "production_evidence": False,
         "resource_port": 443,
         "resource_url": PROD_RESOURCE_URL,
@@ -121,12 +131,13 @@ def unit_source_path() -> Path:
 
 
 def stage_unit(dest_dir: Path) -> Path:
-    """Copy the service and port-443 ingress units without invoking systemd."""
+    """Copy the MCP, loopback Human UI, and port-443 ingress units without invoking systemd."""
     destination = Path(dest_dir)
     destination.mkdir(parents=True, exist_ok=True)
     _stage_validated(destination, UNIT_NAME, validate_unit_text)
     _stage_validated(destination, INGRESS_SOCKET_NAME, validate_ingress_socket_text)
     _stage_validated(destination, INGRESS_UNIT_NAME, validate_ingress_service_text)
+    _stage_validated(destination, WEB_UNIT_NAME, validate_web_unit_text)
     return destination / UNIT_NAME
 
 
@@ -155,6 +166,33 @@ def validate_unit_text(text: str) -> None:
         raise ValidationError("systemd unit does not match the non-root service contract")
     if "CAP_NET_BIND_SERVICE" in text:
         raise ValidationError("systemd unit does not match the non-root service contract")
+
+
+def validate_web_unit_text(text: str) -> None:
+    """Require a non-root, loopback-only, read-only production Human UI unit."""
+    required = (
+        "User=atlas\n",
+        "Group=atlas\n",
+        "ExecStart=/opt/datarelay-atlas/.venv/bin/python -m atlas --data-root /var/lib/datarelay-atlas web serve --host 127.0.0.1 --port 8788\n",
+        "Restart=on-failure\n",
+        "NoNewPrivileges=true\n",
+        "ProtectSystem=strict\n",
+        "ProtectHome=true\n",
+        "ReadOnlyPaths=/var/lib/datarelay-atlas\n",
+        "IPAddressAllow=localhost\n",
+        "IPAddressDeny=any\n",
+        "WantedBy=multi-user.target\n",
+    )
+    forbidden = (
+        "User=root",
+        "--host 0.0.0.0",
+        "--host ::",
+        "EnvironmentFile=",
+        "ReadWritePaths=/var/lib/datarelay-atlas",
+        "CAP_NET_BIND_SERVICE",
+    )
+    if any(line not in text for line in required) or any(token in text for token in forbidden):
+        raise ValidationError("Human UI unit must remain non-root, loopback-only, and read-only")
 
 
 def validate_ingress_socket_text(text: str) -> None:
