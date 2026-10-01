@@ -33,7 +33,7 @@ from atlas.secrets import contains_unsafe_secret
 from atlas.service import AtlasService
 
 PIN_VERSION = "1.7.0"
-PIN_BASELINE = "c50d2a3b7540dcc2899d752573d0634da78dd2bc"
+PIN_BASELINE = "4e9555ea0783459469765a07cb20c5dbd6a1ceb0"
 PROD_HOST = "mcp.atlas.datarelay.run"
 PROD_ENDPOINT = "https://mcp.atlas.datarelay.run"
 PROD_PROJECT_ID = "datarelay-atlas"
