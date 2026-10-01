@@ -77,7 +77,7 @@ Milestones:
 - Athena absorption inventory + Atlas-native sync/retrieval/MCP context library
 - Athena independence gate + retirement checklist (owner delete is separate)
 - Phase 1 project registry + canonical sync operator surface (`python -m atlas`)
-- Autonomous Work Controller PoC (`python -m atlas work-controller`, ADR-0006)
+- optional Automation Extension foundation: Autonomous Work Controller PoC (`python -m atlas work-controller`, ADR-0006)
 
 ## Phase 1 operator surface
 

@@ -48,6 +48,14 @@ Completed foundation:
 
 Exit: Atlas owns its product/runtime contracts and can be resumed without Athena as a runtime dependency.
 
+Evidence retained from the original roadmap:
+
+- license audit: `integrations/athena/DEPENDENCY-LICENSE-AUDIT.md`
+- PoC ownership: `integrations/athena/POC-MIGRATION.md`
+- provenance contracts: ADR-0003 + `docs/contracts/source-provider-provenance.md`
+- absorption/retirement: ADR-0004 + `docs/migration/athena-capability-inventory.md` + `docs/migration/athena-retirement-checklist.md`
+- redistribution review notes remain historical evidence and do not reintroduce an Athena runtime dependency
+
 ## Phase 1 — Project Registry & Canonical Sync
 
 Completed foundation:
@@ -62,6 +70,8 @@ Completed foundation:
 - durable state contract
 
 Exit: a project can be registered and its selected canonical knowledge can be reproducibly projected with provenance.
+
+Phase 1 qualification remains implementation + deterministic tests + operator E2E against `datarelay-labs/datarelay-atlas`; roadmap text alone is never release evidence.
 
 ## Phase 2 — Knowledge Retrieval, MCP & Human Navigation
 
@@ -84,6 +94,8 @@ Search/Ask contract:
 
 Exit: a human and an approved MCP client can retrieve the same current, attributable context from the same candidate.
 
+Human UI evidence remains anchored in `atlas/web_ui.py`, `tests/test_web_ui.py`, `docs/contracts/ATLAS_SURFACE_RECONCILIATION.md`, and `docs/contracts/ATLAS_FULL_USER_E2E.md`. Implementation presence alone does not establish browser release readiness.
+
 ## Phase 3 — Lifecycle Intelligence
 
 Core capabilities:
@@ -94,8 +106,8 @@ Core capabilities:
 - observed vs inferred vs unknown state
 - stale/different-HEAD evidence distinction
 - validation/release evidence navigation
-- human-equivalent user-test lifecycle visibility where required
-- no inference of executed PASS from static contract/config presence
+- human-equivalent user-test lifecycle visibility where required: Surface Reconciliation vs Full User E2E, required/configured/executed status, exact evidence HEAD, and stale/different-HEAD distinction
+- distinguish CI/static contract configuration from actual public-user-surface execution evidence; never infer execution PASS from contract presence
 
 Exit: Atlas shows both what a project knows and where the current candidate is in its engineering lifecycle.
 
@@ -129,7 +141,7 @@ Core capabilities:
 - dependency/SBOM/provenance policy
 - multi-project operational E2E
 - production restart/recovery evidence
-- before any user-facing Atlas production release: mandatory actual-browser Surface Reconciliation and Full User E2E on the same exact release candidate under the active Engineering System release standard
+- before any user-facing Atlas production release: mandatory actual-browser Surface Reconciliation and Full User E2E on the same exact release candidate under ADR-0016 and the active Engineering System release standard
 
 Exit: the self-hosted single-organization Core product is supportable in production.
 
