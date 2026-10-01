@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import subprocess
@@ -16,6 +17,7 @@ from atlas.core_release_browser import (
     REQUEST_KIND,
     RESULT_KIND,
     SURFACE_IDS,
+    _compose_core_release_result,
     fixture_contract,
     prepare_core_release_browser_fixture,
     request_from_manifest,
@@ -164,6 +166,23 @@ class CoreReleaseBrowserTests(unittest.TestCase):
                 {group["project_id"] for group in search["groups"]},
                 {"core-alpha", "core-beta"},
             )
+            isolated = primary.search_across_projects(
+                fixture_contract()["isolated_query"],
+                project_ids=[
+                    fixture_contract()["primary_project_id"],
+                    fixture_contract()["peer_project_id"],
+                ],
+                source_class="engineering",
+                limit_per_project=4,
+            )
+            self.assertEqual(
+                {
+                    group["project_id"]
+                    for group in isolated["groups"]
+                    if group["hits"]
+                },
+                {"core-alpha"},
+            )
             personal = primary.personal_search(
                 fixture_contract()["personal_project_id"],
                 fixture_contract()["personal_query"],
@@ -199,48 +218,47 @@ class CoreReleaseBrowserTests(unittest.TestCase):
                 verify_exact_clean_candidate(repo, head)
 
     def test_complete_actual_browser_result_is_normalized_and_digest_bound(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, head = make_git_candidate(tmp)
-            observed = {}
+        head = "4" * 40
+        normalized = validate_core_release_browser_request(make_request(head))
+        result = _compose_core_release_result(
+            normalized,
+            raw_pass(),
+            servers_stopped=True,
+        )
+        self.assertEqual(result["result"], "PASS")
+        self.assertEqual(result["authority"], AUTHORITY)
+        self.assertEqual(result["release_authority"], RELEASE_AUTHORITY)
+        self.assertTrue(result["browser"]["actual_process"])
+        self.assertEqual(
+            result["server_binding"],
+            {
+                "mode": "VERIFIED_CHECKOUT_SUBPROCESS",
+                "candidate_head": head,
+                "server_count": 3,
+                "servers_stopped": True,
+            },
+        )
+        self.assertEqual(
+            [item["surface_id"] for item in result["surfaces"]],
+            list(SURFACE_IDS),
+        )
+        self.assertEqual(
+            [item["mission_id"] for item in result["missions"]],
+            list(MISSION_IDS),
+        )
 
-            def runner(_argv, _cwd, _stdin, env):
-                observed.update(env)
-                return command_result(raw_pass())
+        tampered = deepcopy(result)
+        tampered["server_binding"]["candidate_head"] = "5" * 40
+        with self.assertRaisesRegex(ValidationError, "server binding HEAD"):
+            validate_core_release_browser_result(tampered)
 
-            with patch.dict(
-                os.environ,
-                {
-                    "GITHUB_TOKEN": "ghp_" + "x" * 32,
-                    "AWS_SECRET_ACCESS_KEY": "must-not-leak",
-                },
-                clear=False,
-            ):
-                result = run_core_release_browser(
-                    make_request(head),
-                    repo_root=repo,
-                    command_runner=runner,
-                )
-            self.assertEqual(result["result"], "PASS")
-            self.assertEqual(result["authority"], AUTHORITY)
-            self.assertEqual(result["release_authority"], RELEASE_AUTHORITY)
-            self.assertTrue(result["browser"]["actual_process"])
-            self.assertEqual(
-                [item["surface_id"] for item in result["surfaces"]],
-                list(SURFACE_IDS),
-            )
-            self.assertEqual(
-                [item["mission_id"] for item in result["missions"]],
-                list(MISSION_IDS),
-            )
-            self.assertEqual(observed, {"PATH": "/usr/local/bin:/usr/bin:/bin"})
-            self.assertNotIn("GITHUB_TOKEN", json.dumps(result))
-            self.assertNotIn("AWS_SECRET_ACCESS_KEY", json.dumps(result))
+        tampered = deepcopy(result)
+        tampered["detail"] = "tampered"
+        with self.assertRaisesRegex(ValidationError, "digest"):
+            validate_core_release_browser_result(tampered)
 
-            tampered = deepcopy(result)
-            tampered["detail"] = "tampered"
-            with self.assertRaisesRegex(ValidationError, "digest"):
-                validate_core_release_browser_result(tampered)
     def test_synthetic_or_incomplete_pass_fails_closed(self):
+        normalized = validate_core_release_browser_request(make_request("4" * 40))
         mutations = []
         missing_surface = raw_pass()
         missing_surface["surfaces"] = missing_surface["surfaces"][:-1]
@@ -260,45 +278,46 @@ class CoreReleaseBrowserTests(unittest.TestCase):
 
         for raw in mutations:
             with self.subTest(raw=raw):
-                with tempfile.TemporaryDirectory() as tmp:
-                    repo, head = make_git_candidate(tmp)
+                with self.assertRaises(ValidationError):
+                    _compose_core_release_result(
+                        normalized,
+                        raw,
+                        servers_stopped=True,
+                    )
 
-                    def runner(_argv, _cwd, _stdin, _env):
-                        return command_result(raw)
-                    with self.assertRaises(ValidationError):
-                        run_core_release_browser(
-                            make_request(head),
-                            repo_root=repo,
-                            command_runner=runner,
-                        )
+        cleanup_failed = _compose_core_release_result(
+            normalized,
+            raw_pass(),
+            servers_stopped=False,
+        )
+        self.assertEqual(cleanup_failed["result"], "FAIL")
+        self.assertEqual(
+            cleanup_failed["error_code"],
+            "CANDIDATE_SERVER_CLEANUP_FAILED",
+        )
 
-    def test_candidate_failure_occurs_before_provider_spawn(self):
+    def test_candidate_failure_occurs_before_server_spawn(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, head = make_git_candidate(tmp)
             (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
-            calls = []
+            with patch(
+                "atlas.core_release_browser._launch_candidate_servers"
+            ) as launch:
+                with self.assertRaisesRegex(ValidationError, "dirty"):
+                    run_core_release_browser(
+                        make_request(head),
+                        repo_root=repo,
+                        fixture_roots={},
+                    )
+                launch.assert_not_called()
 
-            def runner(_argv, _cwd, _stdin, _env):
-                calls.append(True)
-                return command_result(raw_pass())
-
-            with self.assertRaisesRegex(ValidationError, "dirty"):
-                run_core_release_browser(
-                    make_request(head),
-                    repo_root=repo,
-                    command_runner=runner,
-                )
-            self.assertEqual(calls, [])
-
-    def test_request_from_manifest_binds_fixed_fixture_contract(self):
+    def test_request_from_manifest_binds_fixed_fixture_contract_and_roots(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, head = make_git_candidate(tmp)
-            manifest = {
-                "schema_version": 1,
-                "kind": "core_release_browser_fixture",
-                "roots": {},
-                "fixture": fixture_contract(),
-            }
+            manifest = prepare_core_release_browser_fixture(
+                Path(tmp) / "fixture",
+                candidate_head=head,
+            )
             request = request_from_manifest(
                 manifest,
                 run_id="core-release-browser-2",
@@ -309,6 +328,7 @@ class CoreReleaseBrowserTests(unittest.TestCase):
                 corrupt_url="http://127.0.0.1:28790/",
             )
             self.assertEqual(request["fixture"], fixture_contract())
+
             bad = deepcopy(manifest)
             bad["fixture"]["primary_project_id"] = "other"
             with self.assertRaises(ValidationError):
@@ -321,6 +341,33 @@ class CoreReleaseBrowserTests(unittest.TestCase):
                     empty_url="http://127.0.0.1:28789/",
                     corrupt_url="http://127.0.0.1:28790/",
                 )
+
+            bad = deepcopy(manifest)
+            bad["roots"]["empty"] = bad["roots"]["primary"]
+            with self.assertRaisesRegex(ValidationError, "roots must be distinct"):
+                request_from_manifest(
+                    bad,
+                    run_id="core-release-browser-4",
+                    source_revision=head,
+                    work_packet_issue=245,
+                    primary_url="http://127.0.0.1:28788/",
+                    empty_url="http://127.0.0.1:28789/",
+                    corrupt_url="http://127.0.0.1:28790/",
+                )
+    def test_candidate_servers_are_bound_to_verified_checkout(self):
+        source = (ROOT / "atlas" / "core_release_browser.py").read_text(
+            encoding="utf-8"
+        )
+        signature = inspect.signature(run_core_release_browser)
+        self.assertNotIn("command_runner", signature.parameters)
+        self.assertIn("subprocess.Popen(", source)
+        self.assertIn('"PYTHONPATH": str(repo_root)', source)
+        self.assertIn('"VERIFIED_CHECKOUT_SUBPROCESS"', source)
+        self.assertGreaterEqual(
+            source.count("verify_exact_clean_candidate(root"),
+            3,
+        )
+
     def test_node_runner_reuses_hardened_loopback_evidence_boundary(self):
         source = (
             ROOT
@@ -333,6 +380,10 @@ class CoreReleaseBrowserTests(unittest.TestCase):
         self.assertIn("ensureEvidenceDir", source)
         self.assertIn("chromium.launch({ headless: true })", source)
         self.assertIn("context.tracing.start", source)
+        self.assertIn("function contentSurface(", source)
+        self.assertNotIn("function headingSurface(", source)
+        self.assertIn("request.fixture.isolated_query", source)
+        self.assertIn("freshContext = await browser.newContext()", source)
         self.assertNotIn("@browserbasehq/stagehand", source)
 
 

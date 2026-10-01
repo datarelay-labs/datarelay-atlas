@@ -5,9 +5,11 @@ import argparse
 import json
 import re
 import shutil
+import socket
 import subprocess
+import sys
+import time
 from pathlib import Path
-from typing import Callable
 from urllib.parse import urlsplit
 
 from atlas.browser_verification import (
@@ -55,10 +57,6 @@ MISSION_IDS = (
     "negative_invalid_recovery", "escaped_markup_safety",
     "reload_and_new_context_persistence", "read_only_post_recovery",
 )
-CommandRunner = Callable[
-    [list[str], str, str, dict[str, str]], subprocess.CompletedProcess[str]
-]
-
 def _reject(message: str) -> None:
     raise ValidationError(message)
 
@@ -69,6 +67,7 @@ def fixture_contract() -> dict[str, str]:
         "peer_project_id": _CORE_PEER_ID,
         "personal_project_id": _CORE_PROJECT_ID,
         "engineering_query": _CORE_QUERY,
+        "isolated_query": "core-alpha-isolation-marker",
         "personal_query": "personal-browser-marker",
         "escape_query": "browser-escape-marker",
         "decision_id": "ADR-9001",
@@ -171,6 +170,147 @@ def verify_exact_clean_candidate(repo_root: Path, expected_head: str) -> None:
         _reject("core release browser candidate worktree is dirty")
 
 
+def _validated_fixture_roots(value: object) -> dict[str, Path]:
+    if not isinstance(value, dict) or set(value) != {"primary", "empty", "corrupt"}:
+        _reject("core release browser fixture roots are invalid")
+    roots: dict[str, Path] = {}
+    for key in ("primary", "empty", "corrupt"):
+        raw = value.get(key)
+        if not isinstance(raw, str) or not raw.startswith("/"):
+            _reject("core release browser fixture root is invalid")
+        path = Path(raw)
+        if path.is_symlink() or not path.is_dir():
+            _reject("core release browser fixture root is unavailable")
+        resolved = path.resolve(strict=True)
+        if resolved != path:
+            _reject("core release browser fixture root is not canonical")
+        roots[key] = path
+    if len(set(roots.values())) != 3:
+        _reject("core release browser fixture roots must be distinct")
+    return roots
+
+
+def _target_server_specs(targets: dict[str, str]) -> dict[str, tuple[str, int]]:
+    specs: dict[str, tuple[str, int]] = {}
+    for key in ("primary", "empty", "corrupt"):
+        parsed = urlsplit(targets[key])
+        host = parsed.hostname or ""
+        port = parsed.port
+        if parsed.scheme != "http" or host != "127.0.0.1":
+            _reject("core release browser server target must be 127.0.0.1 HTTP")
+        if port is None or not 1024 <= port <= 65535:
+            _reject("core release browser server target requires an explicit unprivileged port")
+        specs[key] = (host, port)
+    if len(set(specs.values())) != 3:
+        _reject("core release browser server targets must be distinct")
+    return specs
+
+
+def _process_owns_listener(process: subprocess.Popen[str], port: int) -> bool:
+    fd_root = Path(f"/proc/{process.pid}/fd")
+    net_tcp = Path("/proc/net/tcp")
+    if not fd_root.is_dir() or not net_tcp.is_file():
+        _reject("core release browser listener ownership boundary is unavailable")
+    socket_inodes: set[str] = set()
+    try:
+        for fd in fd_root.iterdir():
+            try:
+                target = fd.readlink().as_posix()
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target.endswith("]"):
+                socket_inodes.add(target[8:-1])
+        for line in net_tcp.read_text(encoding="ascii").splitlines()[1:]:
+            fields = line.split()
+            if len(fields) < 10 or fields[3] != "0A":
+                continue
+            local_port = int(fields[1].split(":", 1)[1], 16)
+            if local_port == port and fields[9] in socket_inodes:
+                return True
+    except (OSError, ValueError, UnicodeError):
+        _reject("core release browser listener ownership could not be verified")
+    return False
+
+
+def _wait_for_server(process: subprocess.Popen[str], host: str, port: int) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            _reject("core release browser candidate server exited before readiness")
+        try:
+            with socket.create_connection((host, port), timeout=0.2):
+                if _process_owns_listener(process, port):
+                    return
+        except OSError:
+            pass
+        time.sleep(0.05)
+    _reject("core release browser candidate server readiness timed out")
+
+
+def _launch_candidate_servers(
+    repo_root: Path,
+    fixture_roots: dict[str, Path],
+    targets: dict[str, str],
+) -> list[subprocess.Popen[str]]:
+    specs = _target_server_specs(targets)
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PYTHONPATH": str(repo_root),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    processes: list[subprocess.Popen[str]] = []
+    try:
+        for key in ("primary", "empty", "corrupt"):
+            host, port = specs[key]
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "atlas",
+                    "--data-root",
+                    str(fixture_roots[key]),
+                    "web",
+                    "serve",
+                    "--host",
+                    host,
+                    "--port",
+                    str(port),
+                ],
+                cwd=str(repo_root),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                start_new_session=True,
+            )
+            processes.append(process)
+            _wait_for_server(process, host, port)
+        return processes
+    except Exception:
+        _stop_candidate_servers(processes)
+        raise
+
+
+def _stop_candidate_servers(processes: list[subprocess.Popen[str]]) -> bool:
+    ok = True
+    for process in reversed(processes):
+        if process.poll() is None:
+            process.terminate()
+    for process in reversed(processes):
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            ok = False
+            process.kill()
+            process.wait(timeout=5)
+        if process.returncode not in {0, -15}:
+            ok = False
+    return ok
+
+
 def _fixture_fetch(source, token):
     if source.source_id == fixture_contract()["source_id"]:
         if token:
@@ -179,7 +319,13 @@ def _fixture_fetch(source, token):
             content="<script>browser-escape-marker</script> " + _CORE_QUERY,
             source_revision=fixture_contract()["source_revision"],
         )
-    return _core_fetch(source, token)
+    fetched = _core_fetch(source, token)
+    if source.project_id == _CORE_PROJECT_ID and source.source_id == "architecture":
+        return FetchedSource(
+            content=fetched.content + "\n" + fixture_contract()["isolated_query"] + "\n",
+            source_revision=fetched.source_revision,
+        )
+    return fetched
 
 
 def _seed_primary(root: Path, candidate_head: str) -> None:
@@ -248,7 +394,7 @@ def _seed_primary(root: Path, candidate_head: str) -> None:
             "issue_updated_at": "2026-10-01T00:00:00Z",
             "author_trust": "trusted",
             "packet_status": "ACTIVE",
-            "branch": "feat/core-release-browser-runner-direct",
+            "branch": "feat/core-release-browser-runner-direct2",
             "head": candidate_head,
             "pr_number": None,
             "pr_state": "NONE",
@@ -344,6 +490,7 @@ def request_from_manifest(
         or not isinstance(manifest.get("roots"), dict)
     ):
         _reject("core release browser fixture manifest is invalid")
+    _validated_fixture_roots(manifest["roots"])
 
     return validate_core_release_browser_request({
         "schema_version": SCHEMA_VERSION,
@@ -524,13 +671,28 @@ def _result_request_part(payload: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _validate_server_binding(value: object, expected_head: str) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "mode", "candidate_head", "server_count", "servers_stopped"
+    }:
+        _reject("core release browser server binding is invalid")
+    if value.get("mode") != "VERIFIED_CHECKOUT_SUBPROCESS":
+        _reject("core release browser server binding mode is invalid")
+    if value.get("candidate_head") != expected_head:
+        _reject("core release browser server binding HEAD mismatch")
+    if value.get("server_count") != 3:
+        _reject("core release browser server binding count is invalid")
+    if not isinstance(value.get("servers_stopped"), bool):
+        _reject("core release browser server cleanup state is invalid")
+    return dict(value)
+
+
 def validate_core_release_browser_result(payload: object) -> dict[str, object]:
     expected = {
         "schema_version", "kind", "authority", "release_authority",
         "run_id", "source_revision", "work_packet_issue", "targets", "fixture",
-        "required_surfaces", "required_missions", "result", "browser",
-        "duration_ms", "surfaces", "missions", "cleanup", "trace_ref",
-
+        "required_surfaces", "required_missions", "server_binding", "result",
+        "browser", "duration_ms", "surfaces", "missions", "cleanup", "trace_ref",
         "screenshot_ref", "error_code", "detail", "result_digest",
     }
     if not isinstance(payload, dict) or set(payload) != expected:
@@ -543,6 +705,10 @@ def validate_core_release_browser_result(payload: object) -> dict[str, object]:
         or payload.get("release_authority") != RELEASE_AUTHORITY
     ):
         _reject("core release browser result authority is invalid")
+    binding = _validate_server_binding(
+        payload.get("server_binding"),
+        str(payload.get("source_revision") or ""),
+    )
     browser = payload.get("browser")
     if not isinstance(browser, dict) or set(browser) != {
         "engine", "version", "mode", "actual_process"
@@ -550,7 +716,7 @@ def validate_core_release_browser_result(payload: object) -> dict[str, object]:
         _reject("core release browser browser schema is invalid")
     if browser.get("mode") not in {"HEADLESS", "NONE"}:
         _reject("core release browser browser mode is invalid")
-    _validate_raw_result({
+    raw = _validate_raw_result({
         "result": payload.get("result"),
         "browser_engine": browser.get("engine"),
         "browser_version": browser.get("version"),
@@ -560,11 +726,12 @@ def validate_core_release_browser_result(payload: object) -> dict[str, object]:
         "missions": payload.get("missions"),
         "cleanup": payload.get("cleanup"),
         "trace_ref": payload.get("trace_ref"),
-
         "screenshot_ref": payload.get("screenshot_ref"),
         "error_code": payload.get("error_code"),
         "detail": payload.get("detail"),
     })
+    if raw["result"] == "PASS" and not binding["servers_stopped"]:
+        _reject("core release browser PASS lacks candidate-server cleanup evidence")
     digest = payload.get("result_digest")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         _reject("core release browser result digest is invalid")
@@ -578,36 +745,20 @@ def validate_core_release_browser_result(payload: object) -> dict[str, object]:
     return dict(payload)
 
 
-def run_core_release_browser(
-    request: object,
+def _compose_core_release_result(
+    normalized: dict[str, object],
+    raw_result: object,
     *,
-    repo_root: Path,
-    command_runner: CommandRunner | None = None,
-    runtime_env: dict[str, str] | None = None,
+    servers_stopped: bool,
 ) -> dict[str, object]:
-    normalized = validate_core_release_browser_request(request)
-    root = Path(repo_root).resolve()
-    verify_exact_clean_candidate(root, str(normalized["source_revision"]))
-    runner_path = root / "tools" / "browser-verification" / "core-release-runner.mjs"
-    if not runner_path.is_file():
-        _reject("core release browser runner is missing")
-
-    runner = command_runner or _default_command_runner
-    env = _provider_environment(
-        "playwright",
-        runtime_env=runtime_env,
-        stagehand_api_key=None,
-        stagehand_model=None,
-    )
-    completed = runner(
-        ["node", str(runner_path)],
-        str(root),
-        json.dumps(normalized, sort_keys=True),
-        env,
-    )
-    if completed.returncode != 0:
-        _reject("core release browser runner process failed")
-    raw = _validate_raw_result(_provider_output(completed.stdout))
+    raw = _validate_raw_result(raw_result)
+    if raw["result"] == "PASS" and not servers_stopped:
+        raw = {
+            **raw,
+            "result": "FAIL",
+            "error_code": "CANDIDATE_SERVER_CLEANUP_FAILED",
+            "detail": "Candidate-bound browser servers did not clean up completely.",
+        }
     body = {
         "schema_version": SCHEMA_VERSION,
         "kind": RESULT_KIND,
@@ -620,11 +771,16 @@ def run_core_release_browser(
         "fixture": normalized["fixture"],
         "required_surfaces": normalized["required_surfaces"],
         "required_missions": normalized["required_missions"],
+        "server_binding": {
+            "mode": "VERIFIED_CHECKOUT_SUBPROCESS",
+            "candidate_head": normalized["source_revision"],
+            "server_count": 3,
+            "servers_stopped": servers_stopped,
+        },
         "result": raw["result"],
         "browser": {
             "engine": raw["browser_engine"],
             "version": raw["browser_version"],
-
             "mode": "HEADLESS" if raw["actual_browser_process"] else "NONE",
             "actual_process": raw["actual_browser_process"],
         },
@@ -637,11 +793,66 @@ def run_core_release_browser(
         "error_code": raw["error_code"],
         "detail": raw["detail"],
     }
-    result = {
-        **body,
-        "result_digest": _canonical_digest(body),
-    }
+    result = {**body, "result_digest": _canonical_digest(body)}
     return validate_core_release_browser_result(result)
+
+
+def run_core_release_browser(
+    request: object,
+    *,
+    repo_root: Path,
+    fixture_roots: object,
+    runtime_env: dict[str, str] | None = None,
+) -> dict[str, object]:
+    normalized = validate_core_release_browser_request(request)
+    root = Path(repo_root).resolve()
+    verify_exact_clean_candidate(root, str(normalized["source_revision"]))
+    roots = _validated_fixture_roots(fixture_roots)
+    runner_path = root / "tools" / "browser-verification" / "core-release-runner.mjs"
+    if not runner_path.is_file():
+        _reject("core release browser runner is missing")
+
+    env = _provider_environment(
+        "playwright",
+        runtime_env=runtime_env,
+        stagehand_api_key=None,
+        stagehand_model=None,
+    )
+    processes: list[subprocess.Popen[str]] = []
+    raw_result: object | None = None
+    servers_stopped = False
+    try:
+        processes = _launch_candidate_servers(
+            root,
+            roots,
+            dict(normalized["targets"]),
+        )
+        verify_exact_clean_candidate(root, str(normalized["source_revision"]))
+        try:
+            completed = _default_command_runner(
+                ["node", str(runner_path)],
+                str(root),
+                json.dumps(normalized, sort_keys=True),
+                env,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValidationError(
+                "core release browser runner process is unavailable"
+            ) from exc
+        if completed.returncode != 0:
+            _reject("core release browser runner process failed")
+        verify_exact_clean_candidate(root, str(normalized["source_revision"]))
+        raw_result = _provider_output(completed.stdout)
+    finally:
+        servers_stopped = _stop_candidate_servers(processes)
+
+    if raw_result is None:
+        _reject("core release browser runner returned no result")
+    return _compose_core_release_result(
+        normalized,
+        raw_result,
+        servers_stopped=servers_stopped,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -689,6 +900,7 @@ def main(argv: list[str] | None = None) -> int:
     result = run_core_release_browser(
         request,
         repo_root=Path(__file__).resolve().parents[1],
+        fixture_roots=manifest["roots"],
         runtime_env=runtime_env,
     )
     print(json.dumps(result, sort_keys=True))

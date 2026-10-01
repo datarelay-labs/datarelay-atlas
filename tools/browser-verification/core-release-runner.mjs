@@ -148,45 +148,86 @@ async function recordMission(results, id, fn) {
 }
 
 
-function headingSurface(targetName, pathname, heading, expectedStatus = 200) {
+function contentSurface(
+  targetName,
+  pathname,
+  heading,
+  requiredTexts,
+  expectedStatus = 200,
+) {
   return async (context, request) => withPage(context, async (page) => {
     await visit(page, request, targetName, pathname, expectedStatus);
     await requireHeading(page, heading);
-    return { status: expectedStatus, detail: heading + " rendered" };
+    const body = await bodyText(page);
+    for (const text of requiredTexts) {
+      if (!body.includes(text)) {
+        throw new Error(heading + " missing capability/state: " + text);
+      }
+    }
+    return {
+      status: expectedStatus,
+      detail: heading + " reconciled with " + requiredTexts.length + " capability/state assertions",
+    };
   });
 }
 
 function surfaceCases() {
   return {
-    overview: headingSurface("primary", "/", "Atlas Overview"),
-    intelligence_overview: headingSurface(
+    overview: contentSurface("primary", "/", "Atlas Overview", [
+      "Registered projects", "Enabled projects", "Configured sources",
+      "Runtime readiness", "Release readiness", "Core Alpha", "Core Beta",
+      "Search across projects", "Personal knowledge",
+    ]),
+    intelligence_overview: contentSurface(
       "primary", "/intelligence", "Derived intelligence",
+      ["DERIVED", "Summary", "Repository entities", "Decision entities", "Decision index", "Core Alpha"],
     ),
-    operations: headingSurface("primary", "/operations", "Operations readiness"),
-    concurrency: headingSurface("primary", "/concurrency", "Measured concurrency"),
-    personal: headingSurface("primary", "/personal", "Personal Knowledge Plane"),
-    instruction_governance: headingSurface(
+    operations: contentSurface("primary", "/operations", "Operations readiness", [
+      "Deployment profile", "Current data-root runtime", "Runbooks",
+      "Security controls", "Release readiness", "Runtime observability",
+    ]),
+    concurrency: contentSurface("primary", "/concurrency", "Measured concurrency", [
+      "Admission state", "Dispatch authority", "Measured runs",
+      "Admission plan", "Execution cycles",
+    ]),
+    personal: contentSurface("primary", "/personal", "Personal Knowledge Plane", [
+      "PERSONAL_REFERENCE_ONLY", "Personal sources",
+      "Engineering sources (excluded from personal search)", "Search personal knowledge",
+    ]),
+    instruction_governance: contentSurface(
       "primary", "/instruction-governance", "Instruction governance",
+      ["Governance state", "Managed surfaces", "Recorded audits", "Mutation authority", "Candidate routing"],
     ),
-    decision_plane: headingSurface("primary", "/decision-plane", "Decision Plane"),
-    providers: headingSurface("primary", "/providers", "Provider capacity"),
-    search: headingSurface("primary", "/search", "Cross-project search"),
-    project: headingSurface("primary", "/projects/core-alpha", "Core Alpha"),
-    project_lifecycle: headingSurface(
+    decision_plane: contentSurface("primary", "/decision-plane", "Decision Plane", [
+      "Shadow/replay measurement only", "Rollout state", "Observations", "Decision classes",
+    ]),
+    providers: contentSurface("primary", "/providers", "Provider capacity", [
+      "Broker plan", "ADVISORY_ONLY", "Failover preview",
+      "Verified route outcomes", "Strategy comparison",
+    ]),
+    search: contentSurface("primary", "/search", "Cross-project search", [
+      "Search all registered projects", "Engineering only", "Personal/reference only",
+    ]),
+    project: contentSurface("primary", "/projects/core-alpha", "Core Alpha", [
+      "datarelay-labs/core-alpha", "Configured sources", "Lifecycle evidence",
+      "Knowledge coverage", "Sources", "Search knowledge", "browser-escape",
+    ]),
+    project_lifecycle: contentSurface(
       "primary", "/projects/core-alpha/lifecycle", "Lifecycle evidence",
+      ["Work / PR", "CI", "Tests", "Release", "Surface Reconciliation", "Full User E2E"],
     ),
-    project_intelligence: headingSurface(
-      "primary",
-      "/projects/core-alpha/intelligence",
+    project_intelligence: contentSurface(
+      "primary", "/projects/core-alpha/intelligence",
       "Derived engineering intelligence",
+      ["DERIVED", "Decision backlinks", "Knowledge gaps", "Contradictions", "ADR-9001"],
     ),
-    source_detail: headingSurface(
-      "primary",
-      "/projects/core-alpha/sources/browser-escape",
-      "browser-escape",
+    source_detail: contentSurface(
+      "primary", "/projects/core-alpha/sources/browser-escape", "browser-escape",
+      ["Registered source", "Projection", "Validated provenance", "Derived projection content", "docs/browser-escape.md"],
     ),
-    decision_detail: headingSurface(
+    decision_detail: contentSurface(
       "primary", "/decisions/ADR-9001", "ADR-9001",
+      ["DERIVED", "Decision targets", "Backlinks"],
     ),
   };
 }
@@ -396,16 +437,29 @@ function missionCases() {
     cross_project_retrieval: async (context, request) => withPage(
       context,
       async (page) => {
+        const isolated = request.fixture.isolated_query;
         await visit(page, request, "primary", "/");
         await page.getByRole("link", { name: /Search across projects/ }).click();
-        await page.locator('input[name="q"]').fill("core-product-e2e-marker");
+        await page.locator('input[name="q"]').fill(isolated);
         await page.locator('select[name="source_class"]').selectOption("engineering");
         await page.getByRole("button", { name: "Search" }).click();
-        const body = await bodyText(page);
-        if (!body.includes("Core Alpha") || !body.includes("Core Beta")) {
-          throw new Error("cross-project result groups are incomplete");
+        let body = await bodyText(page);
+        if (!body.includes("Core Alpha") || body.includes("Core Beta")) {
+          throw new Error("cross-project isolation did not preserve the sole owning project");
         }
-        return "explicit engineering search returned both project groups";
+        await page.getByRole("link", { name: "Core Alpha" }).click();
+        await page.waitForURL(/\/projects\/core-alpha/);
+        assertLoopbackUrl(page.url(), "cross-project owning-group navigation");
+        await page.locator('input[name="q"]').fill(isolated);
+        await page.getByRole("button", { name: "Search" }).click();
+        body = await bodyText(page);
+        if (!body.includes("datarelay-labs/core-alpha")
+            || !body.includes("docs/architecture.md")
+            || !body.includes(isolated)
+            || body.includes("datarelay-labs/core-beta")) {
+          throw new Error("project-scoped retrieval leaked or lost owning-project provenance");
+        }
+        return "one-project-only cross-project search preserved owning-group and project isolation";
       },
     ),
   };
@@ -490,8 +544,9 @@ function missionCasesThree() {
 
 function missionCasesFour() {
   return {
-    reload_and_new_context_persistence: async (context, request) => {
+    reload_and_new_context_persistence: async (context, request, browser) => {
       const page = await context.newPage();
+      let freshContext = null;
       try {
         await visit(
           page,
@@ -503,19 +558,21 @@ function missionCasesFour() {
         await page.reload({ waitUntil: "domcontentloaded" });
         assertLoopbackUrl(page.url(), "reload navigation");
         await requireText(page, "1111111111111111111111111111111111111111");
-        const second = await context.newPage();
-        try {
-          await second.goto(page.url(), { waitUntil: "domcontentloaded" });
-          assertLoopbackUrl(second.url(), "new page navigation");
-          await requireText(
-            second,
-            "1111111111111111111111111111111111111111",
-          );
-        } finally {
-          await second.close().catch(() => {});
-        }
-        return "attributable state persisted across reload and new page";
+
+        freshContext = await browser.newContext();
+        await installLoopbackRequestGuard(freshContext);
+        const freshPage = await freshContext.newPage();
+        await freshPage.goto(page.url(), { waitUntil: "domcontentloaded" });
+        assertLoopbackUrl(freshPage.url(), "fresh-context navigation");
+        await requireText(
+          freshPage,
+          "1111111111111111111111111111111111111111",
+        );
+        return "attributable state persisted across reload and a fresh browser context";
       } finally {
+        if (freshContext) {
+          await freshContext.close().catch(() => {});
+        }
         await page.close().catch(() => {});
       }
     },
@@ -534,7 +591,7 @@ function missionCasesFour() {
   };
 }
 
-async function runMissions(context, request, results) {
+async function runMissions(browser, context, request, results) {
   const cases = {
     ...missionCases(),
     ...missionCasesTwo(),
@@ -544,7 +601,7 @@ async function runMissions(context, request, results) {
   for (const id of request.required_missions) {
     await recordMission(results, id, async () => {
       if (!cases[id]) throw new Error("mission implementation missing");
-      return cases[id](context, request);
+      return cases[id](context, request, browser);
     });
   }
 }
@@ -619,7 +676,7 @@ async function run(request) {
     traceStarted = true;
 
     await runSurfaceCases(context, request, result.surfaces);
-    await runMissions(context, request, result.missions);
+    await runMissions(browser, context, request, result.missions);
     const failures = [...result.surfaces, ...result.missions]
       .filter((item) => item.outcome !== "PASS");
     if (failures.length) {
