@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 from jsonschema import Draft202012Validator
 
@@ -144,8 +147,240 @@ class BrowserVerificationTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     validate_browser_verification_request(payload)
 
+    def test_secret_bearing_target_url_is_rejected_before_spawn(self) -> None:
+        payload = request()
+        payload["target_url"] = (
+            "http://127.0.0.1:8788/?OPENAI_API_KEY=sk-"
+            + "a" * 32
+        )
+        calls = []
+
+        def runner(_argv, _cwd, _stdin, _env):
+            calls.append(True)
+            return command_result(raw_pass())
+
+        with self.assertRaisesRegex(ValidationError, "target_url"):
+            run_browser_verification(
+                payload,
+                repo_root=ROOT,
+                command_runner=runner,
+            )
+        self.assertEqual(calls, [])
+
+    def test_provider_child_environment_is_minimal_and_explicit(self) -> None:
+        payload = raw_pass()
+        payload.update(
+            {
+                "result": "HUMAN_REQUIRED",
+                "browser_engine": "UNKNOWN",
+                "browser_version": "UNKNOWN",
+                "actual_browser_process": False,
+                "duration_ms": 1,
+                "steps": [],
+                "model_metrics": {
+                    "state": "UNAVAILABLE",
+                    "provider": "openai",
+                    "model": "openai/gpt-5.4-mini",
+                    "llm_call_count": None,
+                    "input_tokens": None,
+                    "output_tokens": None,
+                    "total_tokens": None,
+                    "cost_microusd": None,
+                },
+                "trace_ref": None,
+                "error_code": "STAGEHAND_MODEL_CREDENTIAL_UNAVAILABLE",
+                "detail": "Stagehand semantic execution requires an approved model credential.",
+            }
+        )
+        observed = {}
+
+        def runner(_argv, _cwd, _stdin, env):
+            observed.update(env)
+            return command_result(payload)
+
+        with patch.dict(
+            os.environ,
+            {
+                "GITHUB_TOKEN": "ghp_" + "x" * 32,
+                "AWS_SECRET_ACCESS_KEY": "unsafe-parent-secret",
+                "OPENAI_API_KEY": "sk-" + "p" * 32,
+                "ATLAS_STAGEHAND_MODEL": "parent/model-must-not-leak",
+                "PATH": "/tmp/evil-node:/usr/bin",
+                "HOME": "/tmp/ambient-home",
+                "LD_LIBRARY_PATH": "/tmp/ambient-libs",
+            },
+            clear=False,
+        ):
+            result = run_browser_verification(
+                request("stagehand"),
+                repo_root=ROOT,
+                command_runner=runner,
+                runtime_env={"LD_LIBRARY_PATH": "/tmp/explicit-libs"},
+                stagehand_api_key="explicit-approved-key",
+                stagehand_model="openai/gpt-5.4-mini",
+            )
+
+        self.assertEqual(result["result"], "HUMAN_REQUIRED")
+        self.assertEqual(observed["OPENAI_API_KEY"], "explicit-approved-key")
+        self.assertEqual(
+            observed["ATLAS_STAGEHAND_MODEL"],
+            "openai/gpt-5.4-mini",
+        )
+        self.assertEqual(observed["PATH"], "/usr/local/bin:/usr/bin:/bin")
+        self.assertEqual(observed["LD_LIBRARY_PATH"], "/tmp/explicit-libs")
+        self.assertNotIn("HOME", observed)
+        self.assertNotIn("GITHUB_TOKEN", observed)
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", observed)
+        self.assertNotIn("unsafe-parent-secret", json.dumps(observed))
+        self.assertNotIn("explicit-approved-key", json.dumps(result))
+
+        observed.clear()
+        with patch.dict(
+            os.environ,
+            {"OPENAI_API_KEY": "sk-" + "z" * 32},
+            clear=False,
+        ):
+            run_browser_verification(
+                request("stagehand"),
+                repo_root=ROOT,
+                command_runner=runner,
+            )
+        self.assertNotIn("OPENAI_API_KEY", observed)
+        self.assertEqual(observed["PATH"], "/usr/local/bin:/usr/bin:/bin")
+        self.assertNotIn("HOME", observed)
+        self.assertNotIn("LD_LIBRARY_PATH", observed)
+
+        with self.assertRaisesRegex(ValidationError, "runtime environment"):
+            run_browser_verification(
+                request(),
+                repo_root=ROOT,
+                command_runner=runner,
+                runtime_env={"GITHUB_TOKEN": "not-allowed"},
+            )
+
+    def test_runner_revalidates_loopback_after_both_navigation_steps(self) -> None:
+        source = (
+            ROOT / "tools" / "browser-verification" / "runner.mjs"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'await assertLoopbackPageUrl(page, "initial navigation");',
+            source,
+        )
+        self.assertIn(
+            'await assertLoopbackPageUrl(page, "concurrency navigation");',
+            source,
+        )
+        self.assertGreaterEqual(
+            source.count("await installLoopbackRequestGuard("),
+            2,
+        )
+
+    def test_node_runner_rejects_external_navigation_and_unsafe_evidence_ancestors(self) -> None:
+        runner = ROOT / "tools" / "browser-verification" / "runner.mjs"
+        with tempfile.TemporaryDirectory() as tmp:
+            test_root = Path(tmp)
+            outside = test_root / "outside"
+            outside.mkdir()
+            (test_root / "evidence").symlink_to(
+                outside,
+                target_is_directory=True,
+            )
+            script = f"""
+import {{
+  assertLoopbackUrl,
+  ensureEvidenceDir,
+  installLoopbackRequestGuard,
+}} from {json.dumps(runner.as_uri())};
+assertLoopbackUrl("http://127.0.0.1:8788/");
+assertLoopbackUrl("https://localhost:9443/concurrency");
+let externalRejected = false;
+try {{
+  assertLoopbackUrl("https://example.com/concurrency");
+}} catch {{
+  externalRejected = true;
+}}
+if (!externalRejected) process.exit(21);
+
+let routeHandler = null;
+await installLoopbackRequestGuard({{
+  route: async (pattern, handler) => {{
+    if (pattern !== "**/*") process.exit(24);
+    routeHandler = handler;
+  }},
+}});
+if (!routeHandler) process.exit(25);
+const routeEvents = [];
+const fakeRoute = (url) => ({{
+  request: () => ({{ url: () => url }}),
+  continue: async () => routeEvents.push("continue"),
+  abort: async () => routeEvents.push("abort"),
+}});
+await routeHandler(fakeRoute("https://example.com/concurrency"));
+await routeHandler(fakeRoute("http://127.0.0.1:8788/concurrency"));
+await routeHandler(fakeRoute("data:text/plain,ok"));
+if (routeEvents.join(",") !== "abort,continue,continue") process.exit(26);
+
+let symlinkRejected = false;
+try {{
+  await ensureEvidenceDir(
+    {{ relDir: "evidence/browser-verification/browser-poc-1" }},
+    {json.dumps(str(test_root))},
+  );
+}} catch {{
+  symlinkRejected = true;
+}}
+if (!symlinkRejected) process.exit(22);
+"""
+            completed = subprocess.run(
+                ["node", "--input-type=module", "-e", script],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=20,
+                check=False,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                completed.stderr[-1000:],
+            )
+
+            (test_root / "evidence").unlink()
+            (test_root / "evidence").write_text(
+                "not a directory",
+                encoding="utf-8",
+            )
+            script = f"""
+import {{ ensureEvidenceDir }} from {json.dumps(runner.as_uri())};
+let rejected = false;
+try {{
+  await ensureEvidenceDir(
+    {{ relDir: "evidence/browser-verification/browser-poc-1" }},
+    {json.dumps(str(test_root))},
+  );
+}} catch {{
+  rejected = true;
+}}
+if (!rejected) process.exit(23);
+"""
+            completed = subprocess.run(
+                ["node", "--input-type=module", "-e", script],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=20,
+                check=False,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                completed.stderr[-1000:],
+            )
+
     def test_playwright_pass_is_digest_bound_and_evidence_only(self) -> None:
-        def runner(_argv: list[str], _cwd: str, _stdin: str):
+        def runner(_argv: list[str], _cwd: str, _stdin: str, _env: dict[str, str]):
             return command_result(raw_pass())
 
         result = run_browser_verification(
@@ -194,7 +429,7 @@ class BrowserVerificationTests(unittest.TestCase):
             }
         )
 
-        def runner(_argv: list[str], _cwd: str, _stdin: str):
+        def runner(_argv: list[str], _cwd: str, _stdin: str, _env: dict[str, str]):
             return command_result(payload)
 
         result = run_browser_verification(
@@ -210,7 +445,7 @@ class BrowserVerificationTests(unittest.TestCase):
         )
 
     def test_provider_process_failure_is_human_required_not_pass(self) -> None:
-        def runner(_argv: list[str], _cwd: str, _stdin: str):
+        def runner(_argv: list[str], _cwd: str, _stdin: str, _env: dict[str, str]):
             return subprocess.CompletedProcess(
                 ["node"], 2, stdout="", stderr="OPENAI_API_KEY=sk-live-secret"
             )
@@ -228,7 +463,7 @@ class BrowserVerificationTests(unittest.TestCase):
         payload = raw_pass()
         payload["actual_browser_process"] = False
 
-        def runner(_argv: list[str], _cwd: str, _stdin: str):
+        def runner(_argv: list[str], _cwd: str, _stdin: str, _env: dict[str, str]):
             return command_result(payload)
 
         with self.assertRaisesRegex(
@@ -245,7 +480,7 @@ class BrowserVerificationTests(unittest.TestCase):
         payload = raw_pass()
         payload["detail"] = "OPENAI_API_KEY=sk-live-secret"
 
-        def runner(_argv: list[str], _cwd: str, _stdin: str):
+        def runner(_argv: list[str], _cwd: str, _stdin: str, _env: dict[str, str]):
             return command_result(payload)
 
         result = run_browser_verification(

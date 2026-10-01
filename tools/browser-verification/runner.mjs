@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const MARKER = "ATLAS_BROWSER_RESULT=";
 
@@ -32,6 +33,47 @@ function emit(result) {
   process.stdout.write(MARKER + JSON.stringify(result) + "\n");
 }
 
+function isLoopbackHttpUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  const host = parsed.hostname.toLowerCase();
+  return ["http:", "https:"].includes(parsed.protocol)
+    && ["127.0.0.1", "localhost", "::1", "[::1]"].includes(host);
+}
+
+function assertLoopbackUrl(value, label = "navigation") {
+  if (!isLoopbackHttpUrl(value)) {
+    throw new Error(label + " left the loopback boundary");
+  }
+}
+
+async function assertLoopbackPageUrl(page, label) {
+  assertLoopbackUrl(page.url(), label);
+}
+
+async function installLoopbackRequestGuard(context) {
+  await context.route("**/*", async (route) => {
+    const value = route.request().url();
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    if (["http:", "https:"].includes(parsed.protocol)
+        && !isLoopbackHttpUrl(value)) {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    await route.continue();
+  });
+}
+
 function evidencePaths(request, provider) {
   const safeRun = String(request.run_id).replace(/[^A-Za-z0-9._-]/g, "_");
   const safeProvider = String(provider).replace(/[^A-Za-z0-9._-]/g, "_");
@@ -44,8 +86,37 @@ function evidencePaths(request, provider) {
   };
 }
 
-async function ensureEvidenceDir(paths) {
-  await fsp.mkdir(path.resolve(paths.relDir), { recursive: true });
+async function ensureEvidenceDir(paths, repoRoot = process.cwd()) {
+  const root = await fsp.realpath(path.resolve(repoRoot));
+  const relDir = String(paths.relDir || "");
+  const parts = relDir.split("/");
+  if (parts.length < 3
+      || parts[0] !== "evidence"
+      || parts[1] !== "browser-verification"
+      || parts.some((part) => !part || part === "." || part === "..")) {
+    throw new Error("evidence path is outside the browser verification boundary");
+  }
+
+  let current = root;
+  for (const part of parts) {
+    current = path.join(current, part);
+    let stat;
+    try {
+      stat = await fsp.lstat(current);
+    } catch (error) {
+      if (!error || error.code !== "ENOENT") throw error;
+      await fsp.mkdir(current, { mode: 0o700 });
+      stat = await fsp.lstat(current);
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error("evidence path ancestor is unsafe");
+    }
+    const real = await fsp.realpath(current);
+    if (real !== current
+        || (real !== root && !real.startsWith(root + path.sep))) {
+      throw new Error("evidence path escapes the repository boundary");
+    }
+  }
 }
 
 async function applyVariation(page, variation) {
@@ -76,6 +147,7 @@ async function verifyOverview(page, steps) {
 
 async function verifyConcurrency(page, steps) {
   await page.waitForURL(/\/concurrency(?:$|[?#])/);
+  await assertLoopbackPageUrl(page, "concurrency navigation");
   const heading = await page.locator("h1").textContent();
   if ((heading || "").trim() !== "Measured concurrency") {
     throw new Error("concurrency heading mismatch");
@@ -102,9 +174,11 @@ async function runPlaywright(request) {
     result.browser_engine = "chromium";
     result.browser_version = browser.version();
     context = await browser.newContext();
+    await installLoopbackRequestGuard(context);
     await context.tracing.start({ screenshots: true, snapshots: true });
     const page = await context.newPage();
     await page.goto(request.target_url, { waitUntil: "domcontentloaded" });
+    await assertLoopbackPageUrl(page, "initial navigation");
     await verifyOverview(page, result.steps);
     await applyVariation(page, request.variation);
     result.steps.push({
@@ -220,6 +294,7 @@ async function runStagehand(request) {
     result.actual_browser_process = true;
     result.browser_engine = "chrome";
     result.browser_version = "STAGEHAND_LOCAL";
+    await installLoopbackRequestGuard(browser.context);
     stagehand = await Stagehand.create({
       browser,
       model: { modelName: model, apiKey: process.env.OPENAI_API_KEY },
@@ -228,6 +303,7 @@ async function runStagehand(request) {
     const pages = await browser.context.pages();
     page = pages[0];
     await page.goto(request.target_url);
+    await assertLoopbackPageUrl(page, "initial navigation");
     await verifyOverview(page, result.steps);
     await applyVariation(page, request.variation);
     result.steps.push({
@@ -297,4 +373,14 @@ async function main() {
   emit(result);
 }
 
-await main();
+const invokedAsMain = Boolean(process.argv[1])
+  && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+if (invokedAsMain) {
+  await main();
+}
+
+export {
+  assertLoopbackUrl,
+  ensureEvidenceDir,
+  installLoopbackRequestGuard,
+};

@@ -28,7 +28,7 @@ _MAX_STEPS = 16
 _RESULT_MARKER = "ATLAS_BROWSER_RESULT="
 
 CommandRunner = Callable[
-    [list[str], str, str],
+    [list[str], str, str, dict[str, str]],
     subprocess.CompletedProcess[str],
 ]
 
@@ -95,6 +95,8 @@ def _safe_text(value: object, *, label: str, maximum: int = 600) -> str:
 def _target_url(value: object) -> str:
     if not isinstance(value, str) or len(value) > 2048:
         _reject("browser verification target_url is invalid")
+    if contains_unsafe_secret(value):
+        _reject("browser verification target_url contains secret material")
     parsed = urlsplit(value)
     host = (parsed.hostname or "").lower()
     if parsed.scheme not in {"http", "https"}:
@@ -408,10 +410,77 @@ def validate_browser_verification_result(
     return dict(payload)
 
 
+_RUNTIME_ENV_KEYS = frozenset({
+    "HOME",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LD_LIBRARY_PATH",
+    "PLAYWRIGHT_BROWSERS_PATH",
+})
+_FIXED_PROVIDER_PATH = "/usr/local/bin:/usr/bin:/bin"
+
+
+def _runtime_environment(value: object) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not set(value).issubset(_RUNTIME_ENV_KEYS):
+        _reject("browser verification runtime environment is invalid")
+    result: dict[str, str] = {}
+    for key, raw in value.items():
+        if (
+            not isinstance(raw, str)
+            or not raw
+            or len(raw) > 4096
+            or any(ord(char) < 32 or ord(char) == 127 for char in raw)
+            or contains_unsafe_secret(raw)
+        ):
+            _reject("browser verification runtime environment is invalid")
+        result[str(key)] = raw
+    return result
+
+
+def _stagehand_api_key(value: object) -> str | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 4096
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        _reject("browser verification Stagehand credential is invalid")
+    return value
+
+
+def _provider_environment(
+    provider: str,
+    *,
+    runtime_env: object,
+    stagehand_api_key: object,
+    stagehand_model: object,
+) -> dict[str, str]:
+    env = {"PATH": _FIXED_PROVIDER_PATH}
+    env.update(_runtime_environment(runtime_env))
+    if provider != "stagehand":
+        return env
+
+    api_key = _stagehand_api_key(stagehand_api_key)
+    if api_key is not None:
+        env["OPENAI_API_KEY"] = api_key
+    if stagehand_model is not None:
+        env["ATLAS_STAGEHAND_MODEL"] = _identity(
+            stagehand_model,
+            label="Stagehand model",
+        )
+    return env
+
+
 def _default_command_runner(
     argv: list[str],
     cwd: str,
     stdin_text: str,
+    env: dict[str, str],
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         argv,
@@ -422,6 +491,7 @@ def _default_command_runner(
         stderr=subprocess.PIPE,
         timeout=180,
         check=False,
+        env=env,
     )
 
 def _human_required_raw(code: str, detail: str) -> dict[str, object]:
@@ -466,6 +536,9 @@ def run_browser_verification(
     *,
     repo_root: Path,
     command_runner: CommandRunner | None = None,
+    runtime_env: dict[str, str] | None = None,
+    stagehand_api_key: str | None = None,
+    stagehand_model: str | None = None,
 ) -> dict[str, object]:
     normalized = validate_browser_verification_request(request)
     root = Path(repo_root).resolve()
@@ -473,11 +546,18 @@ def run_browser_verification(
     if not runner_path.is_file():
         _reject("browser verification optional runner is missing")
     runner = command_runner or _default_command_runner
+    provider_env = _provider_environment(
+        str(normalized["provider"]),
+        runtime_env=runtime_env,
+        stagehand_api_key=stagehand_api_key,
+        stagehand_model=stagehand_model,
+    )
     try:
         completed = runner(
             ["node", str(runner_path)],
             str(root),
             json.dumps(normalized, sort_keys=True),
+            provider_env,
         )
     except (OSError, subprocess.SubprocessError):
         raw = _human_required_raw(
