@@ -39,7 +39,7 @@ SECRET = "OPENAI_API_KEY=sk-fake-secret-1234567890"
 
 
 def _packet_body(
-    head: str = HEAD, *, implementer: str = "CURSOR"
+    head: str = HEAD, *, implementer: str = "CHATGPT_CHAT"
 ) -> str:
     return f"""PACKET_VERSION=2
 TARGET_REPO={REPO}
@@ -220,6 +220,45 @@ class SliceDDispositionTests(unittest.TestCase):
         fields.update(overrides)
         return apply_exact_head_disposition(**fields)  # type: ignore[arg-type]
 
+    def test_current_cursor_packet_is_refused_before_probe_or_spawn(self) -> None:
+        ledger, sha = self.store.load(47)
+        assert ledger is not None
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("retired Cursor disposition must not probe or spawn")
+
+        outcome = apply_exact_head_disposition(
+            claim=ledger.claims[make_audit_claim_key(REPO, 47, HEAD)],
+            ledger=ledger,
+            ledger_sha=sha,
+            claim_store=self.store,
+            packet_store=MemoryPacketStore(_packet_body(implementer="CURSOR")),
+            repository=REPO,
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            descriptor=ProjectDescriptor(
+                repository=REPO,
+                worktree=self.worktree,
+                cursor_chat_id=CHAT,
+            ),
+            observed_host=HOST,
+            expected_host=HOST,
+            worktree_path=self.worktree,
+            git_runner=_git(HEAD),
+            spawn=forbidden,
+            list_sessions=forbidden,
+            list_processes=forbidden,
+            attempt=2,
+            gates=_gates(),
+            state_root=self.state.name,
+            host_probe=forbidden,
+        )
+        self.assertEqual(outcome["action"], "implementer_refused")
+        self.assertEqual(outcome["cursor_calls"], 0)
+
     def test_chat_rework_authorizes_handoff_without_cursor_spawn(self) -> None:
         packet = MemoryPacketStore(
             _packet_body(implementer="CHATGPT_CHAT")
@@ -278,93 +317,79 @@ class SliceDDispositionTests(unittest.TestCase):
             "WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF", packet.body
         )
 
-    def test_rework_mutates_once_and_resumes_the_same_chat(self) -> None:
+    def test_rework_mutates_once_and_authorizes_chat_handoff(self) -> None:
         outcome = self._apply()
-        self.assertEqual(outcome["action"], "redispatched")
-        self.assertEqual(outcome["cursor_calls"], 1)
+        self.assertEqual(outcome["action"], "authorized_handoff")
+        self.assertEqual(outcome["verdict"], "REWORK")
+        self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertEqual(self.spawned, [])
         self.assertEqual(self.packet.mutations, 1)
-        self.assertEqual(len(self.spawned), 1)
-        argv = self.spawned[0]
-        self.assertEqual(argv[:4], ["agent", "--print", "--resume", CHAT])
-        self.assertNotIn(CHAT, self.packet.body)
-        self.assertIn("bounded gap", self.packet.body)
-        self.assertIn("VERDICT=REWORK", self.packet.body)
-        self.assertNotIn("SUCCESSOR_ACTIVE", self.packet.body)
-        again = self._apply(spawn=self._spawn())
-        self.assertEqual(again["action"], "duplicate")
-        self.assertEqual(again["cursor_calls"], 0)
+        self.assertIn("WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF", self.packet.body)
+        self.assertNotIn("/work-resume", self.packet.body)
+
+        replay = self._apply()
+        self.assertEqual(replay["action"], "duplicate")
+        self.assertEqual(replay["cursor_calls"], 0)
+        self.assertEqual(self.spawned, [])
         self.assertEqual(self.packet.mutations, 1)
-        self.assertEqual(len(self.spawned), 1)
 
     def test_missing_or_unknown_implementer_fails_closed(self) -> None:
-        missing = MemoryPacketStore(
-            _packet_body().replace("IMPLEMENTER=CURSOR\n", "")
-        )
-        result = self._apply(packet_store=missing)
-        self.assertEqual(result["action"], "implementer_refused")
+        for value in (None, "CURSOR", "OTHER"):
+            body = _packet_body()
+            if value is None:
+                body = body.replace("IMPLEMENTER=CHATGPT_CHAT\n", "")
+            else:
+                body = body.replace(
+                    "IMPLEMENTER=CHATGPT_CHAT", f"IMPLEMENTER={value}"
+                )
+            packet = MemoryPacketStore(body)
+            result = self._apply(packet_store=packet)
+            self.assertEqual(result["action"], "implementer_refused")
+            self.assertEqual(result["cursor_calls"], 0)
+            self.assertEqual(packet.mutations, 0)
         self.assertEqual(self.spawned, [])
-        self.assertEqual(missing.mutations, 0)
 
-        unknown = MemoryPacketStore(
-            _packet_body(implementer="OTHER")
-        )
-        result = self._apply(packet_store=unknown)
-        self.assertEqual(result["action"], "implementer_refused")
-        self.assertEqual(self.spawned, [])
-        self.assertEqual(unknown.mutations, 0)
-
-    def test_stale_dirty_active_and_ambiguous_do_not_dispatch(self) -> None:
+    def test_stale_dirty_and_cursor_state_do_not_dispatch(self) -> None:
         stale = self._apply(head=OTHER, packets=[_snapshot(head=OTHER)])
-        self.assertEqual(stale["action"], "stale_head")
+        self.assertIn(stale["action"], {"stale_head", "stale_checkpoint"})
+        self.assertEqual(stale["cursor_calls"], 0)
+
         dirty = self._apply(git_runner=_git(HEAD, dirty=True))
         self.assertEqual(dirty["action"], "identity_refused")
-        active = self._apply(
-            list_sessions=lambda: [
-                PersistSession(session_id="s", workspace=self.worktree, status="Attached")
-            ]
+        self.assertEqual(dirty["cursor_calls"], 0)
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("Chat disposition must not probe Cursor state")
+
+        current = self._apply(
+            list_sessions=forbidden,
+            list_processes=forbidden,
         )
-        self.assertEqual(active["action"], "cursor_active_noop")
-        ambiguous = self._apply(packets=[])
-        self.assertEqual(ambiguous["action"], "ambiguous_packet")
-        mismatched = self._apply(
-            packet_store=MemoryPacketStore(_packet_body(OTHER))
-        )
-        self.assertEqual(mismatched["action"], "stale_packet")
+        self.assertEqual(current["action"], "authorized_handoff")
+        self.assertEqual(current["cursor_calls"], 0)
         self.assertEqual(self.spawned, [])
-        self.assertEqual(self.packet.mutations, 0)
 
-    def test_dispatch_failure_keeps_findings_and_replay_does_not_dispatch(self) -> None:
-        outcome = self._apply(spawn=self._spawn(code=1))
-        self.assertEqual(outcome["action"], "dispatch_blocked")
+    def test_legacy_dispatch_failure_is_unreachable_from_chat_handoff(self) -> None:
+        def forbidden_spawn(*_args, **_kwargs):
+            raise AssertionError("Chat disposition must not spawn Cursor")
+
+        outcome = self._apply(spawn=forbidden_spawn)
+        self.assertEqual(outcome["action"], "authorized_handoff")
         self.assertEqual(outcome["cursor_calls"], 0)
-        self.assertIn("bounded gap", outcome["findings"] or "")
-        self.assertIn("bounded gap", self.packet.body)
-        self.assertIn("WORK_PACKET_MUTATION=DISPATCH_BLOCKED", self.packet.body)
-        self.assertNotIn(CHAT, self.packet.body)
-        self.assertEqual(self.packet.mutations, 2)
-        replay = self._apply(spawn=self._spawn())
-        self.assertEqual(replay["action"], "duplicate")
-        self.assertEqual(len(self.spawned), 1)
-        self.assertEqual(self.packet.mutations, 2)
+        self.assertEqual(self.spawned, [])
+        self.assertIn("WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF", self.packet.body)
 
-    def test_compensation_conflict_keeps_the_finding_set(self) -> None:
-        class FailCompensate(MemoryPacketStore):
-            def cas_save(self, body: str, *, expected_body: str, expected_token: str) -> None:
-                if self.mutations >= 1:
-                    raise CheckpointCasConflict("compensate lost")
-                super().cas_save(
-                    body, expected_body=expected_body, expected_token=expected_token
-                )
-
-        packet = FailCompensate(_packet_body())
-        outcome = self._apply(packet_store=packet, spawn=self._spawn(code=1))
-        self.assertEqual(outcome["action"], "compensation_failed")
-        self.assertIn("bounded gap", outcome["findings"] or "")
-        self.assertIn("bounded gap", packet.body)
-        self.assertEqual(len(self.spawned), 1)
-        replay = self._apply(packet_store=packet, spawn=self._spawn())
+        replay = self._apply(spawn=forbidden_spawn)
         self.assertEqual(replay["action"], "duplicate")
-        self.assertEqual(len(self.spawned), 1)
+        self.assertEqual(replay["cursor_calls"], 0)
+
+    def test_chat_handoff_never_enters_dispatch_compensation(self) -> None:
+        outcome = self._apply()
+        self.assertEqual(outcome["action"], "authorized_handoff")
+        self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertEqual(self.spawned, [])
+        self.assertIn("bounded gap", outcome["findings"])
+        self.assertNotIn("DISPATCH_BLOCKED", self.packet.body)
 
     def test_pass_without_current_gates_does_not_advance(self) -> None:
         claim = _claim("PASS")
@@ -432,32 +457,27 @@ class SliceDDispositionTests(unittest.TestCase):
         self.assertEqual(self.store.writes, writes)
         self.assertEqual(self.spawned, [])
 
-    def test_findings_redact_chat_id_secret_and_host_path(self) -> None:
-        finding = f"see {CHAT} and {SECRET} under {self.worktree}/notes"
+    def test_findings_redact_secret_and_host_path_without_cursor_identity(self) -> None:
+        finding = f"fix {SECRET} at {self.worktree}/private/file"
         outcome = self._apply(claim=_claim("REWORK", findings=finding))
-        self.assertEqual(outcome["action"], "redispatched")
-        blob = self.packet.body + (outcome["findings"] or "")
-        self.assertNotIn(CHAT, blob)
-        self.assertNotIn("sk-fake-secret", blob)
-        self.assertNotIn(self.worktree, blob)
-        loaded, _sha = self.store.load(47)
-        assert loaded is not None
-        self.assertNotIn(CHAT, loaded.to_json())
-        self.assertNotIn(self.worktree, loaded.to_json())
+        self.assertEqual(outcome["action"], "authorized_handoff")
+        encoded = str(outcome)
+        self.assertNotIn(SECRET, encoded)
+        self.assertNotIn(self.worktree, encoded)
+        self.assertNotIn(CHAT, self.packet.body)
+        self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertEqual(self.spawned, [])
 
-    def test_bugbot_absence_still_redispatches(self) -> None:
-        outcome = self._apply(bugbot_advisory="BILLING_DISABLED")
-        self.assertEqual(outcome["action"], "redispatched")
-        self.assertEqual(len(self.spawned), 1)
-        self.assertNotIn("BILLING_DISABLED", self.packet.body)
-
+    def test_bugbot_absence_still_authorizes_handoff(self) -> None:
+        outcome = self._apply(bugbot_advisory=None)
+        self.assertEqual(outcome["action"], "authorized_handoff")
+        self.assertEqual(outcome["cursor_calls"], 0)
+        self.assertEqual(self.spawned, [])
 
 class BugbotPresentTests(unittest.TestCase):
     def test_bugbot_advisory_is_included_and_absence_is_not_required(self) -> None:
         tmp = tempfile.TemporaryDirectory()
-        state = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.addCleanup(state.cleanup)
         store = MemoryClaimStore()
         key = make_audit_claim_key(REPO, 47, HEAD)
         ledger = IssueAuditLedger(
@@ -468,14 +488,12 @@ class BugbotPresentTests(unittest.TestCase):
         )
         store.save(ledger, expected_sha=None)
         packet = MemoryPacketStore(_packet_body())
-        spawned: list[list[str]] = []
-
-        def spawn(argv: list[str], _cwd: str) -> int:
-            spawned.append(argv)
-            return 0
-
         loaded, sha = store.load(47)
         assert loaded is not None
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("Chat disposition must not spawn or probe Cursor")
+
         outcome = apply_exact_head_disposition(
             claim=loaded.claims[key],
             ledger=loaded,
@@ -497,122 +515,20 @@ class BugbotPresentTests(unittest.TestCase):
             expected_host=HOST,
             worktree_path=tmp.name,
             git_runner=_git(HEAD),
-            spawn=spawn,
-            list_sessions=lambda: [],
-            list_processes=lambda _path: [],
+            spawn=forbidden,
+            list_sessions=forbidden,
+            list_processes=forbidden,
             bugbot_advisory="nit: bound the retry",
-            state_root=state.name,
-            host_probe=lambda: HOST,
         )
-        self.assertEqual(outcome["action"], "redispatched")
-        self.assertEqual(len(spawned), 1)
+        self.assertEqual(outcome["action"], "authorized_handoff")
+        self.assertEqual(outcome["cursor_calls"], 0)
         self.assertIn("nit: bound the retry", packet.body)
         self.assertNotIn(CHAT, packet.body)
 
-
 class SliceDBoundaryTests(unittest.TestCase):
-    def test_pending_dispatch_restart_resumes_once(self) -> None:
+    def test_legacy_pending_dispatch_is_rewritten_as_chat_handoff(self) -> None:
         tmp = tempfile.TemporaryDirectory()
-        state = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.addCleanup(state.cleanup)
-        store = MemoryClaimStore()
-        key = make_audit_claim_key(REPO, 47, HEAD)
-        ledger = IssueAuditLedger(
-            repository=REPO,
-            issue_number=47,
-            month_id="2023-11",
-            claims={key: _claim("REWORK")},
-        )
-        store.save(ledger, expected_sha=None)
-        pending = render_rework_work_packet_body(
-            _packet_body(),
-            repository=REPO,
-            branch=BRANCH,
-            workstream=WORKSTREAM,
-            findings="bounded gap",
-            attempt=2,
-            head=HEAD,
-        )
-        packet = MemoryPacketStore(pending)
-        spawned: list[list[str]] = []
-
-        def spawn(argv: list[str], _cwd: str) -> int:
-            spawned.append(argv)
-            return 0
-
-        loaded, sha = store.load(47)
-        assert loaded is not None
-        self.assertIsNone(loaded.dispositions.get(key))
-        outcome = apply_exact_head_disposition(
-            claim=loaded.claims[key],
-            ledger=loaded,
-            ledger_sha=sha,
-            claim_store=store,
-            packet_store=packet,
-            repository=REPO,
-            issue_number=47,
-            branch=BRANCH,
-            workstream=WORKSTREAM,
-            head=HEAD,
-            packets=[_snapshot()],
-            descriptor=ProjectDescriptor(
-                repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
-            ),
-            observed_host=HOST,
-            expected_host=HOST,
-            worktree_path=tmp.name,
-            git_runner=_git(HEAD),
-            spawn=spawn,
-            list_sessions=lambda: [],
-            list_processes=lambda _path: [],
-            attempt=2,
-            state_root=state.name,
-            host_probe=lambda: HOST,
-        )
-        self.assertEqual(outcome["action"], "redispatched")
-        self.assertEqual(outcome["cursor_calls"], 1)
-        self.assertEqual(len(spawned), 1)
-        self.assertEqual(spawned[0][:4], ["agent", "--print", "--resume", CHAT])
-        self.assertEqual(packet.mutations, 0)
-        loaded, _sha = store.load(47)
-        assert loaded is not None
-        self.assertEqual(loaded.dispositions[key]["action"], "redispatched")
-        replay = apply_exact_head_disposition(
-            claim=loaded.claims[key],
-            ledger=loaded,
-            ledger_sha=_sha,
-            claim_store=store,
-            packet_store=packet,
-            repository=REPO,
-            issue_number=47,
-            branch=BRANCH,
-            workstream=WORKSTREAM,
-            head=HEAD,
-            packets=[_snapshot()],
-            descriptor=ProjectDescriptor(
-                repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
-            ),
-            observed_host=HOST,
-            expected_host=HOST,
-            worktree_path=tmp.name,
-            git_runner=_git(HEAD),
-            spawn=spawn,
-            list_sessions=lambda: [],
-            list_processes=lambda _path: [],
-            attempt=2,
-            state_root=state.name,
-            host_probe=lambda: HOST,
-        )
-        self.assertEqual(replay["action"], "duplicate")
-        self.assertEqual(len(spawned), 1)
-        self.assertEqual(packet.mutations, 0)
-
-    def test_cursor_appearing_before_spawn_fails_closed(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        state = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.addCleanup(state.cleanup)
         store = MemoryClaimStore()
         key = make_audit_claim_key(REPO, 47, HEAD)
         store.save(
@@ -624,24 +540,22 @@ class SliceDBoundaryTests(unittest.TestCase):
             ),
             expected_sha=None,
         )
-        packet = MemoryPacketStore(_packet_body())
-        spawned: list[list[str]] = []
-        seen = {"n": 0}
-
-        def sessions():
-            seen["n"] += 1
-            if seen["n"] == 1:
-                return []
-            return [
-                PersistSession(session_id="s", workspace=tmp.name, status="Attached")
-            ]
-
-        def spawn(argv: list[str], _cwd: str) -> int:
-            spawned.append(argv)
-            return 0
-
+        pending = render_rework_work_packet_body(
+            _packet_body(),
+            repository=REPO,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            findings="bounded gap",
+            attempt=2,
+            head=HEAD,
+        )
+        packet = MemoryPacketStore(pending)
         loaded, sha = store.load(47)
         assert loaded is not None
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("legacy pending marker must not resume Cursor")
+
         outcome = apply_exact_head_disposition(
             claim=loaded.claims[key],
             ledger=loaded,
@@ -661,22 +575,62 @@ class SliceDBoundaryTests(unittest.TestCase):
             expected_host=HOST,
             worktree_path=tmp.name,
             git_runner=_git(HEAD),
-            spawn=spawn,
-            list_sessions=sessions,
-            list_processes=lambda _path: [],
+            spawn=forbidden,
+            list_sessions=forbidden,
+            list_processes=forbidden,
             attempt=2,
-            state_root=state.name,
-            host_probe=lambda: HOST,
         )
-        self.assertEqual(outcome["action"], "dispatch_blocked")
-        self.assertNotEqual(outcome["action"], "redispatched")
-        self.assertEqual(spawned, [])
+        self.assertEqual(outcome["action"], "authorized_handoff")
         self.assertEqual(outcome["cursor_calls"], 0)
-        self.assertIn("bounded gap", packet.body)
-        self.assertIn("WORK_PACKET_MUTATION=DISPATCH_BLOCKED", packet.body)
-        self.assertNotIn(CHAT, packet.body)
+        self.assertIn("WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF", packet.body)
 
-    def test_product_path_uses_github_adapter_and_one_resume(self) -> None:
+    def test_cursor_state_is_not_probed_before_chat_handoff(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MemoryClaimStore()
+        key = make_audit_claim_key(REPO, 47, HEAD)
+        store.save(
+            IssueAuditLedger(
+                repository=REPO,
+                issue_number=47,
+                month_id="2023-11",
+                claims={key: _claim("REWORK")},
+            ),
+            expected_sha=None,
+        )
+        loaded, sha = store.load(47)
+        assert loaded is not None
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("Chat disposition must not probe Cursor state")
+
+        outcome = apply_exact_head_disposition(
+            claim=loaded.claims[key],
+            ledger=loaded,
+            ledger_sha=sha,
+            claim_store=store,
+            packet_store=MemoryPacketStore(_packet_body()),
+            repository=REPO,
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            descriptor=ProjectDescriptor(
+                repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
+            ),
+            observed_host=HOST,
+            expected_host=HOST,
+            worktree_path=tmp.name,
+            git_runner=_git(HEAD),
+            spawn=forbidden,
+            list_sessions=forbidden,
+            list_processes=forbidden,
+        )
+        self.assertEqual(outcome["action"], "authorized_handoff")
+        self.assertEqual(outcome["cursor_calls"], 0)
+
+    def test_product_path_uses_github_adapter_and_authorizes_handoff(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         state = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -686,15 +640,15 @@ class SliceDBoundaryTests(unittest.TestCase):
 
         def runner(argv: list[str], _cwd: str) -> subprocess.CompletedProcess[str]:
             if argv[:4] == ["gh", "api", "--paginate", "--slurp"]:
-                page = [
-                    {
-                        "number": 47,
-                        "title": "[AI Work] disposition",
-                        "body": body["text"],
-                        "user": {"login": "packet-author"},
-                    }
-                ]
-                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps([page]), stderr="")
+                page = [{
+                    "number": 47,
+                    "title": "[AI Work] disposition",
+                    "body": body["text"],
+                    "user": {"login": "packet-author"},
+                }]
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps([page]), stderr=""
+                )
             if argv[:2] == ["gh", "api"] and argv[2].endswith("/permission"):
                 return subprocess.CompletedProcess(
                     argv, 0, stdout=json.dumps({"permission": "admin"}), stderr=""
@@ -708,7 +662,9 @@ class SliceDBoundaryTests(unittest.TestCase):
                     "updatedAt": body["updated"],
                     "author": {"login": "packet-author"},
                 }
-                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(payload), stderr="")
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=json.dumps(payload), stderr=""
+                )
             if argv[:3] == ["gh", "issue", "edit"]:
                 written = Path(argv[argv.index("--body-file") + 1]).read_text()
                 edits.append(written)
@@ -729,7 +685,6 @@ class SliceDBoundaryTests(unittest.TestCase):
             ),
             expected_sha=None,
         )
-        spawned: list[list[str]] = []
         config = HostWorkerConfig(
             state_root=state.name,
             host_id=HOST,
@@ -739,6 +694,10 @@ class SliceDBoundaryTests(unittest.TestCase):
                 ),
             ),
         )
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("product Chat path must not spawn/probe Cursor")
+
         outcome = run_completed_audit_disposition(
             host_config=config,
             claim_store=store,
@@ -749,36 +708,18 @@ class SliceDBoundaryTests(unittest.TestCase):
             head=HEAD,
             packets=[_snapshot()],
             git_runner=_git(HEAD),
-            spawn=lambda argv, _cwd: spawned.append(argv) or 0,
-            list_sessions=lambda: [],
-            list_processes=lambda _path: [],
+            spawn=forbidden,
+            list_sessions=forbidden,
+            list_processes=forbidden,
             host_probe=lambda: HOST,
             attempt=2,
         )
-        self.assertEqual(outcome["action"], "redispatched")
-        self.assertEqual(outcome["cursor_calls"], 1)
+        self.assertEqual(outcome["action"], "authorized_handoff")
+        self.assertEqual(outcome["cursor_calls"], 0)
         self.assertEqual(outcome["packet_mutations"], 1)
         self.assertEqual(len(edits), 1)
-        self.assertIn("VERDICT=REWORK", edits[0])
+        self.assertIn("WORK_PACKET_MUTATION=AUTHORIZED_HANDOFF", edits[0])
         self.assertNotIn(CHAT, edits[0])
-        self.assertEqual(spawned[0][:4], ["agent", "--print", "--resume", CHAT])
-        parsed = build_parser().parse_args(
-            [
-                "host-worker",
-                "dispose-once",
-                "--descriptors",
-                "descriptors.json",
-                "--issue",
-                "47",
-                "--branch",
-                BRANCH,
-                "--workstream",
-                WORKSTREAM,
-                "--head",
-                HEAD,
-            ]
-        )
-        self.assertIs(parsed.func.__name__, "cmd_host_worker_dispose_once")
 
     def test_omitted_host_probe_observes_the_real_host(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -880,19 +821,10 @@ class SliceDBoundaryTests(unittest.TestCase):
         self.assertNotEqual(outcome["verdict"], "PASS")
         self.assertEqual(spawned, [])
 
-    def test_unconfirmed_resume_is_not_run_again(self) -> None:
+    def test_replay_of_chat_handoff_does_not_spawn(self) -> None:
         tmp = tempfile.TemporaryDirectory()
-        state = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.addCleanup(state.cleanup)
-
-        class FailRedispatchSave(MemoryClaimStore):
-            def save(self, ledger: IssueAuditLedger, *, expected_sha: str | None) -> str:
-                if '"action": "redispatched"' in ledger.to_json():
-                    raise CheckpointCasConflict("redispatch persist lost")
-                return super().save(ledger, expected_sha=expected_sha)
-
-        store = FailRedispatchSave()
+        store = MemoryClaimStore()
         key = make_audit_claim_key(REPO, 47, HEAD)
         store.save(
             IssueAuditLedger(
@@ -904,58 +836,69 @@ class SliceDBoundaryTests(unittest.TestCase):
             expected_sha=None,
         )
         packet = MemoryPacketStore(_packet_body())
-        spawned: list[list[str]] = []
 
-        def spawn(argv: list[str], _cwd: str) -> int:
-            spawned.append(argv)
-            return 0
-
-        def once(ledger_sha: str | None, ledger: IssueAuditLedger) -> dict:
-            return apply_exact_head_disposition(
-                claim=ledger.claims[key],
-                ledger=ledger,
-                ledger_sha=ledger_sha,
-                claim_store=store,
-                packet_store=packet,
-                repository=REPO,
-                issue_number=47,
-                branch=BRANCH,
-                workstream=WORKSTREAM,
-                head=HEAD,
-                packets=[_snapshot()],
-                descriptor=ProjectDescriptor(
-                    repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
-                ),
-                observed_host=HOST,
-                expected_host=HOST,
-                worktree_path=tmp.name,
-                git_runner=_git(HEAD),
-                spawn=spawn,
-                list_sessions=lambda: [],
-                list_processes=lambda _path: [],
-                attempt=2,
-                state_root=state.name,
-                host_probe=lambda: HOST,
-            )
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("Chat handoff must not spawn/probe Cursor")
 
         loaded, sha = store.load(47)
         assert loaded is not None
-        first = once(sha, loaded)
-        self.assertEqual(first["action"], "dispatch_unconfirmed")
-        self.assertEqual(len(spawned), 1)
-        replay_ledger, replay_sha = store.load(47)
-        assert replay_ledger is not None
-        self.assertEqual(replay_ledger.dispositions[key]["action"], "dispatch_started")
-        second = once(replay_sha, replay_ledger)
-        self.assertEqual(second["action"], "dispatch_blocked")
-        self.assertEqual(len(spawned), 1)
-        self.assertIn("bounded gap", packet.body)
+        first = apply_exact_head_disposition(
+            claim=loaded.claims[key],
+            ledger=loaded,
+            ledger_sha=sha,
+            claim_store=store,
+            packet_store=packet,
+            repository=REPO,
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            descriptor=ProjectDescriptor(
+                repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
+            ),
+            observed_host=HOST,
+            expected_host=HOST,
+            worktree_path=tmp.name,
+            git_runner=_git(HEAD),
+            spawn=forbidden,
+            list_sessions=forbidden,
+            list_processes=forbidden,
+            attempt=2,
+        )
+        self.assertEqual(first["action"], "authorized_handoff")
+        loaded2, sha2 = store.load(47)
+        assert loaded2 is not None
+        second = apply_exact_head_disposition(
+            claim=loaded2.claims[key],
+            ledger=loaded2,
+            ledger_sha=sha2,
+            claim_store=store,
+            packet_store=packet,
+            repository=REPO,
+            issue_number=47,
+            branch=BRANCH,
+            workstream=WORKSTREAM,
+            head=HEAD,
+            packets=[_snapshot()],
+            descriptor=ProjectDescriptor(
+                repository=REPO, worktree=tmp.name, cursor_chat_id=CHAT
+            ),
+            observed_host=HOST,
+            expected_host=HOST,
+            worktree_path=tmp.name,
+            git_runner=_git(HEAD),
+            spawn=forbidden,
+            list_sessions=forbidden,
+            list_processes=forbidden,
+            attempt=2,
+        )
+        self.assertEqual(second["action"], "duplicate")
+        self.assertEqual(second["cursor_calls"], 0)
 
-    def test_state_root_outside_the_worktree_leaves_no_repo_artifact(self) -> None:
+    def test_chat_handoff_creates_no_cursor_lock_artifact(self) -> None:
         work = tempfile.TemporaryDirectory()
-        state = tempfile.TemporaryDirectory()
         self.addCleanup(work.cleanup)
-        self.addCleanup(state.cleanup)
         store = MemoryClaimStore()
         key = make_audit_claim_key(REPO, 47, HEAD)
         store.save(
@@ -969,13 +912,16 @@ class SliceDBoundaryTests(unittest.TestCase):
         )
         loaded, sha = store.load(47)
         assert loaded is not None
-        packet = MemoryPacketStore(_packet_body())
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("Chat handoff must not touch Cursor runtime")
+
         outcome = apply_exact_head_disposition(
             claim=loaded.claims[key],
             ledger=loaded,
             ledger_sha=sha,
             claim_store=store,
-            packet_store=packet,
+            packet_store=MemoryPacketStore(_packet_body()),
             repository=REPO,
             issue_number=47,
             branch=BRANCH,
@@ -989,66 +935,10 @@ class SliceDBoundaryTests(unittest.TestCase):
             expected_host=HOST,
             worktree_path=work.name,
             git_runner=_git(HEAD),
-            spawn=lambda _argv, _cwd: 0,
-            list_sessions=lambda: [],
-            list_processes=lambda _path: [],
-            state_root=state.name,
-            host_probe=lambda: HOST,
+            spawn=forbidden,
+            list_sessions=forbidden,
+            list_processes=forbidden,
         )
-        self.assertEqual(outcome["action"], "redispatched")
+        self.assertEqual(outcome["action"], "authorized_handoff")
+        self.assertEqual(outcome["cursor_calls"], 0)
         self.assertFalse((Path(work.name) / "chat-locks").exists())
-        self.assertTrue(any(Path(state.name).rglob("*.lock")))
-        nested = MemoryPacketStore(_packet_body())
-        refused = apply_exact_head_disposition(
-            claim=_claim("REWORK"),
-            ledger=IssueAuditLedger(
-                repository=REPO,
-                issue_number=47,
-                month_id="2023-11",
-                claims={key: _claim("REWORK")},
-            ),
-            ledger_sha=None,
-            claim_store=MemoryClaimStore(),
-            packet_store=nested,
-            repository=REPO,
-            issue_number=47,
-            branch=BRANCH,
-            workstream=WORKSTREAM,
-            head=HEAD,
-            packets=[_snapshot()],
-            descriptor=ProjectDescriptor(
-                repository=REPO, worktree=work.name, cursor_chat_id=CHAT
-            ),
-            observed_host=HOST,
-            expected_host=HOST,
-            worktree_path=work.name,
-            git_runner=_git(HEAD),
-            spawn=lambda _argv, _cwd: 0,
-            list_sessions=lambda: [],
-            list_processes=lambda _path: [],
-            state_root=work.name,
-            host_probe=lambda: HOST,
-        )
-        self.assertEqual(refused["action"], "state_root_refused")
-        self.assertEqual(nested.mutations, 0)
-        self.assertFalse((Path(work.name) / "chat-locks").exists())
-        descriptor = Path(state.name) / "descriptors.json"
-        descriptor.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "state_root": work.name,
-                    "host_id": HOST,
-                    "projects": [
-                        {
-                            "repository": REPO,
-                            "worktree": work.name,
-                            "cursor_chat_id": CHAT,
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        with self.assertRaises(ValidationError):
-            load_host_worker_config(descriptor)

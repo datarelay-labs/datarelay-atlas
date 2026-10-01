@@ -93,7 +93,6 @@ from atlas.work_controller import (
     FixedAuditAdapter,
     GitHubWorkPacketAdapter,
     OpenAIResponsesAuditAdapter,
-    PtyPersistCursorDispatcher,
     RecordingCursorDispatcher,
     default_git_runner,
     RecordingWorkPacketAdapter,
@@ -566,13 +565,14 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
     `--audit-adapter fixed` explicitly for offline/deterministic verdicts.
     `--audit-adapter openai` is metadata-only and may be used with a recording
     packet adapter for audit-only runs. It cannot mutate the canonical GitHub
-    Work Packet or spawn Cursor until it has the Codex evidence bundle.
+    Work Packet until it has the required evidence parity. Cursor spawning is
+    retired regardless of audit adapter.
 
-    Production Work Packet adapter mutates the same GitHub `[AI Work]` Issue
-    before REWORK dispatch. `RecordingWorkPacketAdapter` is offline/test-only.
+    The GitHub Work Packet adapter mutates the same `[AI Work]` Issue before an
+    authorized REWORK handoff. `RecordingWorkPacketAdapter` is offline/test-only.
 
     Non-runtime commands (`register` / `show` / `list`) do not carry audit or
-    dispatch flags; they always get offline-safe recording adapters.
+    handoff flags; they always get offline-safe recording adapters.
     """
     if not hasattr(args, "audit_adapter"):
         return WorkController(
@@ -597,28 +597,20 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
 
     packet_choice = getattr(args, "work_packet_adapter", None)
     spawn = bool(getattr(args, "spawn_dispatch", False))
-    if adapter == "openai" and (spawn or packet_choice == "github"):
+    if spawn:
+        raise ValidationError(
+            "CURSOR_RUNTIME_RETIRED: --spawn-dispatch is no longer supported"
+        )
+    if adapter == "openai" and packet_choice == "github":
         raise ValidationError(
             "OpenAI audit adapter is metadata-only and cannot mutate the "
-            "canonical GitHub Work Packet or spawn Cursor until it has Codex "
-            "evidence parity; use --work-packet-adapter recording without "
-            "--spawn-dispatch"
+            "canonical GitHub Work Packet until it has Codex evidence parity; "
+            "use --work-packet-adapter recording"
         )
     if packet_choice is None:
-        # ChatGPT-primary default is audit-only and must not mutate GitHub or
-        # spawn Cursor. An explicit --spawn-dispatch selects the GitHub packet
-        # path, where WorkController enforces IMPLEMENTER=CURSOR.
-        packet_choice = "github" if spawn else "recording"
-    if packet_choice == "github" and not spawn:
-        raise ValidationError(
-            "GitHub Work Packet mutation requires --spawn-dispatch "
-            "(audit-only mode must pass --work-packet-adapter recording)"
-        )
-    if spawn and packet_choice != "github":
-        raise ValidationError(
-            "real --spawn-dispatch requires --work-packet-adapter github "
-            "(RecordingWorkPacketAdapter cannot pair with PtyPersistCursorDispatcher)"
-        )
+        # ChatGPT-primary default stays audit-only. Explicit GitHub packet
+        # selection enables authorized handoff mutation without any spawn.
+        packet_choice = "recording"
     if packet_choice == "github":
         work_packet = GitHubWorkPacketAdapter()
     elif packet_choice == "recording":
@@ -626,12 +618,9 @@ def _controller_from_args(args: argparse.Namespace) -> WorkController:
     else:
         raise ValidationError(f"unsupported work packet adapter: {packet_choice}")
 
-    if spawn:
-        dispatcher = PtyPersistCursorDispatcher()
-    else:
-        # Do not pair recording packet adapters with a fake successful dispatcher:
-        # audit-only REWORK must stop without claiming REWORK_DISPATCHED.
-        dispatcher = AuditOnlyCursorDispatcher()
+    # Current runtime never spawns Cursor. WorkController Chat handoffs do not
+    # call the dispatcher; this fail-closed adapter protects legacy call sites.
+    dispatcher = AuditOnlyCursorDispatcher()
     return WorkController(
         Path(args.data_root),
         audit=audit,
@@ -891,15 +880,14 @@ def _add_work_controller_runtime_flags(parser: argparse.ArgumentParser) -> None:
         choices=["github", "recording"],
         default=None,
         help=(
-            "github=mutate canonical GitHub Work Packet before REWORK dispatch "
-            "(production default for codex); recording=offline/test only "
-            "(default when --audit-adapter fixed or openai)"
+            "github=mutate canonical GitHub Work Packet before authorized REWORK handoff; "
+            "recording=offline/test or audit-only (default unless github is explicit)"
         ),
     )
     parser.add_argument(
         "--spawn-dispatch",
         action="store_true",
-        help="Use PTY persist dispatcher to create a fresh /work-resume session",
+        help="Retired compatibility flag; always fails closed (Cursor runtime removed)",
     )
 
 
@@ -1302,7 +1290,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     wc_comp = wc_sub.add_parser(
         "completion",
-        help="Handle one Cursor completion event JSON file",
+        help="Handle one durable completion event JSON file (historical events accepted)",
     )
     wc_comp.add_argument("event_file")
     _add_work_controller_runtime_flags(wc_comp)
@@ -1482,12 +1470,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     hw = sub.add_parser(
         "host-worker",
-        help="Host-local Cursor resume worker (Issue #47 slice A)",
+        help="Host-local audit/disposition worker; Cursor resume runtime is retired",
     )
     hw_sub = hw.add_subparsers(dest="hw_command", required=True)
     hw_run = hw_sub.add_parser(
         "run-once",
-        help="Locked idle pass with zero model and zero Cursor calls",
+        help="Locked idle compatibility pass; no current resume authority",
     )
     hw_run.add_argument(
         "--descriptors",
@@ -1518,7 +1506,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     usage = sub.add_parser(
         "usage",
-        help="Read-only Cursor worker, usage, and provider-capacity evidence",
+        help="Read-only historical Cursor usage/provider-capacity evidence",
     )
     usage_sub = usage.add_subparsers(dest="usage_command", required=True)
     usage_inventory = usage_sub.add_parser(
