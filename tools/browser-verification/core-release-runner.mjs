@@ -205,9 +205,27 @@ function surfaceCases() {
       "Broker plan", "ADVISORY_ONLY", "Failover preview",
       "Verified route outcomes", "Strategy comparison",
     ]),
-    search: contentSurface("primary", "/search", "Cross-project search", [
-      "Search all registered projects", "Engineering only", "Personal/reference only",
-    ]),
+    search: async (context, request) => withPage(context, async (page) => {
+      await visit(page, request, "primary", "/search");
+      await requireHeading(page, "Cross-project search");
+      const input = page.locator('input[name="q"]');
+      const select = page.locator('select[name="source_class"]');
+      if (await input.getAttribute("placeholder") !== "Search all registered projects") {
+        throw new Error("cross-project search input is not discoverable");
+      }
+      const options = await select.locator("option").allTextContents();
+      if (!options.includes("Engineering only")
+          || !options.includes("Personal/reference only")) {
+        throw new Error("cross-project source-class controls are incomplete");
+      }
+      if (await page.locator('form[action="/search"]').count() !== 1) {
+        throw new Error("cross-project search form action is missing");
+      }
+      return {
+        status: 200,
+        detail: "cross-project search input, source-class controls and form action reconciled",
+      };
+    }),
     project: contentSurface("primary", "/projects/core-alpha", "Core Alpha", [
       "datarelay-labs/core-alpha", "Configured sources", "Lifecycle evidence",
       "Knowledge coverage", "Sources", "Search knowledge", "browser-escape",
@@ -452,10 +470,12 @@ function missionCases() {
         assertLoopbackUrl(page.url(), "cross-project owning-group navigation");
         await page.locator('input[name="q"]').fill(isolated);
         await page.getByRole("button", { name: "Search" }).click();
+        await page.waitForURL(/q=core-alpha-isolation-marker/);
         body = await bodyText(page);
-        if (!body.includes("datarelay-labs/core-alpha")
+        if (await page.locator('input[name="q"]').inputValue() !== isolated
+            || !body.includes("1 attributable result(s)")
+            || !body.includes("datarelay-labs/core-alpha")
             || !body.includes("docs/architecture.md")
-            || !body.includes(isolated)
             || body.includes("datarelay-labs/core-beta")) {
           throw new Error("project-scoped retrieval leaked or lost owning-project provenance");
         }
