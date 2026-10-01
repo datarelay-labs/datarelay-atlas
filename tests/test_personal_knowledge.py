@@ -93,6 +93,22 @@ class PersonalKnowledgeTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 svc.personal_knowledge_dashboard()
 
+            del manifest["items"][1]["content"]
+            manifest["items"][1]["title"] = "Bearer abc.def"
+            (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "contains unsafe secret metadata"
+            ):
+                svc.personal_knowledge_dashboard()
+
+            manifest["items"][1]["title"] = "Rejected"
+            manifest["source_system"] = "Authorization: Bearer abc.def"
+            (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "contains unsafe secret metadata"
+            ):
+                svc.personal_knowledge_dashboard()
+
     def test_import_manifest_is_preserved_by_existing_backup_restore(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

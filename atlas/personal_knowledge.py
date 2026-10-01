@@ -16,6 +16,7 @@ from atlas.projection import ProjectionStore
 from atlas.projection_retrieval import build_keyword_retriever, iter_validated_projections
 from atlas.provenance import PERSONAL_SOURCE_CLASS, ValidationError
 from atlas.registry import ProjectRegistry
+from atlas.secrets import contains_unsafe_secret
 
 MANIFEST_FILENAME = f"{SNAPSHOT_DIRNAME}/import-manifest.json"
 _MANIFEST_KIND = "personal_knowledge_import_manifest"
@@ -129,13 +130,27 @@ def _manifest(data_root: Path) -> dict[str, object]:
         )
         counts["total"] += 1
         counts[state.lower()] += 1
+
+    exposed_manifest = {
+        "source_system": source_system,
+        "observed_at": observed_at,
+        "items": normalized,
+    }
+    if contains_unsafe_secret(
+        json.dumps(
+            exposed_manifest,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+    ):
+        raise ValidationError("personal import manifest contains unsafe secret metadata")
+
     return {
         "state": "OBSERVED",
         "detail": "bounded import/quarantine metadata only; rejected bodies are not retained here",
-        "source_system": source_system,
-        "observed_at": observed_at,
+        **exposed_manifest,
         "counts": counts,
-        "items": normalized,
     }
 
 
