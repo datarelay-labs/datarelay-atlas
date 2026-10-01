@@ -94,6 +94,27 @@ class PersonalKnowledgeTests(unittest.TestCase):
                 svc.personal_knowledge_dashboard()
 
             del manifest["items"][1]["content"]
+            manifest["content"] = "must-not-be-retained"
+            (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(ValidationError):
+                svc.personal_knowledge_dashboard()
+            del manifest["content"]
+
+            manifest["items"][1]["state"] = []
+            (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "state is invalid"):
+                svc.personal_knowledge_dashboard()
+            manifest["items"][1]["state"] = "QUARANTINED"
+
+            manifest["items"][1]["title"] = (
+                "PASS" + "WORD=" + chr(34) + "hunter2" + chr(10) + "more-secret" + chr(34)
+            )
+            (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "contains unsafe secret metadata"
+            ):
+                svc.personal_knowledge_dashboard()
+
             manifest["items"][1]["title"] = "Bearer abc.def"
             (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(

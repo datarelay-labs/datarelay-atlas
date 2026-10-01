@@ -82,7 +82,8 @@ def _manifest(data_root: Path) -> dict[str, object]:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise ValidationError("personal import manifest is invalid JSON") from exc
-    if not isinstance(payload, dict):
+    expected = {"schema_version", "kind", "source_system", "observed_at", "items"}
+    if not isinstance(payload, dict) or set(payload) != expected:
         raise ValidationError("personal import manifest is invalid")
     if payload.get("schema_version") != 1 or payload.get("kind") != _MANIFEST_KIND:
         raise ValidationError("personal import manifest is unsupported")
@@ -115,7 +116,7 @@ def _manifest(data_root: Path) -> dict[str, object]:
             raise ValidationError("personal import manifest external_id is invalid")
         if title is not None and (not isinstance(title, str) or len(title) > 256):
             raise ValidationError("personal import manifest title is invalid")
-        if state not in _MANIFEST_STATES:
+        if not isinstance(state, str) or state not in _MANIFEST_STATES:
             raise ValidationError("personal import manifest state is invalid")
         if reason_code is not None and (not isinstance(reason_code, str) or not reason_code or len(reason_code) > 128):
             raise ValidationError("personal import manifest reason_code is invalid")
