@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "kind": "decision_plane_canary_request",
+  "request_id": "optional-context-canary-1",
+  "decision_class": "OPTIONAL_CONTEXT_SELECTION",
+  "expected_evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "scope": {
+    "project_id": "datarelay-atlas",
+    "path_prefixes": ["atlas"],
+    "task_kinds": ["DEVELOPMENT"]
+  },
+  "max_canary_decisions": 10,
+  "evaluated_at": "2026-09-30T12:00:00Z",
+  "expires_at": "2026-10-01T12:00:00Z"
+}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from atlas.work_controller import (
     WorkControllerStore,
     WorkstreamRecord,
     build_persist_resume_command,
+    drain_completion_inbox,
+    enqueue_completion_event,
 )
 
 
@@ -798,6 +801,180 @@ class WorkControllerTests(unittest.TestCase):
             self.assertEqual(outcomes[0]["state"], "PASSED")
             self.assertEqual(ctl.show("awc-poc")["state"], "PASSED")
             self.assertIsNone(ctl.show("awc-poc")["pending_event"])
+
+    def test_controller_store_rejects_symlink_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            external = root / "external.json"
+            external.write_text(
+                json.dumps({"schema_version": 1, "workstreams": {}}),
+                encoding="utf-8",
+            )
+            state = root / "work-controller.json"
+            state.symlink_to(external)
+            store = WorkControllerStore(root)
+            with self.assertRaisesRegex(ValidationError, "path is unsafe"):
+                store.list_workstreams()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "work-controller.json"
+            state.symlink_to(root / "missing-controller.json")
+            store = WorkControllerStore(root)
+            with self.assertRaisesRegex(ValidationError, "path is unsafe"):
+                store.list_workstreams()
+
+    def test_concurrent_completion_drain_is_single_consumer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ctl, dispatcher, packets = self._ctl(tmp)
+            event_path = enqueue_completion_event(root, self._event())
+            original = ctl.handle_completion
+            entered = threading.Event()
+            release = threading.Event()
+            handle_calls = 0
+            handle_guard = threading.Lock()
+            errors: list[BaseException] = []
+            results: list[list[dict]] = []
+
+            def synchronized_handle(event):
+                nonlocal handle_calls
+                with handle_guard:
+                    handle_calls += 1
+                entered.set()
+                self.assertTrue(release.wait(timeout=5))
+                return original(event)
+
+            ctl.handle_completion = synchronized_handle
+
+            def worker():
+                try:
+                    results.append(drain_completion_inbox(ctl, root))
+                except BaseException as exc:
+                    errors.append(exc)
+
+            first = threading.Thread(target=worker)
+            second = threading.Thread(target=worker)
+            first.start()
+            self.assertTrue(entered.wait(timeout=5))
+            second.start()
+            second.join(timeout=5)
+            self.assertFalse(second.is_alive())
+            release.set()
+            first.join(timeout=10)
+            self.assertFalse(first.is_alive())
+
+            self.assertEqual(errors, [])
+            self.assertEqual(handle_calls, 1)
+            self.assertEqual(len(ctl.audit.calls), 1)
+            self.assertEqual(sorted(len(batch) for batch in results), [0, 1])
+            self.assertFalse(event_path.exists())
+            processed = root / "completion-processed" / event_path.name
+            self.assertTrue(processed.is_file())
+            self.assertEqual(
+                json.loads(processed.read_text(encoding="utf-8")),
+                self._event(),
+            )
+            self.assertEqual(len(dispatcher.requests), 0)
+            self.assertEqual(len(packets.updates), 0)
+            self.assertEqual(drain_completion_inbox(ctl, root), [])
+
+    def test_completion_event_claim_releases_after_handler_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ctl, _dispatcher, _packets = self._ctl(tmp)
+            event_path = enqueue_completion_event(root, self._event())
+            original = ctl.handle_completion
+
+            def fail_before_processing(_event):
+                raise RuntimeError("synthetic handler failure")
+
+            ctl.handle_completion = fail_before_processing
+            with self.assertRaisesRegex(RuntimeError, "synthetic handler failure"):
+                drain_completion_inbox(ctl, root)
+            self.assertTrue(event_path.is_file())
+
+            ctl.handle_completion = original
+            outcomes = drain_completion_inbox(ctl, root)
+            self.assertEqual(len(outcomes), 1)
+            self.assertFalse(event_path.exists())
+
+    def test_completion_processed_parent_swap_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ctl, _dispatcher, _packets = self._ctl(tmp)
+            event_path = enqueue_completion_event(root, self._event())
+            original = ctl.handle_completion
+            outside = root / "outside-processed"
+            outside.mkdir()
+
+            def swap_processed(event):
+                outcome = original(event)
+                processed = root / "completion-processed"
+                real = root / "completion-processed-real"
+                processed.rename(real)
+                processed.symlink_to(outside, target_is_directory=True)
+                return outcome
+
+            ctl.handle_completion = swap_processed
+            with self.assertRaisesRegex(ValidationError, "processed directory is unsafe"):
+                drain_completion_inbox(ctl, root)
+            self.assertTrue(event_path.is_file())
+            self.assertFalse((outside / event_path.name).exists())
+
+    def test_completion_inbox_parent_swap_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ctl, _dispatcher, _packets = self._ctl(tmp)
+            event_path = enqueue_completion_event(root, self._event())
+            original = ctl.handle_completion
+            outside = root / "outside-inbox"
+            outside.mkdir()
+
+            def swap_inbox(event):
+                outcome = original(event)
+                inbox = root / "completion-inbox"
+                real = root / "completion-inbox-real"
+                inbox.rename(real)
+                inbox.symlink_to(outside, target_is_directory=True)
+                return outcome
+
+            ctl.handle_completion = swap_inbox
+            with self.assertRaisesRegex(ValidationError, "inbox directory is unsafe"):
+                drain_completion_inbox(ctl, root)
+            self.assertTrue((root / "completion-inbox-real" / event_path.name).is_file())
+            self.assertFalse((outside / event_path.name).exists())
+
+    def test_completion_directories_and_events_reject_symlinks(self):
+        event = self._event()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            external = root / "external-inbox"
+            external.mkdir()
+            (root / "completion-inbox").symlink_to(external, target_is_directory=True)
+            with self.assertRaisesRegex(ValidationError, "inbox directory is unsafe"):
+                enqueue_completion_event(root, event)
+            self.assertEqual(list(external.iterdir()), [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "completion-inbox").symlink_to(
+                root / "missing-inbox", target_is_directory=True
+            )
+            ctl, _dispatcher, _packets = self._ctl(tmp)
+            with self.assertRaisesRegex(ValidationError, "inbox directory is unsafe"):
+                drain_completion_inbox(ctl, root)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inbox = root / "completion-inbox"
+            inbox.mkdir()
+            target = root / "external-event.json"
+            target.write_text(json.dumps(event), encoding="utf-8")
+            (inbox / "evt-1.json").symlink_to(target)
+            ctl, _dispatcher, _packets = self._ctl(tmp)
+            with self.assertRaisesRegex(ValidationError, "event path is unsafe"):
+                drain_completion_inbox(ctl, root)
 
     def test_unsupported_schema_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:

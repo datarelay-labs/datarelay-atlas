@@ -1,0 +1,35 @@
+{
+  "state": "CURRENT",
+  "authority": "ROUTING_ADVISORY_ONLY",
+  "mutation_authority": "NONE",
+  "route_action": "CANARY_PR_REQUIRED",
+  "reasons": [],
+  "audit_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "audit_outcome": "CANARY_READY",
+  "target_repository": "datarelay-labs/datarelay-atlas",
+  "target_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "current_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "current_inventory_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "audit_inventory_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "engineering_system_revision": "dddddddddddddddddddddddddddddddddddddddd",
+  "model_provider": "openai",
+  "model_name": "gpt-5.6-sol",
+  "model_profile": "medium",
+  "harness_id": "chatgpt-chat",
+  "harness_revision": "2026-09-30",
+  "evaluation_ref": "github:issue-190",
+  "candidate_changes": [
+    {
+      "path": "AGENTS.md",
+      "before_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "after_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "behavior_results": [
+    {
+      "scenario_id": "chat-primary-implementation",
+      "outcome": "PASS"
+    }
+  ],
+  "next_effect": "SEPARATE_CANARY_AND_PR_GOVERNANCE_REQUIRED"
+}

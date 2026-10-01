@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/concurrency-dispatch-authorization.schema.json",
+  "title": "DataRelay Atlas Concurrency Dispatch Authorization v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "authorization_id",
+    "authority",
+    "dispatch_effect_authority",
+    "evaluated_at",
+    "plan_digest",
+    "plan_observed_at",
+    "graph_state",
+    "assignment_count",
+    "assignments",
+    "authorization_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "concurrency_dispatch_authorization"
+    },
+    "authorization_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "authority": {
+      "const": "DISPATCH_AUTHORIZATION_ONLY"
+    },
+    "dispatch_effect_authority": {
+      "const": "NONE"
+    },
+    "evaluated_at": {
+      "type": "string"
+    },
+    "plan_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "plan_observed_at": {
+      "type": "string"
+    },
+    "graph_state": {
+      "const": "READY"
+    },
+    "assignment_count": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 64
+    },
+    "assignments": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 64
+    },
+    "authorization_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

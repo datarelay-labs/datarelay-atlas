@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/instruction-governance-profile.schema.json",
+  "title": "DataRelay Atlas Instruction Governance Profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version","kind","target_repository","expected_target_head",
+    "engineering_system_repository","engineering_system_revision",
+    "agent_base_digest","behavior_scenarios_digest","trigger_kind","trigger_revision",
+    "model_provider","model_name","model_profile","harness_id","harness_revision"
+  ],
+  "properties": {
+    "schema_version": {"type":"integer","const":1},
+    "kind": {"type":"string","const":"instruction_governance_profile"},
+    "target_repository": {"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+    "expected_target_head": {"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "engineering_system_repository": {"type":"string","const":"datarelay-labs/engineering-system"},
+    "engineering_system_revision": {"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "agent_base_digest": {"$ref":"#/$defs/digest"},
+    "behavior_scenarios_digest": {"$ref":"#/$defs/digest"},
+    "trigger_kind": {"enum":["MODEL_CHANGE","HARNESS_CHANGE","INSTRUCTION_CHANGE","MANUAL_AUDIT"]},
+    "trigger_revision": {"$ref":"#/$defs/id"},
+    "model_provider": {"type":"string","pattern":"^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "model_name": {"$ref":"#/$defs/id"},
+    "model_profile": {"$ref":"#/$defs/id"},
+    "harness_id": {"$ref":"#/$defs/id"},
+    "harness_revision": {"$ref":"#/$defs/id"}
+  },
+  "$defs": {
+    "digest": {"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "id": {"type":"string","minLength":1,"maxLength":256,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]{0,255}$"}
+  }
+}

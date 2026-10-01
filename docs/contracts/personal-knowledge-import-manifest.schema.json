@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/personal-knowledge-import-manifest.schema.json",
+  "title": "DataRelay Atlas Personal Knowledge Import Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "source_system", "observed_at", "items"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "kind": {"type": "string", "const": "personal_knowledge_import_manifest"},
+    "source_system": {"type": "string", "minLength": 1, "maxLength": 64},
+    "observed_at": {"type": "string", "minLength": 1, "maxLength": 64},
+    "items": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state"],
+        "properties": {
+          "source_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+          "external_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+          "title": {"type": ["string", "null"], "maxLength": 256},
+          "state": {"enum": ["IMPORTED", "SANITIZED", "QUARANTINED", "REJECTED"]},
+          "reason_code": {"type": ["string", "null"], "minLength": 1, "maxLength": 128}
+        }
+      }
+    }
+  }
+}

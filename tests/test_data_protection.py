@@ -17,6 +17,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 from atlas.cli import main
+from atlas.concurrency_claim import (
+    FILENAME as CONCURRENCY_CLAIMS_FILENAME,
+    _load_ledger as _load_claim_ledger,
+)
+from atlas.concurrency_effect import (
+    FILENAME as CONCURRENCY_EFFECTS_FILENAME,
+    _load_ledger as _load_effect_ledger,
+)
+from atlas.concurrency_handoff import (
+    FILENAME as CONCURRENCY_HANDOFFS_FILENAME,
+    _load_ledger as _load_handoff_ledger,
+)
 from atlas.data_lock import data_root_write_lock
 from atlas.data_protection import backup_data_root, restore_test
 from atlas.github_sync import FetchedSource
@@ -76,6 +88,132 @@ class DataProtectionTests(unittest.TestCase):
             )
             self.assertIn("alpha body", document)
             self.assertIn("rev-alpha", document)
+
+    def test_backup_preserves_concurrency_replay_reservations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "data"
+            _sample_root(root)
+
+            effect_payload = {
+                "schema_version": 1,
+                "kind": "concurrency_dispatch_effect_ledger",
+                "authority": "DISPATCH_EFFECT_RECEIPT_ONLY",
+                "effects": [
+                    {
+                        "effect_id": "effect-1",
+                        "authorization_digest": "a" * 64,
+                        "authorization_id": "auth-1",
+                        "state": "IN_PROGRESS",
+                        "assignment_count": 2,
+                        "receipt": None,
+                        "receipt_digest": None,
+                    }
+                ],
+            }
+            claim_payload = {
+                "schema_version": 1,
+                "kind": "concurrency_handoff_claim_ledger",
+                "claims": [
+                    {
+                        "claim_id": "claim-1",
+                        "handoff_digest": "b" * 64,
+                        "state": "IN_PROGRESS",
+                        "receipt": None,
+                        "claim_digest": None,
+                    }
+                ],
+            }
+            handoff_payload = {
+                "schema_version": 1,
+                "kind": "concurrency_work_packet_handoff_ledger",
+                "handoffs": [],
+            }
+            (root / CONCURRENCY_EFFECTS_FILENAME).write_text(
+                json.dumps(effect_payload) + "\n",
+                encoding="utf-8",
+            )
+            (root / CONCURRENCY_CLAIMS_FILENAME).write_text(
+                json.dumps(claim_payload) + "\n",
+                encoding="utf-8",
+            )
+            (root / CONCURRENCY_HANDOFFS_FILENAME).write_text(
+                json.dumps(handoff_payload) + "\n",
+                encoding="utf-8",
+            )
+
+            backup = base / "snapshot"
+            backup_data_root(root, backup)
+            restored = base / "restored"
+            restore_test(backup, restored)
+
+            self.assertEqual(
+                _load_effect_ledger(restored)["effects"][0]["state"],
+                "IN_PROGRESS",
+            )
+            self.assertEqual(
+                _load_claim_ledger(restored)["claims"][0]["state"],
+                "IN_PROGRESS",
+            )
+            self.assertEqual(_load_handoff_ledger(restored)["handoffs"], [])
+            for name in (
+                CONCURRENCY_EFFECTS_FILENAME,
+                CONCURRENCY_CLAIMS_FILENAME,
+                CONCURRENCY_HANDOFFS_FILENAME,
+            ):
+                self.assertEqual(
+                    (restored / name).read_bytes(),
+                    (root / name).read_bytes(),
+                )
+
+            duplicate_member_effect = (
+                '{"schema_version":1,'
+                '"kind":"concurrency_dispatch_effect_ledger",'
+                '"authority":"DISPATCH_EFFECT_RECEIPT_ONLY",'
+                '"effects":[{}],"effects":[]}\n'
+            )
+            (root / CONCURRENCY_EFFECTS_FILENAME).write_text(
+                duplicate_member_effect, encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "replay state"):
+                backup_data_root(root, base / "rejected-duplicate-member-effect")
+
+            malformed_effect = json.loads(json.dumps(effect_payload))
+            del malformed_effect["effects"][0]["effect_id"]
+            (root / CONCURRENCY_EFFECTS_FILENAME).write_text(
+                json.dumps(malformed_effect) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "replay state"):
+                backup_data_root(root, base / "rejected-effect")
+
+            (root / CONCURRENCY_EFFECTS_FILENAME).write_text(
+                json.dumps(effect_payload) + "\n",
+                encoding="utf-8",
+            )
+            duplicate_claim = json.loads(json.dumps(claim_payload))
+            duplicate_claim["claims"].append(
+                dict(duplicate_claim["claims"][0])
+            )
+            (root / CONCURRENCY_CLAIMS_FILENAME).write_text(
+                json.dumps(duplicate_claim) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "replay state"):
+                backup_data_root(root, base / "rejected-claim")
+
+            (root / CONCURRENCY_CLAIMS_FILENAME).write_text(
+                json.dumps(claim_payload) + "\n",
+                encoding="utf-8",
+            )
+            malformed_handoff = dict(handoff_payload)
+            malformed_handoff["handoffs"] = [{}]
+            (root / CONCURRENCY_HANDOFFS_FILENAME).write_text(
+                json.dumps(malformed_handoff) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "replay state"):
+                backup_data_root(root, base / "rejected-handoff")
 
     def test_cli_backup_includes_controller_state_and_skips_chat_audit_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -325,6 +463,25 @@ class DataProtectionTests(unittest.TestCase):
             os.replace(link, root / "registry.json")
             with self.assertRaisesRegex(ValidationError, "not a regular file"):
                 backup_data_root(root, base / "link")
+
+    def test_backup_allows_and_excludes_lifecycle_projection_caches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "data"
+            _sample_root(root)
+            (root / "github-lifecycle.json").write_text(
+                json.dumps({"observed": True}),
+                encoding="utf-8",
+            )
+            (root / "lifecycle-evidence.json").write_text(
+                json.dumps({"observed": True}),
+                encoding="utf-8",
+            )
+            backup = base / "backup"
+            result = backup_data_root(root, backup)
+            self.assertEqual(result["status"], "ok")
+            self.assertFalse((backup / "github-lifecycle.json").exists())
+            self.assertFalse((backup / "lifecycle-evidence.json").exists())
 
     def test_backup_rejects_secret_like_projection_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:

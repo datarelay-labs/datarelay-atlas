@@ -16,7 +16,44 @@ from pathlib import Path
 
 from atlas.data_lock import LOCK_NAME, data_root_write_lock
 from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
+from atlas.personal_knowledge import (
+    MANIFEST_FILENAME as PERSONAL_MANIFEST_FILENAME,
+    validate_personal_import_manifest,
+)
+from atlas.provider_dashboard import FILENAME as PROVIDER_DASHBOARD_FILENAME
+from atlas.provider_route_quality import FILENAME as PROVIDER_ROUTE_QUALITY_FILENAME
+from atlas.decision_plane import FILENAME as DECISION_PLANE_FILENAME
+from atlas.decision_plane_canary import FILENAME as DECISION_PLANE_CANARY_FILENAME
+from atlas.instruction_governance import (
+    FILENAME as INSTRUCTION_GOVERNANCE_FILENAME,
+    DISPOSITION_FILENAME as INSTRUCTION_GOVERNANCE_DISPOSITION_FILENAME,
+)
+from atlas.instruction_governance_canary import FILENAME as INSTRUCTION_GOVERNANCE_CANARY_FILENAME
+from atlas.concurrency_admission import (
+    SNAPSHOT_FILENAME as CONCURRENCY_SNAPSHOT_FILENAME,
+    RUNS_FILENAME as CONCURRENCY_RUNS_FILENAME,
+)
+from atlas.concurrency_authorization import FILENAME as CONCURRENCY_AUTHORIZATION_FILENAME
+from atlas.concurrency_effect import (
+    FILENAME as CONCURRENCY_EFFECTS_FILENAME,
+    validate_concurrency_effect_ledger,
+)
+from atlas.concurrency_join import FILENAME as CONCURRENCY_JOINS_FILENAME
+from atlas.concurrency_execution import (
+    FILENAME as CONCURRENCY_EXECUTIONS_FILENAME,
+    validate_concurrency_execution_ledger,
+)
+from atlas.concurrency_handoff import (
+    FILENAME as CONCURRENCY_HANDOFFS_FILENAME,
+    validate_concurrency_handoff_ledger,
+)
+from atlas.concurrency_claim import (
+    FILENAME as CONCURRENCY_CLAIMS_FILENAME,
+    validate_concurrency_claim_ledger,
+)
+from atlas.concurrency_claim_join import FILENAME as CONCURRENCY_CLAIM_JOINS_FILENAME
 from atlas.provenance import ValidationError
+from atlas.security_review import FILENAME as SECURITY_REVIEW_FILENAME
 from atlas.registry import REGISTRY_SCHEMA_VERSION, ProjectRegistry
 from atlas.secrets import contains_unsafe_secret
 from atlas.work_controller import (
@@ -32,7 +69,36 @@ PARTIAL_SUFFIX = ".partial"
 _DURABLE_NAME = "registry.json"
 _PROJECTIONS_DIR = "projections"
 _CONTROLLER_NAME = "work-controller.json"
-_DERIVED_CACHE_FILES = frozenset({"chat-audit.json", "chat-audit.lock", "chat-audit.tmp"})
+_REPLAY_STATE_FILES = frozenset(
+    {
+        CONCURRENCY_EFFECTS_FILENAME,
+        CONCURRENCY_HANDOFFS_FILENAME,
+        CONCURRENCY_CLAIMS_FILENAME,
+        CONCURRENCY_EXECUTIONS_FILENAME,
+    }
+)
+_DERIVED_CACHE_FILES = frozenset(
+    {
+        "chat-audit.json",
+        "chat-audit.lock",
+        "chat-audit.tmp",
+        "github-lifecycle.json",
+        "lifecycle-evidence.json",
+        PROVIDER_DASHBOARD_FILENAME,
+        PROVIDER_ROUTE_QUALITY_FILENAME,
+        DECISION_PLANE_FILENAME,
+        DECISION_PLANE_CANARY_FILENAME,
+        INSTRUCTION_GOVERNANCE_FILENAME,
+        INSTRUCTION_GOVERNANCE_DISPOSITION_FILENAME,
+        INSTRUCTION_GOVERNANCE_CANARY_FILENAME,
+        CONCURRENCY_SNAPSHOT_FILENAME,
+        CONCURRENCY_RUNS_FILENAME,
+        CONCURRENCY_AUTHORIZATION_FILENAME,
+        CONCURRENCY_JOINS_FILENAME,
+        CONCURRENCY_CLAIM_JOINS_FILENAME,
+        SECURITY_REVIEW_FILENAME,
+    }
+)
 _DERIVED_CACHE_DIRS = frozenset({"chat-audit-handoffs"})
 _CONTROLLER_DIRS = frozenset({COMPLETION_INBOX_DIRNAME, COMPLETION_PROCESSED_DIRNAME})
 
@@ -44,7 +110,7 @@ class _SnapshotFile:
 
 
 def backup_data_root(data_root: Path, dest: Path) -> dict:
-    """Snapshot registry and projections while cooperating writers are excluded."""
+    """Snapshot durable/controller state while cooperating writers are excluded."""
     root = Path(data_root)
     target = Path(dest)
     if root.is_symlink() or not root.is_dir():
@@ -128,11 +194,17 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
     saw_projections = False
     saw_controller = False
     controller_dirs: list[str] = []
+    replay_files: list[str] = []
     for entry in root.iterdir():
         name = entry.name
         if name == LOCK_NAME:
             if entry.is_symlink():
                 raise ValidationError("backup entry is not a regular file")
+            continue
+        if name in _REPLAY_STATE_FILES:
+            if entry.is_symlink() or not entry.is_file():
+                raise ValidationError("backup entry is not a regular file")
+            replay_files.append(name)
             continue
         if name in _DERIVED_CACHE_FILES:
             if entry.is_symlink() or not entry.is_file():
@@ -201,6 +273,14 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
         for path in _tree_files(root / dirname):
             relative = path.relative_to(root).as_posix()
             files.append(_SnapshotFile(relative, "controller", _read_regular(path)))
+    for name in sorted(replay_files):
+        files.append(
+            _SnapshotFile(name, "controller", _read_regular(root / name))
+        )
+    personal_manifest = root / PERSONAL_MANIFEST_FILENAME
+    if personal_manifest.exists():
+        validate_personal_import_manifest(root)
+
     snapshot_root = root / SNAPSHOT_DIRNAME
     if snapshot_root.exists():
         for path in _tree_files(snapshot_root):
@@ -253,6 +333,7 @@ def _validate_snapshot_files(files: list[_SnapshotFile]) -> None:
     _validate_registry_blob(blobs.get(_DURABLE_NAME))
     _validate_projection_blobs(blobs)
     _validate_controller_blobs(blobs)
+    _validate_replay_blobs(blobs)
 
 
 def _validate_registry_blob(raw: bytes | None) -> None:
@@ -315,15 +396,92 @@ def _validate_controller_blobs(blobs: dict[str, bytes]) -> None:
             raise ValidationError("completion event is unsupported") from exc
 
 
+
+
+def _validate_replay_blobs(blobs: dict[str, bytes]) -> None:
+    validators = (
+        (
+            CONCURRENCY_EFFECTS_FILENAME,
+            validate_concurrency_effect_ledger,
+            "concurrency effect replay state",
+        ),
+        (
+            CONCURRENCY_HANDOFFS_FILENAME,
+            validate_concurrency_handoff_ledger,
+            "concurrency handoff replay state",
+        ),
+        (
+            CONCURRENCY_CLAIMS_FILENAME,
+            validate_concurrency_claim_ledger,
+            "concurrency claim replay state",
+        ),
+        (
+            CONCURRENCY_EXECUTIONS_FILENAME,
+            validate_concurrency_execution_ledger,
+            "concurrency execution replay state",
+        ),
+    )
+    validated: dict[str, dict[str, object]] = {}
+    for filename, validator, label in validators:
+        raw = blobs.get(filename)
+        if raw is None:
+            continue
+        payload = _json_object(raw, f"{label} is corrupt")
+        try:
+            validated[filename] = validator(payload)
+        except ValidationError as exc:
+            raise ValidationError(f"{label} is unsupported") from exc
+
+    executions = validated.get(CONCURRENCY_EXECUTIONS_FILENAME)
+    if executions is not None:
+        effects = validated.get(CONCURRENCY_EFFECTS_FILENAME)
+        effect_by_id = {
+            str(item["effect_id"]): item
+            for item in ((effects or {}).get("effects") or [])
+            if isinstance(item, dict)
+        }
+        for record in executions["records"]:
+            if record.get("state") != "TERMINAL":
+                continue
+            entry = effect_by_id.get(str(record["effect_id"]))
+            if (
+                entry is None
+                or entry.get("state") != "TERMINAL"
+                or entry.get("authorization_digest")
+                != record.get("authorization_digest")
+                or entry.get("receipt_digest")
+                != record.get("effect_receipt_digest")
+            ):
+                raise ValidationError(
+                    "concurrency execution replay binding is unsupported"
+                )
+            receipt = entry.get("receipt")
+            if (
+                not isinstance(receipt, dict)
+                or receipt.get("effect_id") != record.get("effect_id")
+                or receipt.get("authorization_id")
+                != record.get("authorization_id")
+                or receipt.get("assignment_count")
+                != record.get("assignment_count")
+                or receipt.get("result") != record.get("effect_result")
+            ):
+                raise ValidationError(
+                    "concurrency execution replay attribution is unsupported"
+                )
+
+
 def _role_matches(path: str, role: str) -> bool:
     if role == "durable":
         return path == _DURABLE_NAME or path.startswith(f"{SNAPSHOT_DIRNAME}/")
     if role == "rebuildable":
         return path.startswith(f"{_PROJECTIONS_DIR}/")
     if role == "controller":
-        return path == _CONTROLLER_NAME or path.startswith(
-            f"{COMPLETION_INBOX_DIRNAME}/"
-        ) or path.startswith(f"{COMPLETION_PROCESSED_DIRNAME}/")
+        return (
+            path == _CONTROLLER_NAME
+            or path in _REPLAY_STATE_FILES
+            or path.startswith(f"{COMPLETION_INBOX_DIRNAME}/")
+            or path.startswith(f"{COMPLETION_PROCESSED_DIRNAME}/")
+        )
     return False
 
 
@@ -344,9 +502,20 @@ def _reject_secret(raw: bytes) -> None:
 
 
 def _json_object(raw: bytes, corrupt_message: str) -> dict:
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON member")
+            result[key] = value
+        return result
+
     try:
-        data = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
+        data = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_object,
+        )
+    except (UnicodeError, ValueError) as exc:
         raise ValidationError(corrupt_message) from exc
     if not isinstance(data, dict):
         raise ValidationError(corrupt_message)
@@ -419,6 +588,7 @@ def _assert_backup_tree(backup: Path) -> list[_SnapshotFile]:
         if extra:
             raise ValidationError("backup contains unexpected files")
     _validate_snapshot_files(files)
+    validate_personal_import_manifest(backup)
     _load_projects(backup)
     _load_controller(backup)
     return files

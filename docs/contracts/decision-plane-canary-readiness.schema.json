@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/decision-plane-canary-readiness.schema.json",
+  "title": "DataRelay Atlas Decision Plane Canary Readiness v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","kind","state","rollout_state","authority","activation_authority","execution_authority","evidence_digest","eligible_class_count","eligible_decision_classes","classes"],
+  "properties": {
+    "schema_version": {"type":"integer","const":1},
+    "kind": {"type":"string","const":"decision_plane_canary_readiness"},
+    "state": {"enum":["OBSERVED","UNKNOWN"]},
+    "rollout_state": {"const":"SHADOW"},
+    "authority": {"const":"CANARY_READINESS_EVIDENCE_ONLY"},
+    "activation_authority": {"const":"NO_ACTIVATION_AUTHORITY"},
+    "execution_authority": {"const":"NONE"},
+    "evidence_digest": {"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "eligible_class_count": {"type":"integer","minimum":0,"maximum":2},
+    "eligible_decision_classes": {
+      "type":"array","uniqueItems":true,"maxItems":2,
+      "items":{"enum":["OPTIONAL_CONTEXT_SELECTION","FOCUSED_CHECK_SELECTION"]}
+    },
+    "classes": {
+      "type":"array","minItems":2,"maxItems":2,
+      "items": {
+        "type":"object","additionalProperties":false,
+        "required":["decision_class","readiness","replay_assessment","verified_replay_count","false_routing_count","criteria","fallback","candidate_authority","execution_authority"],
+        "properties": {
+          "decision_class":{"enum":["OPTIONAL_CONTEXT_SELECTION","FOCUSED_CHECK_SELECTION"]},
+          "readiness":{"enum":["CANARY_REQUEST_ELIGIBLE","CANARY_REQUEST_NOT_ELIGIBLE"]},
+          "replay_assessment":{"enum":["REPLAY_PASS","REPLAY_FAIL","INSUFFICIENT_EVIDENCE"]},
+          "verified_replay_count":{"type":"integer","minimum":0},
+          "false_routing_count":{"type":"integer","minimum":0},
+          "criteria":{
+            "type":"object","additionalProperties":false,
+            "required":["minimum_verified_replay_records","verified_success_noninferiority","cost_or_time_or_frontier_improvement","retry_delta_nonpositive"],
+            "properties":{
+              "minimum_verified_replay_records":{"type":"integer","const":5},
+              "verified_success_noninferiority":{"type":"boolean"},
+              "cost_or_time_or_frontier_improvement":{"type":"boolean"},
+              "retry_delta_nonpositive":{"type":"boolean"}
+            }
+          },
+          "fallback":{"const":"CURRENT_DECISION"},
+          "candidate_authority":{"const":"ATLAS_VALIDATED_CANDIDATES_ONLY"},
+          "execution_authority":{"const":"NONE"}
+        }
+      }
+    }
+  }
+}

@@ -57,6 +57,9 @@
     },
     "capacity_attribution": {
       "$ref": "https://datarelay.local/contracts/provider-capacity-attribution.schema.json"
+    },
+    "capacity_operational": {
+      "$ref": "https://atlas.datarelay.run/contracts/provider-capacity-operational.schema.json"
     }
   },
   "$defs": {

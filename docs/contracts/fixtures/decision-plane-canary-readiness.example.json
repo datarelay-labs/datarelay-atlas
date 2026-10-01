@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "kind": "decision_plane_canary_readiness",
+  "state": "OBSERVED",
+  "rollout_state": "SHADOW",
+  "authority": "CANARY_READINESS_EVIDENCE_ONLY",
+  "activation_authority": "NO_ACTIVATION_AUTHORITY",
+  "execution_authority": "NONE",
+  "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "eligible_class_count": 1,
+  "eligible_decision_classes": ["OPTIONAL_CONTEXT_SELECTION"],
+  "classes": [
+    {
+      "decision_class": "FOCUSED_CHECK_SELECTION",
+      "readiness": "CANARY_REQUEST_NOT_ELIGIBLE",
+      "replay_assessment": "INSUFFICIENT_EVIDENCE",
+      "verified_replay_count": 0,
+      "false_routing_count": 0,
+      "criteria": {
+        "minimum_verified_replay_records": 5,
+        "verified_success_noninferiority": false,
+        "cost_or_time_or_frontier_improvement": false,
+        "retry_delta_nonpositive": true
+      },
+      "fallback": "CURRENT_DECISION",
+      "candidate_authority": "ATLAS_VALIDATED_CANDIDATES_ONLY",
+      "execution_authority": "NONE"
+    },
+    {
+      "decision_class": "OPTIONAL_CONTEXT_SELECTION",
+      "readiness": "CANARY_REQUEST_ELIGIBLE",
+      "replay_assessment": "REPLAY_PASS",
+      "verified_replay_count": 5,
+      "false_routing_count": 0,
+      "criteria": {
+        "minimum_verified_replay_records": 5,
+        "verified_success_noninferiority": true,
+        "cost_or_time_or_frontier_improvement": true,
+        "retry_delta_nonpositive": true
+      },
+      "fallback": "CURRENT_DECISION",
+      "candidate_authority": "ATLAS_VALIDATED_CANDIDATES_ONLY",
+      "execution_authority": "NONE"
+    }
+  ]
+}

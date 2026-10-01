@@ -1,0 +1,17 @@
+{
+  "adapter_id": "CHATGPT_EXTERNAL_HANDOFF",
+  "branch": "feat/example-one",
+  "claim_id": "claim-example-1",
+  "effect_id": "claim-source-effect",
+  "handoff_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head": "1111111111111111111111111111111111111111",
+  "issue_number": 201,
+  "kind": "concurrency_handoff_claim_request",
+  "node_id": "datarelay-labs/datarelay-atlas#201",
+  "provider": "openai",
+  "repository": "datarelay-labs/datarelay-atlas",
+  "route_id": "chat-primary",
+  "runtime": "chat_ssh",
+  "schema_version": 1,
+  "worktree_path": "/srv/datarelay-atlas-worktrees/example-one"
+}

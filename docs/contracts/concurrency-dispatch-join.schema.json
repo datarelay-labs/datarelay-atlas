@@ -1,0 +1,238 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/concurrency-dispatch-join.schema.json",
+  "title": "DataRelay Atlas Dispatch-bound Concurrency Join Evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "join_id",
+    "effect_id",
+    "effect_receipt_digest",
+    "authorization_digest",
+    "observed_at",
+    "effect_result",
+    "result",
+    "pass_authority",
+    "dispatched_count",
+    "dispatch_omission_count",
+    "complete_count",
+    "failed_count",
+    "human_required_count",
+    "outcomes",
+    "dispatch_omissions",
+    "join_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "concurrency_dispatch_join_observation"
+    },
+    "join_id": {
+      "$ref": "#/$defs/id"
+    },
+    "effect_id": {
+      "$ref": "#/$defs/id"
+    },
+    "effect_receipt_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "authorization_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "observed_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\\\.[0-9]{1,6})?Z$"
+    },
+    "effect_result": {
+      "enum": [
+        "DISPATCHED",
+        "PARTIAL"
+      ]
+    },
+    "result": {
+      "enum": [
+        "PASS",
+        "PARTIAL",
+        "FAILED",
+        "HUMAN_REQUIRED"
+      ]
+    },
+    "pass_authority": {
+      "const": "MEASUREMENT_ONLY"
+    },
+    "dispatched_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "dispatch_omission_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "complete_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "failed_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "human_required_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "outcomes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/outcome"
+      }
+    },
+    "dispatch_omissions": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/omission"
+      }
+    },
+    "join_digest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@#\\\\-]{0,255}$"
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "route": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "slot_id",
+        "worker_id",
+        "provider",
+        "runtime",
+        "route_id",
+        "head",
+        "outcome",
+        "duration_ms",
+        "evidence_ref"
+      ],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/id"
+        },
+        "slot_id": {
+          "$ref": "#/$defs/id"
+        },
+        "worker_id": {
+          "$ref": "#/$defs/id"
+        },
+        "provider": {
+          "$ref": "#/$defs/provider"
+        },
+        "runtime": {
+          "$ref": "#/$defs/id"
+        },
+        "route_id": {
+          "$ref": "#/$defs/route"
+        },
+        "head": {
+          "$ref": "#/$defs/id"
+        },
+        "outcome": {
+          "enum": [
+            "COMPLETE",
+            "FAILED",
+            "HUMAN_REQUIRED"
+          ]
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 604800000
+        },
+        "evidence_ref": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "omission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "slot_id",
+        "worker_id",
+        "provider",
+        "runtime",
+        "route_id",
+        "head",
+        "dispatch_result"
+      ],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/id"
+        },
+        "slot_id": {
+          "$ref": "#/$defs/id"
+        },
+        "worker_id": {
+          "$ref": "#/$defs/id"
+        },
+        "provider": {
+          "$ref": "#/$defs/provider"
+        },
+        "runtime": {
+          "$ref": "#/$defs/id"
+        },
+        "route_id": {
+          "$ref": "#/$defs/route"
+        },
+        "head": {
+          "$ref": "#/$defs/id"
+        },
+        "dispatch_result": {
+          "enum": [
+            "REFUSED",
+            "HUMAN_REQUIRED",
+            "ERROR"
+          ]
+        }
+      }
+    }
+  }
+}

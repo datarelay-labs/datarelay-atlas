@@ -1,0 +1,52 @@
+{
+  "authority": "EVIDENCE_ONLY",
+  "controls": [
+    {
+      "control_id": "MCP_AUTHORIZATION_SCOPE",
+      "evidence_ref": "tests:test_security_mcp",
+      "outcome": "PASS"
+    },
+    {
+      "control_id": "MCP_TOKEN_ISSUER_RESOURCE_BINDING",
+      "evidence_ref": "tests:test_mcp_http",
+      "outcome": "PASS"
+    },
+    {
+      "control_id": "TLS_AND_SECRET_FILE_PERMISSIONS",
+      "evidence_ref": "tests:test_ops",
+      "outcome": "PASS"
+    },
+    {
+      "control_id": "DEPLOYMENT_INGRESS_HARDENING",
+      "evidence_ref": "contract:deploy-systemd",
+      "outcome": "PASS"
+    },
+    {
+      "control_id": "DATA_ROOT_PATH_AND_SYMLINK_SAFETY",
+      "evidence_ref": "tests:test_data_protection",
+      "outcome": "PASS"
+    },
+    {
+      "control_id": "BACKUP_RESTORE_FAIL_CLOSED",
+      "evidence_ref": "tests:test_data_protection.restore",
+      "outcome": "PASS"
+    },
+    {
+      "control_id": "CONTENT_FREE_ERROR_AND_EVIDENCE_BOUNDARY",
+      "evidence_ref": "tests:test_runtime_observability",
+      "outcome": "PASS"
+    }
+  ],
+  "evidence_digest": "3b06875ab1dc132f6fef798ce2dbcec5533f707d8aa680deb61cd2b361ae087f",
+  "findings": [],
+  "kind": "atlas_security_review_evidence",
+  "repository": "datarelay-labs/datarelay-atlas",
+  "reviewed_at": "2026-10-01T00:00:00Z",
+  "reviewer": {
+    "kind": "CHATGPT_CHAT",
+    "reference": "github:issue-221"
+  },
+  "schema_version": 1,
+  "scope_version": 1,
+  "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

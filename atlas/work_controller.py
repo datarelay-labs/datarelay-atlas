@@ -7,6 +7,7 @@ runs an independent audit, and either stops or dispatches a fresh /work-resume.
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import pty
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -4742,6 +4744,215 @@ class GitHubWorkPacketAdapter:
             "selected_node": dict(selected),
         }
 
+
+    def activate_concurrency_execution_packet(
+        self,
+        repository: str,
+        issue_number: int,
+        *,
+        branch: str,
+        head: str,
+        workstream: str,
+        expected_active_issue_numbers: list[int],
+        max_wip: int,
+    ) -> dict[str, Any]:
+        """CAS-activate one exact queued packet under a bounded multi-node WIP set.
+
+        The caller owns repository-level serialization. This method never
+        starts a worker/session and never grants PASS or release authority.
+        """
+        repo = normalize_github_repository(repository)
+        if (
+            isinstance(issue_number, bool)
+            or not isinstance(issue_number, int)
+            or issue_number < 1
+        ):
+            raise ValidationError("concurrency activation issue_number is invalid")
+        number = issue_number
+        expected_branch = str(branch or "").strip()
+        expected_head = str(head or "").strip().lower()
+        expected_workstream = str(workstream or "").strip()
+        if (
+            not _valid_git_branch_ref(expected_branch)
+            or not re.fullmatch(r"[0-9a-f]{40}", expected_head)
+            or not WORKSTREAM_RE.fullmatch(expected_workstream)
+        ):
+            raise ValidationError(
+                "concurrency activation branch/head/workstream is invalid"
+            )
+        if isinstance(max_wip, bool) or not isinstance(max_wip, int) or not 1 <= max_wip <= 64:
+            raise ValidationError("concurrency activation max_wip is invalid")
+
+        expected_active: list[int] = []
+        for value in expected_active_issue_numbers:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValidationError(
+                    "concurrency activation expected ACTIVE issue set is invalid"
+                )
+            expected_active.append(value)
+        if len(expected_active) != len(set(expected_active)):
+            raise ValidationError(
+                "concurrency activation expected ACTIVE issue set is duplicated"
+            )
+        expected_active = sorted(expected_active)
+        if number in expected_active:
+            raise ValidationError(
+                "concurrency activation target is already in expected ACTIVE set"
+            )
+        if len(expected_active) >= max_wip:
+            raise ValidationError("concurrency activation project WIP is exhausted")
+
+        queued = self.reread_trusted_queued_execution_packet(repo, number)
+        expected_queued = {
+            "repository": repo,
+            "issue_number": number,
+            "branch": expected_branch,
+            "workstream": expected_workstream,
+            "head": expected_head,
+            "packet_status": "PAUSED",
+            "queue_state": "QUEUED",
+            "implementer": "CHATGPT_CHAT",
+        }
+        if any(queued.get(key) != value for key, value in expected_queued.items()):
+            raise ValidationError("concurrency queued packet identity drifted")
+
+        payload = self._view_issue(repo, number)
+        payload_number = payload.get("number")
+        if (
+            isinstance(payload_number, bool)
+            or not isinstance(payload_number, int)
+            or payload_number != number
+        ):
+            raise ValidationError("concurrency activation issue identity changed")
+        self._assert_ai_work_issue(payload, issue_number=number)
+        self._require_trusted_issue_author(repo, payload)
+        original_body = str(payload.get("body") or "")
+        original_updated_at = str(
+            payload.get("updatedAt") or payload.get("updated_at") or ""
+        )
+        meta = _parse_leading_packet_metadata(original_body)
+        after_raw = meta.get("AFTER_ISSUE")
+        predecessor_issue: int | None = None
+        if after_raw is not None and str(after_raw).strip():
+            predecessor_issue = _after_issue_number(after_raw)
+            if predecessor_issue is None:
+                raise ValidationError(
+                    "concurrency activation canonical AFTER_ISSUE is invalid"
+                )
+
+        def _require_predecessor_complete() -> None:
+            if predecessor_issue is None:
+                return
+            fact = self.read_readiness_packet_fact(repo, predecessor_issue)
+            if (
+                fact.get("packet_status") != "COMPLETE"
+                or fact.get("queue_state") != "NONE"
+            ):
+                raise ValidationError(
+                    "concurrency activation canonical predecessor is not COMPLETE"
+                )
+
+        _require_predecessor_complete()
+        active_before = self._trusted_repository_active_issue_numbers(repo)
+        if active_before != expected_active:
+            listed = ", ".join(f"#{item}" for item in active_before[:20]) or "none"
+            raise ValidationError(
+                "concurrency activation repository ACTIVE occupancy drifted: "
+                f"{listed}"
+            )
+
+        new_body = render_readiness_packet_active_body(
+            original_body,
+            repository=repo,
+            branch=expected_branch,
+            head=expected_head,
+        )
+
+        def _assert_pre_edit_concurrency() -> None:
+            refreshed = self.reread_trusted_queued_execution_packet(repo, number)
+            if any(
+                refreshed.get(key) != value
+                for key, value in expected_queued.items()
+            ):
+                raise ValidationError(
+                    "concurrency queued packet changed before activation edit"
+                )
+            _require_predecessor_complete()
+            current_active = self._trusted_repository_active_issue_numbers(repo)
+            if current_active != expected_active:
+                listed = (
+                    ", ".join(f"#{item}" for item in current_active[:20])
+                    or "none"
+                )
+                raise ValidationError(
+                    "concurrency activation ACTIVE occupancy changed before edit: "
+                    f"{listed}"
+                )
+
+        self._cas_replace_issue_body(
+            repo,
+            number,
+            original_body=original_body,
+            original_updated_at=original_updated_at,
+            new_body=new_body,
+            require_trusted_author=True,
+            require_open_ai_work=True,
+            before_edit=_assert_pre_edit_concurrency,
+        )
+
+        expected_fact = {
+            "repository": repo,
+            "issue_number": number,
+            "branch": expected_branch,
+            "head": expected_head,
+            "packet_status": "ACTIVE",
+            "queue_state": "NONE",
+        }
+        if self.read_readiness_packet_fact(repo, number) != expected_fact:
+            raise ValidationError(
+                "concurrency packet activation was not confirmed"
+            )
+        active = self.reread_trusted_active_packet(repo, number)
+        for key, value in {
+            "repository": repo,
+            "issue_number": number,
+            "branch": expected_branch,
+            "workstream": expected_workstream,
+            "head": expected_head,
+            "status": "ACTIVE",
+            "implementer": "CHATGPT_CHAT",
+        }.items():
+            if active.get(key) != value:
+                raise ValidationError(
+                    "concurrency active packet identity drifted after activation"
+                )
+        _require_predecessor_complete()
+        expected_after = sorted([*expected_active, number])
+        landed_active = self._trusted_repository_active_issue_numbers(repo)
+        if landed_active != expected_after:
+            listed = (
+                ", ".join(f"#{item}" for item in landed_active[:20]) or "none"
+            )
+            raise ValidationError(
+                "concurrency activation post-write ACTIVE occupancy drifted: "
+                f"{listed}"
+            )
+        return {
+            "repository": repo,
+            "issue_number": number,
+            "branch": expected_branch,
+            "workstream": expected_workstream,
+            "head": expected_head,
+            "status": "ACTIVE",
+            "queue_state": "NONE",
+            "implementer": queued["implementer"],
+            "change_risk": queued["change_risk"],
+            "intent_revision": queued["intent_revision"],
+            "author_permission": queued["author_permission"],
+            "predecessor_issue": predecessor_issue,
+        }
+
+
     def _scan_trusted_active_packets(
         self,
         repository: str,
@@ -5741,8 +5952,12 @@ class WorkControllerStore:
         return {"schema_version": CONTROLLER_SCHEMA_VERSION, "workstreams": {}}
 
     def _load(self) -> dict:
+        if self.path.is_symlink():
+            raise ValidationError("work-controller.json path is unsafe")
         if not self.path.exists():
             return self._empty()
+        if not self.path.is_file():
+            raise ValidationError("work-controller.json path is unsafe")
         data = json.loads(self.path.read_text(encoding="utf-8"))
         version = data.get("schema_version")
         if version != CONTROLLER_SCHEMA_VERSION:
@@ -6582,10 +6797,63 @@ def default_data_root() -> Path:
 
 
 def load_completion_event(path: Path) -> dict:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    source = Path(path)
+    if source.is_symlink() or not source.is_file():
+        raise ValidationError("completion event path is unsafe")
+    raw = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValidationError("completion event must be a JSON object")
     return raw
+
+
+def _claim_completion_event(path: Path) -> tuple[int, dict] | None:
+    """Claim one inbox event without holding the data-root lock during audit.
+
+    A non-blocking advisory lock on the opened regular inode makes cooperating
+    drainers single-consumer. The descriptor stays open until the event is moved
+    after processing, so a process crash releases the claim automatically while
+    leaving the inbox file available for retry.
+    """
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise ValidationError("completion event cannot be claimed safely")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValidationError("completion event path is unsafe") from exc
+    locked = False
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValidationError("completion event path is unsafe")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            return None
+        locked = True
+        try:
+            current = path.lstat()
+        except FileNotFoundError:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+            return None
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode):
+            raise ValidationError("completion event path is unsafe")
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValidationError("completion event path changed during claim")
+        with os.fdopen(os.dup(fd), "r", encoding="utf-8") as source:
+            raw = json.load(source)
+        if not isinstance(raw, dict):
+            raise ValidationError("completion event must be a JSON object")
+        return fd, raw
+    except Exception:
+        if locked:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        raise
 
 
 def completion_inbox_dir(data_root: Path) -> Path:
@@ -6606,9 +6874,13 @@ def enqueue_completion_event(data_root: Path, event: dict, *, filename: str | No
     text = json.dumps(event, indent=2, sort_keys=True) + "\n"
     with data_root_write_lock(root):
         inbox = completion_inbox_dir(root)
+        if inbox.is_symlink() or (inbox.exists() and not inbox.is_dir()):
+            raise ValidationError("completion inbox directory is unsafe")
         inbox.mkdir(parents=True, exist_ok=True)
+        if inbox.is_symlink() or not inbox.is_dir():
+            raise ValidationError("completion inbox directory is unsafe")
         path = inbox / name
-        if path.exists():
+        if path.is_symlink() or path.exists():
             raise ValidationError(f"completion inbox file already exists: {path.name}")
         atomic_write_text(path, text)
     return path
@@ -6625,23 +6897,66 @@ def drain_completion_inbox(controller: WorkController, data_root: Path) -> list[
     inbox = completion_inbox_dir(root)
     processed = completion_processed_dir(root)
     with data_root_write_lock(root):
+        if processed.is_symlink() or (processed.exists() and not processed.is_dir()):
+            raise ValidationError("completion processed directory is unsafe")
         processed.mkdir(parents=True, exist_ok=True)
+        if processed.is_symlink() or not processed.is_dir():
+            raise ValidationError("completion processed directory is unsafe")
+        if inbox.is_symlink():
+            raise ValidationError("completion inbox directory is unsafe")
         if not inbox.exists():
             return []
-        pending = sorted(path for path in inbox.glob("*.json") if path.is_file())
+        if not inbox.is_dir():
+            raise ValidationError("completion inbox directory is unsafe")
+        pending: list[tuple[Path, dict]] = []
+        for path in sorted(inbox.glob("*.json")):
+            if path.is_symlink() or not path.is_file():
+                raise ValidationError("completion event path is unsafe")
+            pending.append((path, load_completion_event(path)))
     outcomes: list[dict] = []
-    for path in pending:
-        event = load_completion_event(path)
-        outcome = controller.handle_completion(event)
-        outcome = dict(outcome)
-        outcome["inbox_file"] = path.name
+    for path, _listed_event in pending:
         with data_root_write_lock(root):
-            if path.is_file():
+            if path.is_symlink():
+                raise ValidationError("completion event path is unsafe")
+            if not path.exists():
+                continue
+            if not path.is_file():
+                raise ValidationError("completion event path is unsafe")
+            claim = _claim_completion_event(path)
+        if claim is None:
+            continue
+        event_fd, event = claim
+        try:
+            outcome = controller.handle_completion(event)
+            outcome = dict(outcome)
+            outcome["inbox_file"] = path.name
+            with data_root_write_lock(root):
+                if inbox.is_symlink() or not inbox.is_dir():
+                    raise ValidationError("completion inbox directory is unsafe")
+                if processed.is_symlink() or not processed.is_dir():
+                    raise ValidationError("completion processed directory is unsafe")
+                if path.is_symlink() or not path.is_file():
+                    raise ValidationError("completion event path is unsafe")
+                opened = os.fstat(event_fd)
+                current = path.stat(follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise ValidationError("completion event path changed after claim")
+                if load_completion_event(path) != event:
+                    raise ValidationError("completion event changed during processing")
                 dest = processed / path.name
+                if dest.is_symlink():
+                    raise ValidationError("completion processed destination is unsafe")
                 if dest.exists():
                     dest = processed / f"{path.stem}-{os.getpid()}{path.suffix}"
+                    if dest.is_symlink():
+                        raise ValidationError("completion processed destination is unsafe")
                 path.replace(dest)
-        outcomes.append(outcome)
+            outcomes.append(outcome)
+        finally:
+            try:
+                fcntl.flock(event_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(event_fd)
     return outcomes
 
 

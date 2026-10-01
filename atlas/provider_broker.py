@@ -21,6 +21,7 @@ from atlas.provider_capacity import validate_provider_capacity_input
 from atlas.provider_capacity_attribution import (
     validate_provider_capacity_attribution,
 )
+from atlas.provider_capacity_operational import validate_provider_capacity_operational
 from atlas.provenance import ValidationError
 
 SCHEMA_VERSION = 1
@@ -48,7 +49,7 @@ _CANDIDATE_KEYS = frozenset(
         "ranks",
     }
 )
-_CANDIDATE_OPTIONAL_KEYS = frozenset({"capacity_attribution"})
+_CANDIDATE_OPTIONAL_KEYS = frozenset({"capacity_attribution", "capacity_operational"})
 _RANK_KEYS = frozenset({"capability_preference", "stewardship_preference"})
 _PLAN_KEYS = frozenset(
     {
@@ -203,6 +204,12 @@ def validate_provider_route_candidate(payload: object) -> dict:
         if attribution["provider"] != descriptor["provider"]:
             _reject("route provider identity does not match capacity attribution")
 
+    operational = None
+    if "capacity_operational" in payload:
+        operational = validate_provider_capacity_operational(payload.get("capacity_operational"))
+        if operational["provider"] != descriptor["provider"]:
+            _reject("route provider identity does not match capacity operational evidence")
+
     gates = payload.get("gates")
     if not isinstance(gates, dict) or set(gates) != set(_GATE_KEYS):
         _reject("provider route candidate gates schema is invalid")
@@ -237,6 +244,8 @@ def validate_provider_route_candidate(payload: object) -> dict:
     }
     if attribution is not None:
         normalized["capacity_attribution"] = attribution
+    if operational is not None:
+        normalized["capacity_operational"] = operational
     return normalized
 
 

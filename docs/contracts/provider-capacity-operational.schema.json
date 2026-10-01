@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/provider-capacity-operational.schema.json",
+  "title": "Provider Capacity Operational Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","kind","provider","evidence","facts"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "provider_capacity_operational"},
+    "provider": {"type":"string","pattern":"^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "evidence": {
+      "type":"object","additionalProperties":false,
+      "required":["authority","source_kind","source_ref","source_digest","observed_at"],
+      "properties":{
+        "authority":{"enum":["PROVIDER_AUTHORITATIVE","UNVERIFIED"]},
+        "source_kind":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+        "source_ref":{"type":["string","null"]},
+        "source_digest":{"type":["string","null"],"pattern":"^[0-9a-f]{64}$"},
+        "observed_at":{"type":["string","null"]}
+      }
+    },
+    "facts": {
+      "type":"object","additionalProperties":false,
+      "required":["reset_semantics","health","latency"],
+      "properties":{
+        "reset_semantics":{"oneOf":[{"type":"object","additionalProperties":false,"required":["status"],"properties":{"status":{"const":"UNKNOWN"}}},{"type":"object","additionalProperties":false,"required":["status","mode","window_seconds"],"properties":{"status":{"const":"OBSERVED"},"mode":{"enum":["FIXED_WINDOW","ROLLING_WINDOW","CALENDAR_WINDOW","EVENT_DRIVEN"]},"window_seconds":{"type":"integer","minimum":60,"maximum":31536000}}}]},
+        "health":{"oneOf":[{"type":"object","additionalProperties":false,"required":["status"],"properties":{"status":{"const":"UNKNOWN"}}},{"type":"object","additionalProperties":false,"required":["status","value"],"properties":{"status":{"const":"OBSERVED"},"value":{"enum":["OPERATIONAL","DEGRADED","OUTAGE","MAINTENANCE"]}}}]},
+        "latency":{"oneOf":[{"type":"object","additionalProperties":false,"required":["status"],"properties":{"status":{"const":"UNKNOWN"}}},{"type":"object","additionalProperties":false,"required":["status","metric","boundary","value_ms"],"properties":{"status":{"const":"OBSERVED"},"metric":{"enum":["ROUND_TRIP_MS","TIME_TO_FIRST_BYTE_MS","PROVIDER_REPORTED_MS"]},"boundary":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},"value_ms":{"type":"integer","minimum":0,"maximum":3600000}}}]}
+      }
+    }
+  }
+}

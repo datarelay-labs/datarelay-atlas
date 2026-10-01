@@ -796,6 +796,7 @@ class ChatAuditTests(unittest.TestCase):
         from atlas.secrets import redact_sensitive_audit_text, contains_unsafe_secret
 
         raw = 'OPENAI_API_KEY="sk-live-abcdefghijklmnopqrstuvwxyz012345\nstill-secret"'
+        self.assertTrue(contains_unsafe_secret(raw))
         cleaned = redact_sensitive_audit_text(raw)
         self.assertNotIn("sk-live-", cleaned)
         self.assertNotIn("still-secret", cleaned)

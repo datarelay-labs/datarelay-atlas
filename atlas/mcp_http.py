@@ -43,12 +43,34 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, instruction_governance_routing_factory=service.instruction_governance_routing, instruction_governance_disposition_factory=service.instruction_governance_disposition_dashboard, instruction_governance_canary_factory=service.instruction_governance_canary_dashboard, concurrency_factory=service.concurrency_dashboard, concurrency_authorization_factory=service.concurrency_dispatch_authorization_dashboard, concurrency_effects_factory=service.concurrency_dispatch_effect_dashboard, concurrency_joins_factory=service.concurrency_dispatch_join_dashboard, concurrency_execution_factory=service.concurrency_execution_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit), provider_route_quality_factory=service.provider_route_quality_dashboard, decision_canary_factory=service.decision_canary_readiness, decision_canary_admission_factory=service.decision_canary_dashboard)
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
-            "Project-scoped Atlas retrieval. search_project returns provenance "
-            "and a projection identity. Pass that identity to get_provenance."
+            "Project-scoped Atlas retrieval and engineering context. search_project "
+            "returns provenance and a projection identity; pass that identity to "
+            "get_provenance. get_source_detail returns bounded validated projection "
+            "content. get_project_intelligence returns non-authoritative derived context; "
+            "get_intelligence_overview requires an explicit project_ids scope; "
+            "get_operations_readiness is read-only and never executes operational actions; "
+            "get_provider_dashboard recomputes advisory broker selection without provider execution; "
+            "get_provider_route_quality reports verified route outcomes with no broker influence; "
+            "get_provider_transition_preview returns ADVISORY_ONLY failover planning without effect authority; "
+            "get_decision_plane returns SHADOW/REPLAY measurements with no activation authority; "
+            "get_decision_canary_readiness reports REPLAY_PASS-derived request readiness without activation or execution authority; "
+            "get_decision_plane_canary reports the scoped canary admission snapshot and stale evidence binding without execution authority; "
+            "Decision Plane candidate tools only prepare bounded options and never execute model choices; "
+            "get_instruction_governance returns Engineering-System-referenced managed-surface audit history with no mutation authority; "
+            "get_instruction_governance_routing derives current candidate routing without creating PRs or mutating instructions; "
+            "get_instruction_governance_disposition reports digest-bound PR handoff evidence without PR/merge/release authority; "
+            "get_instruction_governance_canary reports canary/adoption-gate evidence without GitHub mutation authority; "
+            "get_concurrency_admission returns advisory multi-node admission and measurement with no dispatch authority; "
+            "get_concurrency_dispatch_authorization reports exact-plan authorization with no dispatch effect authority; "
+            "get_concurrency_dispatch_effects reports one-shot effect receipts without join or PASS authority; "
+            "get_concurrency_dispatch_joins reports effect-bound completion measurement with measurement-only PASS semantics; "
+            "get_concurrency_execution_cycles reports plan-replay-protected orchestration state with no engineering PASS authority; "
+            "get_personal_knowledge and search_personal_knowledge keep personal/reference content explicitly non-authoritative; "
+            "search_knowledge requires explicit project_ids and supports all/engineering/personal source-class filtering."
         ),
         token_verifier=verifier,
         auth=AuthSettings(
@@ -112,6 +134,270 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             tools,
             "search_project",
             {"project_id": project_id, "query": query, "limit": limit},
+        )
+
+    @server.tool(
+        name="search_knowledge",
+        description="Search an explicit project scope with all/engineering/personal filtering and attributable provenance",
+        structured_output=False,
+    )
+    async def search_knowledge(
+        project_ids: list[str],
+        query: str,
+        source_class: str = "all",
+        limit_per_project: int = 5,
+    ) -> str:
+        return _call_tool(
+            tools,
+            "search_knowledge",
+            {
+                "project_ids": project_ids,
+                "query": query,
+                "source_class": source_class,
+                "limit_per_project": limit_per_project,
+            },
+        )
+
+    @server.tool(
+        name="get_project_intelligence",
+        description="Return deterministic non-authoritative project intelligence from validated projections",
+        structured_output=False,
+    )
+    async def get_project_intelligence(project_id: str) -> str:
+        return _call_tool(
+            tools,
+            "get_project_intelligence",
+            {"project_id": project_id},
+        )
+
+    @server.tool(
+        name="get_intelligence_overview",
+        description="Return deterministic cross-project intelligence for an explicit project_ids scope",
+        structured_output=False,
+    )
+    async def get_intelligence_overview(project_ids: list[str]) -> str:
+        return _call_tool(
+            tools,
+            "get_intelligence_overview",
+            {"project_ids": project_ids},
+        )
+
+    @server.tool(
+        name="get_operations_readiness",
+        description="Return read-only runtime, operations, and release readiness without executing operations",
+        structured_output=False,
+    )
+    async def get_operations_readiness() -> str:
+        return _call_tool(
+            tools,
+            "get_operations_readiness",
+            {},
+        )
+
+    @server.tool(
+        name="get_provider_dashboard",
+        description="Return validated provider capacity evidence and recomputed advisory broker state",
+        structured_output=False,
+    )
+    async def get_provider_dashboard() -> str:
+        return _call_tool(
+            tools,
+            "get_provider_dashboard",
+            {},
+        )
+
+    @server.tool(
+        name="get_provider_route_quality",
+        description="Return verified provider-route outcome measurements with no broker ranking or execution authority",
+        structured_output=False,
+    )
+    async def get_provider_route_quality() -> str:
+        return _call_tool(tools, "get_provider_route_quality", {})
+
+    @server.tool(
+        name="get_provider_transition_preview",
+        description="Return one advisory failover recommendation without executing a provider transition",
+        structured_output=False,
+    )
+    async def get_provider_transition_preview(
+        current_route_id: str,
+        failure_reason: str,
+        prior_failed_route_ids: list[str] | None = None,
+        max_attempts: int = 3,
+    ) -> str:
+        return _call_tool(
+            tools,
+            "get_provider_transition_preview",
+            {
+                "current_route_id": current_route_id,
+                "failure_reason": failure_reason,
+                "prior_failed_route_ids": prior_failed_route_ids or [],
+                "max_attempts": max_attempts,
+            },
+        )
+
+    @server.tool(
+        name="get_decision_plane",
+        description="Return Decision Plane shadow/replay measurements without activation authority",
+        structured_output=False,
+    )
+    async def get_decision_plane() -> str:
+        return _call_tool(
+            tools,
+            "get_decision_plane",
+            {},
+        )
+
+    @server.tool(
+        name="get_decision_canary_readiness",
+        description="Return deterministic readiness evidence for a bounded Decision Plane canary request",
+        structured_output=False,
+    )
+    async def get_decision_canary_readiness() -> str:
+        return _call_tool(tools, "get_decision_canary_readiness", {})
+
+    @server.tool(
+        name="get_decision_plane_canary",
+        description="Return the bounded Decision Plane canary admission snapshot and replay-evidence binding state",
+        structured_output=False,
+    )
+    async def get_decision_plane_canary() -> str:
+        return _call_tool(tools, "get_decision_plane_canary", {})
+
+    @server.tool(
+        name="get_decision_context_candidates",
+        description="Prepare optional-context candidates while preserving mandatory repository context",
+        structured_output=False,
+    )
+    async def get_decision_context_candidates(optional_paths: list[str] | None = None) -> str:
+        return _call_tool(
+            tools,
+            "get_decision_context_candidates",
+            {"optional_paths": optional_paths or []},
+        )
+
+    @server.tool(
+        name="get_decision_focused_check_candidates",
+        description="Prepare affected focused-check candidates while keeping terminal release gates separate",
+        structured_output=False,
+    )
+    async def get_decision_focused_check_candidates(changed_paths: list[str]) -> str:
+        return _call_tool(
+            tools,
+            "get_decision_focused_check_candidates",
+            {"changed_paths": changed_paths},
+        )
+
+    @server.tool(
+        name="get_instruction_governance",
+        description="Return managed instruction inventory and advisory audit history without mutation authority",
+        structured_output=False,
+    )
+    async def get_instruction_governance() -> str:
+        return _call_tool(
+            tools,
+            "get_instruction_governance",
+            {},
+        )
+
+    @server.tool(
+        name="get_instruction_governance_routing",
+        description="Return deterministic instruction candidate routing without repository mutation",
+        structured_output=False,
+    )
+    async def get_instruction_governance_routing() -> str:
+        return _call_tool(tools, "get_instruction_governance_routing", {})
+
+    @server.tool(
+        name="get_instruction_governance_disposition",
+        description="Return audit-bound instruction disposition and digest-bound PR handoff evidence",
+        structured_output=False,
+    )
+    async def get_instruction_governance_disposition() -> str:
+        return _call_tool(tools, "get_instruction_governance_disposition", {})
+
+    @server.tool(
+        name="get_instruction_governance_canary",
+        description="Return instruction-governance canary/adoption-gate evidence without GitHub mutation authority",
+        structured_output=False,
+    )
+    async def get_instruction_governance_canary() -> str:
+        return _call_tool(tools, "get_instruction_governance_canary", {})
+
+    @server.tool(
+        name="get_concurrency_admission",
+        description="Return provider-neutral multi-node admission and measured join evidence without dispatch authority",
+        structured_output=False,
+    )
+    async def get_concurrency_admission() -> str:
+        return _call_tool(
+            tools,
+            "get_concurrency_admission",
+            {},
+        )
+
+    @server.tool(
+        name="get_concurrency_dispatch_authorization",
+        description="Return exact-plan multi-node dispatch authorization without dispatch effect authority",
+        structured_output=False,
+    )
+    async def get_concurrency_dispatch_authorization() -> str:
+        return _call_tool(tools, "get_concurrency_dispatch_authorization", {})
+
+    @server.tool(
+        name="get_concurrency_dispatch_effects",
+        description="Return one-shot multi-node dispatch effect receipts without join or PASS authority",
+        structured_output=False,
+    )
+    async def get_concurrency_dispatch_effects() -> str:
+        return _call_tool(tools, "get_concurrency_dispatch_effects", {})
+
+    @server.tool(
+        name="get_concurrency_dispatch_joins",
+        description="Return dispatch-bound completion/join evidence with measurement-only PASS semantics",
+        structured_output=False,
+    )
+    async def get_concurrency_dispatch_joins() -> str:
+        return _call_tool(tools, "get_concurrency_dispatch_joins", {})
+
+    @server.tool(
+        name="get_concurrency_execution_cycles",
+        description="Return provider-neutral execution-cycle orchestration state without engineering PASS authority",
+        structured_output=False,
+    )
+    async def get_concurrency_execution_cycles() -> str:
+        return _call_tool(tools, "get_concurrency_execution_cycles", {})
+
+    @server.tool(
+        name="get_personal_knowledge",
+        description="Return non-authoritative personal/reference inventory and bounded import/quarantine metadata",
+        structured_output=False,
+    )
+    async def get_personal_knowledge() -> str:
+        return _call_tool(tools, "get_personal_knowledge", {})
+
+    @server.tool(
+        name="search_personal_knowledge",
+        description="Search only personal/reference projections within one explicit project",
+        structured_output=False,
+    )
+    async def search_personal_knowledge(project_id: str, query: str, limit: int = 8) -> str:
+        return _call_tool(
+            tools,
+            "search_personal_knowledge",
+            {"project_id": project_id, "query": query, "limit": limit},
+        )
+
+    @server.tool(
+        name="get_source_detail",
+        description="Return one registered source with bounded validated projection content and provenance",
+        structured_output=False,
+    )
+    async def get_source_detail(project_id: str, source_id: str) -> str:
+        return _call_tool(
+            tools,
+            "get_source_detail",
+            {"project_id": project_id, "source_id": source_id},
         )
 
     @server.tool(

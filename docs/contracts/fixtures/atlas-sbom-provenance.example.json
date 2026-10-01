@@ -1,0 +1,19 @@
+{
+  "authority": "EVIDENCE_ONLY",
+  "component_count": 6,
+  "declared_direct_dependency_count": 5,
+  "generator": "atlas.sbom.v1",
+  "kind": "atlas_sbom_provenance",
+  "provenance_digest": "084d69a90327890f0afbec5e7cc3394d91ac9afd873c65416fdb08a5370c5c30",
+  "python_implementation": "cpython",
+  "python_version": "3.12.3",
+  "repository": "datarelay-labs/datarelay-atlas",
+  "requirements_sha256": "b1803e7e90a38779fe49521ce49b36dfb29e34fcafd8e27172ef1604d29a40bf",
+  "sbom_filename": "bom.cdx.json",
+  "sbom_serial_number": "urn:uuid:7fb2f96d-d047-5c2d-8cb6-60cb521702df",
+  "sbom_sha256": "dc3eff54f3f9375ef0307970f3d835682469fca86e6f3e60dbd31d9e3d238ff6",
+  "schema_version": 1,
+  "source_clean": true,
+  "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "third_party_sha256": "3509acc17bde451567d8e9cd40010e5b99056beb797a24a1640aec58d641f656"
+}

@@ -1,0 +1,16 @@
+{
+  "claim_join_id": "claim-join-example",
+  "claims": [
+    {
+      "claim_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "node_id": "datarelay-labs/datarelay-atlas#201"
+    },
+    {
+      "claim_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "node_id": "datarelay-labs/datarelay-atlas#202"
+    }
+  ],
+  "dispatch_join_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "kind": "concurrency_claim_bound_join_observation",
+  "schema_version": 1
+}

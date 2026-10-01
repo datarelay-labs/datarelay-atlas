@@ -83,7 +83,7 @@ def _looks_like_secret(text: str) -> bool:
     key_q = r'((?:\\?["\'])?)'
     val_q = r'(\\?["\'])'
     if re.search(
-        rf'(?i){key_q}({name})\1\s*[:=]\s*{val_q}((?:\\.|(?!\3).)*)\3',
+        rf'(?i){key_q}({name})\1\s*[:=]\s*{val_q}((?:\\.|(?!\3)[\s\S])*)\3',
         scan,
     ):
         return True

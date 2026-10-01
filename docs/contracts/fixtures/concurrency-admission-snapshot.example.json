@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "kind": "concurrency_admission_snapshot",
+  "observed_at": "2026-09-30T12:30:00Z",
+  "graph": {
+    "schema_version": 1,
+    "kind": "dependency_readiness_graph",
+    "max_wip": 2,
+    "nodes": [
+      {
+        "node_id": "datarelay-labs/datarelay-atlas#201",
+        "issue_number": 201,
+        "repository": "datarelay-labs/datarelay-atlas",
+        "branch": "feat/example-one",
+        "head": "1111111111111111111111111111111111111111",
+        "packet_status": "PAUSED",
+        "queue_state": "QUEUED",
+        "dependencies": [],
+        "resources": [
+          "component:retrieval"
+        ],
+        "authority_state": "TRUSTED",
+        "owner_gate": false,
+        "human_required": false,
+        "priority": 10
+      },
+      {
+        "node_id": "datarelay-labs/datarelay-atlas#202",
+        "issue_number": 202,
+        "repository": "datarelay-labs/datarelay-atlas",
+        "branch": "feat/example-two",
+        "head": "2222222222222222222222222222222222222222",
+        "packet_status": "PAUSED",
+        "queue_state": "QUEUED",
+        "dependencies": [],
+        "resources": [
+          "component:web"
+        ],
+        "authority_state": "TRUSTED",
+        "owner_gate": false,
+        "human_required": false,
+        "priority": 20
+      }
+    ]
+  },
+  "policy": {
+    "authority": "ADMISSION_POLICY_ONLY",
+    "max_parallel_admission": 2,
+    "max_slot_evidence_age_seconds": 3600,
+    "project_limits": [
+      {
+        "repository": "datarelay-labs/datarelay-atlas",
+        "max_wip": 2
+      }
+    ]
+  },
+  "execution_slots": [
+    {
+      "slot_id": "slot-chat-1",
+      "worker_id": "chat-worker-1",
+      "provider": "openai",
+      "runtime": "chat_ssh",
+      "route_id": "chat-primary",
+      "state": "AVAILABLE",
+      "gates": {
+        "trust": "ALLOW",
+        "budget": "ALLOW",
+        "rate": "ALLOW",
+        "quota": "ALLOW",
+        "blast_radius": "ALLOW"
+      },
+      "evidence_ref": "capacity:chat-worker-1:001",
+      "observed_at": "2026-09-30T12:30:00Z"
+    },
+    {
+      "slot_id": "slot-codex-1",
+      "worker_id": "codex-worker-1",
+      "provider": "openai",
+      "runtime": "codex",
+      "route_id": "codex-review",
+      "state": "AVAILABLE",
+      "gates": {
+        "trust": "ALLOW",
+        "budget": "ALLOW",
+        "rate": "ALLOW",
+        "quota": "ALLOW",
+        "blast_radius": "ALLOW"
+      },
+      "evidence_ref": "capacity:codex-worker-1:001",
+      "observed_at": "2026-09-30T12:30:00Z"
+    }
+  ]
+}
