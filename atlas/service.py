@@ -44,6 +44,7 @@ from atlas.decision_plane_canary import (
     publish_decision_canary_admission,
 )
 from atlas.operations_readiness import operations_readiness
+from atlas.runtime_observability import runtime_observability_snapshot
 from atlas.personal_knowledge import build_personal_retriever, personal_knowledge_dashboard
 from atlas.provider_dashboard import provider_dashboard, provider_transition_preview, publish_provider_dashboard_snapshot
 from atlas.provider_route_quality import (
@@ -146,6 +147,10 @@ class AtlasService:
             project_id, query, limit=limit
         )
 
+
+    def runtime_observability(self) -> dict[str, object]:
+        """Return bounded read-only runtime observability facts."""
+        return runtime_observability_snapshot(self.data_root)
 
     def operations_readiness(
         self,

@@ -1029,6 +1029,14 @@ def render_operations(service: AtlasService) -> UiResponse:
         f'<tr><td><code>{escape(str(value))}</code></td></tr>'
         for value in readiness["dependencies"]["declared_dependencies"]
     ) or '<tr><td class="muted">No declared runtime dependencies found.</td></tr>'
+    observability = readiness["observability"]
+    observable_states = "".join(
+        f'<tr><td>{escape(str(name))}</td><td>{escape(str(value))}</td></tr>'
+        for name, value in sorted(
+            observability["controller"]["state_counts"].items()
+        )
+        if value
+    ) or '<tr><td colspan="2" class="muted">No controller workstreams.</td></tr>'
 
     body = (
         '<p><a href="/">← Projects</a></p><h1>Operations readiness</h1>'
@@ -1038,6 +1046,24 @@ def render_operations(service: AtlasService) -> UiResponse:
         f'<article class="card"><h2>{escape(str(readiness["deployment"]["state"]))}</h2><p>Deployment contract</p></article>'
         f'<article class="card"><h2>{escape(str(readiness["security_controls"]["state"]))}</h2><p>Security controls</p></article>'
         f'<article class="card"><h2>{escape(str(readiness["release_readiness"]["state"]))}</h2><p>Release readiness</p></article></section>'
+        '<section class="card" style="margin-top:16px"><h2>Runtime observability</h2>'
+        f'<p><span class="pill">{escape(str(observability["authority"]))}</span> '
+        f'observed {escape(str(observability["observed_at"]))} · '
+        f'<code>{escape(str(observability["snapshot_digest"]))}</code></p>'
+        '<div style="overflow:auto"><table><tbody>'
+        f'<tr><th>Source</th><td>{escape(str(observability["source"]["state"]))} · <code>{escape(str(observability["source"]["head"]))}</code> / clean={escape(str(observability["source"]["clean"]).lower())}</td></tr>'
+        f'<tr><th>Python</th><td>{escape(str(observability["python"]["implementation"]))} {escape(str(observability["python"]["version"]))}</td></tr>'
+        f'<tr><th>Data root</th><td>{escape(str(observability["data_root"]["state"]))}</td></tr>'
+        f'<tr><th>Registry</th><td>{observability["registry"]["project_count"]} projects / {observability["registry"]["enabled_project_count"]} enabled / {observability["registry"]["source_count"]} sources</td></tr>'
+        f'<tr><th>Projections</th><td>{observability["projections"]["record_count"]} records / {observability["projections"]["document_count"]} documents</td></tr>'
+        f'<tr><th>Completions</th><td>{observability["completion"]["inbox_count"]} inbox / {observability["completion"]["processed_count"]} processed</td></tr>'
+        f'<tr><th>Durable state</th><td>{observability["storage"]["durable_file_count"]} files / {observability["storage"]["durable_byte_count"]} bytes</td></tr>'
+        f'<tr><th>Derived cache</th><td>{observability["derived_cache"]["present_root_count"]} roots / {observability["derived_cache"]["file_count"]} files</td></tr>'
+        '</tbody></table></div>'
+        '<h3>Controller lifecycle</h3><div style="overflow:auto"><table><tbody>'
+        + observable_states
+        + '</tbody></table></div>'
+        '<p class="muted">OBSERVABILITY_ONLY. This snapshot cannot release, deploy, merge, repair, or declare PASS.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Production claim boundary</h2><dl>'
         f'<dt>production_oriented</dt><dd><code>{str(bool(readiness["production_oriented"])).lower()}</code></dd>'
         f'<dt>Runtime</dt><dd><span class="pill">{escape(str(readiness["runtime"]["state"]))}</span></dd>'

@@ -1705,6 +1705,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional validated SBOM bundle directory to bind into readiness.",
     )
     ops_readiness.set_defaults(func=cmd_ops_readiness)
+    ops_observe = ops_sub.add_parser(
+        "observe",
+        help="Show bounded read-only Atlas runtime observability",
+    )
+    ops_observe.set_defaults(func=cmd_ops_observe)
     ops_sbom = ops_sub.add_parser(
         "sbom",
         help="Generate a deterministic CycloneDX SBOM and provenance bundle",
@@ -2115,6 +2120,11 @@ def cmd_ops_readiness(args: argparse.Namespace) -> int:
             sbom_bundle=sbom_bundle,
         )
     )
+    return 0
+
+
+def cmd_ops_observe(args: argparse.Namespace) -> int:
+    _print_json(_service(args).runtime_observability())
     return 0
 
 

@@ -12,6 +12,7 @@ from atlas.ops import (
     validate_unit_text,
 )
 from atlas.provenance import ValidationError
+from atlas.runtime_observability import runtime_observability_snapshot
 from atlas.sbom import validate_sbom_bundle
 
 try:
@@ -201,6 +202,10 @@ def operations_readiness(
     runbooks = [_safe_runbook(repo_root, value) for value in raw_runbooks]
 
     runtime_ready = data_root_runtime_ready(Path(data_root))
+    observability = runtime_observability_snapshot(
+        Path(data_root),
+        repo_root=repo_root,
+    )
     operation_commands = {
         "health": _command_state(operations.get("health_command")),
         "backup": _command_state(operations.get("backup_command")),
@@ -306,6 +311,7 @@ def operations_readiness(
             "state": "OBSERVED_READY" if runtime_ready else "OBSERVED_NOT_READY",
             "data_root_ready": runtime_ready,
         },
+        "observability": observability,
         "deployment": deployment,
         "dependencies": dependencies,
         "operations": {
