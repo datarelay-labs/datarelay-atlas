@@ -1,0 +1,12 @@
+{
+  "environment": "LOCAL",
+  "kind": "browser_verification_request",
+  "provider": "playwright",
+  "run_id": "browser-fixture-1",
+  "scenario_id": "ATLAS_OVERVIEW_TO_CONCURRENCY",
+  "schema_version": 1,
+  "source_revision": "4444444444444444444444444444444444444444",
+  "target_url": "http://127.0.0.1:8788/",
+  "variation": "BASELINE",
+  "work_packet_issue": 19
+}

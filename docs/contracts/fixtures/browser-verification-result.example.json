@@ -1,0 +1,57 @@
+{
+  "authority": "BROWSER_EVIDENCE_ONLY",
+  "browser": {
+    "actual_process": true,
+    "engine": "chromium",
+    "mode": "HEADLESS",
+    "version": "153.0.8010.12"
+  },
+  "detail": "Deterministic Playwright journey passed.",
+  "deterministic_gate_override": "NONE",
+  "duration_ms": 2500,
+  "environment": "LOCAL",
+  "error_code": null,
+  "kind": "browser_verification_result",
+  "model_metrics": {
+    "cost_microusd": 0,
+    "input_tokens": 0,
+    "llm_call_count": 0,
+    "model": null,
+    "output_tokens": 0,
+    "provider": null,
+    "state": "NOT_APPLICABLE",
+    "total_tokens": 0
+  },
+  "provider": "playwright",
+  "result": "PASS",
+  "result_digest": "27258b06fd25c2c0922b7af1770232070a7c04078dd42fcbb188d5236a7fe1bc",
+  "run_id": "browser-fixture-1",
+  "scenario_id": "ATLAS_OVERVIEW_TO_CONCURRENCY",
+  "schema_version": 1,
+  "screenshot_ref": null,
+  "source_revision": "4444444444444444444444444444444444444444",
+  "steps": [
+    {
+      "detail": "Atlas Overview rendered in the actual browser.",
+      "evidence_ref": null,
+      "outcome": "PASS",
+      "step_id": "overview_loaded"
+    },
+    {
+      "detail": "Baseline DOM retained.",
+      "evidence_ref": null,
+      "outcome": "PASS",
+      "step_id": "layout_variation"
+    },
+    {
+      "detail": "Measured concurrency rendered after browser navigation.",
+      "evidence_ref": null,
+      "outcome": "PASS",
+      "step_id": "concurrency_loaded"
+    }
+  ],
+  "target_url": "http://127.0.0.1:8788/",
+  "trace_ref": "evidence/browser-verification/browser-fixture-1/playwright-baseline.zip",
+  "variation": "BASELINE",
+  "work_packet_issue": 19
+}

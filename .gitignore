@@ -3,3 +3,5 @@ __pycache__/
 .atlas-data/
 .atlas-data-*/
 .venv/
+tools/browser-verification/node_modules/
+evidence/browser-verification/

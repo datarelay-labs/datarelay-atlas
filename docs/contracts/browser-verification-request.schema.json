@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/browser-verification-request.schema.json",
+  "title": "DataRelay Atlas Browser Verification Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "run_id",
+    "scenario_id",
+    "provider",
+    "target_url",
+    "environment",
+    "source_revision",
+    "work_packet_issue",
+    "variation"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "browser_verification_request"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._@#+\\-]{0,255}$"
+    },
+    "scenario_id": {
+      "const": "ATLAS_OVERVIEW_TO_CONCURRENCY"
+    },
+    "provider": {
+      "enum": [
+        "playwright",
+        "stagehand"
+      ]
+    },
+    "target_url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "environment": {
+      "enum": [
+        "LOCAL",
+        "PREVIEW"
+      ]
+    },
+    "source_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "work_packet_issue": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "variation": {
+      "enum": [
+        "BASELINE",
+        "WRAPPED_LAYOUT"
+      ]
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@#+/\\-]{0,255}$"
+    }
+  }
+}
