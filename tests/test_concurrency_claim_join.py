@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -89,6 +91,14 @@ def _resign(evidence: dict) -> None:
 
 
 class ConcurrencyClaimBoundJoinTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = patch(
+            "atlas.concurrency_effect._trusted_effect_time",
+            return_value=datetime(2026, 9, 30, 12, 30, tzinfo=timezone.utc),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_public_schemas_fixtures_and_runtime_parity(self) -> None:
         observation_schema = json.loads(
             (
