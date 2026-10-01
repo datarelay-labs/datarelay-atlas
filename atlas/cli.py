@@ -63,6 +63,12 @@ from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
 from atlas.schema_compat import rollback_data_root, upgrade_data_root
 from atlas.sbom import publish_sbom_bundle
+from atlas.security_review import (
+    derive_review_outcome,
+    load_security_review_evidence,
+    publish_security_review_evidence,
+    security_review_dashboard,
+)
 from atlas.ops import (
     assess_service_environment,
     prod_launch_contract,
@@ -1725,6 +1731,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="New absolute output directory; existing paths are refused.",
     )
     ops_sbom.set_defaults(func=cmd_ops_sbom)
+    ops_security_review = ops_sub.add_parser(
+        "security-review",
+        help="Validate or publish exact-source bounded security review evidence",
+    )
+    ops_security_review_sub = ops_security_review.add_subparsers(
+        dest="security_review_command",
+        required=True,
+    )
+    ops_security_review_validate = ops_security_review_sub.add_parser(
+        "validate",
+        help="Validate one exact-source security review evidence file",
+    )
+    ops_security_review_validate.add_argument("--evidence", required=True)
+    ops_security_review_validate.set_defaults(func=cmd_ops_security_review_validate)
+    ops_security_review_publish = ops_security_review_sub.add_parser(
+        "publish",
+        help="Publish validated review evidence into derived local state",
+    )
+    ops_security_review_publish.add_argument("--evidence", required=True)
+    ops_security_review_publish.set_defaults(func=cmd_ops_security_review_publish)
+    ops_security_review_show = ops_security_review_sub.add_parser(
+        "show",
+        help="Show the current derived security review evidence state",
+    )
+    ops_security_review_show.set_defaults(func=cmd_ops_security_review_show)
     ops_check = ops_sub.add_parser(
         "check",
         help="Fail closed unless the service environment is ready",
@@ -2135,6 +2166,38 @@ def cmd_ops_sbom(args: argparse.Namespace) -> int:
             Path(args.dest),
         )
     )
+    return 0
+
+
+def cmd_ops_security_review_validate(args: argparse.Namespace) -> int:
+    evidence = load_security_review_evidence(Path(args.evidence))
+    _print_json(
+        {
+            "state": "VALIDATED_EVIDENCE",
+            "authority": evidence["authority"],
+            "review_outcome": derive_review_outcome(evidence),
+            "reviewer_attribution": "DECLARED_ONLY",
+            "repository": evidence["repository"],
+            "source_revision": evidence["source_revision"],
+            "reviewed_at": evidence["reviewed_at"],
+            "evidence_digest": evidence["evidence_digest"],
+        }
+    )
+    return 0
+
+
+def cmd_ops_security_review_publish(args: argparse.Namespace) -> int:
+    _print_json(
+        publish_security_review_evidence(
+            Path(args.data_root),
+            Path(args.evidence),
+        )
+    )
+    return 0
+
+
+def cmd_ops_security_review_show(args: argparse.Namespace) -> int:
+    _print_json(security_review_dashboard(Path(args.data_root)))
     return 0
 
 

@@ -1030,6 +1030,7 @@ def render_operations(service: AtlasService) -> UiResponse:
         for value in readiness["dependencies"]["declared_dependencies"]
     ) or '<tr><td class="muted">No declared runtime dependencies found.</td></tr>'
     observability = readiness["observability"]
+    security_review = readiness["security_review"]
     observable_states = "".join(
         f'<tr><td>{escape(str(name))}</td><td>{escape(str(value))}</td></tr>'
         for name, value in sorted(
@@ -1072,8 +1073,10 @@ def render_operations(service: AtlasService) -> UiResponse:
         f'<span class="muted">{escape(str(readiness["release_readiness"]["detail"]))}</span></dd>'
         f'<dt>Security controls</dt><dd><span class="pill">{escape(str(readiness["security_controls"]["state"]))}</span> '
         f'<span class="muted">{escape(str(readiness["security_controls"]["detail"]))}</span></dd>'
-        f'<dt>Security review</dt><dd><span class="pill">{escape(str(readiness["security_review"]["state"]))}</span> '
-        f'<span class="muted">{escape(str(readiness["security_review"]["detail"]))}</span></dd></dl></section>'
+        f'<dt>Security review</dt><dd><span class="pill">{escape(str(security_review["state"]))}</span> '
+        f'<code>{escape(str(security_review["review_outcome"]))}</code> · '
+        f'<code>{escape(str(security_review["evidence_digest"] or "none"))}</code> '
+        f'<span class="muted">{escape(str(security_review["detail"]))}</span></dd></dl></section>'
         '<section class="card" style="margin-top:16px"><h2>prod-atlas deployment contract</h2><dl>'
         f'<dt>Status</dt><dd><span class="pill">{escape(str(contract["status"]))}</span></dd>'
         f'<dt>Hostname</dt><dd><code>{escape(str(contract["hostname"]))}</code></dd>'

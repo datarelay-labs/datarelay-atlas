@@ -14,6 +14,7 @@ from atlas.ops import (
 from atlas.provenance import ValidationError
 from atlas.runtime_observability import runtime_observability_snapshot
 from atlas.sbom import validate_sbom_bundle
+from atlas.security_review import security_review_dashboard
 
 try:
     import yaml  # type: ignore
@@ -218,6 +219,10 @@ def operations_readiness(
         repo_root,
         sbom_bundle=sbom_bundle,
     )
+    security_review = security_review_dashboard(
+        Path(data_root),
+        repo_root=repo_root,
+    )
 
     public_smoke_required = _bool(
         release.get("public_smoke_required"),
@@ -333,10 +338,7 @@ def operations_readiness(
             "state": deployment["state"],
             "detail": "systemd service/ingress hardening contract validates in repository" if deployment["state"] == "CONFIGURED" else "deployment security-control contract is unavailable",
         },
-        "security_review": {
-            "state": "UNKNOWN",
-            "detail": "no standalone security-review PASS evidence is modeled by this surface",
-        },
+        "security_review": security_review,
         "release_readiness": {
             "state": "NOT_CLAIMED",
             "detail": (
