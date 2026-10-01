@@ -120,8 +120,8 @@ class WebUiTests(unittest.TestCase):
         metadata = SimpleNamespace(provider="github", enabled=True, source_path=".engineering/project.yaml")
         other = SimpleNamespace(provider="github", enabled=True, source_path="README.md")
         project = SimpleNamespace(engineering_metadata_path=".engineering/project.yaml", sources={"engineering-meta": metadata, "readme": other})
-        self.assertEqual(_adoption_projection_state(project, [{"source_id": "engineering-meta", "sync_state": "success"}]), "OBSERVED")
-        self.assertEqual(_adoption_projection_state(project, [{"source_id": "engineering-meta", "sync_state": "error"}]), "UNKNOWN")
+        self.assertEqual(_adoption_projection_state(project, [{"source_id": "engineering-meta", "sync_state": "success", "source_revision": "a" * 40}]), "OBSERVED")
+        self.assertEqual(_adoption_projection_state(project, [{"source_id": "engineering-meta", "sync_state": "error"}]), "UNAVAILABLE")
         self.assertEqual(_adoption_projection_state(SimpleNamespace(engineering_metadata_path=".engineering/project.yaml", sources={"readme": other}), []), "UNKNOWN")
 
     def test_knowledge_coverage_reports_projection_gaps_without_inventing_analysis(self):
@@ -130,9 +130,9 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("COMPLETE", body)
         self.assertIn("1/1 configured sources projected", body)
         self.assertIn("Contradictions", body)
-        self.assertIn("no derived contradiction analysis in this slice", body)
+        self.assertIn("no explicit contradiction markers observed; semantic consistency remains unknown", body)
         self.assertIn("Unanswered questions", body)
-        self.assertIn("no derived question analysis in this slice", body)
+        self.assertIn('<span class="pill">0</span> explicit QUESTION/TODO item(s)', body)
 
     def test_lifecycle_detail_route_preserves_independent_truth(self):
         state, body = self.get("/projects/demo/lifecycle")
@@ -142,7 +142,8 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("CI", body)
         self.assertIn("Tests", body)
         self.assertIn("Release", body)
-        self.assertIn("Browser gates", body)
+        self.assertIn("Surface Reconciliation", body)
+        self.assertIn("Full User E2E", body)
         self.assertIn("does not infer one channel from another", body)
         self.assertNotIn(">PASS<", body)
 
@@ -154,8 +155,10 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("no exact-candidate CI evidence loaded", body)
         self.assertIn("no exact-candidate test evidence loaded", body)
         self.assertIn("no exact-candidate release evidence loaded", body)
-        self.assertIn("Browser gates", body)
-        self.assertIn("browser gates are configured but no execution evidence is loaded", body)
+        self.assertIn("Surface Reconciliation", body)
+        self.assertIn("no Surface Reconciliation configuration or execution evidence loaded", body)
+        self.assertIn("Full User E2E", body)
+        self.assertIn("no Full User E2E configuration or execution evidence loaded", body)
 
     def test_valid_local_lifecycle_snapshot_surfaces_active_packet(self):
         snapshot = {
@@ -205,10 +208,16 @@ class WebUiTests(unittest.TestCase):
                 "branch": "feat/lifecycle", "head": head, "pr_number": 172, "pr_state": "OPEN", "pr_head": head,
                 "canonical_fact": True, "reasons": []}],
             "summary": {"observed_count": 1, "canonical_count": 1, "noncanonical_count": 0}}
-        evidence = {"schema_version": 1, "kind": "atlas_lifecycle_evidence", "observed_at": "2026-09-30T00:01:00Z",
+        evidence = {"schema_version": 2, "kind": "atlas_lifecycle_evidence", "observed_at": "2026-09-30T00:01:00Z",
             "repository": "datarelay-labs/demo", "candidate_head": head,
-            "channels": {"ci": {"outcome": "PASS", "detail": "run 123"}, "tests": {"outcome": "FAIL", "detail": "2 failed"},
-                "browser": {"outcome": "BLOCKED", "detail": "host libraries missing"}}}
+            "channels": {
+                "ci": {"outcome": "PASS", "detail": "run 123", "evidence_ref": "ci:run-123"},
+                "tests": {"outcome": "FAIL", "detail": "2 failed", "evidence_ref": "tests:run-123"}},
+            "human_equivalent_user_tests": {
+                "surface_reconciliation": {"required": True, "configured": True, "outcome": "BLOCKED",
+                    "detail": "host libraries missing", "evidence_ref": "surface:run-123"},
+                "full_user_e2e": {"required": True, "configured": False, "outcome": None,
+                    "detail": None, "evidence_ref": None}}}
         (self.root / "github-lifecycle.json").write_text(json.dumps(snapshot))
         (self.root / "lifecycle-evidence.json").write_text(json.dumps(evidence))
         _, body = self.get("/projects/demo")
@@ -224,8 +233,10 @@ class WebUiTests(unittest.TestCase):
                 "issue_state": "OPEN", "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted", "packet_status": "ACTIVE",
                 "branch": "feat/lifecycle", "head": head, "pr_number": None, "pr_state": "NONE", "pr_head": None,
                 "canonical_fact": True, "reasons": []}], "summary": {"observed_count": 1, "canonical_count": 1, "noncanonical_count": 0}}
-        evidence = {"schema_version": 1, "kind": "atlas_lifecycle_evidence", "observed_at": "2026-09-30T00:01:00Z",
-            "repository": "datarelay-labs/demo", "candidate_head": "c" * 40, "channels": {"ci": {"outcome": "PASS", "detail": "old run"}}}
+        evidence = {"schema_version": 2, "kind": "atlas_lifecycle_evidence", "observed_at": "2026-09-30T00:01:00Z",
+            "repository": "datarelay-labs/demo", "candidate_head": "c" * 40,
+            "channels": {"ci": {"outcome": "PASS", "detail": "old run", "evidence_ref": "ci:old-run"}},
+            "human_equivalent_user_tests": {}}
         (self.root / "github-lifecycle.json").write_text(json.dumps(snapshot)); (self.root / "lifecycle-evidence.json").write_text(json.dumps(evidence))
         _, body = self.get("/projects/demo")
         self.assertIn("STALE", body)

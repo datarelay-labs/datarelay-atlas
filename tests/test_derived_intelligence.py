@@ -22,7 +22,8 @@ class DerivedIntelligenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             svc=self.seed(tmp); payload=derived_intelligence_payload(svc.projections,["alpha","beta"])
             self.assertFalse(payload["canonical"]); self.assertTrue(payload["derived"])
-            self.assertEqual(payload["contradictions"]["state"],"UNKNOWN")
+            self.assertEqual(payload["contradictions"]["state"],"NONE_OBSERVED")
+            self.assertEqual(payload["contradictions"]["semantic_state"],"UNKNOWN")
             kinds={(i["kind"],i["value"],i["source_project_id"]) for i in payload["items"]}
             self.assertIn(("cross_project_link","datarelay-labs/beta","alpha"),kinds)
             self.assertIn(("cross_project_link","datarelay-labs/alpha","beta"),kinds)
