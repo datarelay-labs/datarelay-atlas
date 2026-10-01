@@ -213,6 +213,40 @@ class InstructionGovernancePreflightTests(unittest.TestCase):
                 base / "data",
             )
 
+    def test_skip_worktree_managed_surface_is_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            _git(repo, "update-index", "--skip-worktree", "AGENTS.md")
+            (repo / "AGENTS.md").write_text(
+                "# local override\n",
+                encoding="utf-8",
+            )
+            self._assert_dirty_rejected(
+                repo,
+                agent_base,
+                scenarios,
+                profile,
+                base / "data",
+            )
+
+    def test_assume_unchanged_managed_surface_is_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, agent_base, scenarios, profile = _repo_fixture(base)
+            _git(repo, "update-index", "--assume-unchanged", "AGENTS.md")
+            (repo / "AGENTS.md").write_text(
+                "# local override\n",
+                encoding="utf-8",
+            )
+            self._assert_dirty_rejected(
+                repo,
+                agent_base,
+                scenarios,
+                profile,
+                base / "data",
+            )
+
     def test_staged_deleted_tracked_managed_surface_is_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

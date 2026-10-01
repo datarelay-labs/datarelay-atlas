@@ -203,6 +203,19 @@ def _assert_managed_path_types(
         require_directory_chain(relative, include_leaf=False)
 
 
+def _assert_managed_index_flags(root: Path) -> None:
+    raw = _git(root, "ls-files", "-v", "-z")
+    for record in raw.split("\0"):
+        if not record:
+            continue
+        if len(record) < 3 or record[1] != " ":
+            _reject("instruction governance managed surfaces are dirty")
+        tag = record[0]
+        relative = record[2:]
+        if _surface_category(relative) is not None and tag != "H":
+            _reject("instruction governance managed surfaces are dirty")
+
+
 def _worktree_managed_surface_paths(root: Path) -> list[str]:
     paths: set[str] = set()
     for path in root.rglob("*"):
@@ -503,6 +516,7 @@ def instruction_governance_preflight(
     surfaces = discover_managed_surfaces(root)
     tracked_paths = _tracked_managed_surface_paths(root)
     _assert_managed_path_types(root, tracked_paths)
+    _assert_managed_index_flags(root)
     surface_paths = sorted(
         set(str(item["path"]) for item in surfaces)
         | set(tracked_paths)
