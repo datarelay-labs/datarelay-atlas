@@ -433,7 +433,7 @@ class ConcurrencyHandoffTests(unittest.TestCase):
             self.assertEqual(receipt["result"], "HUMAN_REQUIRED")
             self.assertEqual(adapter.activation_order, [])
 
-    def test_handoff_ledger_is_excluded_from_backup_authority(self) -> None:
+    def test_handoff_ledger_is_preserved_for_replay_safety(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             data = base / "data"
@@ -449,12 +449,9 @@ class ConcurrencyHandoffTests(unittest.TestCase):
             )
             dest = base / "backup"
             result = backup_data_root(data, dest)
-            self.assertNotIn(
-                "concurrency-work-packet-handoffs.json",
-                json.dumps(result),
-            )
-            self.assertFalse(
-                (dest / "concurrency-work-packet-handoffs.json").exists()
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(
+                (dest / "concurrency-work-packet-handoffs.json").is_file()
             )
 
 

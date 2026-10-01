@@ -155,6 +155,19 @@ def _surface_category(path: str) -> str | None:
     return None
 
 
+
+
+def _tracked_managed_surface_paths(root: Path) -> list[str]:
+    raw = _git(root, "ls-files", "-z")
+    paths = []
+    for relative in raw.split("\0"):
+        if not relative:
+            continue
+        if _surface_category(relative) is not None:
+            paths.append(relative)
+    return sorted(set(paths))
+
+
 def discover_managed_surfaces(repo_root: Path) -> list[dict[str, object]]:
     root = Path(repo_root).resolve()
     surfaces: list[dict[str, object]] = []
@@ -430,8 +443,18 @@ def instruction_governance_preflight(
     scenarios = _behavior_scenarios(scenarios_data)
 
     surfaces = discover_managed_surfaces(root)
-    surface_paths = [str(item["path"]) for item in surfaces]
-    dirty = _git(root, "status", "--porcelain=v1", "--untracked-files=all", "--", *surface_paths)
+    surface_paths = sorted(
+        set(str(item["path"]) for item in surfaces)
+        | set(_tracked_managed_surface_paths(root))
+    )
+    dirty = _git(
+        root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--",
+        *surface_paths,
+    )
     if dirty:
         raise ValidationError("instruction governance managed surfaces are dirty")
     inventory_digest = _canonical_digest(surfaces)

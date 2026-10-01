@@ -18,6 +18,7 @@ from atlas.data_protection import (
     _DERIVED_CACHE_FILES,
     _DURABLE_NAME,
     _PROJECTIONS_DIR,
+    _REPLAY_STATE_FILES,
     _tree_files,
 )
 from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
@@ -164,7 +165,7 @@ def _storage_stats(root: Path) -> dict[str, int]:
             continue
         if name.endswith(".tmp"):
             _reject("runtime observability data root is unsafe")
-        if name in {_DURABLE_NAME, _CONTROLLER_NAME}:
+        if name in {_DURABLE_NAME, _CONTROLLER_NAME} or name in _REPLAY_STATE_FILES:
             durable_files += 1
             durable_bytes += _regular_size(
                 entry,

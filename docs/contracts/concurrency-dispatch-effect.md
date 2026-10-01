@@ -10,4 +10,4 @@ Per-assignment outcomes are DISPATCHED, REFUSED, HUMAN_REQUIRED, or ERROR. The a
 
 The receipt authority is DISPATCH_EFFECT_RECEIPT_ONLY. It has no join authority and no PASS authority. Completion and reconciliation remain separate measured concurrency run evidence.
 
-The local effect ledger is derived runtime evidence and is excluded from durable backup authority. Terminal receipts and their digests are revalidated whenever the ledger is read; malformed or tampered state fails closed.
+The local effect ledger is runtime controller state whose replay reservations must survive backup and restore. It is therefore preserved with Atlas controller state rather than treated as a discardable derived cache. Terminal receipts and their digests are revalidated whenever the ledger is read; malformed or tampered state fails closed.

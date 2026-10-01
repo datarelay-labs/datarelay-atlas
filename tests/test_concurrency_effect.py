@@ -365,7 +365,7 @@ class ConcurrencyEffectTests(unittest.TestCase):
                 result["receipt_digest"],
             )
 
-    def test_cli_web_mcp_read_surfaces_and_backup_exclusion(self):
+    def test_cli_web_mcp_read_surfaces_and_backup_preservation(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             root = base / "data"
@@ -430,7 +430,7 @@ class ConcurrencyEffectTests(unittest.TestCase):
             self.assertIn("PASS authority", body)
 
             backup_data_root(root, base / "backup")
-            self.assertFalse((base / "backup" / FILENAME).exists())
+            self.assertTrue((base / "backup" / FILENAME).is_file())
 
     def test_module_has_no_concrete_transport_or_retry_loop(self):
         source = (ROOT / "atlas" / "concurrency_effect.py").read_text()

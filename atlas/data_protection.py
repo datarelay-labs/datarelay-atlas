@@ -30,11 +30,25 @@ from atlas.concurrency_admission import (
     RUNS_FILENAME as CONCURRENCY_RUNS_FILENAME,
 )
 from atlas.concurrency_authorization import FILENAME as CONCURRENCY_AUTHORIZATION_FILENAME
-from atlas.concurrency_effect import FILENAME as CONCURRENCY_EFFECTS_FILENAME
+from atlas.concurrency_effect import (
+    AUTHORITY as CONCURRENCY_EFFECT_AUTHORITY,
+    FILENAME as CONCURRENCY_EFFECTS_FILENAME,
+    LEDGER_KIND as CONCURRENCY_EFFECT_LEDGER_KIND,
+    SCHEMA_VERSION as CONCURRENCY_EFFECT_SCHEMA_VERSION,
+)
 from atlas.concurrency_join import FILENAME as CONCURRENCY_JOINS_FILENAME
 from atlas.concurrency_execution import FILENAME as CONCURRENCY_EXECUTIONS_FILENAME
-from atlas.concurrency_handoff import FILENAME as CONCURRENCY_HANDOFFS_FILENAME
-from atlas.concurrency_claim import FILENAME as CONCURRENCY_CLAIMS_FILENAME
+from atlas.concurrency_handoff import (
+    FILENAME as CONCURRENCY_HANDOFFS_FILENAME,
+    LEDGER_KIND as CONCURRENCY_HANDOFF_LEDGER_KIND,
+    SCHEMA_VERSION as CONCURRENCY_HANDOFF_SCHEMA_VERSION,
+    validate_concurrency_handoff_authorization,
+)
+from atlas.concurrency_claim import (
+    FILENAME as CONCURRENCY_CLAIMS_FILENAME,
+    LEDGER_KIND as CONCURRENCY_CLAIM_LEDGER_KIND,
+    SCHEMA_VERSION as CONCURRENCY_CLAIM_SCHEMA_VERSION,
+)
 from atlas.concurrency_claim_join import FILENAME as CONCURRENCY_CLAIM_JOINS_FILENAME
 from atlas.provenance import ValidationError
 from atlas.security_review import FILENAME as SECURITY_REVIEW_FILENAME
@@ -53,7 +67,34 @@ PARTIAL_SUFFIX = ".partial"
 _DURABLE_NAME = "registry.json"
 _PROJECTIONS_DIR = "projections"
 _CONTROLLER_NAME = "work-controller.json"
-_DERIVED_CACHE_FILES = frozenset({"chat-audit.json", "chat-audit.lock", "chat-audit.tmp", PROVIDER_DASHBOARD_FILENAME, PROVIDER_ROUTE_QUALITY_FILENAME, DECISION_PLANE_FILENAME, DECISION_PLANE_CANARY_FILENAME, INSTRUCTION_GOVERNANCE_FILENAME, INSTRUCTION_GOVERNANCE_DISPOSITION_FILENAME, INSTRUCTION_GOVERNANCE_CANARY_FILENAME, CONCURRENCY_SNAPSHOT_FILENAME, CONCURRENCY_RUNS_FILENAME, CONCURRENCY_AUTHORIZATION_FILENAME, CONCURRENCY_EFFECTS_FILENAME, CONCURRENCY_JOINS_FILENAME, CONCURRENCY_EXECUTIONS_FILENAME, CONCURRENCY_HANDOFFS_FILENAME, CONCURRENCY_CLAIMS_FILENAME, CONCURRENCY_CLAIM_JOINS_FILENAME, SECURITY_REVIEW_FILENAME})
+_REPLAY_STATE_FILES = frozenset(
+    {
+        CONCURRENCY_EFFECTS_FILENAME,
+        CONCURRENCY_HANDOFFS_FILENAME,
+        CONCURRENCY_CLAIMS_FILENAME,
+    }
+)
+_DERIVED_CACHE_FILES = frozenset(
+    {
+        "chat-audit.json",
+        "chat-audit.lock",
+        "chat-audit.tmp",
+        PROVIDER_DASHBOARD_FILENAME,
+        PROVIDER_ROUTE_QUALITY_FILENAME,
+        DECISION_PLANE_FILENAME,
+        DECISION_PLANE_CANARY_FILENAME,
+        INSTRUCTION_GOVERNANCE_FILENAME,
+        INSTRUCTION_GOVERNANCE_DISPOSITION_FILENAME,
+        INSTRUCTION_GOVERNANCE_CANARY_FILENAME,
+        CONCURRENCY_SNAPSHOT_FILENAME,
+        CONCURRENCY_RUNS_FILENAME,
+        CONCURRENCY_AUTHORIZATION_FILENAME,
+        CONCURRENCY_JOINS_FILENAME,
+        CONCURRENCY_EXECUTIONS_FILENAME,
+        CONCURRENCY_CLAIM_JOINS_FILENAME,
+        SECURITY_REVIEW_FILENAME,
+    }
+)
 _DERIVED_CACHE_DIRS = frozenset({"chat-audit-handoffs"})
 _CONTROLLER_DIRS = frozenset({COMPLETION_INBOX_DIRNAME, COMPLETION_PROCESSED_DIRNAME})
 
@@ -65,7 +106,7 @@ class _SnapshotFile:
 
 
 def backup_data_root(data_root: Path, dest: Path) -> dict:
-    """Snapshot registry and projections while cooperating writers are excluded."""
+    """Snapshot durable/controller state while cooperating writers are excluded."""
     root = Path(data_root)
     target = Path(dest)
     if root.is_symlink() or not root.is_dir():
@@ -149,11 +190,17 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
     saw_projections = False
     saw_controller = False
     controller_dirs: list[str] = []
+    replay_files: list[str] = []
     for entry in root.iterdir():
         name = entry.name
         if name == LOCK_NAME:
             if entry.is_symlink():
                 raise ValidationError("backup entry is not a regular file")
+            continue
+        if name in _REPLAY_STATE_FILES:
+            if entry.is_symlink() or not entry.is_file():
+                raise ValidationError("backup entry is not a regular file")
+            replay_files.append(name)
             continue
         if name in _DERIVED_CACHE_FILES:
             if entry.is_symlink() or not entry.is_file():
@@ -222,6 +269,10 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
         for path in _tree_files(root / dirname):
             relative = path.relative_to(root).as_posix()
             files.append(_SnapshotFile(relative, "controller", _read_regular(path)))
+    for name in sorted(replay_files):
+        files.append(
+            _SnapshotFile(name, "controller", _read_regular(root / name))
+        )
     snapshot_root = root / SNAPSHOT_DIRNAME
     if snapshot_root.exists():
         for path in _tree_files(snapshot_root):
@@ -274,6 +325,7 @@ def _validate_snapshot_files(files: list[_SnapshotFile]) -> None:
     _validate_registry_blob(blobs.get(_DURABLE_NAME))
     _validate_projection_blobs(blobs)
     _validate_controller_blobs(blobs)
+    _validate_replay_blobs(blobs)
 
 
 def _validate_registry_blob(raw: bytes | None) -> None:
@@ -336,15 +388,94 @@ def _validate_controller_blobs(blobs: dict[str, bytes]) -> None:
             raise ValidationError("completion event is unsupported") from exc
 
 
+
+
+def _validate_replay_blobs(blobs: dict[str, bytes]) -> None:
+    effect_raw = blobs.get(CONCURRENCY_EFFECTS_FILENAME)
+    if effect_raw is not None:
+        effect = _json_object(
+            effect_raw,
+            "concurrency effect replay state is corrupt",
+        )
+        if (
+            set(effect) != {"schema_version", "kind", "authority", "effects"}
+            or effect.get("schema_version") != CONCURRENCY_EFFECT_SCHEMA_VERSION
+            or effect.get("kind") != CONCURRENCY_EFFECT_LEDGER_KIND
+            or effect.get("authority") != CONCURRENCY_EFFECT_AUTHORITY
+            or not isinstance(effect.get("effects"), list)
+        ):
+            raise ValidationError("concurrency effect replay state is unsupported")
+        for item in effect["effects"]:
+            if not isinstance(item, dict):
+                raise ValidationError("concurrency effect replay state is unsupported")
+            state = item.get("state")
+            if state not in {"IN_PROGRESS", "TERMINAL"}:
+                raise ValidationError("concurrency effect replay state is unsupported")
+            if state == "IN_PROGRESS" and (
+                item.get("receipt") is not None
+                or item.get("receipt_digest") is not None
+            ):
+                raise ValidationError("concurrency effect replay state is unsupported")
+
+    handoff_raw = blobs.get(CONCURRENCY_HANDOFFS_FILENAME)
+    if handoff_raw is not None:
+        handoff = _json_object(
+            handoff_raw,
+            "concurrency handoff replay state is corrupt",
+        )
+        if (
+            set(handoff) != {"schema_version", "kind", "handoffs"}
+            or handoff.get("schema_version") != CONCURRENCY_HANDOFF_SCHEMA_VERSION
+            or handoff.get("kind") != CONCURRENCY_HANDOFF_LEDGER_KIND
+            or not isinstance(handoff.get("handoffs"), list)
+        ):
+            raise ValidationError("concurrency handoff replay state is unsupported")
+        try:
+            for item in handoff["handoffs"]:
+                validate_concurrency_handoff_authorization(item)
+        except ValidationError as exc:
+            raise ValidationError(
+                "concurrency handoff replay state is unsupported"
+            ) from exc
+
+    claim_raw = blobs.get(CONCURRENCY_CLAIMS_FILENAME)
+    if claim_raw is not None:
+        claim = _json_object(
+            claim_raw,
+            "concurrency claim replay state is corrupt",
+        )
+        if (
+            set(claim) != {"schema_version", "kind", "claims"}
+            or claim.get("schema_version") != CONCURRENCY_CLAIM_SCHEMA_VERSION
+            or claim.get("kind") != CONCURRENCY_CLAIM_LEDGER_KIND
+            or not isinstance(claim.get("claims"), list)
+        ):
+            raise ValidationError("concurrency claim replay state is unsupported")
+        for item in claim["claims"]:
+            if not isinstance(item, dict):
+                raise ValidationError("concurrency claim replay state is unsupported")
+            state = item.get("state")
+            if state not in {"IN_PROGRESS", "TERMINAL"}:
+                raise ValidationError("concurrency claim replay state is unsupported")
+            if state == "IN_PROGRESS" and (
+                item.get("receipt") is not None
+                or item.get("claim_digest") is not None
+            ):
+                raise ValidationError("concurrency claim replay state is unsupported")
+
+
 def _role_matches(path: str, role: str) -> bool:
     if role == "durable":
         return path == _DURABLE_NAME or path.startswith(f"{SNAPSHOT_DIRNAME}/")
     if role == "rebuildable":
         return path.startswith(f"{_PROJECTIONS_DIR}/")
     if role == "controller":
-        return path == _CONTROLLER_NAME or path.startswith(
-            f"{COMPLETION_INBOX_DIRNAME}/"
-        ) or path.startswith(f"{COMPLETION_PROCESSED_DIRNAME}/")
+        return (
+            path == _CONTROLLER_NAME
+            or path in _REPLAY_STATE_FILES
+            or path.startswith(f"{COMPLETION_INBOX_DIRNAME}/")
+            or path.startswith(f"{COMPLETION_PROCESSED_DIRNAME}/")
+        )
     return False
 
 

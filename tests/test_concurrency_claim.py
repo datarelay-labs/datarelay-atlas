@@ -294,7 +294,7 @@ class ConcurrencyClaimTests(unittest.TestCase):
                     )
                 self.assertFalse((data / CLAIM_FILENAME).exists())
 
-    def test_claim_ledger_is_excluded_from_backup_authority(self) -> None:
+    def test_claim_ledger_is_preserved_for_replay_safety(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             data = base / "data"
@@ -309,8 +309,8 @@ class ConcurrencyClaimTests(unittest.TestCase):
             )
             dest = base / "backup"
             result = backup_data_root(data, dest)
-            self.assertNotIn(CLAIM_FILENAME, json.dumps(result))
-            self.assertFalse((dest / CLAIM_FILENAME).exists())
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue((dest / CLAIM_FILENAME).is_file())
 
 
 if __name__ == "__main__":
