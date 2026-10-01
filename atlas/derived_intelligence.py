@@ -24,15 +24,45 @@ class DerivedItem:
     source_identity: str
     provenance: dict[str, object]
 
-def build_derived_intelligence(store: ProjectionStore, project_ids: list[str]) -> list[DerivedItem]:
+def _build_derived_intelligence(
+    store: ProjectionStore,
+    project_ids: list[str],
+) -> tuple[list[DerivedItem], bool]:
     items: list[DerivedItem] = []
     seen: set[tuple[str,str,str,str]] = set()
-    projections = [projection for project_id in sorted(set(project_ids)) for projection in iter_validated_projections(store, project_id)]
-    known_repositories = {projection.provenance.repository for projection in projections if projection.provenance.engineering_authority}
+    contradiction_detected = False
+    projections = [
+        projection
+        for project_id in sorted(set(project_ids))
+        for projection in iter_validated_projections(store, project_id)
+    ]
+    known_repositories = {
+        projection.provenance.repository
+        for projection in projections
+        if projection.provenance.engineering_authority
+    }
     for projection in projections:
         prov = provenance_dict(projection.provenance)
         own_repo = str(prov["repository"])
-        body = projection.text.split(_BODY_SEPARATOR, 1)[1] if _BODY_SEPARATOR in projection.text else ""
+        body = (
+            projection.text.split(_BODY_SEPARATOR, 1)[1]
+            if _BODY_SEPARATOR in projection.text
+            else ""
+        )
+        contradiction_values = sorted(
+            {
+                match.strip()[:240]
+                for match in _CONTRADICTION.findall(body)
+                if match.strip()
+            }
+        )
+        merge_conflict = _MERGE_CONFLICT.search(body) is not None
+        if contradiction_values or merge_conflict:
+            contradiction_detected = True
+
+        if len(items) >= _MAX_ITEMS:
+            continue
+
         for repo in sorted(known_repositories):
             if repo == own_repo:
                 continue
@@ -47,13 +77,16 @@ def build_derived_intelligence(store: ProjectionStore, project_ids: list[str]) -
             value = next((part.strip() for part in match.groups() if part and part.strip()), "")
             if value:
                 _append(items, seen, "unanswered_question", value[:240], projection.project_id, projection.identity, prov)
-        for value in sorted({match.strip()[:240] for match in _CONTRADICTION.findall(body) if match.strip()}):
+        for value in contradiction_values:
             _append(items, seen, "contradiction_evidence", value, projection.project_id, projection.identity, prov)
-        if _MERGE_CONFLICT.search(body):
+        if merge_conflict:
             _append(items, seen, "contradiction_evidence", "unresolved merge-conflict markers", projection.project_id, projection.identity, prov)
-        if len(items) >= _MAX_ITEMS:
-            return sorted(items, key=_sort_key)
-    return sorted(items, key=_sort_key)
+    return sorted(items, key=_sort_key), contradiction_detected
+
+
+def build_derived_intelligence(store: ProjectionStore, project_ids: list[str]) -> list[DerivedItem]:
+    items, _contradiction_detected = _build_derived_intelligence(store, project_ids)
+    return items
 
 def _append(items, seen, kind, value, project_id, identity, provenance):
     key=(kind,value,project_id,identity)
@@ -66,7 +99,9 @@ def _sort_key(item: DerivedItem):
 
 def derived_intelligence_payload(store: ProjectionStore, project_ids: list[str]) -> dict[str, object]:
     normalized_ids = sorted(set(project_ids))
-    items = build_derived_intelligence(store, normalized_ids)
+    items, contradiction_detected = _build_derived_intelligence(
+        store, normalized_ids
+    )
     backlinks: dict[str, list[dict[str, str]]] = {}
     concepts: dict[str, list[dict[str, str]]] = {}
     questions: dict[str, list[dict[str, str]]] = {}
@@ -134,11 +169,14 @@ def derived_intelligence_payload(store: ProjectionStore, project_ids: list[str])
         "derived": True,
         "canonical": False,
         "contradictions": {
-            "state": "DETECTED" if contradiction_items else "NONE_OBSERVED",
+            "state": "DETECTED" if contradiction_detected else "NONE_OBSERVED",
             "semantic_state": "UNKNOWN",
             "detail": (
-                f"{len(contradiction_items)} explicit contradiction evidence item(s) in validated projections"
-                if contradiction_items
+                (
+                    f"{len(contradiction_items)} retained explicit contradiction evidence item(s); "
+                    "additional evidence may be outside the bounded display set"
+                )
+                if contradiction_detected
                 else "no explicit contradiction markers observed; semantic consistency remains unknown"
             ),
             "items": [

@@ -42,6 +42,47 @@ class DerivedIntelligenceTests(unittest.TestCase):
             values=[i["value"] for i in derived_intelligence_payload(svc.projections,["alpha"])["items"] if i["kind"]=="unanswered_question"]
             self.assertEqual(values,["tracked explicitly?"])
 
+    def test_contradiction_state_survives_item_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = AtlasService(Path(tmp))
+            svc.register_project(
+                project_id="alpha",
+                repository="datarelay-labs/alpha",
+            )
+            svc.add_source(
+                "alpha",
+                source_id="dense",
+                source_path="DENSE.md",
+            )
+            headings = chr(10).join(
+                f"## Heading {index:03d}" for index in range(500)
+            )
+            content = (
+                "# Dense" + chr(10) * 2 + headings
+                + chr(10) * 2
+                + "CONTRADICTION: actual conflict after the cap"
+                + chr(10)
+            )
+            svc.sync_project(
+                "alpha",
+                fetch=lambda s, t: FetchedSource(
+                    content=content,
+                    source_revision="c" * 40,
+                ),
+            )
+            payload = derived_intelligence_payload(
+                svc.projections, ["alpha"]
+            )
+            self.assertEqual(len(payload["items"]), 500)
+            self.assertEqual(payload["contradictions"]["state"], "DETECTED")
+            self.assertEqual(
+                payload["contradictions"]["semantic_state"], "UNKNOWN"
+            )
+            self.assertIn(
+                "outside the bounded display set",
+                payload["contradictions"]["detail"],
+            )
+
     def test_rebuild_is_deterministic(self):
         with tempfile.TemporaryDirectory() as tmp:
             svc=self.seed(tmp)

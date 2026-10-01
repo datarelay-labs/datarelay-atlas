@@ -101,7 +101,7 @@ class ConcurrencyExecutionSurfaceTests(unittest.TestCase):
             fixture,
         )
 
-    def test_cli_web_mcp_read_surfaces_and_backup_exclusion(self):
+    def test_cli_web_mcp_read_surfaces_and_backup_preservation(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             root = base / "data"
@@ -165,8 +165,17 @@ class ConcurrencyExecutionSurfaceTests(unittest.TestCase):
             self.assertIn("ORCHESTRATION_EVIDENCE_ONLY", body)
             self.assertIn("PASS authority", body)
 
-            backup_data_root(root, base / "backup")
-            self.assertFalse((base / "backup" / FILENAME).exists())
+            backup = base / "backup"
+            backup_data_root(root, backup)
+            self.assertTrue((backup / FILENAME).is_file())
+            backup_manifest = json.loads(
+                (backup / "manifest.json").read_text(encoding="utf-8")
+            )
+            roles = {
+                entry["path"]: entry["role"]
+                for entry in backup_manifest["files"]
+            }
+            self.assertEqual(roles[FILENAME], "controller")
 
     def test_tampered_cycle_or_effect_receipt_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -21,6 +21,7 @@ from atlas.concurrency_execution import (
     start_concurrency_execution,
 )
 from atlas.concurrency_join import record_concurrency_dispatch_join
+from atlas.data_protection import backup_data_root, restore_test
 from atlas.provenance import ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -182,6 +183,42 @@ class ConcurrencyExecutionTests(unittest.TestCase):
             self.assertEqual(latest["assignment_count"], 2)
             self.assertEqual(latest["effect_result"], "DISPATCHED")
             self.assertEqual(latest["pass_authority"], "NONE")
+
+    def test_execution_replay_guard_survives_backup_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "data"
+            root.mkdir()
+            plan = _write_snapshot(root, _snapshot())
+            start_concurrency_execution(
+                root,
+                cycle_id="backup-cycle-first",
+                authorization_request=_request(
+                    plan, authorization_id="backup-auth-first"
+                ),
+                effect_id="backup-effect-first",
+                effect_port=RecordingPort(),
+            )
+
+            backup = base / "backup"
+            backup_data_root(root, backup)
+            restored = base / "restored"
+            restore_test(backup, restored)
+
+            restored_plan = _write_snapshot(restored, _snapshot())
+            self.assertEqual(restored_plan["plan_digest"], plan["plan_digest"])
+            replay = RecordingPort()
+            with self.assertRaisesRegex(ValidationError, "replay"):
+                start_concurrency_execution(
+                    restored,
+                    cycle_id="backup-cycle-second",
+                    authorization_request=_request(
+                        restored_plan, authorization_id="backup-auth-second"
+                    ),
+                    effect_id="backup-effect-second",
+                    effect_port=replay,
+                )
+            self.assertEqual(replay.calls, [])
 
     def test_same_plan_replay_is_rejected_before_new_port_calls(self):
         with tempfile.TemporaryDirectory() as tmp:

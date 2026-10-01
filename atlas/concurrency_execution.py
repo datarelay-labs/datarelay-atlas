@@ -193,13 +193,8 @@ def validate_concurrency_execution_record(
     return dict(payload)
 
 
-def _load_ledger(root: Path) -> dict[str, object]:
-    path = root / FILENAME
-    if path.is_symlink():
-        _reject("concurrency execution ledger path is unsafe")
-    if not path.exists():
-        return _empty_ledger()
-    payload = _load_json(path)
+def validate_concurrency_execution_ledger(payload: object) -> dict[str, object]:
+    """Validate the durable plan-level execution replay ledger."""
     if (
         not isinstance(payload, dict)
         or set(payload)
@@ -236,6 +231,15 @@ def _load_ledger(root: Path) -> dict[str, object]:
         seen_effect.add(effect_id)
         records.append(item)
     return {**_empty_ledger(), "records": records}
+
+
+def _load_ledger(root: Path) -> dict[str, object]:
+    path = root / FILENAME
+    if path.is_symlink():
+        _reject("concurrency execution ledger path is unsafe")
+    if not path.exists():
+        return _empty_ledger()
+    return validate_concurrency_execution_ledger(_load_json(path))
 
 
 def _make_record(

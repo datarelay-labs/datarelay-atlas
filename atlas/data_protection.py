@@ -39,7 +39,10 @@ from atlas.concurrency_effect import (
     validate_concurrency_effect_ledger,
 )
 from atlas.concurrency_join import FILENAME as CONCURRENCY_JOINS_FILENAME
-from atlas.concurrency_execution import FILENAME as CONCURRENCY_EXECUTIONS_FILENAME
+from atlas.concurrency_execution import (
+    FILENAME as CONCURRENCY_EXECUTIONS_FILENAME,
+    validate_concurrency_execution_ledger,
+)
 from atlas.concurrency_handoff import (
     FILENAME as CONCURRENCY_HANDOFFS_FILENAME,
     validate_concurrency_handoff_ledger,
@@ -71,6 +74,7 @@ _REPLAY_STATE_FILES = frozenset(
         CONCURRENCY_EFFECTS_FILENAME,
         CONCURRENCY_HANDOFFS_FILENAME,
         CONCURRENCY_CLAIMS_FILENAME,
+        CONCURRENCY_EXECUTIONS_FILENAME,
     }
 )
 _DERIVED_CACHE_FILES = frozenset(
@@ -89,7 +93,6 @@ _DERIVED_CACHE_FILES = frozenset(
         CONCURRENCY_RUNS_FILENAME,
         CONCURRENCY_AUTHORIZATION_FILENAME,
         CONCURRENCY_JOINS_FILENAME,
-        CONCURRENCY_EXECUTIONS_FILENAME,
         CONCURRENCY_CLAIM_JOINS_FILENAME,
         SECURITY_REVIEW_FILENAME,
     }
@@ -409,6 +412,11 @@ def _validate_replay_blobs(blobs: dict[str, bytes]) -> None:
             CONCURRENCY_CLAIMS_FILENAME,
             validate_concurrency_claim_ledger,
             "concurrency claim replay state",
+        ),
+        (
+            CONCURRENCY_EXECUTIONS_FILENAME,
+            validate_concurrency_execution_ledger,
+            "concurrency execution replay state",
         ),
     )
     for filename, validator, label in validators:
