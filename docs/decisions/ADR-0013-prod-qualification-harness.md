@@ -7,12 +7,12 @@ Date: 2026-09-26
 
 Issue #65 prepares public-smoke and operational-E2E machinery while Lane A
 activates the prod-atlas runtime. Atlas is pinned to Engineering System
-v1.7.0 baseline `c50d2a3b7540dcc2899d752573d0634da78dd2bc`. At that baseline,
-`production_oriented: true` requires `operational_e2e_required`,
-`public_smoke_required`, and `full_e2e_passes>=1`, and a non-empty release
-command is executed by the pinned release contract. Those flags stay false
-until a real prod-atlas run exists. The managed Engineering System baseline is
-now advanced by the post-merge adoption remediation while preserving this exact-pin fail-closed contract.
+v1.7.0 baseline `0b09d0ddea19aca804bfdcebb79332783bf64c5c`. Under the active
+Engineering System contract, `production_oriented: true` requires the configured
+release qualification gates;
+those flags stay false until a real prod-atlas run exists. Managed baseline
+adoption advances the approved exact pin together with this qualification gate;
+a project profile that disagrees with the approved pin still fails closed.
 
 ## Minimal design gate
 
