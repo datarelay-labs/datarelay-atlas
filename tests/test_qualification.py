@@ -125,6 +125,63 @@ class QualificationTests(unittest.TestCase):
         self.assertNotIn("qualification-marker", rendered)
         self._assert_release_flags_unchanged()
 
+    def test_multi_project_local_journey_is_scoped_and_non_production(self):
+        evidence = run_operational_e2e(
+            "multi-project-local",
+            {},
+            repo_root=ROOT,
+        )
+        self.assertEqual(evidence["status"], "PASS")
+        self.assertFalse(evidence["production_claim"])
+        self.assertEqual(
+            evidence["mode"],
+            "multi-project-local-deterministic",
+        )
+        self.assertEqual(
+            [step["name"] for step in evidence["steps"]],
+            [
+                "register_sync",
+                "project_isolation",
+                "cross_project_search",
+                "mcp_cross_project",
+                "restart_recovery",
+                "backup_restore",
+            ],
+        )
+        for step in evidence["steps"]:
+            self.assertEqual(step["status"], "PASS")
+            self.assertEqual(step.get("project_count"), "2")
+        rendered = json.dumps(evidence)
+        self.assertNotIn("multi-project-operational", rendered)
+        self.assertNotIn("alpha-only-marker", rendered)
+        self.assertNotIn("beta-only-marker", rendered)
+        self.assertNotIn("rev-multi-alpha", rendered)
+        self.assertNotIn("rev-multi-beta", rendered)
+        self._assert_release_flags_unchanged()
+
+    def test_multi_project_scope_leakage_fails_closed(self):
+        with patch(
+            "atlas.qualification._multi_project_isolated",
+            return_value=False,
+        ):
+            evidence = run_operational_e2e(
+                "multi-project-local",
+                {},
+                repo_root=ROOT,
+            )
+        self.assertEqual(evidence["status"], "FAIL")
+        self.assertFalse(evidence["production_claim"])
+        self.assertEqual(
+            evidence["reason"],
+            "multi-project scope isolation failed",
+        )
+        self.assertEqual(
+            [step["name"] for step in evidence["steps"]],
+            ["register_sync", "project_isolation"],
+        )
+        self.assertEqual(evidence["steps"][-1]["status"], "FAIL")
+        self._assert_release_flags_unchanged()
+
     def test_public_smoke_fails_closed_without_an_https_url(self):
         missing = run_public_smoke({}, repo_root=ROOT)
         self.assertEqual(missing["status"], "FAIL_CLOSED")
@@ -642,6 +699,25 @@ class QualificationTests(unittest.TestCase):
         payload = json.loads(buffer.getvalue())
         self.assertEqual(payload["status"], "PASS")
         self.assertFalse(payload["production_claim"])
+
+    def test_cli_multi_project_mode_exits_zero_without_release_claim(self):
+        from io import StringIO
+        from unittest.mock import patch
+
+        buffer = StringIO()
+        with patch("sys.stdout", buffer):
+            code = main(
+                ["operational-e2e", "--mode", "multi-project-local"]
+            )
+        self.assertEqual(code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["status"], "PASS")
+        self.assertEqual(
+            payload["mode"],
+            "multi-project-local-deterministic",
+        )
+        self.assertFalse(payload["production_claim"])
+        self._assert_release_flags_unchanged()
 
     def _write_profile(self, root: Path, text: str) -> None:
         engineering = root / ".engineering"

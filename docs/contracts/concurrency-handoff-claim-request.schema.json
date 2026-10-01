@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/concurrency-handoff-claim-request.schema.json",
+  "title": "DataRelay Atlas Concurrency Handoff Claim Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "claim_id",
+    "handoff_digest",
+    "effect_id",
+    "node_id",
+    "repository",
+    "issue_number",
+    "branch",
+    "head",
+    "worktree_path",
+    "adapter_id",
+    "provider",
+    "runtime",
+    "route_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "concurrency_handoff_claim_request"
+    },
+    "claim_id": {
+      "$ref": "#/$defs/id"
+    },
+    "handoff_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "effect_id": {
+      "$ref": "#/$defs/id"
+    },
+    "node_id": {
+      "$ref": "#/$defs/id"
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "issue_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "branch": {
+      "$ref": "#/$defs/id"
+    },
+    "head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "worktree_path": {
+      "type": "string",
+      "pattern": "^/",
+      "minLength": 2,
+      "maxLength": 1024
+    },
+    "adapter_id": {
+      "$ref": "#/$defs/id"
+    },
+    "provider": {
+      "$ref": "#/$defs/id"
+    },
+    "runtime": {
+      "$ref": "#/$defs/id"
+    },
+    "route_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@#+\\-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/atlas-security-review-evidence.schema.json",
+  "title": "Atlas Exact-Source Security Review Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "repository",
+    "source_revision",
+    "reviewed_at",
+    "reviewer",
+    "scope_version",
+    "controls",
+    "findings",
+    "authority",
+    "evidence_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "atlas_security_review_evidence"},
+    "repository": {"const": "datarelay-labs/datarelay-atlas"},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "reviewed_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reference"],
+      "properties": {
+        "kind": {"enum": ["CHATGPT_CHAT", "CODEX", "HUMAN", "OTHER_APPROVED"]},
+        "reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/#@+\\-]{0,159}$"
+        }
+      }
+    },
+    "scope_version": {"const": 1},
+    "controls": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {"$ref": "#/$defs/control"},
+      "allOf": [
+        {"contains": {"properties": {"control_id": {"const": "MCP_AUTHORIZATION_SCOPE"}}, "required": ["control_id"]}},
+        {"contains": {"properties": {"control_id": {"const": "MCP_TOKEN_ISSUER_RESOURCE_BINDING"}}, "required": ["control_id"]}},
+        {"contains": {"properties": {"control_id": {"const": "TLS_AND_SECRET_FILE_PERMISSIONS"}}, "required": ["control_id"]}},
+        {"contains": {"properties": {"control_id": {"const": "DEPLOYMENT_INGRESS_HARDENING"}}, "required": ["control_id"]}},
+        {"contains": {"properties": {"control_id": {"const": "DATA_ROOT_PATH_AND_SYMLINK_SAFETY"}}, "required": ["control_id"]}},
+        {"contains": {"properties": {"control_id": {"const": "BACKUP_RESTORE_FAIL_CLOSED"}}, "required": ["control_id"]}},
+        {"contains": {"properties": {"control_id": {"const": "CONTENT_FREE_ERROR_AND_EVIDENCE_BOUNDARY"}}, "required": ["control_id"]}}
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "authority": {"const": "EVIDENCE_ONLY"},
+    "evidence_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "$defs": {
+    "safeRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/#@+\\-]{0,159}$"
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["control_id", "outcome", "evidence_ref"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {"outcome": {"enum": ["PASS", "FAIL"]}},
+            "required": ["outcome"]
+          },
+          "then": {
+            "properties": {"evidence_ref": {"$ref": "#/$defs/safeRef"}}
+          }
+        }
+      ],
+      "properties": {
+        "control_id": {
+          "enum": [
+            "MCP_AUTHORIZATION_SCOPE",
+            "MCP_TOKEN_ISSUER_RESOURCE_BINDING",
+            "TLS_AND_SECRET_FILE_PERMISSIONS",
+            "DEPLOYMENT_INGRESS_HARDENING",
+            "DATA_ROOT_PATH_AND_SYMLINK_SAFETY",
+            "BACKUP_RESTORE_FAIL_CLOSED",
+            "CONTENT_FREE_ERROR_AND_EVIDENCE_BOUNDARY"
+          ]
+        },
+        "outcome": {"enum": ["PASS", "FAIL", "UNKNOWN"]},
+        "evidence_ref": {
+          "anyOf": [
+            {"$ref": "#/$defs/safeRef"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding_id", "severity", "disposition", "evidence_ref"],
+      "properties": {
+        "finding_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Z0-9][A-Z0-9._\\-]{0,63}$"
+        },
+        "severity": {"enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]},
+        "disposition": {"enum": ["OPEN", "RESOLVED"]},
+        "evidence_ref": {"$ref": "#/$defs/safeRef"}
+      }
+    }
+  }
+}

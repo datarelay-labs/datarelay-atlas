@@ -4742,6 +4742,215 @@ class GitHubWorkPacketAdapter:
             "selected_node": dict(selected),
         }
 
+
+    def activate_concurrency_execution_packet(
+        self,
+        repository: str,
+        issue_number: int,
+        *,
+        branch: str,
+        head: str,
+        workstream: str,
+        expected_active_issue_numbers: list[int],
+        max_wip: int,
+    ) -> dict[str, Any]:
+        """CAS-activate one exact queued packet under a bounded multi-node WIP set.
+
+        The caller owns repository-level serialization. This method never
+        starts a worker/session and never grants PASS or release authority.
+        """
+        repo = normalize_github_repository(repository)
+        if (
+            isinstance(issue_number, bool)
+            or not isinstance(issue_number, int)
+            or issue_number < 1
+        ):
+            raise ValidationError("concurrency activation issue_number is invalid")
+        number = issue_number
+        expected_branch = str(branch or "").strip()
+        expected_head = str(head or "").strip().lower()
+        expected_workstream = str(workstream or "").strip()
+        if (
+            not _valid_git_branch_ref(expected_branch)
+            or not re.fullmatch(r"[0-9a-f]{40}", expected_head)
+            or not WORKSTREAM_RE.fullmatch(expected_workstream)
+        ):
+            raise ValidationError(
+                "concurrency activation branch/head/workstream is invalid"
+            )
+        if isinstance(max_wip, bool) or not isinstance(max_wip, int) or not 1 <= max_wip <= 64:
+            raise ValidationError("concurrency activation max_wip is invalid")
+
+        expected_active: list[int] = []
+        for value in expected_active_issue_numbers:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValidationError(
+                    "concurrency activation expected ACTIVE issue set is invalid"
+                )
+            expected_active.append(value)
+        if len(expected_active) != len(set(expected_active)):
+            raise ValidationError(
+                "concurrency activation expected ACTIVE issue set is duplicated"
+            )
+        expected_active = sorted(expected_active)
+        if number in expected_active:
+            raise ValidationError(
+                "concurrency activation target is already in expected ACTIVE set"
+            )
+        if len(expected_active) >= max_wip:
+            raise ValidationError("concurrency activation project WIP is exhausted")
+
+        queued = self.reread_trusted_queued_execution_packet(repo, number)
+        expected_queued = {
+            "repository": repo,
+            "issue_number": number,
+            "branch": expected_branch,
+            "workstream": expected_workstream,
+            "head": expected_head,
+            "packet_status": "PAUSED",
+            "queue_state": "QUEUED",
+            "implementer": "CHATGPT_CHAT",
+        }
+        if any(queued.get(key) != value for key, value in expected_queued.items()):
+            raise ValidationError("concurrency queued packet identity drifted")
+
+        payload = self._view_issue(repo, number)
+        payload_number = payload.get("number")
+        if (
+            isinstance(payload_number, bool)
+            or not isinstance(payload_number, int)
+            or payload_number != number
+        ):
+            raise ValidationError("concurrency activation issue identity changed")
+        self._assert_ai_work_issue(payload, issue_number=number)
+        self._require_trusted_issue_author(repo, payload)
+        original_body = str(payload.get("body") or "")
+        original_updated_at = str(
+            payload.get("updatedAt") or payload.get("updated_at") or ""
+        )
+        meta = _parse_leading_packet_metadata(original_body)
+        after_raw = meta.get("AFTER_ISSUE")
+        predecessor_issue: int | None = None
+        if after_raw is not None and str(after_raw).strip():
+            predecessor_issue = _after_issue_number(after_raw)
+            if predecessor_issue is None:
+                raise ValidationError(
+                    "concurrency activation canonical AFTER_ISSUE is invalid"
+                )
+
+        def _require_predecessor_complete() -> None:
+            if predecessor_issue is None:
+                return
+            fact = self.read_readiness_packet_fact(repo, predecessor_issue)
+            if (
+                fact.get("packet_status") != "COMPLETE"
+                or fact.get("queue_state") != "NONE"
+            ):
+                raise ValidationError(
+                    "concurrency activation canonical predecessor is not COMPLETE"
+                )
+
+        _require_predecessor_complete()
+        active_before = self._trusted_repository_active_issue_numbers(repo)
+        if active_before != expected_active:
+            listed = ", ".join(f"#{item}" for item in active_before[:20]) or "none"
+            raise ValidationError(
+                "concurrency activation repository ACTIVE occupancy drifted: "
+                f"{listed}"
+            )
+
+        new_body = render_readiness_packet_active_body(
+            original_body,
+            repository=repo,
+            branch=expected_branch,
+            head=expected_head,
+        )
+
+        def _assert_pre_edit_concurrency() -> None:
+            refreshed = self.reread_trusted_queued_execution_packet(repo, number)
+            if any(
+                refreshed.get(key) != value
+                for key, value in expected_queued.items()
+            ):
+                raise ValidationError(
+                    "concurrency queued packet changed before activation edit"
+                )
+            _require_predecessor_complete()
+            current_active = self._trusted_repository_active_issue_numbers(repo)
+            if current_active != expected_active:
+                listed = (
+                    ", ".join(f"#{item}" for item in current_active[:20])
+                    or "none"
+                )
+                raise ValidationError(
+                    "concurrency activation ACTIVE occupancy changed before edit: "
+                    f"{listed}"
+                )
+
+        self._cas_replace_issue_body(
+            repo,
+            number,
+            original_body=original_body,
+            original_updated_at=original_updated_at,
+            new_body=new_body,
+            require_trusted_author=True,
+            require_open_ai_work=True,
+            before_edit=_assert_pre_edit_concurrency,
+        )
+
+        expected_fact = {
+            "repository": repo,
+            "issue_number": number,
+            "branch": expected_branch,
+            "head": expected_head,
+            "packet_status": "ACTIVE",
+            "queue_state": "NONE",
+        }
+        if self.read_readiness_packet_fact(repo, number) != expected_fact:
+            raise ValidationError(
+                "concurrency packet activation was not confirmed"
+            )
+        active = self.reread_trusted_active_packet(repo, number)
+        for key, value in {
+            "repository": repo,
+            "issue_number": number,
+            "branch": expected_branch,
+            "workstream": expected_workstream,
+            "head": expected_head,
+            "status": "ACTIVE",
+            "implementer": "CHATGPT_CHAT",
+        }.items():
+            if active.get(key) != value:
+                raise ValidationError(
+                    "concurrency active packet identity drifted after activation"
+                )
+        _require_predecessor_complete()
+        expected_after = sorted([*expected_active, number])
+        landed_active = self._trusted_repository_active_issue_numbers(repo)
+        if landed_active != expected_after:
+            listed = (
+                ", ".join(f"#{item}" for item in landed_active[:20]) or "none"
+            )
+            raise ValidationError(
+                "concurrency activation post-write ACTIVE occupancy drifted: "
+                f"{listed}"
+            )
+        return {
+            "repository": repo,
+            "issue_number": number,
+            "branch": expected_branch,
+            "workstream": expected_workstream,
+            "head": expected_head,
+            "status": "ACTIVE",
+            "queue_state": "NONE",
+            "implementer": queued["implementer"],
+            "change_risk": queued["change_risk"],
+            "intent_revision": queued["intent_revision"],
+            "author_permission": queued["author_permission"],
+            "predecessor_issue": predecessor_issue,
+        }
+
+
     def _scan_trusted_active_packets(
         self,
         repository: str,

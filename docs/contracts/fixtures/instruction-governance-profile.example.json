@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "instruction_governance_profile",
+  "target_repository": "datarelay-labs/datarelay-atlas",
+  "expected_target_head": "1111111111111111111111111111111111111111",
+  "engineering_system_repository": "datarelay-labs/engineering-system",
+  "engineering_system_revision": "2222222222222222222222222222222222222222",
+  "agent_base_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "behavior_scenarios_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "trigger_kind": "MODEL_CHANGE",
+  "trigger_revision": "gpt-profile-2026-09",
+  "model_provider": "openai",
+  "model_name": "gpt-5.6-sol",
+  "model_profile": "high",
+  "harness_id": "chatgpt-chat",
+  "harness_revision": "2026-09-30"
+}

@@ -16,7 +16,28 @@ from pathlib import Path
 
 from atlas.data_lock import LOCK_NAME, data_root_write_lock
 from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
+from atlas.provider_dashboard import FILENAME as PROVIDER_DASHBOARD_FILENAME
+from atlas.provider_route_quality import FILENAME as PROVIDER_ROUTE_QUALITY_FILENAME
+from atlas.decision_plane import FILENAME as DECISION_PLANE_FILENAME
+from atlas.decision_plane_canary import FILENAME as DECISION_PLANE_CANARY_FILENAME
+from atlas.instruction_governance import (
+    FILENAME as INSTRUCTION_GOVERNANCE_FILENAME,
+    DISPOSITION_FILENAME as INSTRUCTION_GOVERNANCE_DISPOSITION_FILENAME,
+)
+from atlas.instruction_governance_canary import FILENAME as INSTRUCTION_GOVERNANCE_CANARY_FILENAME
+from atlas.concurrency_admission import (
+    SNAPSHOT_FILENAME as CONCURRENCY_SNAPSHOT_FILENAME,
+    RUNS_FILENAME as CONCURRENCY_RUNS_FILENAME,
+)
+from atlas.concurrency_authorization import FILENAME as CONCURRENCY_AUTHORIZATION_FILENAME
+from atlas.concurrency_effect import FILENAME as CONCURRENCY_EFFECTS_FILENAME
+from atlas.concurrency_join import FILENAME as CONCURRENCY_JOINS_FILENAME
+from atlas.concurrency_execution import FILENAME as CONCURRENCY_EXECUTIONS_FILENAME
+from atlas.concurrency_handoff import FILENAME as CONCURRENCY_HANDOFFS_FILENAME
+from atlas.concurrency_claim import FILENAME as CONCURRENCY_CLAIMS_FILENAME
+from atlas.concurrency_claim_join import FILENAME as CONCURRENCY_CLAIM_JOINS_FILENAME
 from atlas.provenance import ValidationError
+from atlas.security_review import FILENAME as SECURITY_REVIEW_FILENAME
 from atlas.registry import REGISTRY_SCHEMA_VERSION, ProjectRegistry
 from atlas.secrets import contains_unsafe_secret
 from atlas.work_controller import (
@@ -32,7 +53,7 @@ PARTIAL_SUFFIX = ".partial"
 _DURABLE_NAME = "registry.json"
 _PROJECTIONS_DIR = "projections"
 _CONTROLLER_NAME = "work-controller.json"
-_DERIVED_CACHE_FILES = frozenset({"chat-audit.json", "chat-audit.lock", "chat-audit.tmp"})
+_DERIVED_CACHE_FILES = frozenset({"chat-audit.json", "chat-audit.lock", "chat-audit.tmp", PROVIDER_DASHBOARD_FILENAME, PROVIDER_ROUTE_QUALITY_FILENAME, DECISION_PLANE_FILENAME, DECISION_PLANE_CANARY_FILENAME, INSTRUCTION_GOVERNANCE_FILENAME, INSTRUCTION_GOVERNANCE_DISPOSITION_FILENAME, INSTRUCTION_GOVERNANCE_CANARY_FILENAME, CONCURRENCY_SNAPSHOT_FILENAME, CONCURRENCY_RUNS_FILENAME, CONCURRENCY_AUTHORIZATION_FILENAME, CONCURRENCY_EFFECTS_FILENAME, CONCURRENCY_JOINS_FILENAME, CONCURRENCY_EXECUTIONS_FILENAME, CONCURRENCY_HANDOFFS_FILENAME, CONCURRENCY_CLAIMS_FILENAME, CONCURRENCY_CLAIM_JOINS_FILENAME, SECURITY_REVIEW_FILENAME})
 _DERIVED_CACHE_DIRS = frozenset({"chat-audit-handoffs"})
 _CONTROLLER_DIRS = frozenset({COMPLETION_INBOX_DIRNAME, COMPLETION_PROCESSED_DIRNAME})
 

@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/provider-route-outcome-observation.schema.json",
+  "title": "DataRelay Atlas Provider Route Outcome Observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "observation_id",
+    "route",
+    "work_packet",
+    "outcome",
+    "cost",
+    "verification"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "type": "string",
+      "const": "provider_route_outcome_observation"
+    },
+    "observation_id": {
+      "$ref": "#/$defs/id"
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "route_id",
+        "provider",
+        "runtime",
+        "usage_mode",
+        "adapter"
+      ],
+      "properties": {
+        "route_id": {
+          "$ref": "#/$defs/id"
+        },
+        "provider": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "runtime": {
+          "$ref": "#/$defs/id"
+        },
+        "usage_mode": {
+          "$ref": "#/$defs/id"
+        },
+        "adapter": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "work_packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "issue_number",
+        "subject_head",
+        "task_kind"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "issue_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "subject_head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "task_kind": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verified_result",
+        "first_pass",
+        "audit_finding_count",
+        "rework_count",
+        "owner_intervention_count",
+        "wall_time_ms",
+        "quota_interruption_count"
+      ],
+      "properties": {
+        "verified_result": {
+          "enum": [
+            "PASS",
+            "REWORK",
+            "HUMAN_REQUIRED",
+            "FAILED"
+          ]
+        },
+        "first_pass": {
+          "type": "boolean"
+        },
+        "audit_finding_count": {
+          "$ref": "#/$defs/count"
+        },
+        "rework_count": {
+          "$ref": "#/$defs/count"
+        },
+        "owner_intervention_count": {
+          "$ref": "#/$defs/count"
+        },
+        "wall_time_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31536000000
+        },
+        "quota_interruption_count": {
+          "$ref": "#/$defs/count"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "first_pass": {
+                "const": true
+              }
+            },
+            "required": [
+              "first_pass"
+            ]
+          },
+          "then": {
+            "properties": {
+              "verified_result": {
+                "const": "PASS"
+              },
+              "rework_count": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "verified_result": {
+                "const": "REWORK"
+              }
+            },
+            "required": [
+              "verified_result"
+            ]
+          },
+          "then": {
+            "properties": {
+              "rework_count": {
+                "minimum": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "cost": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "const": "UNKNOWN"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "milliunits",
+            "source_ref",
+            "source_digest"
+          ],
+          "properties": {
+            "status": {
+              "const": "OBSERVED"
+            },
+            "milliunits": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000000000
+            },
+            "source_ref": {
+              "$ref": "#/$defs/id"
+            },
+            "source_digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        }
+      ]
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_ref",
+        "source_digest",
+        "observed_at"
+      ],
+      "properties": {
+        "source_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "source_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?Z$"
+    }
+  }
+}

@@ -50,14 +50,25 @@ from atlas.cursor_usage import (
 from atlas.context_optimization import load_context_canary_report
 from atlas.context_shadow import load_shadow_quality_binding
 from atlas.context_learned import load_learned_canary_binding
+from atlas.provider_broker import STRATEGIES
+from atlas.provider_capability import CAPABILITY_NAMES
 from atlas.provider_transition import (
+    FAILURE_REASONS,
     load_provider_transition_candidates,
     plan_provider_transition,
 )
 from atlas.host_worker import load_host_worker_config, run_once
+from atlas.instruction_governance import TRIGGERS
 from atlas.supervisor import supervise_once
 from atlas.data_protection import backup_data_root, restore_test
 from atlas.schema_compat import rollback_data_root, upgrade_data_root
+from atlas.sbom import publish_sbom_bundle
+from atlas.security_review import (
+    derive_review_outcome,
+    load_security_review_evidence,
+    publish_security_review_evidence,
+    security_review_dashboard,
+)
 from atlas.ops import (
     assess_service_environment,
     prod_launch_contract,
@@ -72,6 +83,7 @@ from atlas.readiness_graph import (
     plan_readiness_file,
     plan_selected_packet_projections,
 )
+from atlas.lifecycle_intelligence import lifecycle_view_payload
 from atlas.readiness_github import plan_github_reconciled_readiness_file
 from atlas.semantic_retrieval import embedding_config_from_cli
 from atlas.service import AtlasService
@@ -105,6 +117,22 @@ def _service(args: argparse.Namespace) -> AtlasService:
 
 def _print_json(payload: object) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _read_json_file(path: str, *, label: str, max_bytes: int = 1024 * 1024) -> object:
+    source = Path(path)
+    if source.is_symlink() or not source.is_file():
+        raise ValidationError(f"{label} file is unsafe")
+    try:
+        raw = source.read_bytes()
+    except OSError as exc:
+        raise ValidationError(f"{label} file is unreadable") from exc
+    if len(raw) > max_bytes:
+        raise ValidationError(f"{label} file exceeds bounded size")
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        raise ValidationError(f"{label} file is invalid JSON") from exc
 
 
 def cmd_project_register(args: argparse.Namespace) -> int:
@@ -166,6 +194,11 @@ def cmd_source_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_source_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).source_detail(args.project_id, args.source_id))
+    return 0
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     svc = _service(args)
     records = svc.sync_project(args.project_id, token=args.token)
@@ -206,6 +239,271 @@ def cmd_projections(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_intelligence_overview(args: argparse.Namespace) -> int:
+    project_ids = list(args.project_id or [])
+    _print_json(_service(args).intelligence_overview(project_ids or None))
+    return 0
+
+
+def cmd_intelligence_decision(args: argparse.Namespace) -> int:
+    project_ids = list(args.project_id or [])
+    _print_json(_service(args).decision_detail(args.decision_id, project_ids or None))
+    return 0
+
+
+def cmd_intelligence_show(args: argparse.Namespace) -> int:
+    svc = _service(args)
+    _print_json(svc.project_intelligence(args.project_id))
+    return 0
+
+
+def cmd_personal_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).personal_knowledge_dashboard())
+    return 0
+
+
+def cmd_personal_search(args: argparse.Namespace) -> int:
+    hits = _service(args).personal_search(args.project_id, args.query, limit=args.limit)
+    _print_json([asdict(hit) for hit in hits])
+    return 0
+
+
+def cmd_providers_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).provider_dashboard())
+    return 0
+
+
+def cmd_providers_quality_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).provider_route_quality_dashboard())
+    return 0
+
+
+def cmd_providers_quality_publish(args: argparse.Namespace) -> int:
+    _print_json(
+        _service(args).publish_provider_route_quality(
+            [Path(value) for value in args.observation]
+        )
+    )
+    return 0
+
+
+def cmd_concurrency_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).concurrency_dashboard())
+    return 0
+
+
+def cmd_concurrency_publish(args: argparse.Namespace) -> int:
+    snapshot = _read_json_file(args.snapshot, label="concurrency snapshot")
+    _print_json(_service(args).publish_concurrency_snapshot(snapshot))
+    return 0
+
+
+def cmd_concurrency_record_run(args: argparse.Namespace) -> int:
+    observation = _read_json_file(args.observation, label="concurrency run observation")
+    _print_json(_service(args).record_concurrency_run(observation))
+    return 0
+
+
+def cmd_concurrency_authorization_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).concurrency_dispatch_authorization_dashboard())
+    return 0
+
+
+def cmd_concurrency_authorize(args: argparse.Namespace) -> int:
+    request = _read_json_file(args.request, label="concurrency authorization request")
+    _print_json(_service(args).publish_concurrency_dispatch_authorization(request))
+    return 0
+
+
+def cmd_concurrency_effects_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).concurrency_dispatch_effect_dashboard())
+    return 0
+
+
+def cmd_concurrency_joins_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).concurrency_dispatch_join_dashboard())
+    return 0
+
+
+def cmd_concurrency_executions_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).concurrency_execution_dashboard())
+    return 0
+
+
+def cmd_instruction_governance_profile_build(args: argparse.Namespace) -> int:
+    payload = _service(args).build_instruction_governance_profile(
+        engineering_system_revision=args.engineering_system_revision,
+        agent_base_path=Path(args.agent_base),
+        behavior_scenarios_path=Path(args.behavior_scenarios),
+        trigger_kind=args.trigger_kind,
+        trigger_revision=args.trigger_revision,
+        model_provider=args.model_provider,
+        model_name=args.model_name,
+        model_profile=args.model_profile,
+        harness_id=args.harness_id,
+        harness_revision=args.harness_revision,
+    )
+    _print_json(payload)
+    return 0
+
+
+def cmd_instruction_governance_candidate_change(args: argparse.Namespace) -> int:
+    payload = _service(args).build_instruction_candidate_change(
+        managed_path=args.path,
+        candidate_path=Path(args.candidate),
+    )
+    _print_json(payload)
+    return 0
+
+
+def cmd_instruction_governance_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).instruction_governance_dashboard())
+    return 0
+
+
+def cmd_instruction_governance_route(args: argparse.Namespace) -> int:
+    _print_json(_service(args).instruction_governance_routing())
+    return 0
+
+
+def cmd_instruction_governance_disposition_build(args: argparse.Namespace) -> int:
+    _print_json(_service(args).build_instruction_governance_disposition(args.audit_identity))
+    return 0
+
+
+def cmd_instruction_governance_disposition_publish(args: argparse.Namespace) -> int:
+    _print_json(_service(args).publish_instruction_governance_disposition(args.audit_identity))
+    return 0
+
+
+def cmd_instruction_governance_disposition_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).instruction_governance_disposition_dashboard())
+    return 0
+
+
+def cmd_instruction_governance_canary_record(args: argparse.Namespace) -> int:
+    observation = _read_json_file(args.observation, label="instruction governance canary observation")
+    _print_json(_service(args).record_instruction_governance_canary(observation))
+    return 0
+
+
+def cmd_instruction_governance_canary_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).instruction_governance_canary_dashboard())
+    return 0
+
+
+def cmd_instruction_governance_preflight(args: argparse.Namespace) -> int:
+    profile = _read_json_file(args.profile, label="instruction governance profile")
+    payload = _service(args).instruction_governance_preflight(
+        profile=profile,
+        agent_base_path=Path(args.agent_base),
+        behavior_scenarios_path=Path(args.behavior_scenarios),
+    )
+    _print_json(payload)
+    return 0
+
+
+def cmd_instruction_governance_record(args: argparse.Namespace) -> int:
+    profile = _read_json_file(args.profile, label="instruction governance profile")
+    result = _read_json_file(args.result, label="instruction governance audit result")
+    payload = _service(args).record_instruction_governance_audit(
+        profile=profile,
+        agent_base_path=Path(args.agent_base),
+        behavior_scenarios_path=Path(args.behavior_scenarios),
+        result=result,
+    )
+    _print_json(payload)
+    return 0
+
+
+def cmd_decision_plane_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).decision_plane_dashboard())
+    return 0
+
+
+def cmd_decision_plane_canary_readiness(args: argparse.Namespace) -> int:
+    _print_json(_service(args).decision_canary_readiness())
+    return 0
+
+
+def cmd_decision_plane_canary_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).decision_canary_dashboard())
+    return 0
+
+
+def cmd_decision_plane_canary_publish(args: argparse.Namespace) -> int:
+    request = _read_json_file(args.request, label="decision plane canary request")
+    _print_json(_service(args).publish_decision_canary_admission(request))
+    return 0
+
+
+def cmd_decision_plane_append(args: argparse.Namespace) -> int:
+    try:
+        payload = json.loads(Path(args.observation).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValidationError("decision plane observation file is invalid") from exc
+    _print_json(_service(args).append_decision_plane_observation(payload))
+    return 0
+
+
+def cmd_decision_plane_context_candidates(args: argparse.Namespace) -> int:
+    _print_json(
+        _service(args).decision_plane_optional_context_candidates(
+            list(args.optional_path or [])
+        )
+    )
+    return 0
+
+
+def cmd_decision_plane_check_candidates(args: argparse.Namespace) -> int:
+    _print_json(
+        _service(args).decision_plane_focused_check_candidates(
+            list(args.changed_path or [])
+        )
+    )
+    return 0
+
+
+def cmd_providers_transition_preview(args: argparse.Namespace) -> int:
+    payload = _service(args).provider_transition_preview(
+        current_route_id=args.current_route,
+        failure_reason=args.failure_reason,
+        prior_failed_route_ids=list(args.prior_failed_route or []),
+        max_attempts=args.max_attempts,
+    )
+    _print_json(payload)
+    return 0
+
+
+def cmd_providers_publish(args: argparse.Namespace) -> int:
+    payload = _service(args).publish_provider_dashboard(
+        candidate_paths=[Path(value) for value in args.candidate],
+        observed_at=args.observed_at,
+        required_capability=args.required_capability,
+        strategy=args.strategy,
+        max_evidence_age_seconds=args.max_evidence_age_seconds,
+        route_set_path=Path(args.route_set) if args.route_set else None,
+    )
+    _print_json(payload)
+    return 0
+
+
+def cmd_search_all(args: argparse.Namespace) -> int:
+    svc = _service(args)
+    project_ids = list(args.project_id or [])
+    if not project_ids:
+        project_ids = [project.project_id for project in svc.list_projects() if project.enabled]
+    _print_json(
+        svc.search_across_projects(
+            args.query,
+            project_ids=project_ids,
+            source_class=args.source_class,
+            limit_per_project=args.limit_per_project,
+        )
+    )
+    return 0
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     svc = _service(args)
     embedding = embedding_config_from_cli(
@@ -218,6 +516,20 @@ def cmd_search(args: argparse.Namespace) -> int:
     hits = svc.search(args.project_id, args.query, limit=args.limit, embedding=embedding)
     _print_json([asdict(hit) for hit in hits])
     return 0
+
+
+def cmd_lifecycle_show(args: argparse.Namespace) -> int:
+    project = _service(args).registry.get(args.project_id)
+    _print_json(lifecycle_view_payload(Path(args.data_root), project.repository))
+    return 0
+
+
+def cmd_lifecycle_validate(args: argparse.Namespace) -> int:
+    project = _service(args).registry.get(args.project_id)
+    payload = lifecycle_view_payload(Path(args.data_root), project.repository)
+    unavailable = [name for name in ("work", "ci", "tests", "release", "surface_reconciliation", "full_user_e2e") if payload[name]["state"] == "UNAVAILABLE"]
+    _print_json({"project_id": args.project_id, "repository": project.repository, "valid": not unavailable, "unavailable_channels": unavailable})
+    return 0 if not unavailable else 2
 
 
 def cmd_web_serve(args: argparse.Namespace) -> int:
@@ -652,6 +964,11 @@ def build_parser() -> argparse.ArgumentParser:
     slist.add_argument("project_id")
     slist.set_defaults(func=cmd_source_list)
 
+    sshow = source_sub.add_parser("show", help="Show one registered source and validated projection detail")
+    sshow.add_argument("project_id")
+    sshow.add_argument("source_id")
+    sshow.set_defaults(func=cmd_source_show)
+
     sync = sub.add_parser("sync", help="Sync one project")
     sync.add_argument("project_id")
     sync.add_argument("--token", default=None)
@@ -670,6 +987,210 @@ def build_parser() -> argparse.ArgumentParser:
     projections = sub.add_parser("projections", help="Show projection/provenance records")
     projections.add_argument("project_id")
     projections.set_defaults(func=cmd_projections)
+
+    intelligence = sub.add_parser("intelligence", help="Show deterministic derived engineering intelligence")
+    intelligence_sub = intelligence.add_subparsers(dest="intelligence_command", required=True)
+    intelligence_overview = intelligence_sub.add_parser("overview", help="Show cross-project derived intelligence")
+    intelligence_overview.add_argument("--project-id", action="append", default=[], help="Explicit project scope; repeat to include multiple projects")
+    intelligence_overview.set_defaults(func=cmd_intelligence_overview)
+    intelligence_decision = intelligence_sub.add_parser("decision", help="Show one ADR decision target and backlinks")
+    intelligence_decision.add_argument("decision_id")
+    intelligence_decision.add_argument("--project-id", action="append", default=[], help="Optional explicit project scope; repeat to include multiple projects")
+    intelligence_decision.set_defaults(func=cmd_intelligence_decision)
+    intelligence_show = intelligence_sub.add_parser("show", help="Show one project's derived intelligence")
+    intelligence_show.add_argument("project_id")
+    intelligence_show.set_defaults(func=cmd_intelligence_show)
+
+    personal = sub.add_parser("personal", help="Read-only Personal Knowledge Plane")
+    personal_sub = personal.add_subparsers(dest="personal_command", required=True)
+    personal_show = personal_sub.add_parser("show", help="Show personal/reference source inventory and import status")
+    personal_show.set_defaults(func=cmd_personal_show)
+    personal_search = personal_sub.add_parser("search", help="Search only personal/reference projections in one project")
+    personal_search.add_argument("project_id")
+    personal_search.add_argument("query")
+    personal_search.add_argument("--limit", type=int, default=8)
+    personal_search.set_defaults(func=cmd_personal_search)
+
+    providers = sub.add_parser("providers", help="Read-only provider capacity and broker state")
+    providers_sub = providers.add_subparsers(dest="providers_command", required=True)
+    providers_show = providers_sub.add_parser("show", help="Show current provider capacity snapshot and advisory broker plan")
+    providers_show.set_defaults(func=cmd_providers_show)
+    providers_quality_show = providers_sub.add_parser(
+        "quality-show",
+        help="Show verified provider route outcome measurements",
+    )
+    providers_quality_show.set_defaults(func=cmd_providers_quality_show)
+    providers_quality_publish = providers_sub.add_parser(
+        "quality-publish",
+        help="Publish a derived provider route quality snapshot from observation files",
+    )
+    providers_quality_publish.add_argument(
+        "--observation",
+        action="append",
+        required=True,
+        help="Provider route outcome observation JSON; repeat for multiple observations",
+    )
+    providers_quality_publish.set_defaults(func=cmd_providers_quality_publish)
+    providers_preview = providers_sub.add_parser("transition-preview", help="Plan one read-only failover from the current provider snapshot")
+    providers_preview.add_argument("--current-route", required=True)
+    providers_preview.add_argument("--failure-reason", required=True, choices=sorted(FAILURE_REASONS))
+    providers_preview.add_argument("--prior-failed-route", action="append", default=[])
+    providers_preview.add_argument("--max-attempts", type=int, default=3)
+    providers_preview.set_defaults(func=cmd_providers_transition_preview)
+    providers_publish = providers_sub.add_parser("publish", help="Validate candidate files and publish a derived provider dashboard snapshot")
+    providers_publish.add_argument("--candidate", action="append", required=True, help="Provider route candidate JSON file; repeat for multiple routes")
+    providers_publish.add_argument("--route-set", default=None, help="Optional approved provider route-set JSON file")
+    providers_publish.add_argument("--observed-at", required=True, help="UTC evaluation timestamp")
+    providers_publish.add_argument("--required-capability", required=True, choices=sorted(CAPABILITY_NAMES))
+    providers_publish.add_argument("--strategy", default="CAPABILITY_FIRST", choices=sorted(STRATEGIES))
+    providers_publish.add_argument("--max-evidence-age-seconds", type=int, required=True)
+    providers_publish.set_defaults(func=cmd_providers_publish)
+
+    concurrency = sub.add_parser("concurrency", help="Provider-neutral measured concurrency admission")
+    concurrency_sub = concurrency.add_subparsers(dest="concurrency_command", required=True)
+    concurrency_show = concurrency_sub.add_parser("show", help="Show current concurrency admission plan and measurements")
+    concurrency_show.set_defaults(func=cmd_concurrency_show)
+    concurrency_publish = concurrency_sub.add_parser("publish", help="Publish a validated derived concurrency snapshot")
+    concurrency_publish.add_argument("--snapshot", required=True)
+    concurrency_publish.set_defaults(func=cmd_concurrency_publish)
+    concurrency_record = concurrency_sub.add_parser("record-run", help="Record one measured run bound to the current plan")
+    concurrency_record.add_argument("--observation", required=True)
+    concurrency_record.set_defaults(func=cmd_concurrency_record_run)
+    concurrency_authorization_show = concurrency_sub.add_parser(
+        "authorization-show",
+        help="Show current exact-plan multi-node dispatch authorization",
+    )
+    concurrency_authorization_show.set_defaults(func=cmd_concurrency_authorization_show)
+    concurrency_authorize = concurrency_sub.add_parser(
+        "authorize",
+        help="Publish multi-node dispatch authorization without dispatching",
+    )
+    concurrency_authorize.add_argument("--request", required=True)
+    concurrency_authorize.set_defaults(func=cmd_concurrency_authorize)
+    concurrency_effects_show = concurrency_sub.add_parser(
+        "effects-show",
+        help="Show one-shot multi-node dispatch effect receipts",
+    )
+    concurrency_effects_show.set_defaults(func=cmd_concurrency_effects_show)
+    concurrency_joins_show = concurrency_sub.add_parser(
+        "joins-show",
+        help="Show dispatch-bound multi-node join evidence",
+    )
+    concurrency_joins_show.set_defaults(func=cmd_concurrency_joins_show)
+    concurrency_executions_show = concurrency_sub.add_parser(
+        "executions-show",
+        help="Show provider-neutral execution-cycle orchestration state",
+    )
+    concurrency_executions_show.set_defaults(func=cmd_concurrency_executions_show)
+
+    instruction_governance = sub.add_parser("instruction-governance", help="Model-aware instruction governance audit evidence")
+    instruction_governance_sub = instruction_governance.add_subparsers(dest="instruction_governance_command", required=True)
+    instruction_governance_show = instruction_governance_sub.add_parser("show", help="Show managed instruction inventory and audit history")
+    instruction_governance_show.set_defaults(func=cmd_instruction_governance_show)
+    instruction_governance_route = instruction_governance_sub.add_parser(
+        "route",
+        help="Show deterministic non-mutating candidate routing decision",
+    )
+    instruction_governance_route.set_defaults(func=cmd_instruction_governance_route)
+    instruction_governance_disposition_build = instruction_governance_sub.add_parser(
+        "disposition-build",
+        help="Build one exact-audit disposition and digest-bound PR handoff without persistence",
+    )
+    instruction_governance_disposition_build.add_argument("--audit-identity", required=True)
+    instruction_governance_disposition_build.set_defaults(func=cmd_instruction_governance_disposition_build)
+    instruction_governance_disposition_publish = instruction_governance_sub.add_parser(
+        "disposition-publish",
+        help="Publish one derived exact-audit disposition/PR handoff",
+    )
+    instruction_governance_disposition_publish.add_argument("--audit-identity", required=True)
+    instruction_governance_disposition_publish.set_defaults(func=cmd_instruction_governance_disposition_publish)
+    instruction_governance_disposition_show = instruction_governance_sub.add_parser(
+        "disposition-show",
+        help="Show derived instruction-governance disposition/PR-handoff ledger",
+    )
+    instruction_governance_disposition_show.set_defaults(func=cmd_instruction_governance_disposition_show)
+    instruction_governance_canary_record = instruction_governance_sub.add_parser(
+        "canary-record",
+        help="Record bounded canary evidence bound to one current PR_CANDIDATE handoff",
+    )
+    instruction_governance_canary_record.add_argument("--observation", required=True)
+    instruction_governance_canary_record.set_defaults(func=cmd_instruction_governance_canary_record)
+    instruction_governance_canary_show = instruction_governance_sub.add_parser(
+        "canary-show",
+        help="Show instruction-governance canary/adoption-gate evidence",
+    )
+    instruction_governance_canary_show.set_defaults(func=cmd_instruction_governance_canary_show)
+    instruction_governance_profile = instruction_governance_sub.add_parser("profile-build", help="Build exact target/Engineering System/model/harness profile JSON")
+    instruction_governance_profile.add_argument("--engineering-system-revision", required=True)
+    instruction_governance_profile.add_argument("--agent-base", required=True)
+    instruction_governance_profile.add_argument("--behavior-scenarios", required=True)
+    instruction_governance_profile.add_argument("--trigger-kind", required=True, choices=sorted(TRIGGERS))
+    instruction_governance_profile.add_argument("--trigger-revision", required=True)
+    instruction_governance_profile.add_argument("--model-provider", required=True)
+    instruction_governance_profile.add_argument("--model-name", required=True)
+    instruction_governance_profile.add_argument("--model-profile", required=True)
+    instruction_governance_profile.add_argument("--harness-id", required=True)
+    instruction_governance_profile.add_argument("--harness-revision", required=True)
+    instruction_governance_profile.set_defaults(func=cmd_instruction_governance_profile_build)
+    instruction_governance_candidate = instruction_governance_sub.add_parser("candidate-change", help="Build digest-only change metadata for one managed surface")
+    instruction_governance_candidate.add_argument("--path", required=True)
+    instruction_governance_candidate.add_argument("--candidate", required=True)
+    instruction_governance_candidate.set_defaults(func=cmd_instruction_governance_candidate_change)
+    instruction_governance_preflight = instruction_governance_sub.add_parser("preflight", help="Bind exact target/profile/Engineering System reference identity")
+    instruction_governance_preflight.add_argument("--profile", required=True)
+    instruction_governance_preflight.add_argument("--agent-base", required=True)
+    instruction_governance_preflight.add_argument("--behavior-scenarios", required=True)
+    instruction_governance_preflight.set_defaults(func=cmd_instruction_governance_preflight)
+    instruction_governance_record = instruction_governance_sub.add_parser("record", help="Record one advisory behavior/candidate-diff audit result")
+    instruction_governance_record.add_argument("--profile", required=True)
+    instruction_governance_record.add_argument("--agent-base", required=True)
+    instruction_governance_record.add_argument("--behavior-scenarios", required=True)
+    instruction_governance_record.add_argument("--result", required=True)
+    instruction_governance_record.set_defaults(func=cmd_instruction_governance_record)
+
+    decision_plane = sub.add_parser("decision-plane", help="Decision Plane shadow/replay evidence")
+    decision_plane_sub = decision_plane.add_subparsers(dest="decision_plane_command", required=True)
+    decision_plane_show = decision_plane_sub.add_parser("show", help="Show Decision Plane shadow/replay summary")
+    decision_plane_show.set_defaults(func=cmd_decision_plane_show)
+    decision_plane_canary_readiness = decision_plane_sub.add_parser(
+        "canary-readiness",
+        help="Show deterministic readiness for a bounded canary admission request",
+    )
+    decision_plane_canary_readiness.set_defaults(func=cmd_decision_plane_canary_readiness)
+    decision_plane_canary_show = decision_plane_sub.add_parser(
+        "canary-show",
+        help="Show the current bounded Decision Plane canary admission snapshot",
+    )
+    decision_plane_canary_show.set_defaults(func=cmd_decision_plane_canary_show)
+    decision_plane_canary_publish = decision_plane_sub.add_parser(
+        "canary-publish",
+        help="Publish a bounded Decision Plane canary admission request",
+    )
+    decision_plane_canary_publish.add_argument("--request", required=True)
+    decision_plane_canary_publish.set_defaults(func=cmd_decision_plane_canary_publish)
+    decision_plane_append = decision_plane_sub.add_parser("append", help="Append one validated shadow/replay observation JSON")
+    decision_plane_append.add_argument("--observation", required=True)
+    decision_plane_append.set_defaults(func=cmd_decision_plane_append)
+    decision_plane_context = decision_plane_sub.add_parser("context-candidates", help="Prepare optional-context candidates while preserving mandatory context")
+    decision_plane_context.add_argument("--optional-path", action="append", default=[])
+    decision_plane_context.set_defaults(func=cmd_decision_plane_context_candidates)
+    decision_plane_checks = decision_plane_sub.add_parser("focused-check-candidates", help="Prepare affected focused-check candidates from .engineering/tests.yaml")
+    decision_plane_checks.add_argument("--changed-path", action="append", required=True)
+    decision_plane_checks.set_defaults(func=cmd_decision_plane_check_candidates)
+
+    search_all = sub.add_parser(
+        "search-all",
+        help="Search an explicit/all-enabled project scope with engineering/personal filtering",
+    )
+    search_all.add_argument("query")
+    search_all.add_argument("--project-id", action="append", default=[])
+    search_all.add_argument(
+        "--source-class",
+        choices=["all", "engineering", "personal"],
+        default="all",
+    )
+    search_all.add_argument("--limit-per-project", type=int, default=5)
+    search_all.set_defaults(func=cmd_search_all)
 
     search = sub.add_parser(
         "search",
@@ -705,6 +1226,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Embeddings HTTP timeout in seconds.",
     )
     search.set_defaults(func=cmd_search)
+
+    lifecycle = sub.add_parser("lifecycle", help="Read-only normalized lifecycle evidence")
+    lifecycle_sub = lifecycle.add_subparsers(dest="lifecycle_command", required=True)
+    lifecycle_show = lifecycle_sub.add_parser("show", help="Show normalized lifecycle state")
+    lifecycle_show.add_argument("project_id")
+    lifecycle_show.set_defaults(func=cmd_lifecycle_show)
+    lifecycle_validate = lifecycle_sub.add_parser("validate", help="Validate local lifecycle evidence for a project")
+    lifecycle_validate.add_argument("project_id")
+    lifecycle_validate.set_defaults(func=cmd_lifecycle_validate)
 
     web = sub.add_parser("web", help="Read-only Human UI")
     web_sub = web.add_subparsers(dest="web_command", required=True)
@@ -1171,6 +1701,61 @@ def build_parser() -> argparse.ArgumentParser:
 
     ops = sub.add_parser("ops", help="Service configuration and health")
     ops_sub = ops.add_subparsers(dest="ops_command", required=True)
+    ops_readiness = ops_sub.add_parser(
+        "readiness",
+        help="Show read-only Phase 5 operations and release readiness",
+    )
+    ops_readiness.add_argument(
+        "--sbom-bundle",
+        default=None,
+        help="Optional validated SBOM bundle directory to bind into readiness.",
+    )
+    ops_readiness.set_defaults(func=cmd_ops_readiness)
+    ops_observe = ops_sub.add_parser(
+        "observe",
+        help="Show bounded read-only Atlas runtime observability",
+    )
+    ops_observe.set_defaults(func=cmd_ops_observe)
+    ops_sbom = ops_sub.add_parser(
+        "sbom",
+        help="Generate a deterministic CycloneDX SBOM and provenance bundle",
+    )
+    ops_sbom.add_argument(
+        "--repo-root",
+        default=".",
+        help="Exact clean Atlas repository root. Defaults to the current directory.",
+    )
+    ops_sbom.add_argument(
+        "--dest",
+        required=True,
+        help="New absolute output directory; existing paths are refused.",
+    )
+    ops_sbom.set_defaults(func=cmd_ops_sbom)
+    ops_security_review = ops_sub.add_parser(
+        "security-review",
+        help="Validate or publish exact-source bounded security review evidence",
+    )
+    ops_security_review_sub = ops_security_review.add_subparsers(
+        dest="security_review_command",
+        required=True,
+    )
+    ops_security_review_validate = ops_security_review_sub.add_parser(
+        "validate",
+        help="Validate one exact-source security review evidence file",
+    )
+    ops_security_review_validate.add_argument("--evidence", required=True)
+    ops_security_review_validate.set_defaults(func=cmd_ops_security_review_validate)
+    ops_security_review_publish = ops_security_review_sub.add_parser(
+        "publish",
+        help="Publish validated review evidence into derived local state",
+    )
+    ops_security_review_publish.add_argument("--evidence", required=True)
+    ops_security_review_publish.set_defaults(func=cmd_ops_security_review_publish)
+    ops_security_review_show = ops_security_review_sub.add_parser(
+        "show",
+        help="Show the current derived security review evidence state",
+    )
+    ops_security_review_show.set_defaults(func=cmd_ops_security_review_show)
     ops_check = ops_sub.add_parser(
         "check",
         help="Fail closed unless the service environment is ready",
@@ -1552,6 +2137,67 @@ def cmd_host_worker_supervise_once(args: argparse.Namespace) -> int:
         host_probe=None,
     )
     _print_json(outcome)
+    return 0
+
+
+def cmd_ops_readiness(args: argparse.Namespace) -> int:
+    sbom_bundle = (
+        Path(args.sbom_bundle)
+        if getattr(args, "sbom_bundle", None)
+        else None
+    )
+    _print_json(
+        _service(args).operations_readiness(
+            sbom_bundle=sbom_bundle,
+        )
+    )
+    return 0
+
+
+def cmd_ops_observe(args: argparse.Namespace) -> int:
+    _print_json(_service(args).runtime_observability())
+    return 0
+
+
+def cmd_ops_sbom(args: argparse.Namespace) -> int:
+    _print_json(
+        publish_sbom_bundle(
+            Path(args.repo_root),
+            Path(args.dest),
+        )
+    )
+    return 0
+
+
+def cmd_ops_security_review_validate(args: argparse.Namespace) -> int:
+    evidence = load_security_review_evidence(Path(args.evidence))
+    _print_json(
+        {
+            "state": "VALIDATED_EVIDENCE",
+            "authority": evidence["authority"],
+            "review_outcome": derive_review_outcome(evidence),
+            "reviewer_attribution": "DECLARED_ONLY",
+            "repository": evidence["repository"],
+            "source_revision": evidence["source_revision"],
+            "reviewed_at": evidence["reviewed_at"],
+            "evidence_digest": evidence["evidence_digest"],
+        }
+    )
+    return 0
+
+
+def cmd_ops_security_review_publish(args: argparse.Namespace) -> int:
+    _print_json(
+        publish_security_review_evidence(
+            Path(args.data_root),
+            Path(args.evidence),
+        )
+    )
+    return 0
+
+
+def cmd_ops_security_review_show(args: argparse.Namespace) -> int:
+    _print_json(security_review_dashboard(Path(args.data_root)))
     return 0
 
 

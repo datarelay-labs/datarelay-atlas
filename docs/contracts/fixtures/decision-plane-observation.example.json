@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "kind": "decision_plane_observation",
+  "record_id": "ctx-shadow-001",
+  "mode": "SHADOW",
+  "decision_class": "OPTIONAL_CONTEXT_SELECTION",
+  "observed_at": "2026-09-30T11:00:00Z",
+  "candidate_ids": [
+    "AGENTS.md",
+    "docs/decisions/ADR-0008"
+  ],
+  "required_candidate_ids": [
+    "AGENTS.md"
+  ],
+  "current_choice_ids": [
+    "AGENTS.md",
+    "docs/decisions/ADR-0008"
+  ],
+  "model_choice_ids": [
+    "AGENTS.md"
+  ],
+  "model_provider": "jev",
+  "model_name": "system-one",
+  "model_profile": "optional-context-v1",
+  "confidence": "0.91",
+  "current_outcome": "UNKNOWN",
+  "model_outcome": "UNKNOWN",
+  "cost_delta_milliunits": 0,
+  "wall_time_delta_ms": 0,
+  "frontier_call_delta": 0,
+  "retry_delta": 0
+}

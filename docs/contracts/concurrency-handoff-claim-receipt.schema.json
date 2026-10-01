@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/concurrency-handoff-claim-receipt.schema.json",
+  "title": "DataRelay Atlas Concurrency Handoff Claim Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "result",
+    "authority",
+    "spawned",
+    "completion_authority",
+    "pass_authority",
+    "release_authority",
+    "claim_id",
+    "handoff_digest",
+    "effect_id",
+    "effect_receipt_digest",
+    "authorization_id",
+    "authorization_digest",
+    "replay_key",
+    "node_id",
+    "repository",
+    "issue_number",
+    "branch",
+    "head",
+    "workstream",
+    "worktree_path",
+    "worktree_identity_digest",
+    "implementer",
+    "adapter_id",
+    "provider",
+    "runtime",
+    "route_id",
+    "slot_id",
+    "worker_id",
+    "slot_evidence_ref",
+    "claim_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "concurrency_handoff_claim_receipt"
+    },
+    "result": {
+      "const": "CLAIMED"
+    },
+    "authority": {
+      "const": "START_EVIDENCE_ONLY"
+    },
+    "spawned": {
+      "type": "boolean",
+      "const": false
+    },
+    "completion_authority": {
+      "const": "NONE"
+    },
+    "pass_authority": {
+      "const": "NONE"
+    },
+    "release_authority": {
+      "const": "NONE"
+    },
+    "claim_id": {
+      "$ref": "#/$defs/id"
+    },
+    "handoff_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "effect_id": {
+      "$ref": "#/$defs/id"
+    },
+    "effect_receipt_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "authorization_id": {
+      "$ref": "#/$defs/id"
+    },
+    "authorization_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "replay_key": {
+      "$ref": "#/$defs/digest"
+    },
+    "node_id": {
+      "$ref": "#/$defs/id"
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "issue_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "branch": {
+      "$ref": "#/$defs/id"
+    },
+    "head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "workstream": {
+      "$ref": "#/$defs/id"
+    },
+    "worktree_path": {
+      "type": "string",
+      "pattern": "^/",
+      "minLength": 2,
+      "maxLength": 1024
+    },
+    "worktree_identity_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "implementer": {
+      "const": "CHATGPT_CHAT"
+    },
+    "adapter_id": {
+      "const": "CHATGPT_EXTERNAL_HANDOFF"
+    },
+    "provider": {
+      "const": "openai"
+    },
+    "runtime": {
+      "const": "chat_ssh"
+    },
+    "route_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "slot_id": {
+      "$ref": "#/$defs/id"
+    },
+    "worker_id": {
+      "$ref": "#/$defs/id"
+    },
+    "slot_evidence_ref": {
+      "$ref": "#/$defs/id"
+    },
+    "claim_digest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@#+\\-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

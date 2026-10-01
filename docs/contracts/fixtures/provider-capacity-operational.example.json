@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "provider_capacity_operational",
+  "provider": "codex",
+  "evidence": {
+    "authority": "PROVIDER_AUTHORITATIVE",
+    "source_kind": "provider_status",
+    "source_ref": "status/api",
+    "source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "observed_at": "2026-09-30T00:00:00Z"
+  },
+  "facts": {
+    "reset_semantics": {"status":"OBSERVED","mode":"ROLLING_WINDOW","window_seconds":18000},
+    "health": {"status":"OBSERVED","value":"OPERATIONAL"},
+    "latency": {"status":"OBSERVED","metric":"ROUND_TRIP_MS","boundary":"provider_api","value_ms":420}
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/decision-plane-canary-admission.schema.json",
+  "title": "DataRelay Atlas Decision Plane Canary Admission v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","kind","request_id","decision_class","decision","reasons","authority","activation_authority","execution_authority","fallback","current_rollout_state","requested_rollout_state","scope","max_canary_decisions","evaluated_at","expires_at","expected_evidence_digest","current_evidence_digest","replay_assessment","verified_replay_count","false_routing_count"],
+  "properties": {
+    "schema_version":{"type":"integer","const":1},
+    "kind":{"type":"string","const":"decision_plane_canary_admission"},
+    "request_id":{"$ref":"decision-plane-canary-request.schema.json#/$defs/id"},
+    "decision_class":{"enum":["OPTIONAL_CONTEXT_SELECTION","FOCUSED_CHECK_SELECTION"]},
+    "decision":{"enum":["CANARY_ELIGIBLE","CANARY_NOT_ELIGIBLE"]},
+    "reasons":{"type":"array","uniqueItems":true,"items":{"$ref":"decision-plane-canary-request.schema.json#/$defs/id"}},
+    "authority":{"const":"CANARY_ADMISSION_ONLY"},
+    "activation_authority":{"const":"NO_ACTIVATION_AUTHORITY"},
+    "execution_authority":{"const":"NONE"},
+    "fallback":{"const":"CURRENT_DECISION"},
+    "current_rollout_state":{"const":"SHADOW"},
+    "requested_rollout_state":{"const":"CANARY"},
+    "scope":{"$ref":"decision-plane-canary-request.schema.json#/properties/scope"},
+    "max_canary_decisions":{"type":"integer","minimum":1,"maximum":100},
+    "evaluated_at":{"$ref":"decision-plane-canary-request.schema.json#/$defs/timestamp"},
+    "expires_at":{"$ref":"decision-plane-canary-request.schema.json#/$defs/timestamp"},
+    "expected_evidence_digest":{"$ref":"decision-plane-canary-request.schema.json#/$defs/digest"},
+    "current_evidence_digest":{"$ref":"decision-plane-canary-request.schema.json#/$defs/digest"},
+    "replay_assessment":{"enum":["REPLAY_PASS","REPLAY_FAIL","INSUFFICIENT_EVIDENCE"]},
+    "verified_replay_count":{"type":"integer","minimum":0},
+    "false_routing_count":{"type":"integer","minimum":0}
+  },
+  "allOf":[
+    {
+      "if":{"properties":{"decision":{"const":"CANARY_ELIGIBLE"}},"required":["decision"]},
+      "then":{"properties":{"reasons":{"maxItems":0},"replay_assessment":{"const":"REPLAY_PASS"},"false_routing_count":{"const":0}}}
+    },
+    {
+      "if":{"properties":{"decision":{"const":"CANARY_NOT_ELIGIBLE"}},"required":["decision"]},
+      "then":{"properties":{"reasons":{"minItems":1}}}
+    }
+  ]
+}

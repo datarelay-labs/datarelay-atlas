@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "concurrency_run_observation",
+  "run_id": "concurrency-run-001",
+  "plan_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "started_at": "2026-09-30T12:31:00Z",
+  "completed_at": "2026-09-30T12:32:00Z",
+  "outcomes": [
+    {
+      "node_id": "datarelay-labs/datarelay-atlas#201",
+      "slot_id": "slot-chat-1",
+      "worker_id": "chat-worker-1",
+      "provider": "openai",
+      "outcome": "COMPLETE",
+      "duration_ms": 55000,
+      "evidence_ref": "run:201:complete"
+    },
+    {
+      "node_id": "datarelay-labs/datarelay-atlas#202",
+      "slot_id": "slot-codex-1",
+      "worker_id": "codex-worker-1",
+      "provider": "openai",
+      "outcome": "COMPLETE",
+      "duration_ms": 50000,
+      "evidence_ref": "run:202:complete"
+    }
+  ]
+}

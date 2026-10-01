@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/concurrency-dispatch-authorization-request.schema.json",
+  "title": "DataRelay Atlas Concurrency Dispatch Authorization Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "authorization_id",
+    "expected_plan_digest",
+    "evaluated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "concurrency_dispatch_authorization_request"
+    },
+    "authorization_id": {
+      "$ref": "#/$defs/id"
+    },
+    "expected_plan_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "evaluated_at": {
+      "$ref": "#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@#\\\\-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?Z$"
+    }
+  }
+}

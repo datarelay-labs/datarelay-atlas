@@ -1,0 +1,151 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "bom-ref": "pkg:pypi/anyio@4.15.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "anyio",
+      "properties": [
+        {
+          "name": "atlas:declared-direct",
+          "value": "false"
+        }
+      ],
+      "purl": "pkg:pypi/anyio@4.15.1",
+      "type": "library",
+      "version": "4.15.1"
+    },
+    {
+      "bom-ref": "pkg:pypi/cryptography@50.0.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "name": "cryptography",
+      "properties": [
+        {
+          "name": "atlas:declared-direct",
+          "value": "true"
+        }
+      ],
+      "purl": "pkg:pypi/cryptography@50.0.1",
+      "type": "library",
+      "version": "50.0.1"
+    },
+    {
+      "bom-ref": "pkg:pypi/httpx2@2.13.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "name": "httpx2",
+      "properties": [
+        {
+          "name": "atlas:declared-direct",
+          "value": "true"
+        }
+      ],
+      "purl": "pkg:pypi/httpx2@2.13.1",
+      "type": "library",
+      "version": "2.13.1"
+    },
+    {
+      "bom-ref": "pkg:pypi/jsonschema@4.26.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "jsonschema",
+      "properties": [
+        {
+          "name": "atlas:declared-direct",
+          "value": "true"
+        }
+      ],
+      "purl": "pkg:pypi/jsonschema@4.26.0",
+      "type": "library",
+      "version": "4.26.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/mcp@2.2.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "mcp",
+      "properties": [
+        {
+          "name": "atlas:declared-direct",
+          "value": "true"
+        }
+      ],
+      "purl": "pkg:pypi/mcp@2.2.0",
+      "type": "library",
+      "version": "2.2.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/pyyaml@6.0.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "pyyaml",
+      "properties": [
+        {
+          "name": "atlas:declared-direct",
+          "value": "true"
+        }
+      ],
+      "purl": "pkg:pypi/pyyaml@6.0.3",
+      "type": "library",
+      "version": "6.0.3"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "bom-ref": "pkg:github/datarelay-labs/datarelay-atlas@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "name": "datarelay-atlas",
+      "purl": "pkg:github/datarelay-labs/datarelay-atlas@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "application",
+      "version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "properties": [
+      {
+        "name": "atlas:source-repository",
+        "value": "datarelay-labs/datarelay-atlas"
+      },
+      {
+        "name": "atlas:source-revision",
+        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "name": "atlas:runtime-inventory",
+        "value": "importlib.metadata"
+      }
+    ]
+  },
+  "serialNumber": "urn:uuid:7fb2f96d-d047-5c2d-8cb6-60cb521702df",
+  "specVersion": "1.6",
+  "version": 1
+}

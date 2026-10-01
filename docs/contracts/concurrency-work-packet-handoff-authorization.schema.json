@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/concurrency-work-packet-handoff-authorization.schema.json",
+  "title": "DataRelay Atlas Concurrency Work Packet Handoff Authorization v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "authority",
+    "pass_authority",
+    "release_authority",
+    "spawned",
+    "effect_id",
+    "authorization_id",
+    "authorization_digest",
+    "replay_key",
+    "node_id",
+    "repository",
+    "issue_number",
+    "branch",
+    "head",
+    "workstream",
+    "worktree_path",
+    "worktree_identity_digest",
+    "implementer",
+    "adapter_id",
+    "provider",
+    "runtime",
+    "route_id",
+    "slot_id",
+    "worker_id",
+    "slot_evidence_ref",
+    "intent_revision",
+    "change_risk",
+    "author_permission",
+    "handoff_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "concurrency_work_packet_handoff_authorization"
+    },
+    "authority": {
+      "const": "EXTERNAL_CHAT_HANDOFF_ONLY"
+    },
+    "pass_authority": {
+      "const": "NONE"
+    },
+    "release_authority": {
+      "const": "NONE"
+    },
+    "spawned": {
+      "type": "boolean",
+      "const": false
+    },
+    "effect_id": {
+      "$ref": "#/$defs/id"
+    },
+    "authorization_id": {
+      "$ref": "#/$defs/id"
+    },
+    "authorization_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "replay_key": {
+      "$ref": "#/$defs/digest"
+    },
+    "node_id": {
+      "$ref": "#/$defs/id"
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "issue_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "branch": {
+      "$ref": "#/$defs/id"
+    },
+    "head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "workstream": {
+      "$ref": "#/$defs/id"
+    },
+    "worktree_path": {
+      "type": "string",
+      "pattern": "^/",
+      "minLength": 2,
+      "maxLength": 1024
+    },
+    "worktree_identity_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "implementer": {
+      "const": "CHATGPT_CHAT"
+    },
+    "adapter_id": {
+      "const": "CHATGPT_EXTERNAL_HANDOFF"
+    },
+    "provider": {
+      "$ref": "#/$defs/id"
+    },
+    "runtime": {
+      "$ref": "#/$defs/id"
+    },
+    "route_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "slot_id": {
+      "$ref": "#/$defs/id"
+    },
+    "worker_id": {
+      "$ref": "#/$defs/id"
+    },
+    "slot_evidence_ref": {
+      "$ref": "#/$defs/id"
+    },
+    "intent_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "change_risk": {
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+        "CRITICAL"
+      ]
+    },
+    "author_permission": {
+      "enum": [
+        "write",
+        "maintain",
+        "admin"
+      ]
+    },
+    "handoff_digest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@#+\\\\-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

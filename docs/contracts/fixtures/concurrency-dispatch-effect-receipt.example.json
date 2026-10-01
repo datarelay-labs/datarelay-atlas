@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "kind": "concurrency_dispatch_effect_receipt",
+  "effect_id": "effect-example",
+  "authorization_digest": "6c96faad4ba60956d9cd7ae1e43b7f7c7b4af03095650a9615eeef7e4fdf95b1",
+  "authorization_id": "effect-auth-1",
+  "result": "DISPATCHED",
+  "assignment_count": 2,
+  "dispatched_count": 2,
+  "refused_count": 0,
+  "human_required_count": 0,
+  "error_count": 0,
+  "receipts": [
+    {
+      "node_id": "datarelay-labs/datarelay-atlas#201",
+      "slot_id": "slot-chat-1",
+      "worker_id": "chat-worker-1",
+      "provider": "openai",
+      "runtime": "chat_ssh",
+      "route_id": "chat-primary",
+      "head": "1111111111111111111111111111111111111111",
+      "replay_key": "4af8d0403a9e1abfe748e0ce5ac71a9197417a4cb6ab80df3651b9b068b482d5",
+      "result": "DISPATCHED",
+      "dispatch_ref": "session-node-1"
+    },
+    {
+      "node_id": "datarelay-labs/datarelay-atlas#202",
+      "slot_id": "slot-codex-1",
+      "worker_id": "codex-worker-1",
+      "provider": "openai",
+      "runtime": "codex",
+      "route_id": "codex-review",
+      "head": "2222222222222222222222222222222222222222",
+      "replay_key": "7c1b604229d5432c10cd8ce29697582003661e1b8287544d109440ae8e638b97",
+      "result": "DISPATCHED",
+      "dispatch_ref": "session-node-2"
+    }
+  ]
+}
