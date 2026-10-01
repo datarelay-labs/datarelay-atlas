@@ -65,6 +65,7 @@ def fixture_contract() -> dict[str, str]:
     return {
         "primary_project_id": _CORE_PROJECT_ID,
         "peer_project_id": _CORE_PEER_ID,
+        "disabled_project_id": "core-disabled",
         "personal_project_id": _CORE_PROJECT_ID,
         "engineering_query": _CORE_QUERY,
         "isolated_query": "core-alpha-isolation-marker",
@@ -312,6 +313,16 @@ def _stop_candidate_servers(processes: list[subprocess.Popen[str]]) -> bool:
 
 
 def _fixture_fetch(source, token):
+    if (
+        source.project_id == fixture_contract()["disabled_project_id"]
+        and source.source_id == "disabled-note"
+    ):
+        if token:
+            raise ValidationError("core release browser fixture does not accept a token")
+        return FetchedSource(
+            content="# Disabled project\n\n" + fixture_contract()["isolated_query"] + "\n",
+            source_revision="6" * 40,
+        )
     if source.source_id == fixture_contract()["source_id"]:
         if token:
             raise ValidationError("core release browser fixture does not accept a token")
@@ -365,6 +376,20 @@ def _seed_primary(root: Path, candidate_head: str) -> None:
     )
 
     service.sync_project(_CORE_PEER_ID, fetch=_fixture_fetch)
+
+    disabled_project_id = fixture_contract()["disabled_project_id"]
+    service.register_project(
+        project_id=disabled_project_id,
+        repository="datarelay-labs/core-disabled",
+        display_name="Core Disabled",
+        enabled=False,
+    )
+    service.add_source(
+        disabled_project_id,
+        source_id="disabled-note",
+        source_path="docs/disabled.md",
+    )
+    service.sync_project(disabled_project_id, fetch=_fixture_fetch)
 
     service.import_root.mkdir(parents=True, exist_ok=True)
     note = service.import_root / "browser-personal.md"
@@ -463,6 +488,7 @@ def prepare_core_release_browser_fixture(
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": FIXTURE_KIND,
+        "candidate_head": candidate_head,
         "roots": {
             "primary": str(primary),
             "empty": str(empty),
@@ -484,12 +510,22 @@ def request_from_manifest(
 ) -> dict[str, object]:
     if (
         not isinstance(manifest, dict)
+        or set(manifest) != {
+            "schema_version", "kind", "candidate_head", "roots", "fixture"
+        }
         or manifest.get("schema_version") != SCHEMA_VERSION
         or manifest.get("kind") != FIXTURE_KIND
         or manifest.get("fixture") != fixture_contract()
         or not isinstance(manifest.get("roots"), dict)
     ):
         _reject("core release browser fixture manifest is invalid")
+    manifest_head = manifest.get("candidate_head")
+    if (
+        not isinstance(manifest_head, str)
+        or _HEAD.fullmatch(manifest_head) is None
+        or manifest_head != source_revision
+    ):
+        _reject("core release browser fixture candidate differs from request")
     _validated_fixture_roots(manifest["roots"])
 
     return validate_core_release_browser_request({

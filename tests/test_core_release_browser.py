@@ -152,7 +152,13 @@ class CoreReleaseBrowserTests(unittest.TestCase):
             base = Path(tmp) / "browser-fixture"
             manifest = prepare_core_release_browser_fixture(base)
             self.assertEqual(manifest["fixture"], fixture_contract())
+            self.assertEqual(manifest["candidate_head"], "a" * 40)
             primary = AtlasService(Path(manifest["roots"]["primary"]))
+            disabled = primary.registry.get(
+                fixture_contract()["disabled_project_id"]
+            )
+            self.assertFalse(disabled.enabled)
+            self.assertEqual(disabled.display_name, "Core Disabled")
             search = primary.search_across_projects(
                 fixture_contract()["engineering_query"],
                 project_ids=[
@@ -328,6 +334,20 @@ class CoreReleaseBrowserTests(unittest.TestCase):
                 corrupt_url="http://127.0.0.1:28790/",
             )
             self.assertEqual(request["fixture"], fixture_contract())
+            self.assertEqual(manifest["candidate_head"], head)
+
+            bad = deepcopy(manifest)
+            bad["candidate_head"] = "f" * 40
+            with self.assertRaisesRegex(ValidationError, "fixture candidate differs"):
+                request_from_manifest(
+                    bad,
+                    run_id="core-release-browser-head-mismatch",
+                    source_revision=head,
+                    work_packet_issue=245,
+                    primary_url="http://127.0.0.1:28788/",
+                    empty_url="http://127.0.0.1:28789/",
+                    corrupt_url="http://127.0.0.1:28790/",
+                )
 
             bad = deepcopy(manifest)
             bad["fixture"]["primary_project_id"] = "other"
@@ -383,6 +403,8 @@ class CoreReleaseBrowserTests(unittest.TestCase):
         self.assertIn("function contentSurface(", source)
         self.assertNotIn("function headingSurface(", source)
         self.assertIn("request.fixture.isolated_query", source)
+        self.assertIn("Core Disabled", source)
+        self.assertIn('page.goBack({ waitUntil: "domcontentloaded" })', source)
         self.assertIn("freshContext = await browser.newContext()", source)
         self.assertNotIn("@browserbasehq/stagehand", source)
 

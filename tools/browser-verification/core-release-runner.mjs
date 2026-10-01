@@ -174,9 +174,9 @@ function contentSurface(
 function surfaceCases() {
   return {
     overview: contentSurface("primary", "/", "Atlas Overview", [
-      "Registered projects", "Enabled projects", "Configured sources",
+      "3\nRegistered projects", "2\nEnabled projects", "Configured sources",
       "Runtime readiness", "Release readiness", "Core Alpha", "Core Beta",
-      "Search across projects", "Personal knowledge",
+      "Core Disabled", "disabled", "Search across projects", "Personal knowledge",
     ]),
     intelligence_overview: contentSurface(
       "primary", "/intelligence", "Derived intelligence",
@@ -449,7 +449,21 @@ function missionCases() {
         if (!body.includes("1111111111111111111111111111111111111111")) {
           throw new Error("attributable engineering revision is absent");
         }
-        return "overview -> project -> attributable engineering search";
+        await page.goBack({ waitUntil: "domcontentloaded" });
+        assertLoopbackUrl(page.url(), "engineering search back-navigation");
+        const backUrl = new URL(page.url());
+        if (backUrl.pathname !== "/projects/core-alpha" || backUrl.search) {
+          throw new Error("back-navigation did not restore the project view");
+        }
+        await requireHeading(page, "Core Alpha");
+        const restored = await bodyText(page);
+        if (await page.locator('input[name="q"]').inputValue() !== ""
+            || !restored.includes("datarelay-labs/core-alpha")
+            || !restored.includes("Configured sources")
+            || !restored.includes("browser-escape")) {
+          throw new Error("project server state was not preserved after back-navigation");
+        }
+        return "overview -> project -> attributable search -> back with server state preserved";
       },
     ),
     cross_project_retrieval: async (context, request) => withPage(
@@ -462,8 +476,10 @@ function missionCases() {
         await page.locator('select[name="source_class"]').selectOption("engineering");
         await page.getByRole("button", { name: "Search" }).click();
         let body = await bodyText(page);
-        if (!body.includes("Core Alpha") || body.includes("Core Beta")) {
-          throw new Error("cross-project isolation did not preserve the sole owning project");
+        if (!body.includes("Core Alpha")
+            || body.includes("Core Beta")
+            || body.includes("Core Disabled")) {
+          throw new Error("cross-project isolation did not preserve the sole enabled owning project");
         }
         await page.getByRole("link", { name: "Core Alpha" }).click();
         await page.waitForURL(/\/projects\/core-alpha/);
