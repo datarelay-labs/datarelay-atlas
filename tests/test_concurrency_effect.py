@@ -104,6 +104,18 @@ class ConcurrencyEffectTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "ledger path is unsafe"):
                 concurrency_dispatch_effect_dashboard(root)
 
+    def test_duplicate_effect_ledger_keys_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = (
+                '{"schema_version":1,"kind":"concurrency_dispatch_effect_ledger",'
+                '"authority":"DISPATCH_EFFECT_RECEIPT_ONLY",'
+                '"effects":[],"effects":[]}'
+            )
+            (root / FILENAME).write_text(raw, encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "duplicate JSON keys"):
+                concurrency_dispatch_effect_dashboard(root)
+
     def setUp(self) -> None:
         patcher = patch(
             "atlas.concurrency_effect._trusted_effect_time",

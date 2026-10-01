@@ -40,6 +40,15 @@ def _reject(message: str) -> None:
     raise ValidationError(message)
 
 
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValidationError("concurrency handoff ledger contains duplicate JSON keys")
+        result[key] = value
+    return result
+
+
 def _canonical_digest(payload: object) -> str:
     raw = json.dumps(
         payload,
@@ -261,7 +270,12 @@ def _load_ledger(data_root: Path) -> dict[str, object]:
     if not path.is_file():
         _reject("concurrency handoff ledger path is unsafe")
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except ValidationError:
+        raise
     except (OSError, ValueError, UnicodeError) as exc:
         raise ValidationError("concurrency handoff ledger is unreadable") from exc
     return validate_concurrency_handoff_ledger(payload)

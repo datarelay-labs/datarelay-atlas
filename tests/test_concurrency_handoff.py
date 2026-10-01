@@ -16,6 +16,7 @@ from atlas.concurrency_authorization import publish_concurrency_dispatch_authori
 from atlas.concurrency_effect import commit_concurrency_dispatch_effect
 from atlas.concurrency_handoff import (
     ADAPTER_ID,
+    FILENAME,
     ConcurrencyWorkPacketHandoffPort,
     get_concurrency_handoff_authorization,
     validate_concurrency_handoff_authorization,
@@ -241,9 +242,19 @@ class ConcurrencyHandoffTests(unittest.TestCase):
     def test_dangling_handoff_ledger_symlink_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            from atlas.concurrency_handoff import FILENAME
             (root / FILENAME).symlink_to(root / "missing-handoff-ledger.json")
             with self.assertRaisesRegex(ValidationError, "ledger path is unsafe"):
+                get_concurrency_handoff_authorization(root, "0" * 64)
+
+    def test_duplicate_handoff_ledger_keys_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = (
+                '{"schema_version":1,"kind":"concurrency_work_packet_handoff_ledger",'
+                '"handoffs":[],"handoffs":[]}'
+            )
+            (root / FILENAME).write_text(raw, encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "duplicate JSON keys"):
                 get_concurrency_handoff_authorization(root, "0" * 64)
 
     def setUp(self) -> None:

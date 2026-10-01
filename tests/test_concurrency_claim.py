@@ -96,6 +96,17 @@ class ConcurrencyClaimTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "ledger path is unsafe"):
                 get_concurrency_handoff_claim(data, "0" * 64)
 
+    def test_duplicate_claim_ledger_keys_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            raw = (
+                '{"schema_version":1,"kind":"concurrency_handoff_claim_ledger",'
+                '"claims":[],"claims":[]}'
+            )
+            (data / CLAIM_FILENAME).write_text(raw, encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "duplicate JSON keys"):
+                get_concurrency_handoff_claim(data, "0" * 64)
+
     def setUp(self) -> None:
         patcher = patch(
             "atlas.concurrency_effect._trusted_effect_time",

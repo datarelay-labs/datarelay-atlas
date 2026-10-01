@@ -44,6 +44,15 @@ def _reject(message: str) -> None:
     raise ValidationError(message)
 
 
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValidationError("concurrency effect ledger contains duplicate JSON keys")
+        result[key] = value
+    return result
+
+
 def _identity(value: object, *, label: str) -> str:
     if (
         not isinstance(value, str)
@@ -93,7 +102,12 @@ def _load_json(path: Path) -> object:
     if len(raw) > _MAX_BYTES:
         _reject("concurrency effect ledger exceeds bounded size")
     try:
-        payload = json.loads(raw.decode("utf-8"))
+        payload = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except ValidationError:
+        raise
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise ValidationError("concurrency effect ledger is invalid JSON") from exc
     assert_content_free(payload)
