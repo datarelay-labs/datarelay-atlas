@@ -660,6 +660,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--primary-url", required=True)
     run.add_argument("--empty-url", required=True)
     run.add_argument("--corrupt-url", required=True)
+    run.add_argument("--runtime-lib-dir")
 
     args = parser.parse_args(argv)
     if args.command == "prepare-fixture":
@@ -680,9 +681,15 @@ def main(argv: list[str] | None = None) -> int:
         empty_url=args.empty_url,
         corrupt_url=args.corrupt_url,
     )
+    runtime_env = (
+        {"LD_LIBRARY_PATH": args.runtime_lib_dir}
+        if args.runtime_lib_dir
+        else None
+    )
     result = run_core_release_browser(
         request,
         repo_root=Path(__file__).resolve().parents[1],
+        runtime_env=runtime_env,
     )
     print(json.dumps(result, sort_keys=True))
     return 0 if result["result"] == "PASS" else 1

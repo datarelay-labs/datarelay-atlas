@@ -64,6 +64,25 @@ async function visit(page, request, targetName, pathname, expectedStatus = 200) 
   return response;
 }
 
+async function submitReadOnlyPost(page, request) {
+  await visit(page, request, "primary", "/");
+  const navigation = page.waitForNavigation({ waitUntil: "domcontentloaded" });
+  await page.evaluate(() => {
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = "/";
+    document.body.appendChild(form);
+    form.submit();
+  });
+  const response = await navigation;
+  if (!response || response.status() !== 405) {
+    throw new Error("browser form POST was not rejected with 405");
+  }
+  assertLoopbackUrl(page.url(), "POST rejection navigation");
+  await requireHeading(page, "Read-only UI");
+  return response;
+}
+
 async function bodyText(page) {
   return page.locator("body").innerText();
 }
@@ -187,10 +206,10 @@ function customSurfaceCases() {
       await visit(page, request, "empty", "/search?q=no-match");
       await requireHeading(page, "Cross-project search");
       const body = await bodyText(page);
-      if (!body.includes("0 attributable result(s)")) {
-        throw new Error("empty search result count is not visible");
+      if (!body.includes("No enabled projects.")) {
+        throw new Error("empty search project state is not visible");
       }
-      return { status: 200, detail: "empty search rendered zero attributable results" };
+      return { status: 200, detail: "empty search rendered no enabled projects" };
     }),
     empty_personal: async (context, request) => withPage(context, async (page) => {
       await visit(page, request, "empty", "/personal");
@@ -228,15 +247,8 @@ function safetySurfaceCases() {
       return { status: 500, detail: "corrupt projection state failed closed" };
     }),
     post_rejection: async (context, request) => withPage(context, async (page) => {
-      await visit(page, request, "primary", "/");
-      const response = await page.evaluate(async () => {
-        const item = await fetch("/", { method: "POST" });
-        return { status: item.status, text: await item.text() };
-      });
-      if (response.status !== 405 || !response.text.includes("Read-only UI")) {
-        throw new Error("browser POST was not rejected as read-only");
-      }
-      return { status: 405, detail: "browser POST rejected with 405" };
+      await submitReadOnlyPost(page, request);
+      return { status: 405, detail: "browser form POST rejected with 405" };
     }),
     security_headers: async (context, request) => withPage(context, async (page) => {
       const response = await visit(page, request, "primary", "/");
@@ -263,7 +275,7 @@ function trustSurfaceCases() {
         page,
         request,
         "primary",
-        "/projects/core-alpha?q=browser-escape-marker",
+        "/projects/core-alpha/sources/browser-escape",
       );
       const body = await requireText(
         page,
@@ -275,7 +287,7 @@ function trustSurfaceCases() {
       if (!body.includes("browser-escape-marker")) {
         throw new Error("escaped source marker is absent");
       }
-      return { status: 200, detail: "source markup remained escaped text" };
+      return { status: 200, detail: "source detail kept markup escaped" };
     }),
     read_only_no_write_controls: async (context, request) => withPage(
       context,
@@ -411,11 +423,12 @@ function missionCasesTwo() {
         await page.locator('input[name="project"]').fill("core-alpha");
         await page.getByRole("button", { name: "Search" }).click();
         const body = await bodyText(page);
-        if (!body.includes("personal-browser-marker")
+        if (!body.includes("1 personal/reference result(s)")
+            || !body.includes("Browser personal reference")
             || !body.includes("personal reference / non-authoritative")) {
           throw new Error("personal reference journey lost authority separation");
         }
-        return "personal search stayed explicitly non-authoritative";
+        return "personal search returned one explicit non-authoritative result";
       },
     ),
     lifecycle_observed_unknown_unavailable: async (context, request) => withPage(
@@ -461,13 +474,14 @@ function missionCasesThree() {
       context,
       async (page) => {
         await visit(page, request, "primary", "/projects/core-alpha");
-        await page.locator('input[name="q"]').fill("browser-escape-marker");
-        await page.getByRole("button", { name: "Search" }).click();
+        await page.getByRole("link", { name: "browser-escape" }).click();
+        await page.waitForURL(/\/sources\/browser-escape/);
+        assertLoopbackUrl(page.url(), "source detail navigation");
         await requireText(page, "<script>browser-escape-marker</script>");
         if (await page.locator("script").count()) {
           throw new Error("source markup became executable DOM");
         }
-        return "source-derived markup remained escaped through project search";
+        return "source-derived markup remained escaped on source detail";
       },
     ),
   };
@@ -508,18 +522,13 @@ function missionCasesFour() {
     read_only_post_recovery: async (context, request) => withPage(
       context,
       async (page) => {
-        await visit(page, request, "primary", "/");
-        const status = await page.evaluate(async () => {
-          const response = await fetch("/", { method: "POST" });
-          return response.status;
-        });
-        if (status !== 405) throw new Error("browser POST did not return 405");
+        await submitReadOnlyPost(page, request);
         await page.goto(target(request, "primary", "/projects/core-alpha"), {
           waitUntil: "domcontentloaded",
         });
         assertLoopbackUrl(page.url(), "POST recovery navigation");
         await requireHeading(page, "Core Alpha");
-        return "read-only rejection preserved subsequent navigation";
+        return "form POST rejection preserved subsequent navigation";
       },
     ),
   };
