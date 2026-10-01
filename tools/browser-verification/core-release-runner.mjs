@@ -173,11 +173,43 @@ function contentSurface(
 
 function surfaceCases() {
   return {
-    overview: contentSurface("primary", "/", "Atlas Overview", [
-      "3\nRegistered projects", "2\nEnabled projects", "Configured sources",
-      "Runtime readiness", "Release readiness", "Core Alpha", "Core Beta",
-      "Core Disabled", "disabled", "Search across projects", "Personal knowledge",
-    ]),
+    overview: async (context, request) => withPage(context, async (page) => {
+      await visit(page, request, "primary", "/");
+      await requireHeading(page, "Atlas Overview");
+      const registered = page.locator("section.card").filter({
+        hasText: "Registered projects",
+      });
+      const enabled = page.locator("section.card").filter({
+        hasText: "Enabled projects",
+      });
+      if ((await registered.locator("h2").textContent() || "").trim() !== "3") {
+        throw new Error("overview registered-project count mismatch");
+      }
+      if ((await enabled.locator("h2").textContent() || "").trim() !== "2") {
+        throw new Error("overview enabled-project count mismatch");
+      }
+      const disabledCard = page.locator("article.card").filter({
+        hasText: "Core Disabled",
+      });
+      if (await disabledCard.count() !== 1
+          || (await disabledCard.locator(".pill").first().textContent() || "").trim() !== "disabled"
+          || !(await disabledCard.innerText()).includes("datarelay-labs/core-disabled")) {
+        throw new Error("overview disabled-project state is not rendered correctly");
+      }
+      const body = await bodyText(page);
+      for (const text of [
+        "Configured sources", "Runtime readiness", "Release readiness",
+        "Core Alpha", "Core Beta", "Search across projects", "Personal knowledge",
+      ]) {
+        if (!body.includes(text)) {
+          throw new Error("overview missing capability/state: " + text);
+        }
+      }
+      return {
+        status: 200,
+        detail: "overview counts, enabled/disabled states, inventory and navigation reconciled",
+      };
+    }),
     intelligence_overview: contentSurface(
       "primary", "/intelligence", "Derived intelligence",
       ["DERIVED", "Summary", "Repository entities", "Decision entities", "Decision index", "Core Alpha"],
@@ -455,6 +487,9 @@ function missionCases() {
         if (backUrl.pathname !== "/projects/core-alpha" || backUrl.search) {
           throw new Error("back-navigation did not restore the project view");
         }
+        await requireHeading(page, "Core Alpha");
+        await page.reload({ waitUntil: "domcontentloaded" });
+        assertLoopbackUrl(page.url(), "engineering project reload after back-navigation");
         await requireHeading(page, "Core Alpha");
         const restored = await bodyText(page);
         if (await page.locator('input[name="q"]').inputValue() !== ""
