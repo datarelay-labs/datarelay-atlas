@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -298,6 +299,30 @@ class PersonalDirectoryImportTests(unittest.TestCase):
                 )
             self.assertEqual(result["counts"]["conflicts"], 0)
             self.assertFalse(entered["value"])
+
+    def test_deep_tree_is_iterative_without_recursion_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            svc = self._service(base / "data")
+            vault = base / "vault"
+            vault.mkdir()
+            current = vault
+            for _ in range(120):
+                current = current / "d"
+                current.mkdir()
+            (current / "note.md").write_text("deep-marker\n", encoding="utf-8")
+
+            old_limit = sys.getrecursionlimit()
+            try:
+                sys.setrecursionlimit(100)
+                result = svc.import_personal_markdown_directory(
+                    "personal", source_root=vault, collection_id="vault"
+                )
+            finally:
+                sys.setrecursionlimit(old_limit)
+
+            self.assertEqual(result["counts"]["imported"], 1)
+            self.assertEqual(len(svc.personal_search("personal", "deep-marker")), 1)
 
     def test_symlink_and_data_root_overlap_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:

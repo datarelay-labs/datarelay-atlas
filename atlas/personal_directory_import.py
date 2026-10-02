@@ -299,60 +299,84 @@ def _scan_directory(root: Path) -> tuple[list[tuple[str, int]], list[dict[str, o
     rejected: list[dict[str, object]] = []
     total_bytes = 0
     entry_count = 0
+    pending = [root]
 
-    def walk(directory: Path) -> None:
-        nonlocal total_bytes, entry_count
+    while pending:
+        directory = pending.pop()
+        flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+        if hasattr(os, "O_DIRECTORY"):
+            flags |= os.O_DIRECTORY
         try:
-            entries = sorted(os.scandir(directory), key=lambda item: item.name)
+            fd = os.open(directory, flags)
         except OSError as exc:
             raise ValidationError("personal directory source root is unreadable") from exc
-        for entry in entries:
-            entry_count += 1
-            if entry_count > _MAX_ENTRIES:
-                raise ValidationError("personal directory contains too many entries")
-            path = Path(entry.path)
-            if entry.is_symlink():
-                raise ValidationError("personal directory contains a symlink")
+        try:
             try:
-                mode = entry.stat(follow_symlinks=False).st_mode
+                with os.scandir(fd) as iterator:
+                    entries = sorted(iterator, key=lambda item: item.name)
             except OSError as exc:
-                raise ValidationError("personal directory entry is unreadable") from exc
-            if stat.S_ISDIR(mode):
-                walk(path)
-                continue
-            relative = path.relative_to(root).as_posix()
-            try:
-                relative.encode("utf-8")
-            except UnicodeEncodeError:
-                rejected.append(
-                    _item(
-                        "[NON_UTF8_PATH]",
-                        None,
-                        "REJECTED",
-                        "NON_UTF8_PATH",
-                    )
-                )
-                continue
-            if contains_unsafe_secret(relative):
-                raise ValidationError("personal directory path metadata looks secret")
-            if len(relative) > _MAX_RELATIVE_PATH:
-                rejected.append(_item(relative[:_MAX_RELATIVE_PATH], None, "REJECTED", "PATH_TOO_LONG"))
-                continue
-            if not stat.S_ISREG(mode) or path.suffix != ".md":
-                rejected.append(_item(relative, None, "REJECTED", "UNSUPPORTED_FILE"))
-                continue
-            size = entry.stat(follow_symlinks=False).st_size
-            if size > _MAX_FILE_BYTES:
-                rejected.append(_item(relative, None, "REJECTED", "FILE_TOO_LARGE"))
-                continue
-            markdown.append((relative, size))
-            total_bytes += size
-            if len(markdown) > _MAX_FILES:
-                raise ValidationError("personal directory contains too many Markdown files")
-            if total_bytes > _MAX_TOTAL_BYTES:
-                raise ValidationError("personal directory Markdown bytes exceed bounded size")
+                raise ValidationError("personal directory source root is unreadable") from exc
 
-    walk(root)
+            child_directories: list[Path] = []
+            for entry in entries:
+                entry_count += 1
+                if entry_count > _MAX_ENTRIES:
+                    raise ValidationError("personal directory contains too many entries")
+                path = directory / entry.name
+                if entry.is_symlink():
+                    raise ValidationError("personal directory contains a symlink")
+                try:
+                    entry_stat = entry.stat(follow_symlinks=False)
+                except OSError as exc:
+                    raise ValidationError("personal directory entry is unreadable") from exc
+                mode = entry_stat.st_mode
+                if stat.S_ISDIR(mode):
+                    child_directories.append(path)
+                    continue
+                relative = path.relative_to(root).as_posix()
+                try:
+                    relative.encode("utf-8")
+                except UnicodeEncodeError:
+                    rejected.append(
+                        _item(
+                            "[NON_UTF8_PATH]",
+                            None,
+                            "REJECTED",
+                            "NON_UTF8_PATH",
+                        )
+                    )
+                    continue
+                if contains_unsafe_secret(relative):
+                    raise ValidationError("personal directory path metadata looks secret")
+                if len(relative) > _MAX_RELATIVE_PATH:
+                    rejected.append(
+                        _item(
+                            relative[:_MAX_RELATIVE_PATH],
+                            None,
+                            "REJECTED",
+                            "PATH_TOO_LONG",
+                        )
+                    )
+                    continue
+                if not stat.S_ISREG(mode) or path.suffix != ".md":
+                    rejected.append(_item(relative, None, "REJECTED", "UNSUPPORTED_FILE"))
+                    continue
+                size = entry_stat.st_size
+                if size > _MAX_FILE_BYTES:
+                    rejected.append(_item(relative, None, "REJECTED", "FILE_TOO_LARGE"))
+                    continue
+                markdown.append((relative, size))
+                total_bytes += size
+                if len(markdown) > _MAX_FILES:
+                    raise ValidationError("personal directory contains too many Markdown files")
+                if total_bytes > _MAX_TOTAL_BYTES:
+                    raise ValidationError(
+                        "personal directory Markdown bytes exceed bounded size"
+                    )
+            pending.extend(reversed(child_directories))
+        finally:
+            os.close(fd)
+
     markdown.sort(key=lambda value: value[0])
     return markdown, rejected
 
