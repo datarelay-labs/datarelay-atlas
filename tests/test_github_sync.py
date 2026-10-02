@@ -142,9 +142,12 @@ class GitHubSyncTests(unittest.TestCase):
             "Authorization: Basic Yjph",
             "Bearer abc.def",
             "Bearer abc123",
+            "Bearer token-abc123",
+            "Bearer authentication-secret",
             "Basic OnBhc3M=",
             "Basic dXNlcjo=",
             "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime-now",
+            "API_TOKEN=replace-at-runtime hunter2",
         )
         for content in samples:
             with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
