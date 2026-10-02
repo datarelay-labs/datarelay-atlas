@@ -38,6 +38,15 @@ _SAFE_AUTH_PROSE_RE = re.compile(
 _AUTH_HEADER_LINE_PREFIX_RE = re.compile(
     r"(?i)(?:Proxy-)?Authorization[ \t]*[:=][ \t]*$"
 )
+_SAFE_SECRET_PLACEHOLDER_RE = re.compile(
+    r"(?im)\b[A-Za-z_][A-Za-z0-9_]{0,80}(?:PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY)"
+    r"[ \t]*=[ \t]*replace-at-runtime(?=$|[ \t\r\n;])"
+)
+_SAFE_DOCUMENTATION_PLACEHOLDER_RE = re.compile(
+    r"(?im)(?P<prefix>\b[A-Z][A-Z0-9_-]{0,80}"
+    r"(?:SECRET|TOKEN|PASSWORD|API_KEY|ACCESS_KEY)"
+    r"[ \t]*=[ \t]*)replace-at-runtime\b"
+)
 
 
 def _contains_unsafe_github_projection_secret(text: str) -> bool:
@@ -53,6 +62,13 @@ def _contains_unsafe_github_projection_secret(text: str) -> bool:
         return "authentication terminology"
 
     scan = _SAFE_AUTH_PROSE_RE.sub(_mask_safe_prose, source)
+    # Atlas documentation uses the literal value 'replace-at-runtime' to mean
+    # operator-supplied-at-runtime, never a credential. Mask only this exact
+    # placeholder value; arbitrary assignment values remain fail-closed.
+    scan = _SAFE_DOCUMENTATION_PLACEHOLDER_RE.sub(
+        lambda match: f"{match.group('prefix')}<redacted>",
+        scan,
+    )
     return contains_unsafe_secret(scan)
 
 

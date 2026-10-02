@@ -85,6 +85,7 @@ class GitHubSyncTests(unittest.TestCase):
                         "The client accepts a bearer token.\n"
                         "The endpoint enforces bearer authentication.\n"
                         "Basic authentication is supported for documented integrations.\n"
+                        "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime\n"
                         "## Authorization:\n\n"
                         "Bearer tokens are checked again after this heading.\n"
                     ),
@@ -98,6 +99,35 @@ class GitHubSyncTests(unittest.TestCase):
             text = projection.read_text(encoding="utf-8")
             self.assertIn("Bearer tokens", text)
             self.assertIn("Basic authentication", text)
+
+    def test_documentation_placeholder_is_allowed_but_arbitrary_value_is_not(self):
+        samples = (
+            "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime",
+            "export ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime",
+        )
+        for content in samples:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
+                store = ProjectionStore(Path(tmp))
+
+                def fetch(source, token):  # noqa: ARG001
+                    return FetchedSource(content=content, source_revision="placeholder-rev")
+
+                record = store.sync_one(SOURCE, fetch=fetch)
+                self.assertEqual(record.sync_state, "success")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ProjectionStore(root)
+
+            def unsafe_fetch(source, token):  # noqa: ARG001
+                return FetchedSource(
+                    content="ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=real-value-12345",
+                    source_revision="unsafe-placeholder-rev",
+                )
+
+            rejected = store.sync_one(SOURCE, fetch=unsafe_fetch)
+            self.assertEqual(rejected.sync_state, "error")
+            self.assertFalse((root / store.projection_key(SOURCE)).exists())
 
     def test_shared_secret_detector_remains_strict_for_bare_bearer_values(self):
         sample = "request failed using Bearer abc123"
@@ -114,6 +144,7 @@ class GitHubSyncTests(unittest.TestCase):
             "Bearer abc123",
             "Basic OnBhc3M=",
             "Basic dXNlcjo=",
+            "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime-now",
         )
         for content in samples:
             with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
