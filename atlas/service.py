@@ -18,6 +18,7 @@ from atlas.engineering_evidence import (
     engineering_evidence_dashboard,
     import_engineering_evidence,
 )
+from atlas.task_context import build_task_context, resolve_task_project
 from atlas.concurrency_admission import (
     concurrency_dashboard,
     publish_concurrency_snapshot,
@@ -161,6 +162,28 @@ class AtlasService:
             self.data_root,
             self.registry,
             project_ids=project_ids,
+        )
+
+    def task_context(
+        self,
+        *,
+        project_id: str | None = None,
+        repository: str | None = None,
+        workstream: str | None = None,
+    ) -> dict[str, object]:
+        """Return one bounded current task-context bootstrap."""
+        project = resolve_task_project(
+            self.registry,
+            project_id=project_id,
+            repository=repository,
+        )
+        return build_task_context(
+            self.data_root,
+            self.registry,
+            self.projections,
+            project=project,
+            workstream=workstream,
+            engineering_system=self.engineering_system_observation(project.project_id),
         )
 
     def import_engineering_evidence(

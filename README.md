@@ -114,7 +114,7 @@ Search JSON includes `path` (the source path) and `identity` (`source_id@ref`). 
 
 ## Authenticated MCP
 
-`python -m atlas mcp serve` exposes `search_project` and `get_provenance` on Streamable HTTP `/mcp` over TLS. Atlas checks bearer tokens as an OAuth resource server; it does not issue them. See ADR-0008 and `docs/runbooks/phase2-authenticated-https-mcp.md`.
+`python -m atlas mcp serve` exposes read-only context tools on Streamable HTTP `/mcp` over TLS. For repository/workstream continuation, approved clients should call `get_task_context` first, then follow its bounded JIT references into tools such as `search_project`, `get_provenance`, `get_project_intelligence`, and `get_engineering_evidence` only when deeper context is needed. Atlas checks bearer tokens as an OAuth resource server; it does not issue them. See ADR-0008, `docs/contracts/ATLAS_TASK_CONTEXT.md`, and `docs/runbooks/phase2-authenticated-https-mcp.md`.
 
 ## Automation Extension
 
