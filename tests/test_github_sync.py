@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 from atlas.github_sync import FetchedSource, fetch_github_file
 from atlas.projection import ProjectionStore
 from atlas.provenance import CanonicalSource, ValidationError
+from atlas.secrets import contains_unsafe_secret, redact_sensitive_audit_text
 
 
 SOURCE = CanonicalSource(
@@ -70,6 +71,152 @@ class GitHubSyncTests(unittest.TestCase):
             # Stale projection must not be marked newly current.
             docs = store.list_documents(SOURCE.project_id)
             self.assertEqual(docs, [])
+
+    def test_authentication_prose_is_not_quarantined(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ProjectionStore(root)
+
+            def fetch(source, token):  # noqa: ARG001
+                return FetchedSource(
+                    content=(
+                        "# Authentication\n\n"
+                        "Bearer tokens are checked with RFC 7662 introspection.\n"
+                        "The client accepts a bearer token.\n"
+                        "The endpoint enforces bearer authentication.\n"
+                        "Basic authentication is supported for documented integrations.\n"
+                        "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime\n"
+                        "## Authorization:\n\n"
+                        "Bearer tokens are checked again after this heading.\n"
+                    ),
+                    source_revision="prose-rev",
+                )
+
+            record = store.sync_one(SOURCE, fetch=fetch)
+            self.assertEqual(record.sync_state, "success")
+            projection = root / record.projection_path
+            self.assertTrue(projection.exists())
+            text = projection.read_text(encoding="utf-8")
+            self.assertIn("Bearer tokens", text)
+            self.assertIn("Basic authentication", text)
+
+    def test_documentation_placeholder_is_allowed_but_arbitrary_value_is_not(self):
+        samples = (
+            "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime",
+            "export ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime",
+            "API_TOKEN=replace-at-runtime;",
+            "API_TOKEN=replace-at-runtime; echo ready",
+        )
+        for content in samples:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
+                store = ProjectionStore(Path(tmp))
+
+                def fetch(source, token):  # noqa: ARG001
+                    return FetchedSource(content=content, source_revision="placeholder-rev")
+
+                record = store.sync_one(SOURCE, fetch=fetch)
+                self.assertEqual(record.sync_state, "success")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ProjectionStore(root)
+
+            def unsafe_fetch(source, token):  # noqa: ARG001
+                return FetchedSource(
+                    content="ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=real-value-12345",
+                    source_revision="unsafe-placeholder-rev",
+                )
+
+            rejected = store.sync_one(SOURCE, fetch=unsafe_fetch)
+            self.assertEqual(rejected.sync_state, "error")
+            self.assertFalse((root / store.projection_key(SOURCE)).exists())
+
+    def test_shared_secret_detector_remains_strict_for_bare_bearer_values(self):
+        sample = "request failed using Bearer abc123"
+        self.assertTrue(contains_unsafe_secret(sample))
+        redacted = redact_sensitive_audit_text(sample, max_chars=1000)
+        self.assertIn("Bearer <redacted>", redacted)
+        self.assertFalse(contains_unsafe_secret(redacted))
+
+    def test_authorization_headers_remain_secret_like(self):
+        samples = (
+            "Authorization: Bearer token",
+            "Authorization: Basic Yjph",
+            "Bearer abc.def",
+            "Bearer abc123",
+            "Bearer token-abc123",
+            "Bearer authentication-secret",
+            "Basic OnBhc3M=",
+            "Basic dXNlcjo=",
+            "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime-now",
+            "API_TOKEN=replace-at-runtime hunter2",
+            "API_TOKEN=replace-at-runtime; GITHUB_TOKEN=real-value-12345",
+        )
+        for content in samples:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                store = ProjectionStore(root)
+
+                def fetch(source, token):  # noqa: ARG001
+                    return FetchedSource(content=content, source_revision="unsafe-rev")
+
+                record = store.sync_one(SOURCE, fetch=fetch)
+                self.assertEqual(record.sync_state, "error")
+                self.assertEqual(record.projection_path, "")
+                self.assertFalse((root / store.projection_key(SOURCE)).exists())
+
+    def test_secret_like_github_body_is_rejected_before_projection_persistence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ProjectionStore(root)
+            secret_value = "sk-" + ("A" * 24)
+
+            def fetch(source, token):  # noqa: ARG001
+                return FetchedSource(
+                    content=f"# Unsafe\n\nOPENAI_API_KEY={secret_value}\n",
+                    source_revision="unsafe-rev",
+                )
+
+            record = store.sync_one(SOURCE, fetch=fetch)
+            self.assertEqual(record.sync_state, "error")
+            self.assertEqual(record.projection_path, "")
+            self.assertFalse((root / store.projection_key(SOURCE)).exists())
+            self.assertEqual(store.list_documents(SOURCE.project_id), [])
+            durable = (root / "projections.json").read_text(encoding="utf-8")
+            self.assertIn("fetched source content looks secret", durable)
+            self.assertNotIn(secret_value, durable)
+
+    def test_secret_like_refresh_preserves_prior_safe_projection_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ProjectionStore(root)
+
+            def safe_fetch(source, token):  # noqa: ARG001
+                return FetchedSource(content="# Safe\n\nalpha", source_revision="safe-rev")
+
+            first = store.sync_one(SOURCE, fetch=safe_fetch)
+            projection = root / first.projection_path
+            safe_bytes = projection.read_bytes()
+            secret_value = "sk-" + ("B" * 24)
+
+            def unsafe_fetch(source, token):  # noqa: ARG001
+                return FetchedSource(
+                    content=f"# Unsafe\n\nGITHUB_TOKEN={secret_value}\n",
+                    source_revision="unsafe-rev",
+                )
+
+            rejected = store.sync_one(SOURCE, fetch=unsafe_fetch)
+            self.assertEqual(rejected.sync_state, "error")
+            self.assertEqual(rejected.projection_path, first.projection_path)
+            self.assertEqual(rejected.content_digest, first.content_digest)
+            self.assertEqual(rejected.source_revision, first.source_revision)
+            self.assertEqual(projection.read_bytes(), safe_bytes)
+            self.assertEqual(store.list_documents(SOURCE.project_id), [])
+            meta = json.loads((root / "projections.json").read_text(encoding="utf-8"))
+            entry = meta["projections"][store.meta_key(SOURCE)]
+            self.assertEqual(entry["error"], "fetched source content looks secret")
+            self.assertIn("prior_provenance", entry)
+            self.assertNotIn(secret_value, json.dumps(meta, sort_keys=True))
 
 
 if __name__ == "__main__":

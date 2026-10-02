@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from atlas.data_lock import (
 )
 from atlas.github_sync import FetchedSource, FetchFn, fetch_github_file
 from atlas.local_markdown import fetch_local_markdown
+from atlas.secrets import contains_unsafe_secret
 from atlas.provenance import (
     GITHUB_PROVIDER,
     LOCAL_MARKDOWN_PROVIDER,
@@ -29,6 +31,42 @@ from atlas.provenance import (
 )
 
 PROJECTOR_ID = "atlas.projection/v1"
+
+_SAFE_AUTH_PROSE_RE = re.compile(
+    r"(?i)\b(?:Bearer[ \t]+(?:tokens?|authentication)|Basic[ \t]+authentication)"
+    r"(?:\.(?=$|[ \t\r\n])|(?![A-Za-z0-9\-._~+/=]))"
+)
+_AUTH_HEADER_LINE_PREFIX_RE = re.compile(
+    r"(?i)(?:Proxy-)?Authorization[ \t]*[:=][ \t]*$"
+)
+_SAFE_DOCUMENTATION_PLACEHOLDER_RE = re.compile(
+    r"(?im)(?P<prefix>\b[A-Z][A-Z0-9_-]{0,80}"
+    r"(?:SECRET|TOKEN|PASSWORD|API_KEY|ACCESS_KEY)"
+    r"[ \t]*=[ \t]*)replace-at-runtime[ \t]*(?=$|[;\r\n])"
+)
+
+
+def _contains_unsafe_github_projection_secret(text: str) -> bool:
+    """Keep shared secret detection strict while allowing bounded auth prose."""
+
+    source = text or ""
+
+    def _mask_safe_prose(match: re.Match[str]) -> str:
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        same_line_prefix = source[line_start : match.start()]
+        if _AUTH_HEADER_LINE_PREFIX_RE.search(same_line_prefix):
+            return match.group(0)
+        return "authentication terminology"
+
+    scan = _SAFE_AUTH_PROSE_RE.sub(_mask_safe_prose, source)
+    # Atlas documentation uses the literal value 'replace-at-runtime' to mean
+    # operator-supplied-at-runtime, never a credential. Mask only this exact
+    # placeholder value; arbitrary assignment values remain fail-closed.
+    scan = _SAFE_DOCUMENTATION_PLACEHOLDER_RE.sub(
+        "documented-runtime-placeholder",
+        scan,
+    )
+    return contains_unsafe_secret(scan)
 
 
 @dataclass(frozen=True)
@@ -105,6 +143,8 @@ class ProjectionStore:
         fetch_fn = fetch or self._default_fetch
         try:
             fetched: FetchedSource = fetch_fn(source, token)
+            if source.provider == GITHUB_PROVIDER and _contains_unsafe_github_projection_secret(fetched.content):
+                raise ValidationError("fetched source content looks secret")
         except Exception as exc:  # noqa: BLE001 - fail closed to sync_state
             # Preserve prior successful projection bytes; mark current sync as error.
             with data_root_write_lock(projection_store_lock_root(self.root)):
