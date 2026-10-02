@@ -104,6 +104,8 @@ class GitHubSyncTests(unittest.TestCase):
         samples = (
             "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime",
             "export ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime",
+            "API_TOKEN=replace-at-runtime;",
+            "API_TOKEN=replace-at-runtime; echo ready",
         )
         for content in samples:
             with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
@@ -148,6 +150,7 @@ class GitHubSyncTests(unittest.TestCase):
             "Basic dXNlcjo=",
             "ATLAS_MCP_INTROSPECTION_CLIENT_SECRET=replace-at-runtime-now",
             "API_TOKEN=replace-at-runtime hunter2",
+            "API_TOKEN=replace-at-runtime; GITHUB_TOKEN=real-value-12345",
         )
         for content in samples:
             with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:

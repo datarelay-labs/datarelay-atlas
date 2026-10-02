@@ -63,7 +63,7 @@ def _contains_unsafe_github_projection_secret(text: str) -> bool:
     # operator-supplied-at-runtime, never a credential. Mask only this exact
     # placeholder value; arbitrary assignment values remain fail-closed.
     scan = _SAFE_DOCUMENTATION_PLACEHOLDER_RE.sub(
-        lambda match: f"{match.group('prefix')}<redacted>",
+        "documented-runtime-placeholder",
         scan,
     )
     return contains_unsafe_secret(scan)
