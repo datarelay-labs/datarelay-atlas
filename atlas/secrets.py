@@ -183,10 +183,12 @@ def _bearer_match_is_credential(match: re.Match[str]) -> bool:
     """Treat explicit auth headers as credentials; reject token-shaped bare prose."""
     if _auth_match_has_header_prefix(match):
         return True
-    token = match.group("token")
+    # A sentence-ending period belongs to prose, not the bearer value.
+    # Internal punctuation remains credential-shaped (for example abc.def).
+    token = match.group("token").rstrip(".")
     if len(token) >= 16:
         return True
-    return any(not char.isalpha() for char in token)
+    return any(not char.isalnum() for char in token)
 
 
 def _has_live_bearer_credential(text: str) -> bool:
@@ -214,8 +216,8 @@ def _basic_token_decodes_to_userinfo(token: str) -> bool:
         return False
     if not text.isprintable() or ":" not in text:
         return False
-    user, _, password = text.partition(":")
-    return bool(user) and bool(password)
+    # Basic is structurally user:password; either field may be empty.
+    return True
 
 
 def _basic_match_is_credential(match: re.Match[str]) -> bool:

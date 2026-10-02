@@ -81,6 +81,7 @@ class GitHubSyncTests(unittest.TestCase):
                     content=(
                         "# Authentication\n\n"
                         "Bearer tokens are checked with RFC 7662 introspection.\n"
+                        "The client accepts a bearer token.\n"
                         "Basic authentication is supported for documented integrations.\n"
                     ),
                     source_revision="prose-rev",
@@ -99,6 +100,8 @@ class GitHubSyncTests(unittest.TestCase):
             "Authorization: Bearer token",
             "Authorization: Basic Yjph",
             "Bearer abc.def",
+            "Basic OnBhc3M=",
+            "Basic dXNlcjo=",
         )
         for content in samples:
             with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
