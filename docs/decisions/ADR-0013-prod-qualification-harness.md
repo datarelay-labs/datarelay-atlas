@@ -82,3 +82,12 @@ when that evidence names the same public endpoint, project, query, identity,
 exact source revision, and the checkout's full HEAD. Restart must change a service
 identity marker. A generic Cursor PASS file is not sufficient. Release
 metadata stays unchanged until that live journey has passed.
+
+## Managed baseline update — 2026-10-02
+
+The managed Engineering System adoption advanced to v1.7.0 baseline
+`7d7c83aeb3cd7766bc224e8496a283f5af87edd5` at policy epoch 4. In accordance
+with this ADR's original fail-closed decision, `atlas.qualification` advances
+its separately approved exact baseline pin in the same change. A project profile
+naming any other baseline still fails closed before qualification performs network
+or data-root mutation.

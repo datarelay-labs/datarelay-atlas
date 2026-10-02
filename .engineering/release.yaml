@@ -21,7 +21,7 @@ blockers:
   user_blocking_p2: true
 human_equivalent_user_tests_required: true
 human_equivalent_user_tests:
-  executor: CHATGPT_CHAT
+  executor: EXECUTION_PROFILE
   actual_user_surface_required: true
   primary_user_surface: browser
   actual_browser_process_required: true
