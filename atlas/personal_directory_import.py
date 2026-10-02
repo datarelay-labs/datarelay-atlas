@@ -11,6 +11,7 @@ import re
 import stat
 from pathlib import Path
 
+from atlas.data_lock import data_root_write_lock
 from atlas.local_markdown import (
     content_sha256,
     fetch_local_markdown,
@@ -24,6 +25,7 @@ from atlas.provenance import (
     ValidationError,
 )
 from atlas.registry import ProjectRegistry, SOURCE_ID_RE
+from atlas.secrets import contains_unsafe_secret
 
 _COLLECTION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 _MAX_FILES = 4096
@@ -53,7 +55,29 @@ def import_personal_markdown_directory(
     source_root: Path,
     collection_id: str,
 ) -> dict[str, object]:
-    """Import one explicit Markdown directory into existing personal snapshots."""
+    """Import one explicit Markdown directory under the Atlas data-root lock."""
+    with data_root_write_lock(data_root):
+        return _import_personal_markdown_directory_locked(
+            data_root=data_root,
+            registry=registry,
+            projections=projections,
+            snapshot_root=snapshot_root,
+            project_id=project_id,
+            source_root=source_root,
+            collection_id=collection_id,
+        )
+
+
+def _import_personal_markdown_directory_locked(
+    *,
+    data_root: Path,
+    registry: ProjectRegistry,
+    projections: ProjectionStore,
+    snapshot_root: Path,
+    project_id: str,
+    source_root: Path,
+    collection_id: str,
+) -> dict[str, object]:
     _validate_collection_id(collection_id)
     root = _validated_source_root(source_root, data_root)
     project = registry.get(project_id)
@@ -252,6 +276,8 @@ def _scan_directory(root: Path) -> tuple[list[tuple[str, int]], list[dict[str, o
                 walk(path)
                 continue
             relative = path.relative_to(root).as_posix()
+            if contains_unsafe_secret(relative):
+                raise ValidationError("personal directory path metadata looks secret")
             if len(relative) > _MAX_RELATIVE_PATH:
                 rejected.append(_item(relative[:_MAX_RELATIVE_PATH], None, "REJECTED", "PATH_TOO_LONG"))
                 continue

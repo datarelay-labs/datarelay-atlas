@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from atlas.cli import main
 from atlas.data_protection import backup_data_root, restore_test
@@ -145,6 +146,56 @@ class PersonalDirectoryImportTests(unittest.TestCase):
                 svc.personal_search("personal", "hunter2"),
                 [],
             )
+
+    def test_secret_like_path_metadata_fails_before_persistence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            svc = self._service(base / "data")
+            vault = base / "vault"
+            vault.mkdir()
+            (vault / 'PASSWORD=hunter2.md').write_text(
+                "safe body\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValidationError) as caught:
+                svc.import_personal_markdown_directory(
+                    "personal", source_root=vault, collection_id="vault"
+                )
+            self.assertIn("path metadata looks secret", str(caught.exception))
+            self.assertNotIn("hunter2", str(caught.exception))
+            self.assertEqual(svc.list_sources("personal"), [])
+
+    def test_public_importer_holds_data_root_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            svc = self._service(base / "data")
+            vault = base / "vault"
+            vault.mkdir()
+            (vault / "note.md").write_text("lock-marker\n", encoding="utf-8")
+            entered = {"value": False}
+
+            class Guard:
+                def __enter__(self):
+                    entered["value"] = True
+                def __exit__(self, exc_type, exc, tb):
+                    entered["value"] = False
+
+            def assert_inside(**kwargs):
+                self.assertTrue(entered["value"])
+                return {"counts": {"conflicts": 0}}
+
+            with patch(
+                "atlas.personal_directory_import.data_root_write_lock",
+                return_value=Guard(),
+            ), patch(
+                "atlas.personal_directory_import._import_personal_markdown_directory_locked",
+                side_effect=assert_inside,
+            ):
+                result = svc.import_personal_markdown_directory(
+                    "personal", source_root=vault, collection_id="vault"
+                )
+            self.assertEqual(result["counts"]["conflicts"], 0)
+            self.assertFalse(entered["value"])
 
     def test_symlink_and_data_root_overlap_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
