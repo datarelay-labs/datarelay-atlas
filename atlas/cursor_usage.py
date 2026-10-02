@@ -1568,16 +1568,38 @@ def load_context_advice(path: Path) -> dict:
                 + ", ".join(precompact_unknown)
             )
 
+    import subprocess
+    import sys
+
+    helper = Path(__file__).resolve().parents[1] / "tools" / "context_epoch.py"
+    if not helper.is_file():
+        raise ValidationError("managed context_epoch helper is unavailable")
     try:
-        from tools.context_epoch import ContextError, decide_epoch
-    except (ImportError, OSError) as exc:
-        raise ValidationError(
-            "managed context_epoch helper is unavailable"
-        ) from exc
+        completed = subprocess.run(
+            [sys.executable, str(helper), "epoch-decide", "--facts", "-"],
+            cwd=str(helper.parent.parent),
+            env={
+                "PATH": "/usr/bin:/bin",
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+            input=json.dumps(raw, sort_keys=True, separators=(",", ":")),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValidationError("managed context_epoch helper is unavailable") from exc
+    if completed.returncode != 0:
+        raise ValidationError("context facts rejected by managed context_epoch helper")
+    if len(completed.stdout.encode("utf-8")) > 4096:
+        _reject("context epoch decision is malformed")
     try:
-        decision = decide_epoch(raw)
-    except ContextError as exc:
-        raise ValidationError(f"context facts rejected: {exc}") from exc
+        decision = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValidationError("context epoch decision is malformed") from exc
     if not isinstance(decision, dict):
         _reject("context epoch decision is malformed")
     source_action = str(decision.get("action") or "")
