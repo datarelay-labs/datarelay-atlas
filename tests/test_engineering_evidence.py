@@ -3,6 +3,7 @@ import io
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from wsgiref.util import setup_testing_defaults
 
@@ -207,6 +208,35 @@ class EngineeringEvidenceTests(unittest.TestCase):
         changed["duration_seconds"] = 61
         with self.assertRaisesRegex(ValidationError, "conflicting"):
             self._import("efficiency", changed)
+
+    def test_store_capacity_rejects_growth_without_corrupting_existing_store(self):
+        self._import("efficiency", self._efficiency())
+        path = self.root / FILENAME
+        before = path.read_bytes()
+        with mock.patch("atlas.engineering_evidence.MAX_STORE_BYTES", len(before) + 16):
+            with self.assertRaisesRegex(ValidationError, "bounded store size"):
+                self._import(
+                    "efficiency",
+                    self._efficiency(),
+                    observed_at="2026-10-02T07:00:01Z",
+                )
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(len(validate_engineering_evidence_store(self.root)["records"]), 1)
+
+    def test_trust_item_attribution_must_match_receipt(self):
+        payload = self._trust()
+        imported = self._import("trust", payload)
+        self.assertEqual(imported["record"]["summary"]["intent_revision"], 1)
+
+        bad_head = self._trust()
+        bad_head["items"][0]["subject_head"] = "d" * 40
+        with self.assertRaisesRegex(ValidationError, "item attribution"):
+            self._import("trust", bad_head, observed_at="2026-10-02T07:00:01Z")
+
+        bad_intent = self._trust()
+        bad_intent["items"][0]["intent_revision"] = 2
+        with self.assertRaisesRegex(ValidationError, "item attribution"):
+            self._import("trust", bad_intent, observed_at="2026-10-02T07:00:02Z")
 
     def test_schema_revision_and_attribution_mismatch_fail_closed(self):
         payload = self._efficiency()

@@ -32,6 +32,7 @@ PRODUCER_REVISION = "c50d2a3b7540dcc2899d752573d0634da78dd2bc"
 PRODUCER_RELEASE = "v1.7.0"
 MAX_ARTIFACT_BYTES = 256 * 1024
 MAX_SCHEMA_BYTES = 256 * 1024
+MAX_STORE_BYTES = 2 * 1024 * 1024
 MAX_RECORDS = 4096
 _HEAD = re.compile(r"^[0-9a-f]{40}$")
 _WORKSTREAM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
@@ -298,16 +299,25 @@ def _summary(
         ):
             _reject("trust evidence attribution does not match import envelope")
         items = payload.get("items")
+        receipt_intent_revision = payload.get("intent_revision")
         authority_counts: dict[str, int] = {}
         status_counts = _count_statuses(items)
         if isinstance(items, list):
             for row in items:
-                if isinstance(row, dict) and isinstance(row.get("authority"), str):
+                if not isinstance(row, dict):
+                    continue
+                if (
+                    row.get("subject_head") != subject_head
+                    or row.get("intent_revision") != receipt_intent_revision
+                ):
+                    _reject("trust evidence item attribution does not match receipt")
+                if isinstance(row.get("authority"), str):
                     authority = str(row["authority"])
                     authority_counts[authority] = authority_counts.get(authority, 0) + 1
         return kind, {
             "feature_id": payload.get("feature_id"),
             "oracle": payload.get("oracle"),
+            "intent_revision": receipt_intent_revision,
             "item_count": len(items) if isinstance(items, list) else 0,
             "authority_counts": dict(sorted(authority_counts.items())),
             "status_counts": status_counts,
@@ -345,7 +355,7 @@ def validate_engineering_evidence_store(data_root: Path) -> dict[str, object]:
     path = _store_path(data_root)
     if not path.exists():
         return _empty_store()
-    raw = _read_regular(path, limit=2 * 1024 * 1024, label="engineering evidence store")
+    raw = _read_regular(path, limit=MAX_STORE_BYTES, label="engineering evidence store")
     if contains_unsafe_secret(raw.decode("utf-8", errors="replace")):
         _reject("engineering evidence store contains unsafe sensitive content")
     payload = _json(raw, label="engineering evidence store")
@@ -462,6 +472,8 @@ def validate_engineering_evidence_store(data_root: Path) -> dict[str, object]:
 
 def _save_store(data_root: Path, payload: dict[str, object]) -> None:
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if len(encoded.encode("utf-8")) > MAX_STORE_BYTES:
+        _reject("engineering evidence store exceeds bounded store size")
     if contains_unsafe_secret(encoded):
         _reject("engineering evidence store would contain unsafe sensitive content")
     atomic_write_text(_store_path(data_root), encoded)
