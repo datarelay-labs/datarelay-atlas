@@ -71,6 +71,48 @@ class GitHubSyncTests(unittest.TestCase):
             docs = store.list_documents(SOURCE.project_id)
             self.assertEqual(docs, [])
 
+    def test_authentication_prose_is_not_quarantined(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ProjectionStore(root)
+
+            def fetch(source, token):  # noqa: ARG001
+                return FetchedSource(
+                    content=(
+                        "# Authentication\n\n"
+                        "Bearer tokens are checked with RFC 7662 introspection.\n"
+                        "Basic authentication is supported for documented integrations.\n"
+                    ),
+                    source_revision="prose-rev",
+                )
+
+            record = store.sync_one(SOURCE, fetch=fetch)
+            self.assertEqual(record.sync_state, "success")
+            projection = root / record.projection_path
+            self.assertTrue(projection.exists())
+            text = projection.read_text(encoding="utf-8")
+            self.assertIn("Bearer tokens", text)
+            self.assertIn("Basic authentication", text)
+
+    def test_authorization_headers_remain_secret_like(self):
+        samples = (
+            "Authorization: Bearer token",
+            "Authorization: Basic Yjph",
+            "Bearer abc.def",
+        )
+        for content in samples:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                store = ProjectionStore(root)
+
+                def fetch(source, token):  # noqa: ARG001
+                    return FetchedSource(content=content, source_revision="unsafe-rev")
+
+                record = store.sync_one(SOURCE, fetch=fetch)
+                self.assertEqual(record.sync_state, "error")
+                self.assertEqual(record.projection_path, "")
+                self.assertFalse((root / store.projection_key(SOURCE)).exists())
+
     def test_secret_like_github_body_is_rejected_before_projection_persistence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -7,6 +7,7 @@ duplicate regexes.
 
 from __future__ import annotations
 
+import base64
 import re
 
 from atlas.provenance import ValidationError
@@ -112,9 +113,9 @@ def _looks_like_secret(text: str) -> bool:
         return True
     if re.search(r"\bAKIA[0-9A-Z]{16}\b", scan):
         return True
-    if re.search(r"(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*", scan):
+    if _has_live_bearer_credential(scan):
         return True
-    if re.search(r"(?i)\bBasic\s+[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_-])", scan):
+    if _has_live_basic_credential(scan):
         return True
     if _URL_USERINFO_RE.search(scan):
         return True
@@ -162,11 +163,78 @@ _SECRET_TOKEN_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
     r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b"
 )
-_BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.IGNORECASE)
-_BASIC_AUTH_RE = re.compile(
-    r"\bBasic\s+[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_-])",
-    re.IGNORECASE,
+_BEARER_RE = re.compile(
+    r"(?i)\bBearer\s+(?P<token>[A-Za-z0-9\-._~+/]+=*)"
 )
+_BASIC_AUTH_RE = re.compile(
+    r"(?i)\bBasic\s+(?P<token>[A-Za-z0-9+/_-]{4,}={0,2})(?![A-Za-z0-9+/_-])"
+)
+_AUTH_HEADER_PREFIX_RE = re.compile(
+    r"(?i)(?:^|[\s\"'])(?:Proxy-)?Authorization\s*[:=]\s*$"
+)
+
+
+def _auth_match_has_header_prefix(match: re.Match[str]) -> bool:
+    prefix = match.string[max(0, match.start() - 80) : match.start()]
+    return _AUTH_HEADER_PREFIX_RE.search(prefix) is not None
+
+
+def _bearer_match_is_credential(match: re.Match[str]) -> bool:
+    """Treat explicit auth headers as credentials; reject token-shaped bare prose."""
+    if _auth_match_has_header_prefix(match):
+        return True
+    token = match.group("token")
+    if len(token) >= 16:
+        return True
+    return any(not char.isalpha() for char in token)
+
+
+def _has_live_bearer_credential(text: str) -> bool:
+    return any(
+        _bearer_match_is_credential(match)
+        for match in _BEARER_RE.finditer(text or "")
+    )
+
+
+def _redact_bearer_auth(match: re.Match[str]) -> str:
+    if not _bearer_match_is_credential(match):
+        return match.group(0)
+    return "Bearer <redacted>"
+
+
+def _basic_token_decodes_to_userinfo(token: str) -> bool:
+    padded = token + ("=" * ((-len(token)) % 4))
+    try:
+        raw = base64.b64decode(padded, validate=True)
+    except (ValueError, TypeError):
+        return False
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    if not text.isprintable() or ":" not in text:
+        return False
+    user, _, password = text.partition(":")
+    return bool(user) and bool(password)
+
+
+def _basic_match_is_credential(match: re.Match[str]) -> bool:
+    if _auth_match_has_header_prefix(match):
+        return True
+    return _basic_token_decodes_to_userinfo(match.group("token"))
+
+
+def _has_live_basic_credential(text: str) -> bool:
+    return any(
+        _basic_match_is_credential(match)
+        for match in _BASIC_AUTH_RE.finditer(text or "")
+    )
+
+
+def _redact_basic_auth(match: re.Match[str]) -> str:
+    if not _basic_match_is_credential(match):
+        return match.group(0)
+    return "Basic <redacted>"
 
 
 def redact_absolute_paths(text: str) -> str:
@@ -215,8 +283,8 @@ def redact_sensitive_audit_text(text: str, *, max_chars: int = 300) -> str:
     cleaned = _SECRET_KV_QUOTED_RE.sub(_redact_secret_kv, cleaned)
     cleaned = _SECRET_KV_BARE_RE.sub(_redact_secret_kv, cleaned)
     cleaned = _SECRET_TOKEN_RE.sub("<redacted>", cleaned)
-    cleaned = _BEARER_RE.sub("Bearer <redacted>", cleaned)
-    cleaned = _BASIC_AUTH_RE.sub("Basic <redacted>", cleaned)
+    cleaned = _BEARER_RE.sub(_redact_bearer_auth, cleaned)
+    cleaned = _BASIC_AUTH_RE.sub(_redact_basic_auth, cleaned)
     cleaned = _URL_USERINFO_RE.sub(r"\g<scheme><redacted>@", cleaned)
     cleaned = cleaned.strip()
     if len(cleaned) <= max_chars:
