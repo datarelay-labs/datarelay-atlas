@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from unittest import mock
@@ -12,6 +13,7 @@ from atlas.engineering_evidence import (
     FILENAME,
     PRODUCER_REVISION,
     SUPPORTED_SCHEMAS,
+    _read_regular,
     engineering_evidence_dashboard,
     import_engineering_evidence,
     validate_engineering_evidence_store,
@@ -198,6 +200,7 @@ class EngineeringEvidenceTests(unittest.TestCase):
         self.assertNotIn('"run_id"', durable)
         self.assertNotIn('"reference": "tests:unit"', durable)
         self.assertNotIn('"command"', durable)
+        self.assertNotIn(str(self.input_root), durable)
         self.assertIn(AUTHORITY, durable)
     def test_duplicate_is_idempotent_and_conflict_is_rejected(self):
         first = self._import("efficiency", self._efficiency())
@@ -274,6 +277,30 @@ class EngineeringEvidenceTests(unittest.TestCase):
         bad["repo"] = "datarelay-labs/other"
         with self.assertRaisesRegex(ValidationError, "attribution"):
             self._import("efficiency", bad)
+
+    def test_fifo_input_is_rejected_before_open(self):
+        fifo = self.input_root / "evidence.fifo"
+        os.mkfifo(fifo)
+        with mock.patch("atlas.engineering_evidence.os.open") as open_mock:
+            with self.assertRaisesRegex(ValidationError, "path is unsafe"):
+                _read_regular(fifo, limit=1024, label="fifo")
+        open_mock.assert_not_called()
+
+    def test_regular_read_uses_nofollow_nonblocking_flags(self):
+        path = self.input_root / "regular.txt"
+        path.write_bytes(b"bounded")
+        real_open = os.open
+        with mock.patch(
+            "atlas.engineering_evidence.os.open",
+            wraps=real_open,
+        ) as open_mock:
+            self.assertEqual(
+                _read_regular(path, limit=1024, label="regular"),
+                b"bounded",
+            )
+        flags = open_mock.call_args.args[1]
+        self.assertTrue(flags & os.O_NOFOLLOW)
+        self.assertTrue(flags & os.O_NONBLOCK)
 
     def test_unsafe_paths_duplicate_keys_and_secret_content_fail_closed(self):
         schema = self._schema("efficiency")

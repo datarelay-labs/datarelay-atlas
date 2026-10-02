@@ -80,9 +80,14 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def _read_regular(path: Path, *, limit: int, label: str) -> bytes:
     source = Path(path)
-    if not hasattr(os, "O_NOFOLLOW"):
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
         _reject(f"{label} path safety is unsupported")
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        if not stat.S_ISREG(os.lstat(source).st_mode):
+            _reject(f"{label} path is unsafe")
+    except OSError as exc:
+        raise ValidationError(f"{label} path is unsafe or unreadable") from exc
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
         fd = os.open(source, flags)
     except OSError as exc:
