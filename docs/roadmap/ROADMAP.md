@@ -1,7 +1,7 @@
 # DataRelay Atlas — Canonical Product Roadmap
 
 Status: Canonical roadmap
-Last realigned: 2026-10-01
+Last realigned: 2026-10-02
 
 This roadmap defines product completion by **product layer and end-to-end outcome**, not by feature count or delivery date.
 
@@ -32,6 +32,88 @@ The Product Charter is authoritative for product scope. GitHub Issue #10 may ret
       provider-specific research, unrelated research labs
 
 Rule: an Automation Extension or Experimental item cannot become a Core release blocker unless an explicit product decision promotes it.
+
+# Post-v0.1.0 — Usage before new capability
+
+Atlas Core v0.1.0 is released. Post-release execution prioritizes **recurring real use and attributable evidence flow** before adding new agent capabilities.
+
+## U1 — Portfolio operational adoption
+
+Status: **COMPLETE via #256**.
+
+- prod Atlas now registers Engineering System, DataRelay Link, DataRelay Control, and DataRelay Grant in addition to Atlas and Personal Knowledge;
+- selected public GitHub sources sync with immutable source revisions and preserve canonical-vs-derived separation;
+- cross-project engineering retrieval and Human UI portfolio visibility pass on production;
+- DataRelay Control adoption metadata remains available through live read-only adoption inspection, while its secret-like metadata body is intentionally excluded from persisted knowledge projection;
+- post-adoption backup/restore passes with six registered projects.
+
+This closes the first utilization gap: Atlas now has real portfolio state to serve rather than only its own repository.
+
+## U2 — Engineering System evidence federation
+
+Status: **NEXT IMPLEMENTATION CANDIDATE**.
+
+Engineering System remains authoritative for how repositories work. Atlas should consume its non-sensitive outputs instead of recreating them.
+
+Initial evidence families to federate when repositories actually emit them:
+
+- provider-neutral efficiency telemetry and outcome reports;
+- behavior-eval results;
+- exact-HEAD trust-evidence receipts;
+- runtime evidence / runtime-contract state;
+- Work Packet and lifecycle state already represented by the Engineering System/GitHub authority model.
+
+Federation rules:
+
+- validate against the Engineering System schema/revision that produced the evidence;
+- retain repository, workstream, exact subject HEAD, timestamp, provenance, and evidence authority;
+- expose current / stale / unknown / unavailable distinctions across projects;
+- retain only bounded evidence metadata; never ingest prompts, transcripts, raw tool payloads, credentials, or private reasoning;
+- remain read-only/evidence-only: federation grants no permission, execution, merge, release, or deployment authority.
+
+Exit: Atlas can answer portfolio-level questions such as which projects have current exact-HEAD evidence, where evidence is stale/missing, and how verified engineering outcomes change over time without becoming a competing methodology source.
+
+## U3 — Approved-client consumption
+
+Atlas value is not established merely because the MCP server is healthy.
+
+- make Atlas retrieval available in the owner's daily approved MCP client where that client supports the existing authenticated read surface;
+- distinguish server readiness from client connection/availability;
+- record successful real retrieval from an approved client as utilization evidence;
+- do not build a generic Atlas chat UI merely because one client is not connected.
+
+This is primarily an integration/adoption step, not a new source-of-truth layer.
+
+## U4 — Measurement-driven automation
+
+#55 Provider Capacity Broker and #56 Decision Plane remain measurement-gated.
+
+- prefer new normalized evidence from live Work Packets and federated Engineering System outputs over repeated manual historical backfill;
+- do not invent provider capacity, cost, ranking, replay, or Decision Plane evidence;
+- expand active routing/decision policy only after comparable real outcomes justify it.
+
+## Ownership rule — Engineering System vs Atlas
+
+**Engineering System defines how a repository must work. Atlas observes, correlates, measures, and serves what repositories currently prove.**
+
+Atlas must not create competing versions of:
+
+- the Work Packet / session-continuity standard;
+- context epoch/compiler/canary/economics contracts;
+- skills/hooks/permission authority;
+- behavior-eval framework;
+- runtime/release/security authority.
+
+Atlas may index and aggregate the resulting attributable evidence, detect stale/contradictory/unknown state, and expose bounded context to humans and approved AI clients.
+
+Current post-release execution order:
+
+1. U1 portfolio operational adoption — COMPLETE;
+2. U2 Engineering System evidence federation;
+3. U3 approved-client consumption — may proceed in parallel where the client surface is available;
+4. accumulate real comparable engineering outcomes;
+5. advance #55/#56 only from measured evidence;
+6. evaluate optional/provider-specific experiments only after the above loop is useful in daily work.
 
 # Atlas Core
 
@@ -249,7 +331,9 @@ These capabilities may be valuable, but are not Core release blockers.
 
 - #76 remains DEFERRED.
 - Cursor-specific usage/runtime research is not a current product requirement.
-- Context compression may be evaluated as a pluggable optimization beneath Atlas trust boundaries.
+- Engineering System remains authoritative for context epoch/compiler/canary/economics behavior; Atlas must not implement a competing generic context compiler.
+- Future provider-native compaction, tool-search, skill-loading, or third-party compression experiments are adapters/optimizations beneath that contract.
+- Atlas may correlate those experiments with attributable context telemetry and verified outcomes across runs/projects.
 - Provider plan price/quota observations are time-sensitive measurements, not product constants.
 
 ## Research labs
