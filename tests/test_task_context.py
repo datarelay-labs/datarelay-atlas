@@ -332,10 +332,18 @@ class TaskContextTests(unittest.TestCase):
             }
         )
         path.write_text(json.dumps(snapshot), encoding="utf-8")
-        ambiguous = self.svc.task_context(project_id="demo")
+        self._import_current_evidence()
+        ambiguous = self.svc.task_context(
+            project_id="demo",
+            workstream=WORKSTREAM,
+        )
         VALIDATOR.validate(ambiguous)
         self.assertEqual(ambiguous["currentness"]["state"], "UNKNOWN")
         self.assertIsNone(ambiguous["currentness"]["current_head"])
+        self.assertEqual(
+            ambiguous["request"]["workstream_binding"],
+            "QUERY_HINT_ONLY",
+        )
         self.assertEqual(
             {item["issue_number"] for item in ambiguous["lifecycle"]["work"]["canonical_packets"]},
             {269, 270},
@@ -344,6 +352,46 @@ class TaskContextTests(unittest.TestCase):
             ambiguous["lifecycle"]["channels"]["ci"]["state"],
             "UNKNOWN",
         )
+
+    def test_malformed_engineering_metadata_is_unavailable(self):
+        self.svc.add_source(
+            "demo",
+            source_id="engineering-meta",
+            source_path=".engineering/project.yaml",
+            title="Engineering System metadata",
+        )
+
+        def fetch(source, token):  # noqa: ARG001
+            if source.source_id == "engineering-meta":
+                return FetchedSource(
+                    content="""engineering_system:
+  version: 1
+  baseline: false
+  mode: adopted
+  ci_mode: shared
+project:
+  name: demo
+""",
+                    source_revision="metadata-rev-1",
+                )
+            return FetchedSource(
+                content="""# Context
+
+verified memory task context bootstrap BODY-MARKER""",
+                source_revision="source-rev-1",
+            )
+
+        self.svc.sync_project("demo", fetch=fetch)
+        payload = self.svc.task_context(project_id="demo")
+        VALIDATOR.validate(payload)
+        self.assertEqual(payload["engineering_system"]["state"], "UNAVAILABLE")
+        self.assertEqual(
+            payload["engineering_system"]["detail"],
+            "Engineering System metadata projection has invalid field types",
+        )
+        self.assertIsNone(payload["engineering_system"]["version"])
+        self.assertIsNone(payload["engineering_system"]["baseline"])
+        json.dumps(payload, allow_nan=False)
 
     def test_identity_and_workstream_validation_fail_closed(self):
         with self.assertRaises(ValidationError):

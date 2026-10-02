@@ -216,6 +216,7 @@ def _evidence_summary(
     dashboard: dict[str, object],
     *,
     workstream: str | None,
+    current_head: str | None,
 ) -> tuple[dict[str, object], str]:
     project_rows = list(dashboard.get("projects") or [])
     project_row = project_rows[0] if project_rows else None
@@ -236,8 +237,10 @@ def _evidence_summary(
                 }
                 if (
                     workstream is not None
+                    and current_head is not None
                     and family.get("state") == "CURRENT"
                     and latest.get("workstream") == workstream
+                    and latest.get("subject_head") == current_head
                 ):
                     current_workstream_matches += 1
             families.append(
@@ -291,6 +294,7 @@ def build_task_context(
     evidence, workstream_binding = _evidence_summary(
         evidence_raw,
         workstream=workstream,
+        current_head=lifecycle["work"]["current_head"],
     )
     refs = _knowledge_refs(projections, project.project_id, workstream)
     query_hint = _knowledge_query(workstream) if workstream else None

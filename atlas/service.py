@@ -729,17 +729,46 @@ class AtlasService:
         _header, separator, body = projection.text.partition("\n---\n")
         if not separator:
             raise ValidationError("Engineering System metadata projection body is unavailable")
-        adoption = parse_adoption_yaml(body.strip(), source_path=project.engineering_metadata_path)
-        assert_adoption_project_consistency(adoption, project_id=project_id)
+        try:
+            adoption = parse_adoption_yaml(
+                body.strip(),
+                source_path=project.engineering_metadata_path,
+            )
+            assert_adoption_project_consistency(adoption, project_id=project_id)
+        except ValidationError:
+            return {
+                "state": "UNAVAILABLE",
+                "detail": "Engineering System metadata projection is malformed",
+                "source_identity": projection.identity,
+                "source_revision": projection.provenance.source_revision,
+                "version": None,
+                "baseline": None,
+                "mode": None,
+                "ci_mode": None,
+            }
+        fields = {
+            "version": adoption.engineering_system_version,
+            "baseline": adoption.engineering_system_baseline,
+            "mode": adoption.engineering_system_mode,
+            "ci_mode": adoption.engineering_system_ci_mode,
+        }
+        if any(value is not None and not isinstance(value, str) for value in fields.values()):
+            return {
+                "state": "UNAVAILABLE",
+                "detail": "Engineering System metadata projection has invalid field types",
+                "source_identity": projection.identity,
+                "source_revision": projection.provenance.source_revision,
+                "version": None,
+                "baseline": None,
+                "mode": None,
+                "ci_mode": None,
+            }
         return {
             "state": "OBSERVED",
             "detail": "validated local Engineering System metadata projection",
             "source_identity": projection.identity,
             "source_revision": projection.provenance.source_revision,
-            "version": adoption.engineering_system_version,
-            "baseline": adoption.engineering_system_baseline,
-            "mode": adoption.engineering_system_mode,
-            "ci_mode": adoption.engineering_system_ci_mode,
+            **fields,
         }
 
     def search_across_projects(
