@@ -83,6 +83,7 @@ class GitHubSyncTests(unittest.TestCase):
                         "# Authentication\n\n"
                         "Bearer tokens are checked with RFC 7662 introspection.\n"
                         "The client accepts a bearer token.\n"
+                        "The endpoint enforces bearer authentication.\n"
                         "Basic authentication is supported for documented integrations.\n"
                         "## Authorization:\n\n"
                         "Bearer tokens are checked again after this heading.\n"

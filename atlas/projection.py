@@ -33,7 +33,7 @@ from atlas.provenance import (
 PROJECTOR_ID = "atlas.projection/v1"
 
 _SAFE_AUTH_PROSE_RE = re.compile(
-    r"(?i)\b(?:Bearer[ \t]+tokens?|Basic[ \t]+authentication)\b"
+    r"(?i)\b(?:Bearer[ \t]+(?:tokens?|authentication)|Basic[ \t]+authentication)\b"
 )
 _AUTH_HEADER_LINE_PREFIX_RE = re.compile(
     r"(?i)(?:Proxy-)?Authorization[ \t]*[:=][ \t]*$"
