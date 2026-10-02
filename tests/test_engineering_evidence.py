@@ -365,6 +365,40 @@ class EngineeringEvidenceTests(unittest.TestCase):
         self.assertEqual(row["state"], "STALE_DIFFERENT_HEAD")
         self.assertEqual(row["latest"]["subject_head"], self.head)
 
+    def test_currentness_prefers_active_canonical_packet_over_completed_head(self):
+        self._import("efficiency", self._efficiency())
+        self._write_lifecycle(self.head)
+        path = self.root / "github-lifecycle.json"
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        snapshot["observations"].append(
+            {
+                "repository": "datarelay-labs/demo",
+                "issue_number": 260,
+                "issue_state": "CLOSED",
+                "issue_updated_at": "2026-10-01T07:01:00Z",
+                "author_trust": "trusted",
+                "packet_status": "COMPLETE",
+                "branch": "feat/older",
+                "head": "c" * 40,
+                "pr_number": None,
+                "pr_state": "NONE",
+                "pr_head": None,
+                "canonical_fact": True,
+                "reasons": [],
+            }
+        )
+        snapshot["summary"] = {
+            "observed_count": 2,
+            "canonical_count": 2,
+            "noncanonical_count": 0,
+        }
+        path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+        dashboard = engineering_evidence_dashboard(self.root, self.registry)
+        row = dashboard["projects"][0]["families"][0]
+        self.assertEqual(row["state"], "CURRENT")
+        self.assertEqual(row["current_head"], self.head)
+
     def test_scoped_dashboard_does_not_leak_portfolio_record_count(self):
         self._import("efficiency", self._efficiency())
         self.registry.register(
@@ -404,6 +438,8 @@ class EngineeringEvidenceTests(unittest.TestCase):
         cases = {
             "producer release": ("producer_release", "v9.9.9"),
             "repository identity": ("repository", "datarelay-labs/tampered"),
+            "family type": ("family", []),
+            "artifact kind type": ("artifact_kind", {}),
             "schema path": ("schema_path", "schemas/other.json"),
             "schema digest": ("schema_sha256", "0" * 64),
             "summary digest": ("summary_sha256", "0" * 64),

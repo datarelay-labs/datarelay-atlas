@@ -429,11 +429,19 @@ def validate_engineering_evidence_store(data_root: Path) -> dict[str, object]:
         seen_records.add(str(record["record_id"]))
         seen_logical.add(str(record["logical_id"]))
         family = record.get("family")
-        if family not in SUPPORTED_SCHEMAS or not isinstance(record.get("summary"), dict):
+        artifact_kind = record.get("artifact_kind")
+        if (
+            not isinstance(family, str)
+            or family not in SUPPORTED_SCHEMAS
+            or not isinstance(record.get("summary"), dict)
+        ):
             _reject("engineering evidence store record is unsupported")
-        if record.get("artifact_kind") not in SUPPORTED_ARTIFACT_KINDS[str(family)]:
+        if (
+            not isinstance(artifact_kind, str)
+            or artifact_kind not in SUPPORTED_ARTIFACT_KINDS[family]
+        ):
             _reject("engineering evidence store artifact kind is unsupported")
-        schema = SUPPORTED_SCHEMAS[str(family)]
+        schema = SUPPORTED_SCHEMAS[family]
         if (
             record.get("schema_path") != schema["path"]
             or record.get("schema_sha256") != schema["sha256"]
@@ -574,17 +582,32 @@ def _record_state(
     if not records:
         return "UNKNOWN", None, None
     try:
-        work = lifecycle_view(data_root, repository).work
+        view = lifecycle_view(data_root, repository)
     except ValidationError:
         return "UNAVAILABLE", max(records, key=lambda item: str(item["observed_at"])), None
-    current_head = work.candidate_head
-    if work.state == "UNAVAILABLE":
+    if view.work.state == "UNAVAILABLE":
         return "UNAVAILABLE", max(records, key=lambda item: str(item["observed_at"])), None
-    if not current_head:
+
+    canonical_packets = [packet for packet in view.work_packets if packet.canonical]
+    if not canonical_packets:
         return "UNKNOWN", max(records, key=lambda item: str(item["observed_at"])), None
-    matching = [item for item in records if item["subject_head"] == current_head]
+    priority = {"ACTIVE": 0, "BLOCKED": 1, "PAUSED": 2, "COMPLETE": 3}
+    current_priority = min(
+        priority.get(packet.packet_status, 9) for packet in canonical_packets
+    )
+    current_heads = {
+        packet.head
+        for packet in canonical_packets
+        if priority.get(packet.packet_status, 9) == current_priority
+    }
+    if not current_heads:
+        return "UNKNOWN", max(records, key=lambda item: str(item["observed_at"])), None
+
+    matching = [item for item in records if item["subject_head"] in current_heads]
     if matching:
-        return "CURRENT", max(matching, key=lambda item: str(item["observed_at"])), current_head
+        selected = max(matching, key=lambda item: str(item["observed_at"]))
+        return "CURRENT", selected, str(selected["subject_head"])
+    current_head = next(iter(current_heads)) if len(current_heads) == 1 else None
     return (
         "STALE_DIFFERENT_HEAD",
         max(records, key=lambda item: str(item["observed_at"])),
