@@ -22,6 +22,28 @@ The manifest is below personal-snapshots, so the existing data-root backup and r
 
 Personal content is always derived reference context. Engineering authority remains false. Quarantined or rejected items expose only bounded metadata. The dashboard does not mutate external sources or quarantine state. Tela is not a production runtime dependency. Existing GitHub, spec, ADR, CI, test, and release authority remains unchanged.
 
+## Markdown directory import
+
+An operator may import one explicitly selected external Markdown directory with:
+
+`atlas personal import-dir PROJECT --root PATH --collection-id ID`
+
+The directory importer reuses the existing `local-markdown` personal snapshot contract; it does not add an Obsidian/Tela runtime dependency or a new authority/persistence layer. `collection-id` creates a stable namespace and each Markdown file receives a deterministic source id derived from its collection-relative path.
+
+Safety and lifecycle rules:
+
+- the selected root must be a real directory outside the Atlas data root;
+- symlinks fail the whole import closed;
+- only regular lowercase `.md` files are eligible; other files are reported as rejected metadata and are never ingested;
+- file count, directory-entry count, per-file bytes, total Markdown bytes, and relative path length are bounded;
+- secret-like new files are quarantined without persisting their bodies;
+- if a previously registered file becomes secret-like, re-import fails closed rather than silently serving a stale projection as current;
+- unchanged imports are idempotent; changed content refreshes the existing snapshot/projection only when source id and logical path still match;
+- absent files are reported as missing, but existing Atlas sources are not automatically deleted;
+- output contains bounded metadata/counts only, never Markdown bodies.
+
+The collection-relative logical source path is retained in Atlas provenance, so personal search remains attributable while engineering authority remains false.
+
 ## Surfaces
 
 Web: /personal
@@ -29,6 +51,8 @@ Web: /personal
 CLI: atlas personal show
 
 CLI search: atlas personal search PROJECT QUERY
+
+CLI directory import: atlas personal import-dir PROJECT --root PATH --collection-id ID
 
 MCP: get_personal_knowledge
 
