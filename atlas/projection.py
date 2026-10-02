@@ -17,6 +17,7 @@ from atlas.data_lock import (
 )
 from atlas.github_sync import FetchedSource, FetchFn, fetch_github_file
 from atlas.local_markdown import fetch_local_markdown
+from atlas.secrets import contains_unsafe_secret
 from atlas.provenance import (
     GITHUB_PROVIDER,
     LOCAL_MARKDOWN_PROVIDER,
@@ -105,6 +106,8 @@ class ProjectionStore:
         fetch_fn = fetch or self._default_fetch
         try:
             fetched: FetchedSource = fetch_fn(source, token)
+            if source.provider == GITHUB_PROVIDER and contains_unsafe_secret(fetched.content):
+                raise ValidationError("fetched source content looks secret")
         except Exception as exc:  # noqa: BLE001 - fail closed to sync_state
             # Preserve prior successful projection bytes; mark current sync as error.
             with data_root_write_lock(projection_store_lock_root(self.root)):
