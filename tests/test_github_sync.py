@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 from atlas.github_sync import FetchedSource, fetch_github_file
 from atlas.projection import ProjectionStore
 from atlas.provenance import CanonicalSource, ValidationError
+from atlas.secrets import contains_unsafe_secret, redact_sensitive_audit_text
 
 
 SOURCE = CanonicalSource(
@@ -83,6 +84,8 @@ class GitHubSyncTests(unittest.TestCase):
                         "Bearer tokens are checked with RFC 7662 introspection.\n"
                         "The client accepts a bearer token.\n"
                         "Basic authentication is supported for documented integrations.\n"
+                        "## Authorization:\n\n"
+                        "Bearer tokens are checked again after this heading.\n"
                     ),
                     source_revision="prose-rev",
                 )
@@ -94,6 +97,13 @@ class GitHubSyncTests(unittest.TestCase):
             text = projection.read_text(encoding="utf-8")
             self.assertIn("Bearer tokens", text)
             self.assertIn("Basic authentication", text)
+
+    def test_shared_secret_detector_remains_strict_for_bare_bearer_values(self):
+        sample = "request failed using Bearer abc123"
+        self.assertTrue(contains_unsafe_secret(sample))
+        redacted = redact_sensitive_audit_text(sample, max_chars=1000)
+        self.assertIn("Bearer <redacted>", redacted)
+        self.assertFalse(contains_unsafe_secret(redacted))
 
     def test_authorization_headers_remain_secret_like(self):
         samples = (

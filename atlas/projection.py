@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -30,6 +31,29 @@ from atlas.provenance import (
 )
 
 PROJECTOR_ID = "atlas.projection/v1"
+
+_SAFE_AUTH_PROSE_RE = re.compile(
+    r"(?i)\b(?:Bearer[ \t]+tokens?|Basic[ \t]+authentication)\b"
+)
+_AUTH_HEADER_LINE_PREFIX_RE = re.compile(
+    r"(?i)(?:Proxy-)?Authorization[ \t]*[:=][ \t]*$"
+)
+
+
+def _contains_unsafe_github_projection_secret(text: str) -> bool:
+    """Keep shared secret detection strict while allowing bounded auth prose."""
+
+    source = text or ""
+
+    def _mask_safe_prose(match: re.Match[str]) -> str:
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        same_line_prefix = source[line_start : match.start()]
+        if _AUTH_HEADER_LINE_PREFIX_RE.search(same_line_prefix):
+            return match.group(0)
+        return "authentication terminology"
+
+    scan = _SAFE_AUTH_PROSE_RE.sub(_mask_safe_prose, source)
+    return contains_unsafe_secret(scan)
 
 
 @dataclass(frozen=True)
@@ -106,7 +130,7 @@ class ProjectionStore:
         fetch_fn = fetch or self._default_fetch
         try:
             fetched: FetchedSource = fetch_fn(source, token)
-            if source.provider == GITHUB_PROVIDER and contains_unsafe_secret(fetched.content):
+            if source.provider == GITHUB_PROVIDER and _contains_unsafe_github_projection_secret(fetched.content):
                 raise ValidationError("fetched source content looks secret")
         except Exception as exc:  # noqa: BLE001 - fail closed to sync_state
             # Preserve prior successful projection bytes; mark current sync as error.
