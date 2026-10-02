@@ -100,6 +100,7 @@ class GitHubSyncTests(unittest.TestCase):
             "Authorization: Bearer token",
             "Authorization: Basic Yjph",
             "Bearer abc.def",
+            "Bearer abc123",
             "Basic OnBhc3M=",
             "Basic dXNlcjo=",
         )

@@ -188,7 +188,7 @@ def _bearer_match_is_credential(match: re.Match[str]) -> bool:
     token = match.group("token").rstrip(".")
     if len(token) >= 16:
         return True
-    return any(not char.isalnum() for char in token)
+    return any(not char.isalpha() for char in token)
 
 
 def _has_live_bearer_credential(text: str) -> bool:
