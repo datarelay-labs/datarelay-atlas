@@ -10,6 +10,7 @@ import hashlib
 import os
 import stat
 from pathlib import Path
+from typing import Callable
 
 from atlas.data_lock import atomic_write_text
 from atlas.github_sync import FetchedSource
@@ -32,10 +33,24 @@ def content_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def read_allowlisted_markdown(import_root: Path, relative: str) -> str:
-    """Return UTF-8 Markdown from a regular file inside ``import_root``."""
+def read_allowlisted_markdown(
+    import_root: Path,
+    relative: str,
+    *,
+    max_bytes: int | None = None,
+    byte_observer: Callable[[int], None] | None = None,
+) -> str:
+    """Return bounded UTF-8 Markdown from a regular file inside ``import_root``."""
+    if max_bytes is not None and (
+        isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1
+    ):
+        raise ValidationError("max_bytes must be a positive integer")
     path = _contained_file(import_root, relative, root_kind="import root")
-    data = _read_regular(path)
+    data = _read_regular(
+        path,
+        max_bytes=max_bytes,
+        byte_observer=byte_observer,
+    )
     return _decode_markdown(data)
 
 
@@ -124,7 +139,12 @@ def _ensure_real_directory(root: Path, kind: str) -> Path:
     return path
 
 
-def _read_regular(path: Path) -> bytes:
+def _read_regular(
+    path: Path,
+    *,
+    max_bytes: int | None = None,
+    byte_observer: Callable[[int], None] | None = None,
+) -> bytes:
     if path.is_symlink() or not path.is_file():
         raise ValidationError("snapshot is not a regular file")
     try:
@@ -135,10 +155,22 @@ def _read_regular(path: Path) -> bytes:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValidationError("snapshot is not a regular file")
         chunks: list[bytes] = []
+        total = 0
         while True:
-            block = os.read(fd, 1024 * 1024)
+            read_size = 1024 * 1024
+            if max_bytes is not None:
+                remaining = max_bytes - total
+                if remaining < 0:
+                    raise ValidationError("snapshot exceeds bounded size")
+                read_size = min(read_size, remaining + 1)
+            block = os.read(fd, read_size)
             if not block:
                 break
+            total += len(block)
+            if byte_observer is not None:
+                byte_observer(len(block))
+            if max_bytes is not None and total > max_bytes:
+                raise ValidationError("snapshot exceeds bounded size")
             chunks.append(block)
         return b"".join(chunks)
     finally:

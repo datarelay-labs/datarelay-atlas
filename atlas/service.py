@@ -46,6 +46,7 @@ from atlas.decision_plane_canary import (
 from atlas.operations_readiness import operations_readiness
 from atlas.runtime_observability import runtime_observability_snapshot
 from atlas.personal_knowledge import build_personal_retriever, personal_knowledge_dashboard
+from atlas.personal_directory_import import import_personal_markdown_directory
 from atlas.provider_dashboard import provider_dashboard, provider_transition_preview, publish_provider_dashboard_snapshot
 from atlas.provider_route_quality import (
     provider_route_quality_dashboard,
@@ -489,6 +490,24 @@ class AtlasService:
             except Exception:
                 published.unlink(missing_ok=True)
                 raise
+
+    def import_personal_markdown_directory(
+        self,
+        project_id: str,
+        *,
+        source_root: Path,
+        collection_id: str,
+    ) -> dict[str, object]:
+        """Import one explicit Markdown directory as personal/reference snapshots."""
+        return import_personal_markdown_directory(
+            data_root=self.data_root,
+            registry=self.registry,
+            projections=self.projections,
+            snapshot_root=self.snapshot_root,
+            project_id=project_id,
+            source_root=source_root,
+            collection_id=collection_id,
+        )
 
     def sync_project(
         self,

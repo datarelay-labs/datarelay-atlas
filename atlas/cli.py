@@ -267,6 +267,16 @@ def cmd_personal_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_personal_import_dir(args: argparse.Namespace) -> int:
+    result = _service(args).import_personal_markdown_directory(
+        args.project_id,
+        source_root=Path(args.root),
+        collection_id=args.collection_id,
+    )
+    _print_json(result)
+    return 2 if result["counts"]["conflicts"] else 0
+
+
 def cmd_providers_show(args: argparse.Namespace) -> int:
     _print_json(_service(args).provider_dashboard())
     return 0
@@ -989,7 +999,7 @@ def build_parser() -> argparse.ArgumentParser:
     intelligence_show.add_argument("project_id")
     intelligence_show.set_defaults(func=cmd_intelligence_show)
 
-    personal = sub.add_parser("personal", help="Read-only Personal Knowledge Plane")
+    personal = sub.add_parser("personal", help="Personal Knowledge Plane")
     personal_sub = personal.add_subparsers(dest="personal_command", required=True)
     personal_show = personal_sub.add_parser("show", help="Show personal/reference source inventory and import status")
     personal_show.set_defaults(func=cmd_personal_show)
@@ -998,6 +1008,14 @@ def build_parser() -> argparse.ArgumentParser:
     personal_search.add_argument("query")
     personal_search.add_argument("--limit", type=int, default=8)
     personal_search.set_defaults(func=cmd_personal_search)
+    personal_import_dir = personal_sub.add_parser(
+        "import-dir",
+        help="Import an explicit Markdown directory as personal/reference snapshots",
+    )
+    personal_import_dir.add_argument("project_id")
+    personal_import_dir.add_argument("--root", required=True)
+    personal_import_dir.add_argument("--collection-id", required=True)
+    personal_import_dir.set_defaults(func=cmd_personal_import_dir)
 
     providers = sub.add_parser("providers", help="Read-only provider capacity and broker state")
     providers_sub = providers.add_subparsers(dest="providers_command", required=True)
