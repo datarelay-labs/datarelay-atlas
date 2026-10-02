@@ -38,10 +38,6 @@ _SAFE_AUTH_PROSE_RE = re.compile(
 _AUTH_HEADER_LINE_PREFIX_RE = re.compile(
     r"(?i)(?:Proxy-)?Authorization[ \t]*[:=][ \t]*$"
 )
-_SAFE_SECRET_PLACEHOLDER_RE = re.compile(
-    r"(?im)\b[A-Za-z_][A-Za-z0-9_]{0,80}(?:PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY)"
-    r"[ \t]*=[ \t]*replace-at-runtime(?=$|[ \t\r\n;])"
-)
 _SAFE_DOCUMENTATION_PLACEHOLDER_RE = re.compile(
     r"(?im)(?P<prefix>\b[A-Z][A-Z0-9_-]{0,80}"
     r"(?:SECRET|TOKEN|PASSWORD|API_KEY|ACCESS_KEY)"
