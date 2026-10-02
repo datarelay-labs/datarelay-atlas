@@ -393,6 +393,56 @@ verified memory task context bootstrap BODY-MARKER""",
         self.assertIsNone(payload["engineering_system"]["baseline"])
         json.dumps(payload, allow_nan=False)
 
+    def test_syntactically_invalid_engineering_metadata_is_unavailable(self):
+        self.svc.add_source(
+            "demo",
+            source_id="engineering-meta",
+            source_path=".engineering/project.yaml",
+            title="Engineering System metadata",
+        )
+
+        def fetch(source, token):  # noqa: ARG001
+            if source.source_id == "engineering-meta":
+                return FetchedSource(
+                    content="engineering_system: [\n",
+                    source_revision="metadata-rev-invalid-yaml",
+                )
+            return FetchedSource(
+                content="# Context\n\nverified memory task context bootstrap BODY-MARKER",
+                source_revision="source-rev-1",
+            )
+
+        self.svc.sync_project("demo", fetch=fetch)
+        payload = self.svc.task_context(project_id="demo")
+        VALIDATOR.validate(payload)
+        self.assertEqual(payload["engineering_system"]["state"], "UNAVAILABLE")
+        self.assertEqual(
+            payload["engineering_system"]["detail"],
+            "Engineering System metadata projection is malformed",
+        )
+        json.dumps(payload, allow_nan=False)
+
+    def test_bounded_size_matches_cli_transport_serialization(self):
+        oversized_name = "가" * 4100
+        root = Path(self.tmp.name) / "transport-bound"
+        svc = AtlasService(root)
+        svc.register_project(
+            project_id="localized",
+            repository="datarelay-labs/localized",
+            display_name=oversized_name,
+        )
+        compact = json.dumps(
+            {"display_name": oversized_name},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        self.assertLess(len(compact.encode("utf-8")), 24 * 1024)
+        with self.assertRaisesRegex(
+            ValidationError,
+            "task context exceeds bounded response size",
+        ):
+            svc.task_context(project_id="localized")
+
     def test_identity_and_workstream_validation_fail_closed(self):
         with self.assertRaises(ValidationError):
             self.svc.task_context()

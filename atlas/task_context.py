@@ -361,13 +361,16 @@ def build_task_context(
         "knowledge_refs": refs,
         "jit_retrieval": jit,
     }
+    # Bound the largest supported transport representation. The CLI pretty-prints
+    # with ASCII escaping and a trailing newline; MCP is more compact, so a
+    # payload that fits this representation also fits the MCP response.
     encoded = json.dumps(
         payload,
+        indent=2,
         sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
+        ensure_ascii=True,
         allow_nan=False,
-    )
+    ) + "\n"
     if len(encoded.encode("utf-8")) > MAX_CONTEXT_BYTES:
         raise ValidationError("task context exceeds bounded response size")
     if contains_unsafe_secret(encoded):
