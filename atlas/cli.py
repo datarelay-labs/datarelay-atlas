@@ -84,6 +84,7 @@ from atlas.readiness_graph import (
     plan_selected_packet_projections,
 )
 from atlas.lifecycle_intelligence import lifecycle_view_payload
+from atlas.engineering_evidence import PRODUCER_REVISION, SUPPORTED_SCHEMAS
 from atlas.readiness_github import plan_github_reconciled_readiness_file
 from atlas.semantic_retrieval import embedding_config_from_cli
 from atlas.service import AtlasService
@@ -275,6 +276,28 @@ def cmd_personal_import_dir(args: argparse.Namespace) -> int:
     )
     _print_json(result)
     return 2 if result["counts"]["conflicts"] else 0
+
+
+def cmd_engineering_evidence_show(args: argparse.Namespace) -> int:
+    project_ids = list(args.project_id or [])
+    _print_json(_service(args).engineering_evidence_dashboard(project_ids or None))
+    return 0
+
+
+def cmd_engineering_evidence_import(args: argparse.Namespace) -> int:
+    _print_json(
+        _service(args).import_engineering_evidence(
+            project_id=args.project_id,
+            family=args.family,
+            artifact_path=Path(args.artifact),
+            schema_path=Path(args.schema),
+            producer_revision=args.producer_revision,
+            workstream=args.workstream,
+            subject_head=args.subject_head,
+            observed_at=args.observed_at,
+        )
+    )
+    return 0
 
 
 def cmd_providers_show(args: argparse.Namespace) -> int:
@@ -1016,6 +1039,46 @@ def build_parser() -> argparse.ArgumentParser:
     personal_import_dir.add_argument("--root", required=True)
     personal_import_dir.add_argument("--collection-id", required=True)
     personal_import_dir.set_defaults(func=cmd_personal_import_dir)
+
+    engineering_evidence = sub.add_parser(
+        "engineering-evidence",
+        help="Engineering System evidence federation",
+    )
+    engineering_evidence_sub = engineering_evidence.add_subparsers(
+        dest="engineering_evidence_command",
+        required=True,
+    )
+    engineering_evidence_show = engineering_evidence_sub.add_parser(
+        "show",
+        help="Show bounded portfolio Engineering System evidence state",
+    )
+    engineering_evidence_show.add_argument(
+        "--project-id",
+        action="append",
+        default=[],
+        help="Optional explicit project scope; repeat for multiple projects",
+    )
+    engineering_evidence_show.set_defaults(func=cmd_engineering_evidence_show)
+    engineering_evidence_import = engineering_evidence_sub.add_parser(
+        "import",
+        help="Import one explicit Engineering System evidence artifact",
+    )
+    engineering_evidence_import.add_argument("project_id")
+    engineering_evidence_import.add_argument(
+        "--family",
+        required=True,
+        choices=sorted(SUPPORTED_SCHEMAS),
+    )
+    engineering_evidence_import.add_argument("--artifact", required=True)
+    engineering_evidence_import.add_argument("--schema", required=True)
+    engineering_evidence_import.add_argument(
+        "--producer-revision",
+        default=PRODUCER_REVISION,
+    )
+    engineering_evidence_import.add_argument("--workstream", required=True)
+    engineering_evidence_import.add_argument("--subject-head", required=True)
+    engineering_evidence_import.add_argument("--observed-at", required=True)
+    engineering_evidence_import.set_defaults(func=cmd_engineering_evidence_import)
 
     providers = sub.add_parser("providers", help="Read-only provider capacity and broker state")
     providers_sub = providers.add_subparsers(dest="providers_command", required=True)

@@ -102,6 +102,10 @@ def render_projects(service: AtlasService) -> UiResponse:
         personal = service.personal_knowledge_dashboard()
     except ValidationError:
         personal = {"state": "UNAVAILABLE", "totals": {"personal_sources": 0}}
+    try:
+        engineering_evidence = service.engineering_evidence_dashboard()
+    except ValidationError:
+        engineering_evidence = {"state": "UNAVAILABLE", "record_count": 0}
     cards = []
     for project in projects:
         pid = quote(project.project_id, safe="")
@@ -117,8 +121,54 @@ def render_projects(service: AtlasService) -> UiResponse:
     listing = "".join(cards) if cards else '<div class="card"><p>No projects registered.</p></div>'
     enabled = sum(1 for project in projects if project.enabled)
     sources = sum(len(project.sources) for project in projects)
-    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section><section class="card"><h2>{escape(str(decision_plane["rollout_state"]))}</h2><p>Decision Plane</p></section><section class="card"><h2>{escape(str(instruction_governance["state"]))}</h2><p>Instruction governance</p></section><section class="card"><h2>{escape(str(concurrency["state"]))}</h2><p>Concurrency admission</p></section><section class="card"><h2>{personal["totals"]["personal_sources"]}</h2><p>Personal knowledge sources</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a> · <a href="/decision-plane">Decision Plane →</a> · <a href="/instruction-governance">Instruction governance →</a> · <a href="/concurrency">Concurrency →</a> · <a href="/personal">Personal knowledge →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
+    body = f'<h1>Atlas Overview</h1><p class="muted">Read-only engineering knowledge and lifecycle navigation.</p><div class="grid"><section class="card"><h2>{len(projects)}</h2><p>Registered projects</p></section><section class="card"><h2>{enabled}</h2><p>Enabled projects</p></section><section class="card"><h2>{sources}</h2><p>Configured sources</p></section><section class="card"><h2>{escape(str(operations["runtime"]["state"]))}</h2><p>Runtime readiness</p></section><section class="card"><h2>{escape(str(operations["state"]))}</h2><p>Deployment profile</p></section><section class="card"><h2>{escape(str(operations["release_readiness"]["state"]))}</h2><p>Release readiness</p></section><section class="card"><h2>{escape(str(providers["state"]))}</h2><p>Provider capacity</p></section><section class="card"><h2>{escape(str(decision_plane["rollout_state"]))}</h2><p>Decision Plane</p></section><section class="card"><h2>{escape(str(instruction_governance["state"]))}</h2><p>Instruction governance</p></section><section class="card"><h2>{escape(str(concurrency["state"]))}</h2><p>Concurrency admission</p></section><section class="card"><h2>{personal["totals"]["personal_sources"]}</h2><p>Personal knowledge sources</p></section><section class="card"><h2>{engineering_evidence["record_count"]}</h2><p>Engineering System evidence records</p></section></div><p><a href="/search">Search across projects →</a> · <a href="/intelligence">Derived intelligence →</a> · <a href="/engineering-evidence">Engineering evidence →</a> · <a href="/operations">Operations readiness →</a> · <a href="/providers">Provider capacity →</a> · <a href="/decision-plane">Decision Plane →</a> · <a href="/instruction-governance">Instruction governance →</a> · <a href="/concurrency">Concurrency →</a> · <a href="/personal">Personal knowledge →</a></p><h2>Projects</h2><section class="grid">' + listing + "</section>"
     return UiResponse("200 OK", _page("Projects", body))
+
+def render_engineering_evidence(service: AtlasService) -> UiResponse:
+    dashboard = service.engineering_evidence_dashboard()
+    if dashboard["state"] == "UNAVAILABLE":
+        return _error(
+            "500 Internal Server Error",
+            "Engineering evidence unavailable",
+            "Engineering System evidence metadata could not be validated safely.",
+        )
+    rows = ""
+    for project in dashboard["projects"]:
+        for family in project["families"]:
+            latest = family["latest"] or {}
+            rows += (
+                f'<tr><td><code>{escape(str(project["project_id"]))}</code></td>'
+                f'<td>{escape(str(family["family"]))}</td>'
+                f'<td><span class="pill">{escape(str(family["state"]))}</span></td>'
+                f'<td>{family["record_count"]}</td>'
+                f'<td><code>{escape(str(family["current_head"] or "UNKNOWN"))}</code></td>'
+                f'<td><code>{escape(str(latest.get("subject_head") or "NONE"))}</code></td>'
+                f'<td>{escape(str(latest.get("artifact_kind") or "NONE"))}</td>'
+                f'<td>{escape(str(latest.get("observed_at") or "NONE"))}</td></tr>'
+            )
+    rows = rows or '<tr><td colspan="8" class="muted">No registered projects.</td></tr>'
+    states = dashboard["state_counts"]
+    body = (
+        '<p><a href="/">← Projects</a></p><h1>Engineering System evidence</h1>'
+        '<p class="muted"><span class="pill">ENGINEERING_SYSTEM_EVIDENCE_ONLY</span> '
+        'Validated bounded metadata only. Engineering System remains the methodology authority; '
+        'this surface grants no execution, merge, release, deploy, or PASS authority.</p>'
+        '<section class="grid">'
+        f'<article class="card"><h2>{dashboard["record_count"]}</h2><p>Federated records</p></article>'
+        f'<article class="card"><h2>{states["CURRENT"]}</h2><p>Current families</p></article>'
+        f'<article class="card"><h2>{states["STALE_DIFFERENT_HEAD"]}</h2><p>Stale families</p></article>'
+        f'<article class="card"><h2>{states["UNKNOWN"]}</h2><p>Unknown families</p></article>'
+        f'<article class="card"><h2>{states["UNAVAILABLE"]}</h2><p>Unavailable families</p></article>'
+        '</section><section class="card" style="margin-top:16px"><h2>Portfolio evidence</h2>'
+        '<div style="overflow:auto"><table><thead><tr><th>Project</th><th>Family</th>'
+        '<th>State</th><th>Records</th><th>Current HEAD</th><th>Evidence HEAD</th>'
+        f'<th>Artifact</th><th>Observed</th></tr></thead><tbody>{rows}</tbody></table></div></section>'
+        f'<p class="muted">Producer: <code>{escape(str(dashboard["producer_repository"]))}</code> '
+        f'{escape(str(dashboard["producer_release"]))} · '
+        f'<code>{escape(str(dashboard["producer_revision"]))}</code></p>'
+    )
+    return UiResponse("200 OK", _page("Engineering System evidence", body))
+
 
 def render_personal_knowledge(service: AtlasService, query: str = "", project_id: str = "") -> UiResponse:
     try:
@@ -1831,6 +1881,8 @@ def create_app(data_root: Path):
                 response = render_projects(service)
             elif path == "/intelligence":
                 response = render_intelligence_overview(service)
+            elif path == "/engineering-evidence":
+                response = render_engineering_evidence(service)
             elif path == "/operations":
                 response = render_operations(service)
             elif path == "/concurrency":

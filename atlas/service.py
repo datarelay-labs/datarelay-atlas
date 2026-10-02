@@ -14,6 +14,10 @@ from atlas.adoption import (
 from atlas.github_sync import FetchFn, fetch_github_file
 from atlas.derived_intelligence import derived_intelligence_payload
 from atlas.data_lock import data_root_write_lock
+from atlas.engineering_evidence import (
+    engineering_evidence_dashboard,
+    import_engineering_evidence,
+)
 from atlas.concurrency_admission import (
     concurrency_dashboard,
     publish_concurrency_snapshot,
@@ -148,6 +152,42 @@ class AtlasService:
             project_id, query, limit=limit
         )
 
+    def engineering_evidence_dashboard(
+        self,
+        project_ids: list[str] | None = None,
+    ) -> dict[str, object]:
+        """Return bounded Engineering System evidence federation state."""
+        return engineering_evidence_dashboard(
+            self.data_root,
+            self.registry,
+            project_ids=project_ids,
+        )
+
+    def import_engineering_evidence(
+        self,
+        *,
+        project_id: str,
+        family: str,
+        artifact_path: Path,
+        schema_path: Path,
+        producer_revision: str,
+        workstream: str,
+        subject_head: str,
+        observed_at: str,
+    ) -> dict[str, object]:
+        """Import one explicitly supplied Engineering System evidence artifact."""
+        return import_engineering_evidence(
+            self.data_root,
+            self.registry,
+            project_id=project_id,
+            family=family,
+            artifact_path=artifact_path,
+            schema_path=schema_path,
+            producer_revision=producer_revision,
+            workstream=workstream,
+            subject_head=subject_head,
+            observed_at=observed_at,
+        )
 
     def runtime_observability(self) -> dict[str, object]:
         """Return bounded read-only runtime observability facts."""

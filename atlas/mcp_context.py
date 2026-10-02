@@ -50,6 +50,7 @@ class AtlasContextTools:
         concurrency_execution_factory: Callable[[], dict[str, object]] | None = None,
         personal_knowledge_factory: Callable[[], dict[str, object]] | None = None,
         personal_search_factory: Callable[[str, str, int], list[Any]] | None = None,
+        engineering_evidence_factory: Callable[[list[str] | None], dict[str, object]] | None = None,
         knowledge_search_factory: Callable[[str, list[str], str, int], dict[str, Any]] | None = None,
         provider_route_quality_factory: Callable[[], dict[str, object]] | None = None,
         decision_canary_factory: Callable[[], dict[str, object]] | None = None,
@@ -79,6 +80,7 @@ class AtlasContextTools:
         self._concurrency_execution_factory = concurrency_execution_factory
         self._personal_knowledge_factory = personal_knowledge_factory
         self._personal_search_factory = personal_search_factory
+        self._engineering_evidence_factory = engineering_evidence_factory
         self._knowledge_search_factory = knowledge_search_factory
         self._provider_route_quality_factory = provider_route_quality_factory
         self._decision_canary_factory = decision_canary_factory
@@ -262,6 +264,13 @@ class AtlasContextTools:
                     "description": "Search only personal/reference projections within one explicit project",
                 }
             )
+        if self._engineering_evidence_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_engineering_evidence",
+                    "description": "Return bounded Engineering System evidence federation state with no execution authority",
+                }
+            )
         if self._knowledge_search_factory is not None and READ_SCOPE in scopes:
             tools.append(
                 {
@@ -288,7 +297,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_route_quality", "get_provider_transition_preview", "get_decision_plane", "get_decision_canary_readiness", "get_decision_plane_canary", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_instruction_governance_routing", "get_instruction_governance_disposition", "get_instruction_governance_canary", "get_concurrency_admission", "get_concurrency_dispatch_authorization", "get_concurrency_dispatch_effects", "get_concurrency_dispatch_joins", "get_concurrency_execution_cycles", "get_personal_knowledge", "search_personal_knowledge", "search_knowledge"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_route_quality", "get_provider_transition_preview", "get_decision_plane", "get_decision_canary_readiness", "get_decision_plane_canary", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_instruction_governance_routing", "get_instruction_governance_disposition", "get_instruction_governance_canary", "get_concurrency_admission", "get_concurrency_dispatch_authorization", "get_concurrency_dispatch_effects", "get_concurrency_dispatch_joins", "get_concurrency_execution_cycles", "get_personal_knowledge", "search_personal_knowledge", "get_engineering_evidence", "search_knowledge"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "search_project":
@@ -396,6 +405,18 @@ class AtlasContextTools:
                 return ToolResult(ok=False, data=None, error="unknown_tool:get_personal_knowledge")
             try:
                 payload = self._personal_knowledge_factory()
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_engineering_evidence":
+            if self._engineering_evidence_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_engineering_evidence")
+            try:
+                project_ids = args.get("project_ids")
+                if project_ids is not None:
+                    project_ids = _required_project_ids(args, "project_ids")
+                payload = self._engineering_evidence_factory(project_ids)
             except ValidationError as exc:
                 return ToolResult(ok=False, data=None, error=str(exc))
             return ToolResult(ok=True, data=payload)
