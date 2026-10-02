@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from atlas.data_lock import LOCK_NAME, data_root_write_lock
+from atlas.engineering_evidence import (
+    FILENAME as ENGINEERING_EVIDENCE_FILENAME,
+    validate_engineering_evidence_store,
+)
 from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
 from atlas.personal_knowledge import (
     MANIFEST_FILENAME as PERSONAL_MANIFEST_FILENAME,
@@ -69,6 +73,7 @@ PARTIAL_SUFFIX = ".partial"
 _DURABLE_NAME = "registry.json"
 _PROJECTIONS_DIR = "projections"
 _CONTROLLER_NAME = "work-controller.json"
+_DURABLE_METADATA_FILES = frozenset({ENGINEERING_EVIDENCE_FILENAME})
 _REPLAY_STATE_FILES = frozenset(
     {
         CONCURRENCY_EFFECTS_FILENAME,
@@ -195,11 +200,17 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
     saw_controller = False
     controller_dirs: list[str] = []
     replay_files: list[str] = []
+    durable_metadata_files: list[str] = []
     for entry in root.iterdir():
         name = entry.name
         if name == LOCK_NAME:
             if entry.is_symlink():
                 raise ValidationError("backup entry is not a regular file")
+            continue
+        if name in _DURABLE_METADATA_FILES:
+            if entry.is_symlink() or not entry.is_file():
+                raise ValidationError("backup entry is not a regular file")
+            durable_metadata_files.append(name)
             continue
         if name in _REPLAY_STATE_FILES:
             if entry.is_symlink() or not entry.is_file():
@@ -277,6 +288,12 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
         files.append(
             _SnapshotFile(name, "controller", _read_regular(root / name))
         )
+    for name in sorted(durable_metadata_files):
+        files.append(
+            _SnapshotFile(name, "durable", _read_regular(root / name))
+        )
+    if ENGINEERING_EVIDENCE_FILENAME in durable_metadata_files:
+        validate_engineering_evidence_store(root)
     personal_manifest = root / PERSONAL_MANIFEST_FILENAME
     if personal_manifest.exists():
         validate_personal_import_manifest(root)
@@ -472,7 +489,11 @@ def _validate_replay_blobs(blobs: dict[str, bytes]) -> None:
 
 def _role_matches(path: str, role: str) -> bool:
     if role == "durable":
-        return path == _DURABLE_NAME or path.startswith(f"{SNAPSHOT_DIRNAME}/")
+        return (
+            path == _DURABLE_NAME
+            or path in _DURABLE_METADATA_FILES
+            or path.startswith(f"{SNAPSHOT_DIRNAME}/")
+        )
     if role == "rebuildable":
         return path.startswith(f"{_PROJECTIONS_DIR}/")
     if role == "controller":
@@ -589,6 +610,7 @@ def _assert_backup_tree(backup: Path) -> list[_SnapshotFile]:
             raise ValidationError("backup contains unexpected files")
     _validate_snapshot_files(files)
     validate_personal_import_manifest(backup)
+    validate_engineering_evidence_store(backup)
     _load_projects(backup)
     _load_controller(backup)
     return files

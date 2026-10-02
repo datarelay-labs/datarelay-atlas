@@ -43,7 +43,7 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, instruction_governance_routing_factory=service.instruction_governance_routing, instruction_governance_disposition_factory=service.instruction_governance_disposition_dashboard, instruction_governance_canary_factory=service.instruction_governance_canary_dashboard, concurrency_factory=service.concurrency_dashboard, concurrency_authorization_factory=service.concurrency_dispatch_authorization_dashboard, concurrency_effects_factory=service.concurrency_dispatch_effect_dashboard, concurrency_joins_factory=service.concurrency_dispatch_join_dashboard, concurrency_execution_factory=service.concurrency_execution_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit), provider_route_quality_factory=service.provider_route_quality_dashboard, decision_canary_factory=service.decision_canary_readiness, decision_canary_admission_factory=service.decision_canary_dashboard)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, instruction_governance_routing_factory=service.instruction_governance_routing, instruction_governance_disposition_factory=service.instruction_governance_disposition_dashboard, instruction_governance_canary_factory=service.instruction_governance_canary_dashboard, concurrency_factory=service.concurrency_dashboard, concurrency_authorization_factory=service.concurrency_dispatch_authorization_dashboard, concurrency_effects_factory=service.concurrency_dispatch_effect_dashboard, concurrency_joins_factory=service.concurrency_dispatch_join_dashboard, concurrency_execution_factory=service.concurrency_execution_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), engineering_evidence_factory=service.engineering_evidence_dashboard, knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit), provider_route_quality_factory=service.provider_route_quality_dashboard, decision_canary_factory=service.decision_canary_readiness, decision_canary_admission_factory=service.decision_canary_dashboard)
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
@@ -70,6 +70,7 @@ def build_mcp_application(
             "get_concurrency_dispatch_joins reports effect-bound completion measurement with measurement-only PASS semantics; "
             "get_concurrency_execution_cycles reports plan-replay-protected orchestration state with no engineering PASS authority; "
             "get_personal_knowledge and search_personal_knowledge keep personal/reference content explicitly non-authoritative; "
+            "get_engineering_evidence returns bounded Engineering System evidence metadata without execution authority; "
             "search_knowledge requires explicit project_ids and supports all/engineering/personal source-class filtering."
         ),
         token_verifier=verifier,
@@ -387,6 +388,17 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             "search_personal_knowledge",
             {"project_id": project_id, "query": query, "limit": limit},
         )
+
+    @server.tool(
+        name="get_engineering_evidence",
+        description="Return bounded Engineering System evidence federation state without execution authority",
+        structured_output=False,
+    )
+    async def get_engineering_evidence(project_ids: list[str] | None = None) -> str:
+        args: dict[str, object] = {}
+        if project_ids is not None:
+            args["project_ids"] = project_ids
+        return _call_tool(tools, "get_engineering_evidence", args)
 
     @server.tool(
         name="get_source_detail",
