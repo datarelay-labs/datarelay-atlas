@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -134,7 +135,7 @@ class PersonalDirectoryImportTests(unittest.TestCase):
                 "personal", source_root=vault, collection_id="vault"
             )
             note.write_text('PASSWORD="hunter2"\n', encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "now quarantined"):
+            with self.assertRaisesRegex(ValidationError, "unreadable or rejected"):
                 svc.import_personal_markdown_directory(
                     "personal", source_root=vault, collection_id="vault"
                 )
@@ -144,6 +145,79 @@ class PersonalDirectoryImportTests(unittest.TestCase):
             )
             self.assertEqual(
                 svc.personal_search("personal", "hunter2"),
+                [],
+            )
+
+    def test_non_utf8_filename_is_bounded_rejected_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            svc = self._service(base / "data")
+            vault = base / "vault"
+            vault.mkdir()
+            raw_path = os.path.join(os.fsencode(vault), b"bad-\xff.md")
+            fd = os.open(raw_path, os.O_CREAT | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, b"safe body\n")
+            finally:
+                os.close(fd)
+
+            result = svc.import_personal_markdown_directory(
+                "personal", source_root=vault, collection_id="vault"
+            )
+            self.assertEqual(result["counts"]["rejected"], 1)
+            self.assertEqual(result["items"][0]["relative_path"], "[NON_UTF8_PATH]")
+            self.assertEqual(result["items"][0]["reason_code"], "NON_UTF8_PATH")
+            json.dumps(result).encode("utf-8")
+            self.assertEqual(svc.list_sources("personal"), [])
+
+    def test_actual_read_byte_limit_is_enforced_after_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            svc = self._service(base / "data")
+            vault = base / "vault"
+            vault.mkdir()
+            note = vault / "note.md"
+            note.write_text("small\n", encoding="utf-8")
+
+            with patch(
+                "atlas.personal_directory_import._scan_directory",
+                return_value=([("note.md", 1)], []),
+            ):
+                note.write_bytes(b"x" * 33)
+                with patch(
+                    "atlas.personal_directory_import._MAX_FILE_BYTES",
+                    32,
+                ):
+                    result = svc.import_personal_markdown_directory(
+                        "personal", source_root=vault, collection_id="vault"
+                    )
+            self.assertEqual(result["counts"]["rejected"], 1)
+            self.assertEqual(result["counts"]["imported"], 0)
+            self.assertFalse(svc.list_sources("personal"))
+
+    def test_actual_aggregate_bytes_are_rechecked_after_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            svc = self._service(base / "data")
+            vault = base / "vault"
+            vault.mkdir()
+            (vault / "a.md").write_text("aaaa", encoding="utf-8")
+            (vault / "b.md").write_text("bbbb", encoding="utf-8")
+
+            with patch(
+                "atlas.personal_directory_import._scan_directory",
+                return_value=([("a.md", 1), ("b.md", 1)], []),
+            ), patch(
+                "atlas.personal_directory_import._MAX_TOTAL_BYTES",
+                7,
+            ):
+                with self.assertRaisesRegex(ValidationError, "bytes exceed"):
+                    svc.import_personal_markdown_directory(
+                        "personal", source_root=vault, collection_id="vault"
+                    )
+            self.assertEqual(svc.list_sources("personal"), [])
+            self.assertEqual(
+                svc.personal_search("personal", "aaaa"),
                 [],
             )
 
@@ -270,6 +344,30 @@ class PersonalDirectoryImportTests(unittest.TestCase):
             self.assertEqual(len(hits), 1)
             self.assertEqual(hits[0].provenance["source_class"], "personal")
             self.assertIs(hits[0].provenance["engineering_authority"], False)
+
+    def test_missing_legacy_secret_like_path_is_redacted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            svc = self._service(base / "data")
+            vault = base / "vault"
+            vault.mkdir()
+            svc.registry.add_personal_snapshot(
+                "personal",
+                source_id="vault-legacy",
+                source_path="vault/PASSWORD=hunter2.md",
+                title="Legacy personal source",
+            )
+
+            result = svc.import_personal_markdown_directory(
+                "personal", source_root=vault, collection_id="vault"
+            )
+            self.assertEqual(result["counts"]["missing"], 1)
+            self.assertEqual(result["items"][0]["relative_path"], "[REDACTED_PATH]")
+            self.assertEqual(
+                result["items"][0]["reason_code"],
+                "SOURCE_FILE_ABSENT_REDACTED_PATH",
+            )
+            self.assertNotIn("hunter2", json.dumps(result))
 
     def test_cli_import_dir_returns_bounded_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:

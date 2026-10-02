@@ -38,7 +38,11 @@ _MAX_RELATIVE_PATH = 512
 def directory_source_id(collection_id: str, relative_path: str) -> str:
     """Return a stable source id for one collection-relative Markdown path."""
     _validate_collection_id(collection_id)
-    digest = hashlib.sha256(relative_path.encode("utf-8")).hexdigest()[:16]
+    try:
+        encoded = relative_path.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValidationError("personal directory path is not UTF-8") from exc
+    digest = hashlib.sha256(encoded).hexdigest()[:16]
     source_id = f"{collection_id}-{digest}"
     if not SOURCE_ID_RE.fullmatch(source_id):
         raise ValidationError("personal directory source id is invalid")
@@ -101,6 +105,7 @@ def _import_personal_markdown_directory_locked(
 
     current_paths: set[str] = set()
     items: list[dict[str, object]] = list(rejected)
+    actual_total_bytes = 0
     counts = {
         "imported": 0,
         "updated": 0,
@@ -111,7 +116,8 @@ def _import_personal_markdown_directory_locked(
         "conflicts": 0,
     }
 
-    for relative_path, size_bytes in discovered:
+    prepared: list[dict[str, object]] = []
+    for relative_path, _scanned_size in discovered:
         virtual_path = f"{collection_id}/{relative_path}"
         current_paths.add(virtual_path)
         source_id = directory_source_id(collection_id, relative_path)
@@ -130,26 +136,72 @@ def _import_personal_markdown_directory_locked(
             continue
 
         try:
-            text = read_allowlisted_markdown(root, relative_path)
-        except ValidationError as exc:
-            if str(exc) == "snapshot content looks secret":
-                if existing is not None:
-                    raise ValidationError(
-                        "existing personal directory source is now quarantined"
-                    ) from exc
-                counts["quarantined"] += 1
-                items.append(
-                    _item(relative_path, source_id, "QUARANTINED", "SECRET_GUARD")
-                )
-                continue
-            counts["rejected"] += 1
-            items.append(
-                _item(relative_path, source_id, "REJECTED", "UNREADABLE_MARKDOWN")
+            text = read_allowlisted_markdown(
+                root,
+                relative_path,
+                max_bytes=_MAX_FILE_BYTES,
             )
+        except ValidationError as exc:
+            if existing is not None:
+                raise ValidationError(
+                    "existing personal directory source is unreadable or rejected"
+                ) from exc
+            reason = (
+                "SECRET_GUARD"
+                if str(exc) == "snapshot content looks secret"
+                else "FILE_TOO_LARGE"
+                if str(exc) == "snapshot exceeds bounded size"
+                else "UNREADABLE_MARKDOWN"
+            )
+            state = "QUARANTINED" if reason == "SECRET_GUARD" else "REJECTED"
+            counts["quarantined" if state == "QUARANTINED" else "rejected"] += 1
+            items.append(_item(relative_path, source_id, state, reason))
             continue
 
-        incoming_digest = content_sha256(text.encode("utf-8"))
+        encoded = text.encode("utf-8")
+        actual_size = len(encoded)
+        actual_total_bytes += actual_size
+        if actual_total_bytes > _MAX_TOTAL_BYTES:
+            raise ValidationError(
+                "personal directory Markdown bytes exceed bounded size"
+            )
+        incoming_digest = content_sha256(encoded)
+
         if existing is None:
+            state = "IMPORTED"
+        else:
+            canonical = canonical_by_id[source_id]
+            try:
+                prior = fetch_local_markdown(snapshot_root, canonical)
+                unchanged = prior.source_revision == incoming_digest
+            except ValidationError as exc:
+                if str(exc) != "snapshot is missing":
+                    raise
+                unchanged = False
+            state = "UNCHANGED" if unchanged else "UPDATED"
+
+        prepared.append(
+            {
+                "relative_path": relative_path,
+                "virtual_path": virtual_path,
+                "source_id": source_id,
+                "title": title,
+                "text": text,
+                "size_bytes": actual_size,
+                "state": state,
+            }
+        )
+
+    for operation in prepared:
+        relative_path = str(operation["relative_path"])
+        virtual_path = str(operation["virtual_path"])
+        source_id = str(operation["source_id"])
+        title = str(operation["title"])
+        text = str(operation["text"])
+        actual_size = int(operation["size_bytes"])
+        state = str(operation["state"])
+
+        if state == "IMPORTED":
             published = publish_snapshot(snapshot_root, project_id, source_id, text)
             try:
                 registered = registry.add_personal_snapshot(
@@ -166,44 +218,17 @@ def _import_personal_markdown_directory_locked(
                 for source in registry.canonical_sources(project_id)
                 if source.source_id == registered.source_id
             )
-            record = projections.sync_one(canonical)
-            if record.sync_state == "error":
-                raise ValidationError("personal directory projection sync failed")
-            existing_by_id[source_id] = registered
-            existing_by_path[virtual_path] = registered
-            canonical_by_id[source_id] = canonical
-            counts["imported"] += 1
-            items.append(
-                _item(relative_path, source_id, "IMPORTED", None, size_bytes=size_bytes)
-            )
-            continue
+        else:
+            canonical = canonical_by_id[source_id]
+            if state == "UPDATED":
+                publish_snapshot(snapshot_root, project_id, source_id, text)
 
-        canonical = canonical_by_id[source_id]
-        try:
-            prior = fetch_local_markdown(snapshot_root, canonical)
-            unchanged = prior.source_revision == incoming_digest
-        except ValidationError as exc:
-            if str(exc) != "snapshot is missing":
-                raise
-            unchanged = False
-
-        if unchanged:
-            record = projections.sync_one(canonical)
-            if record.sync_state == "error":
-                raise ValidationError("personal directory projection sync failed")
-            counts["unchanged"] += 1
-            items.append(
-                _item(relative_path, source_id, "UNCHANGED", None, size_bytes=size_bytes)
-            )
-            continue
-
-        publish_snapshot(snapshot_root, project_id, source_id, text)
         record = projections.sync_one(canonical)
         if record.sync_state == "error":
             raise ValidationError("personal directory projection sync failed")
-        counts["updated"] += 1
+        counts[state.lower()] += 1
         items.append(
-            _item(relative_path, source_id, "UPDATED", None, size_bytes=size_bytes)
+            _item(relative_path, source_id, state, None, size_bytes=actual_size)
         )
 
     for source in existing_sources:
@@ -215,8 +240,22 @@ def _import_personal_markdown_directory_locked(
         ):
             counts["missing"] += 1
             relative = source.source_path[len(prefix):]
+            try:
+                relative.encode("utf-8")
+                unsafe_path = contains_unsafe_secret(relative)
+            except UnicodeEncodeError:
+                unsafe_path = True
             items.append(
-                _item(relative, source.source_id, "MISSING", "SOURCE_FILE_ABSENT")
+                _item(
+                    "[REDACTED_PATH]" if unsafe_path else relative,
+                    source.source_id,
+                    "MISSING",
+                    (
+                        "SOURCE_FILE_ABSENT_REDACTED_PATH"
+                        if unsafe_path
+                        else "SOURCE_FILE_ABSENT"
+                    ),
+                )
             )
 
     items.sort(key=lambda item: (str(item["relative_path"]), str(item["state"])))
@@ -276,6 +315,18 @@ def _scan_directory(root: Path) -> tuple[list[tuple[str, int]], list[dict[str, o
                 walk(path)
                 continue
             relative = path.relative_to(root).as_posix()
+            try:
+                relative.encode("utf-8")
+            except UnicodeEncodeError:
+                rejected.append(
+                    _item(
+                        "[NON_UTF8_PATH]",
+                        None,
+                        "REJECTED",
+                        "NON_UTF8_PATH",
+                    )
+                )
+                continue
             if contains_unsafe_secret(relative):
                 raise ValidationError("personal directory path metadata looks secret")
             if len(relative) > _MAX_RELATIVE_PATH:

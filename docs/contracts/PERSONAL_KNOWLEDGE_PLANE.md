@@ -35,11 +35,12 @@ Safety and lifecycle rules:
 - the selected root must be a real directory outside the Atlas data root;
 - symlinks fail the whole import closed;
 - only regular lowercase `.md` files are eligible; other files are reported as rejected metadata and are never ingested;
-- file count, directory-entry count, per-file bytes, total Markdown bytes, and relative path length are bounded;
+- file count, directory-entry count, per-file bytes, total Markdown bytes, and relative path length are bounded; byte limits are rechecked against the bytes actually opened/read so scan-time size races cannot bypass them;
+- non-UTF-8/surrogateescaped filenames are rejected as bounded generic metadata without echoing undecodable path bytes;
 - secret-like new files are quarantined without persisting their bodies;
 - if a previously registered file becomes secret-like, re-import fails closed rather than silently serving a stale projection as current;
 - unchanged imports are idempotent; changed content refreshes the existing snapshot/projection only when source id and logical path still match;
-- absent files are reported as missing, but existing Atlas sources are not automatically deleted;
+- absent files are reported as missing, but existing Atlas sources are not automatically deleted; legacy missing paths that match the secret detector are replaced with a generic redacted-path marker;
 - output contains bounded metadata/counts only, never Markdown bodies.
 
 The collection-relative logical source path is retained in Atlas provenance, so personal search remains attributable while engineering authority remains false.
