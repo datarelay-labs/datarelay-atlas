@@ -116,6 +116,14 @@ def _import_personal_markdown_directory_locked(
         "conflicts": 0,
     }
 
+    def observe_bytes(count: int) -> None:
+        nonlocal actual_total_bytes
+        actual_total_bytes += count
+        if actual_total_bytes > _MAX_TOTAL_BYTES:
+            raise ValidationError(
+                "personal directory Markdown bytes exceed bounded size"
+            )
+
     prepared: list[dict[str, object]] = []
     for relative_path, _scanned_size in discovered:
         virtual_path = f"{collection_id}/{relative_path}"
@@ -140,8 +148,11 @@ def _import_personal_markdown_directory_locked(
                 root,
                 relative_path,
                 max_bytes=_MAX_FILE_BYTES,
+                byte_observer=observe_bytes,
             )
         except ValidationError as exc:
+            if str(exc) == "personal directory Markdown bytes exceed bounded size":
+                raise
             if existing is not None:
                 raise ValidationError(
                     "existing personal directory source is unreadable or rejected"
@@ -160,11 +171,6 @@ def _import_personal_markdown_directory_locked(
 
         encoded = text.encode("utf-8")
         actual_size = len(encoded)
-        actual_total_bytes += actual_size
-        if actual_total_bytes > _MAX_TOTAL_BYTES:
-            raise ValidationError(
-                "personal directory Markdown bytes exceed bounded size"
-            )
         incoming_digest = content_sha256(encoded)
 
         if existing is None:

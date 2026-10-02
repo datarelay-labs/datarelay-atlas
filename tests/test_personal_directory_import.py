@@ -221,6 +221,34 @@ class PersonalDirectoryImportTests(unittest.TestCase):
                 [],
             )
 
+    def test_rejected_file_bytes_still_count_toward_actual_aggregate_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            svc = self._service(base / "data")
+            vault = base / "vault"
+            vault.mkdir()
+            (vault / "secret.md").write_text(
+                'PASSWORD="hunter2"\n',
+                encoding="utf-8",
+            )
+            (vault / "safe.md").write_text("safe\n", encoding="utf-8")
+
+            with patch(
+                "atlas.personal_directory_import._scan_directory",
+                return_value=([("secret.md", 1), ("safe.md", 1)], []),
+            ), patch(
+                "atlas.personal_directory_import._MAX_TOTAL_BYTES",
+                20,
+            ):
+                with self.assertRaisesRegex(ValidationError, "bytes exceed"):
+                    svc.import_personal_markdown_directory(
+                        "personal", source_root=vault, collection_id="vault"
+                    )
+
+            self.assertEqual(svc.list_sources("personal"), [])
+            snapshot_project = svc.snapshot_root / "personal"
+            self.assertFalse(snapshot_project.exists())
+
     def test_secret_like_path_metadata_fails_before_persistence(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
