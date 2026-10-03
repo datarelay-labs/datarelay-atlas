@@ -501,6 +501,7 @@ class OpsCheckTests(unittest.TestCase):
         self.assertIn("/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod", check)
         self.assertIn("--env-file /etc/datarelay-atlas/service.env", check)
         self.assertNotIn("PYTHONPATH=. python3 -m atlas ops check", check)
+        self.assertIn("--noproxy '*'", text)
         self.assertIn(
             "--resolve mcp.atlas.datarelay.run:8443:127.0.0.1", text
         )
