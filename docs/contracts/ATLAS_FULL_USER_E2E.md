@@ -49,3 +49,13 @@ Reload the browser and open a fresh browser context. Registry/projection/lifecyc
 ## Pass rule
 
 PASS requires all missions on the same exact candidate, browser-process evidence, no API/source-inspection substitution for browser actions, and recorded cleanup truth. Any browser-visible failure, stale candidate, hidden API fallback, fabricated lifecycle PASS, or authority confusion is REWORK.
+
+## Engineering System User Acceptance v2
+
+- **ChatGPT itself is the executor and final auditor.** ChatGPT assumes the applicable Atlas user persona and performs each mission through the real browser. Coding agents, alternate models, scripted replays, CI, and automated harnesses cannot substitute for the user gate.
+- Run mission-first, black-box, and real-effect. The persona starts without source/test answer-key knowledge, follows browser-visible discovery/guidance, and verifies the real rendered/derived outcome and authority labeling.
+- Include realistic mistakes/recovery for applicable missions: invalid or empty search, unknown project/route, stale or invalid lifecycle evidence, reload/new context, unavailable derived source, and rejected write attempts. Recovery must be understandable from the product surface rather than hidden implementation knowledge.
+- A finding is not a stop condition. Continue every safe independent mission, freeze findings at pass end, batch-remediate, and restart invalidated Full User E2E from the beginning on the new candidate.
+- Repeat state-sensitive missions across meaningful reload/new-context/source-state variants when one success could hide stale-state or persistence defects. Maintain run-owned cleanup and report environment/tooling blockage honestly.
+- Retain machine-readable scenario/findings ledgers and derive the summary from them. Release PASS requires 100% applicable mission/real-effect coverage, zero mandatory FAIL/PARTIAL/BLOCKED, zero unresolved blocking finding, and cleanup PASS.
+- The final clean Full User E2E and final clean Surface Reconciliation must bind to the **same exact HEAD**. If E2E remediation changes the public surface or contract, rerun Surface Reconciliation. Only after ChatGPT directly executes and finally audits both clean gates may the release Work Packet record terminal product-quality closure and freeze that HEAD.
