@@ -431,9 +431,9 @@ Current related roadmap:
 Current related roadmap:
 
 - #54 Provider Capability Adapter — COMPLETE
-- #55 Provider Capacity Broker — MEASUREMENT_READY
+- #55 Provider Capacity Broker — real single-route quality baseline established (5 verified `chat-primary` outcomes); no alternate configured route or provider-authoritative capacity snapshot exists, so additional ranking strategies remain intentionally inactive.
 
-Rule: do not add synthetic routing strategies merely to complete a checklist. Expand #55 only when real measured evidence justifies a policy decision.
+Rule: do not add synthetic routing strategies merely to complete a checklist. Expand #55 only when a second approved route and real provider-authoritative capacity evidence exist; single-route operation requires no routing optimization work.
 
 ## A4 — Bounded Decision Plane
 
@@ -441,12 +441,18 @@ Rule: do not add synthetic routing strategies merely to complete a checklist. Ex
 - a cheap decision model may rank only eligible options
 - deterministic post-validation remains authoritative
 - shadow -> replay -> canary -> limited active -> measured expansion
+- the previously isolated OPTIONAL_CONTEXT_SELECTION / FOCUSED_CHECK_SELECTION LIMITED_ACTIVE and measured rollback slices are integrated on the current-main line by #303 rather than being treated as complete merely because historical feature branches exist
 
-Current related roadmap:
+Current measured result:
 
-- #56 Decision Plane — MEASUREMENT_READY
+- OPTIONAL_CONTEXT_SELECTION real replay: 5/5 current success and 5/5 GPT-6-Luna-selected-context success;
+- selected context reduced bounded repository context from 924,326 to 124,897 characters (~86.5%);
+- conservative end-to-end wall time including selector overhead regressed by 28,777 ms across five cases;
+- no monetary cost reduction is claimed because comparable provider-exposed marginal cost was unavailable;
+- Atlas therefore reports `REPLAY_FAIL`, `CANARY_REQUEST_NOT_ELIGIBLE`, and deterministic `CURRENT_DECISION` fallback for the current Codex runtime;
+- faster eligible Codex selector candidates tested (`gpt-reserve`, `gpt-5.6-luna`, `gpt-6-luna`) did not remove the selector-latency disadvantage; GPT-6-Luna was the fastest measured selector.
 
-Rule: acceptance requires real dogfood evidence of equal-or-better verified success plus useful cost/time reduction. No speculative expansion is required.
+Rule: do not canary or activate #56 under the current measured runtime. Re-evaluate only when the decision-runtime economics materially change; a negative measured result is a terminal NO-GO for this runtime, not unfinished implementation work.
 
 ## A5 — Instruction / harness governance
 
