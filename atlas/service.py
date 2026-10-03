@@ -13,12 +13,13 @@ from atlas.adoption import (
 )
 from atlas.github_sync import FetchFn, fetch_github_file
 from atlas.derived_intelligence import derived_intelligence_payload
-from atlas.data_lock import data_root_write_lock
+from atlas.data_lock import data_root_fd_path, data_root_write_lock
 from atlas.engineering_evidence import (
     engineering_evidence_dashboard,
     import_engineering_evidence,
 )
 from atlas.task_context import build_task_context, resolve_task_project
+from atlas.lifecycle_intelligence import publish_github_lifecycle_snapshot
 from atlas.concurrency_admission import (
     concurrency_dashboard,
     publish_concurrency_snapshot,
@@ -706,6 +707,28 @@ class AtlasService:
         )
         assert_adoption_project_consistency(adoption, project_id=project_id)
         return adoption
+
+    def publish_github_lifecycle_snapshot(self, snapshot_path: Path) -> dict[str, object]:
+        with data_root_write_lock(self.data_root) as root_fd:
+            bound_registry = ProjectRegistry(data_root_fd_path(root_fd))
+            expected_repositories = tuple(
+                sorted(
+                    {
+                        project.repository
+                        for project in bound_registry.list_projects()
+                        if project.enabled
+                        and any(
+                            source.enabled and source.provider == "github"
+                            for source in project.sources.values()
+                        )
+                    }
+                )
+            )
+            return publish_github_lifecycle_snapshot(
+                self.data_root,
+                snapshot_path,
+                expected_repositories=expected_repositories,
+            )
 
     def projection_records(self, project_id: str) -> list[dict[str, Any]]:
         return self.projections.list_records(project_id=project_id)

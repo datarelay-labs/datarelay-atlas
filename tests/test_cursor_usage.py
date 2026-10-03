@@ -1009,6 +1009,12 @@ class CursorUsageGitHubSnapshotTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             load_github_reconciliation_snapshot(path)
 
+        payload = json.loads(self._snapshot_path().read_text(encoding="utf-8"))
+        payload["observations"][0]["branch"] = "fix/ghp_" + ("A" * 20)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(ValidationError, "unsafe secret"):
+            load_github_reconciliation_snapshot(path)
+
     def test_canonical_snapshot_recomputes_pr_and_head_consistency(self):
         path = self._snapshot_path()
         payload = json.loads(path.read_text(encoding="utf-8"))

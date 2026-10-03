@@ -8,6 +8,7 @@ pass, and this module does not change the release contract flags.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -327,10 +328,13 @@ def _core_mcp_snapshot(service: AtlasService) -> dict[str, object] | None:
 def _write_core_lifecycle_fixture(data_root: Path) -> None:
     current_head = "a" * 40
     stale_head = "b" * 40
+    observed_at = datetime.now(timezone.utc).replace(
+        microsecond=0
+    ).isoformat().replace("+00:00", "Z")
     snapshot = {
         "schema_version": 1,
         "kind": "cursor_github_reconciliation",
-        "observed_at": "2026-10-01T00:00:00Z",
+        "observed_at": observed_at,
         "repositories": ["datarelay-labs/core-alpha"],
         "observations": [
             {

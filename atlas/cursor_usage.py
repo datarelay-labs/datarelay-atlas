@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import re
+import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -19,6 +21,7 @@ from typing import Callable, Iterable, Mapping
 
 from atlas.provenance import ValidationError
 from atlas.provider_capacity import build_provider_capacity_input
+from atlas.secrets import contains_unsafe_secret
 from atlas.work_controller import (
     GitHubWorkPacketAdapter,
     GitRunner,
@@ -1446,25 +1449,72 @@ def _validate_github_observation(
     }
 
 
+def _read_github_snapshot_bytes(path: Path) -> tuple[bytes, os.stat_result]:
+    source = Path(path)
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+        _reject("GitHub snapshot path safety is unsupported")
+    try:
+        if not stat.S_ISREG(os.lstat(source).st_mode):
+            _reject("GitHub snapshot path is unsafe")
+        fd = os.open(
+            source,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+        )
+    except OSError as exc:
+        raise ValidationError("GitHub snapshot path is unsafe or unreadable") from exc
+    try:
+        opened_stat = os.fstat(fd)
+        if not stat.S_ISREG(opened_stat.st_mode):
+            _reject("GitHub snapshot path is unsafe")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            block = os.read(fd, min(64 * 1024, MAX_SNAPSHOT_BYTES - total + 1))
+            if not block:
+                break
+            total += len(block)
+            if total > MAX_SNAPSHOT_BYTES:
+                _reject("GitHub snapshot exceeds the bounded import size")
+            chunks.append(block)
+        final_stat = os.fstat(fd)
+        if (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+            opened_stat.st_size,
+            opened_stat.st_mtime_ns,
+        ) != (
+            final_stat.st_dev,
+            final_stat.st_ino,
+            final_stat.st_size,
+            final_stat.st_mtime_ns,
+        ):
+            _reject("GitHub snapshot changed while being read")
+        return b"".join(chunks), final_stat
+    finally:
+        os.close(fd)
+
+
 def load_github_reconciliation_snapshot(
     path: Path,
-) -> tuple[list[PacketFact], list[dict], dict]:
+    *,
+    include_file_stat: bool = False,
+):
     """Load one bounded GitHub reconciliation snapshot without GitHub access."""
     import json
 
-    source = Path(path)
     try:
-        size = source.stat().st_size
-    except OSError as exc:
-        raise ValidationError("GitHub snapshot is not readable") from exc
-    if size > MAX_SNAPSHOT_BYTES:
-        _reject("GitHub snapshot exceeds the bounded import size")
-    try:
-        raw = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raw_bytes, source_stat = _read_github_snapshot_bytes(Path(path))
+        raw = json.loads(raw_bytes.decode("utf-8"))
+    except ValidationError:
+        raise
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValidationError("GitHub snapshot is not JSON") from exc
     if not isinstance(raw, dict):
         _reject("GitHub snapshot must be a JSON object")
+    if contains_unsafe_secret(
+        json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    ):
+        _reject("GitHub snapshot contains unsafe secret")
     assert_content_free(raw)
     unknown = sorted(set(raw).difference(_GITHUB_SNAPSHOT_TOP_KEYS))
     missing = sorted(_GITHUB_SNAPSHOT_TOP_KEYS.difference(raw))
@@ -1520,6 +1570,8 @@ def load_github_reconciliation_snapshot(
         **expected_summary,
     }
     assert_content_free(metadata)
+    if include_file_stat:
+        return facts, observations, metadata, source_stat
     return facts, observations, metadata
 
 

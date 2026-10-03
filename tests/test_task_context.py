@@ -1,9 +1,13 @@
 import contextlib
+from datetime import datetime, timedelta, timezone
 import io
+import os
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from jsonschema import Draft202012Validator
 
@@ -50,10 +54,13 @@ class TaskContextTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _write_lifecycle(self, *, canonical: bool = True) -> None:
+        observed_at = datetime.now(timezone.utc).replace(
+            microsecond=0
+        ).isoformat().replace("+00:00", "Z")
         snapshot = {
             "schema_version": 1,
             "kind": "cursor_github_reconciliation",
-            "observed_at": "2026-10-03T00:00:00Z",
+            "observed_at": observed_at,
             "repositories": ["datarelay-labs/demo"],
             "observations": [
                 {
@@ -228,6 +235,33 @@ class TaskContextTests(unittest.TestCase):
         unavailable = self.svc.task_context(project_id="demo")
         self.assertEqual(unavailable["currentness"]["state"], "UNAVAILABLE")
 
+        self._write_lifecycle()
+        lifecycle_path = self.root / "github-lifecycle.json"
+        expired_time = (datetime.now(timezone.utc) - timedelta(hours=2)).timestamp()
+        os.utime(lifecycle_path, (expired_time, expired_time))
+        expired = self.svc.task_context(project_id="demo")
+        self.assertEqual(expired["currentness"]["state"], "STALE")
+        self.assertIn("cache expired", expired["lifecycle"]["work"]["detail"])
+
+        self._write_lifecycle()
+        observation_stale = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+        observation_stale["observed_at"] = (
+            datetime.now(timezone.utc) - timedelta(hours=2)
+        ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        lifecycle_path.write_text(json.dumps(observation_stale), encoding="utf-8")
+        observation_expired = self.svc.task_context(project_id="demo")
+        self.assertEqual(observation_expired["currentness"]["state"], "STALE")
+        self.assertIn(
+            "observation expired",
+            observation_expired["lifecycle"]["work"]["detail"],
+        )
+
+        self._write_lifecycle()
+        future_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).timestamp()
+        os.utime(lifecycle_path, (future_time, future_time))
+        future = self.svc.task_context(project_id="demo")
+        self.assertEqual(future["currentness"]["state"], "UNAVAILABLE")
+
         self._write_lifecycle(canonical=False)
         stale = self.svc.task_context(project_id="demo")
         self.assertEqual(stale["currentness"]["state"], "STALE")
@@ -270,7 +304,9 @@ class TaskContextTests(unittest.TestCase):
         snapshot = {
             "schema_version": 1,
             "kind": "cursor_github_reconciliation",
-            "observed_at": "2026-10-03T00:00:00Z",
+            "observed_at": datetime.now(timezone.utc).replace(
+                microsecond=0
+            ).isoformat().replace("+00:00", "Z"),
             "repositories": ["datarelay-labs/demo"],
             "observations": observations,
             "summary": {
@@ -460,6 +496,189 @@ verified memory task context bootstrap BODY-MARKER""",
         )
         with self.assertRaises(ValidationError):
             self.svc.task_context(repository="datarelay-labs/demo")
+
+    def test_currentness_uses_file_stat_bound_to_validated_snapshot_bytes(self):
+        from atlas import lifecycle_intelligence as lifecycle_module
+
+        self._write_lifecycle()
+        path = self.root / "github-lifecycle.json"
+        facts, observations, metadata, _ = (
+            lifecycle_module.load_github_reconciliation_snapshot(
+                path,
+                include_file_stat=True,
+            )
+        )
+        expired_stat = SimpleNamespace(
+            st_mtime=(datetime.now(timezone.utc) - timedelta(hours=2)).timestamp()
+        )
+        with patch.object(
+            lifecycle_module,
+            "load_github_reconciliation_snapshot",
+            return_value=(facts, observations, metadata, expired_stat),
+        ):
+            result = self.svc.task_context(project_id="demo")
+        self.assertEqual(result["currentness"]["state"], "STALE")
+        self.assertIn("cache expired", result["lifecycle"]["work"]["detail"])
+
+    def test_publish_github_snapshot_is_validated_atomic_and_cli_exposed(self):
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        snapshot = {
+            "schema_version": 1,
+            "kind": "cursor_github_reconciliation",
+            "observed_at": (now - timedelta(seconds=5)).isoformat().replace("+00:00", "Z"),
+            "repositories": ["datarelay-labs/demo"],
+            "observations": [{
+                "repository": "datarelay-labs/demo",
+                "issue_number": 299,
+                "issue_state": "OPEN",
+                "issue_updated_at": "2026-10-03T01:00:00Z",
+                "author_trust": "trusted",
+                "packet_status": "ACTIVE",
+                "branch": "fix/freshness",
+                "head": self.head,
+                "pr_number": None,
+                "pr_state": "NONE",
+                "pr_head": None,
+                "canonical_fact": True,
+                "reasons": [],
+            }],
+            "summary": {"observed_count": 1, "canonical_count": 1, "noncanonical_count": 0},
+        }
+        incoming = self.root / "incoming-lifecycle.json"
+        incoming.write_text(json.dumps(snapshot), encoding="utf-8")
+        result = self.svc.publish_github_lifecycle_snapshot(incoming)
+        self.assertEqual(result["state"], "PUBLISHED")
+        self.assertEqual(result["authority"], "DERIVED_READ_ONLY")
+        published = self.root / "github-lifecycle.json"
+        self.assertEqual(published.stat().st_mode & 0o777, 0o600)
+        current = self.svc.task_context(project_id="demo")
+        self.assertEqual(current["currentness"]["state"], "CURRENT")
+        self.assertEqual(current["currentness"]["current_head"], self.head)
+
+        duplicate = self.root / "duplicate-lifecycle.json"
+        duplicate.write_text(json.dumps(snapshot), encoding="utf-8")
+        self.assertEqual(
+            self.svc.publish_github_lifecycle_snapshot(duplicate)["state"],
+            "UNCHANGED",
+        )
+
+        parser = build_parser()
+        cli_input = self.root / "incoming-lifecycle-cli.json"
+        snapshot["observed_at"] = datetime.now(timezone.utc).replace(
+            microsecond=0
+        ).isoformat().replace("+00:00", "Z")
+        cli_input.write_text(json.dumps(snapshot), encoding="utf-8")
+        args = parser.parse_args([
+            "--data-root", str(self.root), "lifecycle", "publish-github-snapshot",
+            "--snapshot", str(cli_input),
+        ])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = args.func(args)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out.getvalue())["state"], "PUBLISHED")
+
+        before = published.read_bytes()
+
+        older = self.root / "older-lifecycle.json"
+        older_payload = dict(snapshot)
+        older_payload["observed_at"] = (now - timedelta(seconds=10)).isoformat().replace(
+            "+00:00", "Z"
+        )
+        older.write_text(json.dumps(older_payload), encoding="utf-8")
+        with self.assertRaisesRegex(ValidationError, "older than the current cache"):
+            self.svc.publish_github_lifecycle_snapshot(older)
+        self.assertEqual(published.read_bytes(), before)
+
+        stale = self.root / "stale-lifecycle.json"
+        stale_payload = dict(snapshot)
+        stale_payload["observed_at"] = (now - timedelta(hours=2)).isoformat().replace(
+            "+00:00", "Z"
+        )
+        stale.write_text(json.dumps(stale_payload), encoding="utf-8")
+        with self.assertRaisesRegex(ValidationError, "too old to publish"):
+            self.svc.publish_github_lifecycle_snapshot(stale)
+        self.assertEqual(published.read_bytes(), before)
+
+        future = self.root / "future-lifecycle.json"
+        future_payload = dict(snapshot)
+        future_payload["observed_at"] = (now + timedelta(minutes=10)).isoformat().replace(
+            "+00:00", "Z"
+        )
+        future.write_text(json.dumps(future_payload), encoding="utf-8")
+        with self.assertRaisesRegex(ValidationError, "too far in the future"):
+            self.svc.publish_github_lifecycle_snapshot(future)
+        self.assertEqual(published.read_bytes(), before)
+
+        same_time_conflict = self.root / "same-time-conflict.json"
+        conflict_payload = json.loads(before)
+        conflict_payload["observations"][0]["issue_number"] = 300
+        same_time_conflict.write_text(json.dumps(conflict_payload), encoding="utf-8")
+        with self.assertRaisesRegex(ValidationError, "conflicts at the current observed_at"):
+            self.svc.publish_github_lifecycle_snapshot(same_time_conflict)
+        self.assertEqual(published.read_bytes(), before)
+
+        bad = self.root / "bad-lifecycle.json"
+        bad.write_text('{"kind":"wrong"}', encoding="utf-8")
+        with self.assertRaises(ValidationError):
+            self.svc.publish_github_lifecycle_snapshot(bad)
+        self.assertEqual(published.read_bytes(), before)
+
+        symlink_input = self.root / "symlink-lifecycle.json"
+        symlink_input.symlink_to(cli_input)
+        with self.assertRaisesRegex(ValidationError, "input is unsafe"):
+            self.svc.publish_github_lifecycle_snapshot(symlink_input)
+        self.assertEqual(published.read_bytes(), before)
+
+        published.write_text("{broken", encoding="utf-8")
+        repaired = self.svc.publish_github_lifecycle_snapshot(cli_input)
+        self.assertEqual(repaired["state"], "PUBLISHED")
+        self.assertEqual(
+            self.svc.task_context(project_id="demo")["currentness"]["state"],
+            "CURRENT",
+        )
+
+        victim = self.root / "victim.json"
+        victim.write_text("keep", encoding="utf-8")
+        published.unlink()
+        published.symlink_to(victim)
+        with self.assertRaisesRegex(ValidationError, "destination is unsafe"):
+            self.svc.publish_github_lifecycle_snapshot(cli_input)
+        self.assertEqual(victim.read_text(encoding="utf-8"), "keep")
+
+    def test_publish_requires_complete_registered_github_repository_set(self):
+        self.svc.register_project(
+            project_id="peer",
+            repository="datarelay-labs/peer",
+            display_name="Peer",
+        )
+        self.svc.add_source(
+            "peer",
+            source_id="context",
+            source_path="README.md",
+            title="Peer",
+        )
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        partial = {
+            "schema_version": 1,
+            "kind": "cursor_github_reconciliation",
+            "observed_at": now.isoformat().replace("+00:00", "Z"),
+            "repositories": ["datarelay-labs/demo"],
+            "observations": [],
+            "summary": {
+                "observed_count": 0,
+                "canonical_count": 0,
+                "noncanonical_count": 0,
+            },
+        }
+        path = self.root / "partial-lifecycle.json"
+        path.write_text(json.dumps(partial), encoding="utf-8")
+        with self.assertRaisesRegex(
+            ValidationError,
+            "repository set does not match",
+        ):
+            self.svc.publish_github_lifecycle_snapshot(path)
+        self.assertFalse((self.root / "github-lifecycle.json").exists())
 
     def test_cli_and_mcp_expose_equivalent_read_only_context(self):
         self._write_lifecycle()
