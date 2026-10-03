@@ -21,6 +21,7 @@ from typing import Callable, Iterable, Mapping
 
 from atlas.provenance import ValidationError
 from atlas.provider_capacity import build_provider_capacity_input
+from atlas.secrets import contains_unsafe_secret
 from atlas.work_controller import (
     GitHubWorkPacketAdapter,
     GitRunner,
@@ -1510,6 +1511,10 @@ def load_github_reconciliation_snapshot(
         raise ValidationError("GitHub snapshot is not JSON") from exc
     if not isinstance(raw, dict):
         _reject("GitHub snapshot must be a JSON object")
+    if contains_unsafe_secret(
+        json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    ):
+        _reject("GitHub snapshot contains unsafe secret")
     assert_content_free(raw)
     unknown = sorted(set(raw).difference(_GITHUB_SNAPSHOT_TOP_KEYS))
     missing = sorted(_GITHUB_SNAPSHOT_TOP_KEYS.difference(raw))
