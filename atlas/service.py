@@ -72,6 +72,7 @@ from atlas.instruction_governance_canary import (
     instruction_governance_canary_dashboard,
     record_instruction_governance_canary,
 )
+from atlas.memory_candidates import ingest_memory_candidates, list_memory_candidates
 from atlas.local_markdown import (
     IMPORT_DIRNAME,
     SNAPSHOT_DIRNAME,
@@ -151,6 +152,52 @@ class AtlasService:
             return []
         return build_personal_retriever(self.projections, project_id).search(
             project_id, query, limit=limit
+        )
+
+    def memory_candidates(
+        self,
+        *,
+        project_id: str | None = None,
+        repository: str | None = None,
+        workstream: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        if project_id is not None:
+            project = self.registry.get(project_id)
+            if repository is not None and repository != project.repository:
+                raise ValidationError("memory candidate repository does not match project")
+            repository = project.repository
+        elif repository is not None:
+            matches = [p for p in self.registry.list_projects() if p.repository == repository]
+            if len(matches) != 1:
+                raise ValidationError("memory candidate repository must resolve to one project")
+            project_id = matches[0].project_id
+        return list_memory_candidates(
+            self.data_root,
+            project_id=project_id,
+            repository=repository,
+            workstream=workstream,
+            limit=limit,
+        )
+
+    def ingest_memory_candidates(
+        self,
+        *,
+        project_id: str,
+        input_kind: str,
+        observed_at: str,
+        candidates: list[dict[str, object]],
+        workstream: str | None = None,
+    ) -> dict[str, object]:
+        project = self.registry.get(project_id)
+        return ingest_memory_candidates(
+            self.data_root,
+            project_id=project.project_id,
+            repository=project.repository,
+            input_kind=input_kind,
+            observed_at=observed_at,
+            candidates=candidates,
+            workstream=workstream,
         )
 
     def engineering_evidence_dashboard(
@@ -583,6 +630,15 @@ class AtlasService:
         if not sources:
             raise ValidationError(f"no sources configured for project {project_id}")
         return self.projections.sync_all(sources, token=token, fetch=fetch)
+
+    def reconcile_canonical_sources(
+        self,
+        project_id: str,
+        *,
+        token: str | None = None,
+        fetch: FetchFn | None = None,
+    ) -> list[ProjectionRecord]:
+        return self.sync_project(project_id, token=token, fetch=fetch)
 
     def rebuild_project(
         self,
