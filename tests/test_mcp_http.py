@@ -741,6 +741,21 @@ class McpHttpTests(unittest.TestCase):
                 )
                 self.assertEqual(provenance["source_revision"], "rev-alpha")
                 self.assertEqual(provenance["repository"], "datarelay-labs/alpha")
+                context = asyncio.run(
+                    _task_context(
+                        resource,
+                        "good",
+                        project_id="alpha",
+                    )
+                )
+                self.assertEqual(context["kind"], "atlas_task_context")
+                self.assertEqual(context["project"]["project_id"], "alpha")
+                self.assertEqual(
+                    context["project"]["repository"],
+                    "datarelay-labs/alpha",
+                )
+                self.assertEqual(context["currentness"]["state"], "UNKNOWN")
+                self.assertNotIn("alpha-mcp-quill", json.dumps(context))
                 empty = asyncio.run(_search(resource, "good", "alpha", "beta-mcp-quill"))
                 self.assertEqual(empty, [])
 
@@ -902,6 +917,11 @@ async def _search(url: str, token: str, project_id: str, query: str):
 
 async def _provenance(url: str, token: str, **arguments):
     text = await _tool(url, token, "get_provenance", arguments)
+    return json.loads(text)
+
+
+async def _task_context(url: str, token: str, **arguments):
+    text = await _tool(url, token, "get_task_context", arguments)
     return json.loads(text)
 
 

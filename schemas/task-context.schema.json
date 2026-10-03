@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Atlas Task Context",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "kind", "authority", "project", "request",
+    "currentness", "engineering_system", "lifecycle",
+    "engineering_evidence", "knowledge_refs", "jit_retrieval"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "atlas_task_context"},
+    "authority": {"const": "DERIVED_READ_ONLY"},
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "display_name", "repository", "default_ref"],
+      "properties": {
+        "project_id": {"type": "string", "minLength": 1},
+        "display_name": {"type": "string", "minLength": 1},
+        "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+        "default_ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workstream", "workstream_binding"],
+      "properties": {
+        "workstream": {"type": ["string", "null"]},
+        "workstream_binding": {
+          "enum": ["NOT_REQUESTED", "QUERY_HINT_ONLY", "CURRENT_EVIDENCE_MATCH"]
+        }
+      }
+    },
+    "currentness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "basis", "current_head"],
+      "properties": {
+        "state": {"enum": ["CURRENT", "STALE", "UNKNOWN", "UNAVAILABLE"]},
+        "basis": {"const": "CANONICAL_LIFECYCLE_EVIDENCE"},
+        "current_head": {
+          "anyOf": [
+            {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "engineering_system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state", "detail", "source_identity", "source_revision",
+        "version", "baseline", "mode", "ci_mode"
+      ],
+      "properties": {
+        "state": {"type": "string"},
+        "detail": {"type": "string"},
+        "source_identity": {"type": ["string", "null"]},
+        "source_revision": {"type": ["string", "null"]},
+        "version": {"type": ["string", "null"]},
+        "baseline": {"type": ["string", "null"]},
+        "mode": {"type": ["string", "null"]},
+        "ci_mode": {"type": ["string", "null"]}
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["work", "channels"],
+      "properties": {
+        "work": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "detail", "current_head", "canonical_packets"],
+          "properties": {
+            "state": {"type": "string"},
+            "detail": {"type": "string", "maxLength": 512},
+            "current_head": {
+              "anyOf": [
+                {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                {"type": "null"}
+              ]
+            },
+            "canonical_packets": {
+              "type": "array",
+              "maxItems": 6,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "issue_number", "packet_status", "branch", "head",
+                  "pr_number", "pr_state", "pr_head"
+                ],
+                "properties": {
+                  "issue_number": {"type": "integer", "minimum": 1},
+                  "packet_status": {"enum": ["ACTIVE", "BLOCKED", "PAUSED", "COMPLETE"]},
+                  "branch": {"type": "string", "minLength": 1},
+                  "head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                  "pr_number": {"type": ["integer", "null"]},
+                  "pr_state": {"type": "string"},
+                  "pr_head": {
+                    "anyOf": [
+                      {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                      {"type": "null"}
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "channels": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ci", "tests", "release", "surface_reconciliation", "full_user_e2e"
+          ],
+          "properties": {
+            "ci": {"$ref": "#/$defs/channel"},
+            "tests": {"$ref": "#/$defs/channel"},
+            "release": {"$ref": "#/$defs/channel"},
+            "surface_reconciliation": {"$ref": "#/$defs/channel"},
+            "full_user_e2e": {"$ref": "#/$defs/channel"}
+          }
+        }
+      }
+    },
+    "engineering_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "authority", "producer_release", "families"],
+      "properties": {
+        "state": {"type": "string"},
+        "authority": {"type": ["string", "null"]},
+        "producer_release": {"type": ["string", "null"]},
+        "families": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "family", "state", "current_head", "record_count", "latest"
+            ],
+            "properties": {
+              "family": {"type": "string"},
+              "state": {"type": "string"},
+              "current_head": {
+                "anyOf": [
+                  {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                  {"type": "null"}
+                ]
+              },
+              "record_count": {"type": "integer", "minimum": 0},
+              "latest": {
+                "anyOf": [
+                  {"type": "null"},
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "record_id", "artifact_kind", "workstream",
+                      "subject_head", "observed_at", "summary_sha256"
+                    ],
+                    "properties": {
+                      "record_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                      "artifact_kind": {"type": "string"},
+                      "workstream": {"type": "string"},
+                      "subject_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                      "observed_at": {"type": "string"},
+                      "summary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "knowledge_refs": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "identity", "path", "repository", "ref", "source_path",
+          "source_revision", "source_class", "canonical", "derived"
+        ],
+        "properties": {
+          "identity": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "repository": {"type": "string", "minLength": 1},
+          "ref": {"type": "string", "minLength": 1},
+          "source_path": {"type": "string", "minLength": 1},
+          "source_revision": {"type": "string", "minLength": 1},
+          "source_class": {"const": "engineering"},
+          "canonical": {"type": "boolean"},
+          "derived": {"type": "boolean"}
+        }
+      }
+    },
+    "jit_retrieval": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tool", "reason", "argument_hint"],
+        "properties": {
+          "tool": {
+            "enum": [
+              "search_project", "get_project_intelligence",
+              "get_engineering_evidence", "get_provenance"
+            ]
+          },
+          "reason": {"type": "string", "minLength": 1, "maxLength": 256},
+          "argument_hint": {"type": "object"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "detail", "candidate_head", "evidence_ref"],
+      "properties": {
+        "state": {"type": "string"},
+        "detail": {"type": "string"},
+        "candidate_head": {
+          "anyOf": [
+            {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            {"type": "null"}
+          ]
+        },
+        "evidence_ref": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

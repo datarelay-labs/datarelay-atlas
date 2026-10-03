@@ -1,7 +1,7 @@
 # DataRelay Atlas — Canonical Product Roadmap
 
 Status: Canonical roadmap
-Last realigned: 2026-10-02
+Last realigned: 2026-10-03
 
 This roadmap defines product completion by **product layer and end-to-end outcome**, not by feature count or delivery date.
 
@@ -37,6 +37,34 @@ Rule: an Automation Extension or Experimental item cannot become a Core release 
 
 Atlas Core v0.1.0 is released. Post-release execution prioritizes **recurring real use and attributable evidence flow** before adding new agent capabilities.
 
+## Verified Continuous Engineering Memory
+
+Confirmed product direction: Atlas should reduce repeated owner explanation and repeated context reconstruction across approved AI clients without becoming a generic chat archive or duplicating Engineering System authority.
+
+Canonical engineering truth remains GitHub/OpenSpec/code/tests/ADR/CI and Engineering System. Atlas memory is provider-neutral derived context and may never outrank current canonical state.
+
+Confirmed capability roadmap:
+
+1. **Automatic Task Context Bootstrap** — one bounded current project/repository/workstream bootstrap for approved AI clients.
+2. **Continuous Canonical/Event Ingestion** — reconcile approved GitHub, Engineering System, CI/test/release/runtime evidence without owner “save this” instructions.
+3. **Scoped Automatic Memory Candidate Extraction** — bounded non-authoritative OWNER_PREFERENCE, VALIDATED_FINDING, LESSON_LEARNED, RUN_SUMMARY, FUTURE_IDEA and REFERENCE_FACT candidates.
+4. **Provenance/Citation-bound Memory** — retain source identity/revision/digest where available.
+5. **Recall-time Current-state Revalidation** — current canonical state wins; stale/contradicted/unavailable/superseded memory stays explicit.
+6. **Dedup + Consolidation + Supersession + TTL** — prevent unbounded duplicate memory and expire by type/policy.
+7. **Progressive / JIT Context Retrieval** — return a small context index first and fetch deeper source/evidence only when needed.
+8. **User Review / Correct / Forget / Pin** — owner control for derived/personal memory without indirect canonical mutation.
+9. **Memory & Context Effectiveness Evals** — measure recall, stale/irrelevant injection, repeated-owner-explanation count, context size/cost and downstream first-pass success.
+
+Implementation order:
+
+- **M1 — Context Bootstrap + Revalidation + JIT retrieval**;
+- **M2 — Continuous ingestion + candidate memory store**;
+- **M3 — Consolidation / temporal validity / TTL**;
+- **M4 — User memory controls**;
+- **M5 — Memory effectiveness evals**.
+
+Explicit non-goals: full raw chat archive, procedural/rule learning that duplicates Engineering System, external memory SaaS runtime dependency, mandatory new graph/vector database, automatic canonical promotion, whole-memory prompt injection, or provider-specific memory silos.
+
 ## U1 — Portfolio operational adoption
 
 Status: **COMPLETE via #256**.
@@ -51,7 +79,7 @@ This closes the first utilization gap: Atlas now has real portfolio state to ser
 
 ## U2 — Engineering System evidence federation
 
-Status: **NEXT IMPLEMENTATION CANDIDATE**.
+Status: **COMPLETE via #261 / PR #262**.
 
 Engineering System remains authoritative for how repositories work. Atlas should consume its non-sensitive outputs instead of recreating them.
 

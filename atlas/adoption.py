@@ -27,7 +27,10 @@ class AdoptionMetadata:
 
 def _parse_yaml(text: str) -> dict[str, Any]:
     if yaml is not None:
-        loaded = yaml.safe_load(text)
+        try:
+            loaded = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ValidationError("invalid engineering metadata YAML") from exc
         if loaded is None:
             return {}
         if not isinstance(loaded, dict):

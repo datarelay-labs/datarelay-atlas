@@ -56,7 +56,7 @@ GitHub / Specs / Code / Tests / ADR / CI
 
 ## 현재 상태
 
-Atlas는 Registry, canonical sync, projection/retrieval, authenticated HTTPS MCP, lifecycle/control-plane foundation, 첫 read-only Human UI를 소유합니다. Athena는 historical migration evidence이며 runtime dependency가 아닙니다.
+Atlas는 Registry, canonical sync, projection/retrieval, authenticated HTTPS MCP, lifecycle/control-plane foundation, 첫 read-only Human UI를 소유합니다. Verified Continuous Engineering Memory M1의 `get_task_context`는 저장소/워크스트림 작업을 재개할 때 현재 lifecycle/evidence를 작은 bootstrap으로 먼저 제공하고, 더 깊은 내용은 기존 검색·provenance 도구를 JIT로 조회하게 합니다. Athena는 historical migration evidence이며 runtime dependency가 아닙니다.
 
 로드맵은 **Atlas Core / Automation Extension / Experimental-Optional** 세 계층으로 분리됩니다. Core 완성은 기능 개수가 아니라 등록 → sync → attributable retrieval → Human UI/MCP 일치 → lifecycle/release evidence → derived intelligence → production recovery → exact-candidate user-surface gate로 이어지는 end-to-end journey로 판정합니다.
 

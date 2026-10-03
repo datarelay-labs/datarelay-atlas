@@ -278,6 +278,17 @@ def cmd_personal_import_dir(args: argparse.Namespace) -> int:
     return 2 if result["counts"]["conflicts"] else 0
 
 
+def cmd_task_context_show(args: argparse.Namespace) -> int:
+    _print_json(
+        _service(args).task_context(
+            project_id=args.project_id,
+            repository=args.repository,
+            workstream=args.workstream,
+        )
+    )
+    return 0
+
+
 def cmd_engineering_evidence_show(args: argparse.Namespace) -> int:
     project_ids = list(args.project_id or [])
     _print_json(_service(args).engineering_evidence_dashboard(project_ids or None))
@@ -1039,6 +1050,24 @@ def build_parser() -> argparse.ArgumentParser:
     personal_import_dir.add_argument("--root", required=True)
     personal_import_dir.add_argument("--collection-id", required=True)
     personal_import_dir.set_defaults(func=cmd_personal_import_dir)
+
+    task_context = sub.add_parser(
+        "task-context",
+        help="Bounded provider-neutral task context bootstrap",
+    )
+    task_context_sub = task_context.add_subparsers(
+        dest="task_context_command",
+        required=True,
+    )
+    task_context_show = task_context_sub.add_parser(
+        "show",
+        help="Show current attributable context and JIT retrieval references",
+    )
+    identity = task_context_show.add_mutually_exclusive_group(required=True)
+    identity.add_argument("--project-id")
+    identity.add_argument("--repository")
+    task_context_show.add_argument("--workstream", default=None)
+    task_context_show.set_defaults(func=cmd_task_context_show)
 
     engineering_evidence = sub.add_parser(
         "engineering-evidence",
