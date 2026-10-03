@@ -1,10 +1,11 @@
-import tempfile, unittest
+import fcntl, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
 from atlas.service import AtlasService
 from atlas.memory_effectiveness import effectiveness_report
 from atlas.provenance import ValidationError
 from atlas.data_protection import backup_data_root, restore_test
+from atlas.data_lock import data_root_write_lock
 
 class MemoryEffectivenessTests(unittest.TestCase):
     def setUp(self):
@@ -52,3 +53,40 @@ class MemoryEffectivenessTests(unittest.TestCase):
         with patch.object(Path, "read_text", side_effect=PermissionError(13, "denied")):
             with self.assertRaisesRegex(ValidationError, "store is unreadable"):
                 effectiveness_report(self.root, project_id="atlas")
+
+    def test_owner_change_while_waiting_is_rejected_after_lock(self):
+        actual_uid=self.root.stat().st_uid; state={"locked":False}; original=fcntl.flock
+        def observed_uid():
+            return actual_uid + 1 if state["locked"] else actual_uid
+        def flock_then_change_owner(fd, operation):
+            result=original(fd, operation)
+            if operation == fcntl.LOCK_EX: state["locked"]=True
+            elif operation == fcntl.LOCK_UN: state["locked"]=False
+            return result
+        store=self.root/"memory-effectiveness.json"
+        with patch("atlas.data_lock.fcntl.flock", side_effect=flock_then_change_owner), \
+             patch("atlas.data_lock._effective_uid", side_effect=observed_uid):
+            with self.assertRaisesRegex(ValidationError, "does not own data root"):
+                self.svc.record_memory_effectiveness(self.obs())
+        self.assertFalse(store.exists())
+
+    def test_owner_drift_before_publish_cleans_temp(self):
+        actual_uid=self.root.stat().st_uid
+        with patch("atlas.data_lock._effective_uid", side_effect=[actual_uid, actual_uid, actual_uid + 1]):
+            with self.assertRaisesRegex(ValidationError, "does not own data root"):
+                self.svc.record_memory_effectiveness(self.obs())
+        self.assertFalse((self.root/"memory-effectiveness.json").exists())
+        self.assertFalse((self.root/"memory-effectiveness.json.tmp").exists())
+
+    def test_data_root_path_swap_while_waiting_fails_closed(self):
+        lock_root=Path(self.tmp.name)/"swap-root"; moved=Path(self.tmp.name)/"swap-old"; original=fcntl.flock
+        swapped={"done":False}
+        def flock_then_swap(fd, operation):
+            result=original(fd, operation)
+            if operation == fcntl.LOCK_EX and not swapped["done"]:
+                swapped["done"]=True; lock_root.rename(moved); lock_root.mkdir()
+            return result
+        with patch("atlas.data_lock.fcntl.flock", side_effect=flock_then_swap):
+            with self.assertRaisesRegex(ValidationError, "identity changed"):
+                with data_root_write_lock(lock_root):
+                    self.fail("swapped data root must never enter write section")

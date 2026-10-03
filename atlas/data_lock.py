@@ -23,18 +23,24 @@ def _effective_uid() -> int:
     return os.geteuid()
 
 
-def require_data_root_writer_owner(data_root: Path) -> None:
+def require_data_root_writer_owner_fd(root_fd: int) -> None:
     """Reject writers that would create service-unreadable 0600 data files."""
-    root = Path(data_root)
     try:
-        root.mkdir(parents=True, exist_ok=True)
-        current = os.stat(root, follow_symlinks=False)
+        current = os.fstat(root_fd)
     except OSError as exc:
         raise ValidationError("data root writer ownership cannot be verified") from exc
     if not stat.S_ISDIR(current.st_mode):
         raise ValidationError("data root writer ownership cannot be verified")
     if current.st_uid != _effective_uid():
         raise ValidationError("data root writer does not own data root")
+
+
+def data_root_fd_path(root_fd: int) -> Path:
+    """Return a stable Linux path bound to an already-open data-root directory."""
+    for base in (Path("/proc/self/fd"), Path("/dev/fd")):
+        if base.is_dir():
+            return base / str(root_fd)
+    raise ValidationError("data root fd boundary is unavailable")
 
 
 _holders: dict[str, "_Holder"] = {}
@@ -46,6 +52,7 @@ class _Holder:
     rlock: threading.RLock
     depth: int = 0
     fd: int | None = None
+    root_fd: int | None = None
 
 
 def projection_store_lock_root(store_root: Path) -> Path:
@@ -62,10 +69,11 @@ def projection_store_lock_root(store_root: Path) -> Path:
 
 @contextmanager
 def data_root_write_lock(data_root: Path):
-    """Exclusive lock shared by registry writes, projection writes, and backup.
+    """Exclusive lock bound to one stable data-root directory inode.
 
-    Same-thread reentry uses one flock. The descriptor is close-on-exec so a
-    child process does not inherit the held lock.
+    Same-thread reentry uses one flock. The root directory and lock file stay
+    open for the whole critical section so a path swap while waiting cannot
+    redirect a writer to an unlocked directory.
     """
     key = str(Path(data_root).resolve())
     with _holders_guard:
@@ -78,40 +86,90 @@ def data_root_write_lock(data_root: Path):
         if holder.depth == 0:
             path = Path(data_root)
             path.mkdir(parents=True, exist_ok=True)
-            fd = _open_lock_file(path / LOCK_NAME)
+            root_fd = _open_data_root_dir(path)
+            try:
+                fd = _open_lock_file_at(root_fd)
+            except Exception:
+                os.close(root_fd)
+                raise
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX)
-            except OSError:
+                _verify_data_root_identity(path, root_fd)
+            except Exception:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
                 os.close(fd)
+                os.close(root_fd)
                 raise
             holder.fd = fd
+            holder.root_fd = root_fd
         holder.depth += 1
         try:
-            yield
+            if holder.root_fd is None:
+                raise ValidationError("data root fd boundary is unavailable")
+            yield holder.root_fd
         finally:
             holder.depth -= 1
-            if holder.depth == 0 and holder.fd is not None:
+            if holder.depth == 0:
                 fd = holder.fd
+                root_fd = holder.root_fd
                 holder.fd = None
-                fcntl.flock(fd, fcntl.LOCK_UN)
-                os.close(fd)
+                holder.root_fd = None
+                if fd is not None:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    os.close(fd)
+                if root_fd is not None:
+                    os.close(root_fd)
     finally:
         holder.rlock.release()
 
 
-def _open_lock_file(path: Path) -> int:
-    """Open the lock file without following a symlink.
+def _open_data_root_dir(path: Path) -> int:
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise ValidationError("data root fd boundary is unavailable")
+    try:
+        fd = os.open(
+            path,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValidationError("data root is not a regular directory") from exc
+        raise
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise ValidationError("data root is not a regular directory")
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
 
-    ``fchmod`` runs on the opened descriptor. Following a symlink would change
-    the target's mode before any backup check can reject it.
-    """
+
+def _verify_data_root_identity(path: Path, root_fd: int) -> None:
+    try:
+        current = os.stat(path, follow_symlinks=False)
+        bound = os.fstat(root_fd)
+    except OSError as exc:
+        raise ValidationError("data root identity changed while acquiring write lock") from exc
+    if (
+        not stat.S_ISDIR(current.st_mode)
+        or (current.st_dev, current.st_ino) != (bound.st_dev, bound.st_ino)
+    ):
+        raise ValidationError("data root identity changed while acquiring write lock")
+
+
+def _open_lock_file_at(root_fd: int) -> int:
+    """Open the shared lock file relative to the bound data-root directory."""
     if not hasattr(os, "O_NOFOLLOW"):
         raise ValidationError("data root lock cannot be opened without following symlinks")
     try:
         fd = os.open(
-            path,
+            LOCK_NAME,
             os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW,
             0o600,
+            dir_fd=root_fd,
         )
     except OSError as exc:
         if exc.errno == errno.ELOOP:

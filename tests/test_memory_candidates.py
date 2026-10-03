@@ -74,6 +74,15 @@ class MemoryCandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "store is unreadable"):
                 self.svc.memory_candidates(project_id="atlas")
 
+    def test_owner_drift_before_publish_cleans_temp(self):
+        actual_uid=self.root.stat().st_uid
+        with patch("atlas.data_lock._effective_uid", side_effect=[actual_uid, actual_uid, actual_uid + 1]):
+            with self.assertRaisesRegex(ValidationError, "does not own data root"):
+                self.svc.ingest_memory_candidates(project_id="atlas",input_kind="RUN_SUMMARY",
+                    observed_at="2026-10-03T01:00:00Z",candidates=[{"candidate_class":"RUN_SUMMARY","content":"safe"}])
+        self.assertFalse((self.root/"memory-candidates.json").exists())
+        self.assertFalse((self.root/"memory-candidates.json.tmp").exists())
+
 if __name__=="__main__":
     unittest.main()
 
