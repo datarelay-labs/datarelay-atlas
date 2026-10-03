@@ -101,3 +101,36 @@ class MemoryCandidateTemporalTests(unittest.TestCase):
         self.assertEqual(stale["items"][0]["validity"],"STALE")
         unknown=list_memory_candidates(self.root,project_id="atlas",as_of="2026-10-02T00:00:00Z",current_provenance={})
         self.assertEqual(unknown["items"][0]["validity"],"UNKNOWN")
+
+class MemoryCandidateControlTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)/"data"; self.svc=AtlasService(self.root)
+        self.svc.register_project(project_id="atlas",repository="datarelay-labs/datarelay-atlas")
+        self.created=self.svc.ingest_memory_candidates(project_id="atlas",input_kind="INTERACTION_SUMMARY",
+            observed_at="2026-01-01T00:00:00Z",candidates=[{"candidate_class":"RUN_SUMMARY","content":"old summary"}])
+        self.cid=self.created["candidate_ids"][0]
+
+    def test_pin_bypasses_ttl_but_forget_hides_candidate(self):
+        self.svc.control_memory_candidate(project_id="atlas",candidate_id=self.cid,action="PIN")
+        shown=list_memory_candidates(self.root,project_id="atlas",as_of="2026-10-03T00:00:00Z")
+        self.assertEqual(shown["items"][0]["validity"],"CURRENT")
+        self.assertTrue(shown["items"][0]["pinned"])
+        self.svc.control_memory_candidate(project_id="atlas",candidate_id=self.cid,action="FORGET")
+        self.assertEqual(list_memory_candidates(self.root,project_id="atlas")["count"],0)
+
+    def test_correct_preserves_history_and_replaces_visible_candidate(self):
+        result=self.svc.control_memory_candidate(project_id="atlas",candidate_id=self.cid,action="CORRECT",
+            content="corrected summary",observed_at="2026-10-03T00:00:00Z")
+        shown=list_memory_candidates(self.root,project_id="atlas",as_of="2026-10-03T01:00:00Z")
+        self.assertEqual(shown["count"],1)
+        self.assertEqual(shown["items"][0]["content"],"corrected summary")
+        self.assertEqual(shown["items"][0]["correction_of"],self.cid)
+        self.assertEqual(shown["items"][0]["candidate_id"],result["candidate_id"])
+
+    def test_controls_fail_closed_on_scope_secret_and_unknown(self):
+        with self.assertRaises(ValidationError):
+            self.svc.control_memory_candidate(project_id="atlas",candidate_id="f"*64,action="PIN")
+        with self.assertRaises(ValidationError):
+            self.svc.control_memory_candidate(project_id="atlas",candidate_id=self.cid,action="CORRECT",
+                content="password=unsafe-secret-value",observed_at="2026-10-03T00:00:00Z")
