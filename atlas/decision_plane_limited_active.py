@@ -508,6 +508,23 @@ def _load_ledger(root: Path) -> dict[str, object]:
     return {**_empty_ledger(), "records": records}
 
 
+def get_optional_context_effect_entry(
+    data_root: Path,
+    activation_id: str,
+) -> dict[str, object]:
+    root = Path(data_root)
+    identity = _id(activation_id, label="activation_id")
+    ledger = _load_ledger(root)
+    matches = [
+        item
+        for item in ledger["records"]
+        if item["activation_id"] == identity
+    ]
+    if len(matches) != 1:
+        _reject("decision plane limited-active activation is not found")
+    return dict(matches[0])
+
+
 def _reserve(
     root: Path,
     *,
@@ -633,21 +650,37 @@ def commit_optional_context_effect(
         "candidate_ids": candidate_ids,
         "required_candidate_ids": required_ids,
     }
-    try:
-        raw = selector_port.select(selector_request)
-    except Exception:
+    from atlas.decision_plane_measured_active import (
+        decision_class_policy,
+    )
+
+    rollback_active = (
+        decision_class_policy(root, DECISION_CLASS)["effective_state"]
+        == "ROLLBACK_TO_CURRENT"
+    )
+    if rollback_active:
         result, selected, reason, attribution = (
             "FALLBACK",
             candidate_ids,
-            "SELECTOR_ERROR",
+            "MEASURED_ROLLBACK_ACTIVE",
             None,
         )
     else:
-        result, selected, reason, attribution = _normalize_selector_result(
-            raw,
-            candidate_ids=candidate_ids,
-            required_candidate_ids=required_ids,
-        )
+        try:
+            raw = selector_port.select(selector_request)
+        except Exception:
+            result, selected, reason, attribution = (
+                "FALLBACK",
+                candidate_ids,
+                "SELECTOR_ERROR",
+                None,
+            )
+        else:
+            result, selected, reason, attribution = _normalize_selector_result(
+                raw,
+                candidate_ids=candidate_ids,
+                required_candidate_ids=required_ids,
+            )
 
     receipt = {
         "schema_version": SCHEMA_VERSION,

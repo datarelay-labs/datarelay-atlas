@@ -726,6 +726,24 @@ def render_decision_plane(
             "latest_effect": None,
         }
 
+    try:
+        measured_active = service.decision_measured_active_dashboard()
+    except ValidationError:
+        measured_active = {
+            "state": "UNAVAILABLE",
+            "authority": "MEASURED_ACTIVE_EVIDENCE_ONLY",
+            "expansion_authority": "NONE",
+            "pass_authority": "NONE",
+            "human_required_authority": "NONE",
+            "measurement_count": 0,
+            "class_policies": [],
+            "latest_record": None,
+        }
+    measured_policy_text = ", ".join(
+        f'{item["decision_class"]}:{item["effective_state"]}'
+        for item in measured_active["class_policies"]
+    ) or "NONE"
+
     canary_rows = "".join(
         f'<tr><td><code>{escape(str(item["decision_class"]))}</code></td>'
         f'<td><span class="pill">{escape(str(item["replay_assessment"]))}</span></td>'
@@ -805,6 +823,14 @@ def render_decision_plane(
         f'<dt>Applied / fallback / no effect</dt><dd>{focused_limited_active["result_counts"]["APPLIED_CANARY"]} / {focused_limited_active["result_counts"]["FALLBACK"]} / {focused_limited_active["result_counts"]["NO_EFFECT"]}</dd>'
         f'<dt>Authority</dt><dd><code>{escape(str(focused_limited_active["authority"]))}</code></dd></dl>'
         '<p class="muted">FOCUSED_CHECK_SELECTION may narrow only affected non-terminal checks. Every terminal/release-required check remains mandatory; invalid choices fall back to all affected checks and no affected checks produce deterministic NO_EFFECT.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Measured active / rollback</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(measured_active["state"]))}</span></dd>'
+        f'<dt>Measurements</dt><dd>{measured_active["measurement_count"]}</dd>'
+        f'<dt>Policies</dt><dd><code>{escape(measured_policy_text)}</code></dd>'
+        f'<dt>Authority</dt><dd><code>{escape(str(measured_active["authority"]))}</code></dd>'
+        f'<dt>Expansion authority</dt><dd><code>{escape(str(measured_active["expansion_authority"]))}</code></dd>'
+        f'<dt>PASS authority</dt><dd><code>{escape(str(measured_active["pass_authority"]))}</code></dd></dl>'
+        '<p class="muted">Verified quality regression forces subsequent LIMITED_ACTIVE selectors back to deterministic current-choice fallback. MEASURED_EXPANSION_ELIGIBLE is evidence only and grants no activation, release, or PASS authority.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Canary admission readiness</h2>'
         f'<p><span class="pill">{escape(str(canary["authority"]))}</span> '
         f'<span class="pill">rollout {escape(str(canary["rollout_state"]))}</span> '

@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.datarelay.run/contracts/decision-plane-measured-active-record.schema.json",
+  "title": "DataRelay Atlas Decision Plane Measured Active Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "authority",
+    "expansion_authority",
+    "pass_authority",
+    "human_required_authority",
+    "measurement_id",
+    "decision_class",
+    "source_activation_id",
+    "source_receipt_digest",
+    "source_result",
+    "observed_at",
+    "baseline_outcome",
+    "active_outcome",
+    "cost_delta_milliunits",
+    "wall_time_delta_ms",
+    "frontier_call_delta",
+    "retry_delta",
+    "selector_attribution",
+    "measurement_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "decision_plane_measured_active_record"
+    },
+    "authority": {
+      "const": "MEASURED_ACTIVE_EVIDENCE_ONLY"
+    },
+    "expansion_authority": {
+      "const": "NONE"
+    },
+    "pass_authority": {
+      "const": "NONE"
+    },
+    "human_required_authority": {
+      "const": "NONE"
+    },
+    "measurement_id": {
+      "$ref": "#/$defs/id"
+    },
+    "decision_class": {
+      "enum": [
+        "OPTIONAL_CONTEXT_SELECTION",
+        "FOCUSED_CHECK_SELECTION"
+      ]
+    },
+    "source_activation_id": {
+      "$ref": "#/$defs/id"
+    },
+    "source_receipt_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "source_result": {
+      "enum": [
+        "APPLIED_CANARY",
+        "FALLBACK",
+        "NO_EFFECT"
+      ]
+    },
+    "observed_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "baseline_outcome": {
+      "enum": [
+        "VERIFIED_SUCCESS",
+        "VERIFIED_FAILURE"
+      ]
+    },
+    "active_outcome": {
+      "enum": [
+        "VERIFIED_SUCCESS",
+        "VERIFIED_FAILURE"
+      ]
+    },
+    "cost_delta_milliunits": {
+      "type": "integer",
+      "minimum": -1000000000,
+      "maximum": 1000000000
+    },
+    "wall_time_delta_ms": {
+      "type": "integer",
+      "minimum": -86400000,
+      "maximum": 86400000
+    },
+    "frontier_call_delta": {
+      "type": "integer",
+      "minimum": -1000000,
+      "maximum": 1000000
+    },
+    "retry_delta": {
+      "type": "integer",
+      "minimum": -1000000,
+      "maximum": 1000000
+    },
+    "selector_attribution": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/attribution"
+        }
+      ]
+    },
+    "measurement_digest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+#\\-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "profile",
+        "decision_ref"
+      ],
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/id"
+        },
+        "model": {
+          "$ref": "#/$defs/id"
+        },
+        "profile": {
+          "$ref": "#/$defs/id"
+        },
+        "decision_ref": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    }
+  }
+}
