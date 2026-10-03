@@ -1,7 +1,7 @@
 """Prod-atlas qualification harness.
 
 Design gate: ADR-0013. The Engineering System pin is v1.7.0 baseline
-92d793387ba6b30b0686ec18b4be67c0353f37eb. Local success is not a production
+da91b155bf36c2a8f1a7e3319135b392d500ce21. Local success is not a production
 pass, and this module does not change the release contract flags.
 """
 
@@ -36,7 +36,7 @@ from atlas.service import AtlasService
 from atlas.web_ui import render_intelligence, render_lifecycle, render_project
 
 PIN_VERSION = "1.7.0"
-PIN_BASELINE = "92d793387ba6b30b0686ec18b4be67c0353f37eb"
+PIN_BASELINE = "da91b155bf36c2a8f1a7e3319135b392d500ce21"
 PROD_HOST = "mcp.atlas.datarelay.run"
 PROD_ENDPOINT = "https://mcp.atlas.datarelay.run"
 PROD_PROJECT_ID = "datarelay-atlas"
