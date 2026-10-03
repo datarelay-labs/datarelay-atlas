@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -18,6 +19,8 @@ _OUTCOMES = {"PASS", "FAIL", "BLOCKED"}
 _EVIDENCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@#?=&%+-]{0,511}$")
 _MAX_EVIDENCE_BYTES = 32 * 1024
 _GITHUB_LIFECYCLE_FILENAME = "github-lifecycle.json"
+_GITHUB_LIFECYCLE_MAX_AGE_SECONDS = 3600
+_GITHUB_LIFECYCLE_MAX_FUTURE_SKEW_SECONDS = 300
 
 @dataclass(frozen=True)
 class EvidenceState:
@@ -50,13 +53,11 @@ class LifecycleView:
     full_user_e2e: EvidenceState
 
 
-def publish_github_lifecycle_snapshot(data_root: Path, snapshot_path: Path) -> dict[str, object]:
-    """Validate and atomically publish bounded GitHub lifecycle cache state."""
-    source = Path(snapshot_path)
-    if source.is_symlink() or not source.is_file():
-        raise ValidationError("GitHub lifecycle snapshot input is unsafe")
-    _, observations, metadata = load_github_reconciliation_snapshot(source)
-    payload = {
+def _github_snapshot_payload(
+    observations: list[dict],
+    metadata: dict,
+) -> dict[str, object]:
+    return {
         "schema_version": GITHUB_SNAPSHOT_SCHEMA_VERSION,
         "kind": "cursor_github_reconciliation",
         "observed_at": metadata["observed_at"],
@@ -68,7 +69,43 @@ def publish_github_lifecycle_snapshot(data_root: Path, snapshot_path: Path) -> d
             "noncanonical_count": metadata["noncanonical_count"],
         },
     }
+
+
+def _github_snapshot_time(value: object) -> datetime:
+    if not isinstance(value, str) or _UTC.fullmatch(value) is None:
+        raise ValidationError("GitHub lifecycle snapshot observed_at is invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValidationError("GitHub lifecycle snapshot observed_at is invalid") from exc
+    if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
+        raise ValidationError("GitHub lifecycle snapshot observed_at is invalid")
+    return parsed
+
+
+def publish_github_lifecycle_snapshot(
+    data_root: Path,
+    snapshot_path: Path,
+    *,
+    observed_now: datetime | None = None,
+) -> dict[str, object]:
+    """Validate and atomically publish fresh, monotonic GitHub lifecycle cache state."""
+    source = Path(snapshot_path)
+    if source.is_symlink() or not source.is_file():
+        raise ValidationError("GitHub lifecycle snapshot input is unsafe")
+    _, observations, metadata = load_github_reconciliation_snapshot(source)
+    payload = _github_snapshot_payload(observations, metadata)
     assert_content_free(payload)
+
+    now = observed_now or datetime.now(timezone.utc)
+    if now.utcoffset() is None or now.utcoffset().total_seconds() != 0:
+        raise ValidationError("GitHub lifecycle publish clock must be UTC")
+    incoming_time = _github_snapshot_time(metadata["observed_at"])
+    if incoming_time < now - timedelta(seconds=_GITHUB_LIFECYCLE_MAX_AGE_SECONDS):
+        raise ValidationError("GitHub lifecycle snapshot is too old to publish")
+    if incoming_time > now + timedelta(seconds=_GITHUB_LIFECYCLE_MAX_FUTURE_SKEW_SECONDS):
+        raise ValidationError("GitHub lifecycle snapshot is too far in the future")
+
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
     root = Path(data_root)
     with data_root_write_lock(root) as root_fd:
@@ -76,6 +113,32 @@ def publish_github_lifecycle_snapshot(data_root: Path, snapshot_path: Path) -> d
         destination = bound_root / _GITHUB_LIFECYCLE_FILENAME
         if destination.is_symlink() or (destination.exists() and not destination.is_file()):
             raise ValidationError("GitHub lifecycle destination is unsafe")
+        if destination.exists():
+            _, current_observations, current_metadata = load_github_reconciliation_snapshot(
+                destination
+            )
+            current_time = _github_snapshot_time(current_metadata["observed_at"])
+            if incoming_time < current_time:
+                raise ValidationError(
+                    "GitHub lifecycle snapshot is older than the current cache"
+                )
+            if incoming_time == current_time:
+                current_payload = _github_snapshot_payload(
+                    current_observations, current_metadata
+                )
+                if payload != current_payload:
+                    raise ValidationError(
+                        "GitHub lifecycle snapshot conflicts at the current observed_at"
+                    )
+                return {
+                    "state": "UNCHANGED",
+                    "observed_at": metadata["observed_at"],
+                    "repository_count": len(metadata["repositories"]),
+                    "observed_count": metadata["observed_count"],
+                    "canonical_count": metadata["canonical_count"],
+                    "noncanonical_count": metadata["noncanonical_count"],
+                    "authority": "DERIVED_READ_ONLY",
+                }
         atomic_write_text(destination, encoded)
         destination.chmod(0o600)
     return {

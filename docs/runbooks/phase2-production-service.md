@@ -142,10 +142,13 @@ done
 ```
 
 The lifecycle publisher validates the same bounded snapshot schema consumed by
-the read path and atomically replaces only `github-lifecycle.json`.
-`github-lifecycle.json` remains backup-excluded derived cache. A malformed,
-oversized, secret-bearing or unsafe snapshot fails closed without replacing the
-previous valid cache. Schedule this sequence only on an approved operator host
+the read path and atomically replaces only `github-lifecycle.json`. Publication
+requires an observation no more than one hour old, permits at most five minutes
+of future clock skew, refuses rollback behind an already-published observation,
+and treats an identical same-time replay as a no-op. `github-lifecycle.json`
+remains backup-excluded derived cache. A malformed, oversized, secret-bearing,
+unsafe, stale, future-dated, rollback, or conflicting same-time snapshot fails
+closed without replacing the previous valid cache. Schedule this sequence only on an approved operator host
 that already has GitHub read authority; never copy its GitHub credential to
 `prod-atlas`.
 
