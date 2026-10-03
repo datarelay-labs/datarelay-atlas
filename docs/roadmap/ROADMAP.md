@@ -182,7 +182,7 @@ Rules:
 
 ## DataRelay Link — Commercial Projection
 
-**Owning product authority:** `datarelay-labs/datarelay-link`, current product roadmap #45.
+**Owning product authority:** `datarelay-labs/datarelay-link`, product roadmap #45. Projection snapshot: issue `updated_at=2026-09-26T11:14:14Z`.
 
 **Atlas projection:** Problem = `HYPOTHESIS`; Product/User = `UNVALIDATED`; Commercial = `WTP_UNKNOWN`.
 
@@ -199,7 +199,7 @@ Next commercial exit: obtain attributable customer confirmation of the problem a
 
 ## DataRelay Control — Commercial Projection
 
-**Owning product authority:** `datarelay-labs/datarelay-control`, current v1 product roadmap #91.
+**Owning product authority:** `datarelay-labs/datarelay-control`, v1 product roadmap #91. Projection snapshot: issue `updated_at=2026-10-03T03:17:31Z`.
 
 **Atlas projection:** Problem = `HYPOTHESIS`; Product/User = `UNVALIDATED`; Commercial = `WTP_UNKNOWN`.
 
@@ -216,7 +216,7 @@ Next commercial exit: identify one repeated integration/operations pain with a n
 
 ## DataRelay Grant — Commercial Projection
 
-**Owning product authority:** `datarelay-labs/datarelay-grant`. The repository is currently a pre-release product definition; no canonical commercial roadmap is assumed by Atlas.
+**Owning product authority:** `datarelay-labs/datarelay-grant`. The repository is currently a pre-release product definition; no canonical commercial roadmap is assumed by Atlas. Projection source snapshot: `AGENTS.md` blob `13f365b69698cd859b2fc6e114e447b043589960`.
 
 **Atlas projection:** Problem = `HYPOTHESIS`; Product/User = `UNVALIDATED`; Commercial = `WTP_UNKNOWN`.
 
@@ -260,7 +260,7 @@ When choosing between otherwise valid roadmap items, Atlas may surface the stron
 
 The desired portfolio behavior is to invest more heavily only as evidence advances, while retaining a bounded exploration budget for new hypotheses.
 
-For Link, Control, and Grant, Atlas must treat these entries as projections and reconcile them against the owning repository before using them for prioritization. A missing or stale owning-repository commercial contract remains `UNKNOWN`, not implied approval.
+For Link, Control, and Grant, Atlas must treat these entries as projections and reconcile them against the owning repository before using them for prioritization. Each projection must carry a reproducible source identity such as an immutable revision/blob or issue `updated_at` snapshot. A missing, changed, or stale owning-repository commercial contract remains `UNKNOWN`, not implied approval.
 
 # Atlas Core
 
