@@ -35,4 +35,10 @@ human_equivalent_user_tests:
     mandatory: true
     contract: docs/contracts/ATLAS_FULL_USER_E2E.md
     minimum_passes: 1
+  contract_version: 2
+  direct_persona_execution_required: true
+  finding_accumulation_before_remediation: true
+  same_head_quality_closure_required: true
+  candidate_freeze_after_quality_closure: true
+  evidence_validator: tools/user_acceptance_contract.py
 execution_context: github-hosted
