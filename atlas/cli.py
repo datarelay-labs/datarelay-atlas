@@ -301,6 +301,19 @@ def cmd_memory_candidates_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_memory_candidates_control(args: argparse.Namespace) -> int:
+    _print_json(
+        _service(args).control_memory_candidate(
+            project_id=args.project_id,
+            candidate_id=args.candidate_id,
+            action=args.action.upper(),
+            content=args.content,
+            observed_at=args.observed_at,
+        )
+    )
+    return 0
+
+
 def cmd_engineering_evidence_show(args: argparse.Namespace) -> int:
     project_ids = list(args.project_id or [])
     _print_json(_service(args).engineering_evidence_dashboard(project_ids or None))
@@ -1099,6 +1112,16 @@ def build_parser() -> argparse.ArgumentParser:
     memory_candidates_show.add_argument("--workstream", default=None)
     memory_candidates_show.add_argument("--limit", type=int, default=100)
     memory_candidates_show.set_defaults(func=cmd_memory_candidates_show)
+    memory_candidates_control = memory_candidates_sub.add_parser(
+        "control",
+        help="Correct, forget, pin, or unpin non-authoritative candidate memory",
+    )
+    memory_candidates_control.add_argument("--project-id", required=True)
+    memory_candidates_control.add_argument("--candidate-id", required=True)
+    memory_candidates_control.add_argument("--action", required=True, choices=["correct", "forget", "pin", "unpin"])
+    memory_candidates_control.add_argument("--content")
+    memory_candidates_control.add_argument("--observed-at")
+    memory_candidates_control.set_defaults(func=cmd_memory_candidates_control)
 
     engineering_evidence = sub.add_parser(
         "engineering-evidence",

@@ -93,7 +93,7 @@ def _normalize_item(value: object) -> dict[str, object]:
     allowed = {
         "candidate_id", "candidate_class", "project_id", "repository", "workstream",
         "content", "input_kind", "observed_at", "provenance", "authority", "canonical",
-        "semantic_key", "supersedes",
+        "semantic_key", "supersedes", "pinned", "forgotten", "correction_of",
     }
     if set(value) - allowed:
         raise ValidationError("memory candidate contains unsupported fields")
@@ -120,6 +120,9 @@ def _normalize_item(value: object) -> dict[str, object]:
         "canonical": False,
         "semantic_key": _identity(value.get("semantic_key"), "semantic_key"),
         "supersedes": _identity(value.get("supersedes"), "supersedes", optional=True),
+        "pinned": value.get("pinned", False) if isinstance(value.get("pinned", False), bool) else False,
+        "forgotten": value.get("forgotten", False) if isinstance(value.get("forgotten", False), bool) else False,
+        "correction_of": _identity(value.get("correction_of"), "correction_of", optional=True),
     }
 
 
@@ -162,6 +165,9 @@ def load_memory_candidates(data_root: Path) -> dict[str, object]:
             }
             migrated.append({
                 **item,
+                "pinned": False,
+                "forgotten": False,
+                "correction_of": None,
                 "semantic_key": hashlib.sha256(
                     json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
                 ).hexdigest(),
@@ -205,6 +211,7 @@ def list_memory_candidates(
         if (project_id is None or item["project_id"] == project_id)
         and (repository is None or item["repository"] == repository)
         and (workstream is None or item["workstream"] == workstream)
+        and not item.get("forgotten", False)
     ]
     now = _parse_time(as_of) if as_of is not None else datetime.now(timezone.utc)
     superseded = {item["supersedes"] for item in selected if item.get("supersedes")}
@@ -216,7 +223,7 @@ def list_memory_candidates(
             validity, reason = "SUPERSEDED", "newer equivalent candidate supersedes this observation"
         else:
             observed = _parse_time(str(item["observed_at"]))
-            if (now - observed).total_seconds() > TTL_SECONDS[str(item["candidate_class"])]:
+            if not item.get("pinned", False) and (now - observed).total_seconds() > TTL_SECONDS[str(item["candidate_class"])]:
                 validity, reason = "STALE", "type-specific TTL expired"
             provenance = item.get("provenance")
             if validity == "CURRENT" and isinstance(provenance, dict) and current_provenance is not None:
@@ -253,6 +260,76 @@ def _parse_time(value: str) -> datetime:
     if parsed.tzinfo is None:
         raise ValidationError("memory candidate observed_at is invalid")
     return parsed.astimezone(timezone.utc)
+
+
+def _publish_store(path: Path, items: list[dict[str, object]]) -> None:
+    payload = {"schema_version": SCHEMA_VERSION, "kind": "atlas_memory_candidates", "items": items}
+    encoded = (json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n").encode("utf-8")
+    if len(items) > _MAX_ITEMS or len(encoded) > _MAX_FILE_BYTES:
+        raise ValidationError("memory candidate store exceeds bounded size")
+    if contains_unsafe_secret(encoded.decode("utf-8")):
+        raise ValidationError("memory candidate store contains unsafe secret")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    if path.is_symlink() or tmp.exists() or tmp.is_symlink():
+        raise ValidationError("memory candidate store is unsafe")
+    with tmp.open("xb") as handle:
+        handle.write(encoded)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+
+
+def control_memory_candidate(
+    data_root: Path,
+    *,
+    project_id: str,
+    repository: str,
+    candidate_id: str,
+    action: str,
+    content: str | None = None,
+    observed_at: str | None = None,
+) -> dict[str, object]:
+    project_id = _identity(project_id, "project_id")  # type: ignore[assignment]
+    repository = _identity(repository, "repository")  # type: ignore[assignment]
+    candidate_id = _identity(candidate_id, "candidate_id")  # type: ignore[assignment]
+    if action not in {"PIN", "UNPIN", "FORGET", "CORRECT"}:
+        raise ValidationError("memory candidate action is invalid")
+    root = Path(data_root); path = root / FILENAME
+    with data_root_write_lock(root):
+        store = load_memory_candidates(root)
+        index = next((i for i,x in enumerate(store["items"]) if x["candidate_id"] == candidate_id), None)
+        if index is None:
+            raise ValidationError("unknown memory candidate")
+        item = store["items"][index]
+        if item["project_id"] != project_id or item["repository"] != repository:
+            raise ValidationError("memory candidate scope mismatch")
+        items = list(store["items"])
+        if action in {"PIN", "UNPIN"}:
+            items[index] = {**item, "pinned": action == "PIN"}
+            result_id = candidate_id
+        elif action == "FORGET":
+            items[index] = {**item, "forgotten": True, "pinned": False}
+            result_id = candidate_id
+        else:
+            corrected = _text(content, "content", limit=_MAX_CONTENT_CHARS)
+            when = _text(observed_at, "observed_at", limit=64)
+            semantic = {
+                "candidate_class": item["candidate_class"], "project_id": project_id,
+                "repository": repository, "workstream": item["workstream"], "content": corrected,
+            }
+            semantic_key = hashlib.sha256(json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+            identity = {**semantic, "input_kind": "INTERACTION_SUMMARY", "observed_at": when, "provenance": item["provenance"]}
+            result_id = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+            replacement = {
+                "candidate_id": result_id, **identity, "semantic_key": semantic_key,
+                "supersedes": candidate_id, "pinned": item.get("pinned", False), "forgotten": False,
+                "correction_of": candidate_id, "authority": AUTHORITY, "canonical": False,
+            }
+            items[index] = {**item, "forgotten": True, "pinned": False}
+            items.append(replacement)
+        _publish_store(path, items)
+    return {"state": action, "candidate_id": result_id, "authority": AUTHORITY, "canonical": False}
 
 
 def ingest_memory_candidates(
@@ -307,6 +384,9 @@ def ingest_memory_candidates(
             **identity_payload,
             "semantic_key": semantic_key,
             "supersedes": None,
+            "pinned": False,
+            "forgotten": False,
+            "correction_of": None,
             "authority": AUTHORITY,
             "canonical": False,
         })

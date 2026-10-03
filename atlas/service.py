@@ -72,7 +72,7 @@ from atlas.instruction_governance_canary import (
     instruction_governance_canary_dashboard,
     record_instruction_governance_canary,
 )
-from atlas.memory_candidates import ingest_memory_candidates, list_memory_candidates
+from atlas.memory_candidates import control_memory_candidate, ingest_memory_candidates, list_memory_candidates
 from atlas.local_markdown import (
     IMPORT_DIRNAME,
     SNAPSHOT_DIRNAME,
@@ -178,6 +178,21 @@ class AtlasService:
             repository=repository,
             workstream=workstream,
             limit=limit,
+        )
+
+    def control_memory_candidate(
+        self,
+        *,
+        project_id: str,
+        candidate_id: str,
+        action: str,
+        content: str | None = None,
+        observed_at: str | None = None,
+    ) -> dict[str, object]:
+        project = self.registry.get(project_id)
+        return control_memory_candidate(
+            self.data_root, project_id=project.project_id, repository=project.repository,
+            candidate_id=candidate_id, action=action, content=content, observed_at=observed_at,
         )
 
     def ingest_memory_candidates(
