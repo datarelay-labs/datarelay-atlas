@@ -120,31 +120,38 @@ def publish_github_lifecycle_snapshot(
         if destination.is_symlink() or (destination.exists() and not destination.is_file()):
             raise ValidationError("GitHub lifecycle destination is unsafe")
         if destination.exists():
-            _, current_observations, current_metadata = load_github_reconciliation_snapshot(
-                destination
-            )
-            current_time = _github_snapshot_time(current_metadata["observed_at"])
-            if incoming_time < current_time:
-                raise ValidationError(
-                    "GitHub lifecycle snapshot is older than the current cache"
+            try:
+                _, current_observations, current_metadata = (
+                    load_github_reconciliation_snapshot(destination)
                 )
-            if incoming_time == current_time:
-                current_payload = _github_snapshot_payload(
-                    current_observations, current_metadata
-                )
-                if payload != current_payload:
+            except ValidationError:
+                # This is rebuildable derived cache. A fresh validated snapshot may
+                # repair an invalid existing regular file without manual deletion.
+                current_observations = None
+                current_metadata = None
+            if current_metadata is not None and current_observations is not None:
+                current_time = _github_snapshot_time(current_metadata["observed_at"])
+                if incoming_time < current_time:
                     raise ValidationError(
-                        "GitHub lifecycle snapshot conflicts at the current observed_at"
+                        "GitHub lifecycle snapshot is older than the current cache"
                     )
-                return {
-                    "state": "UNCHANGED",
-                    "observed_at": metadata["observed_at"],
-                    "repository_count": len(metadata["repositories"]),
-                    "observed_count": metadata["observed_count"],
-                    "canonical_count": metadata["canonical_count"],
-                    "noncanonical_count": metadata["noncanonical_count"],
-                    "authority": "DERIVED_READ_ONLY",
-                }
+                if incoming_time == current_time:
+                    current_payload = _github_snapshot_payload(
+                        current_observations, current_metadata
+                    )
+                    if payload != current_payload:
+                        raise ValidationError(
+                            "GitHub lifecycle snapshot conflicts at the current observed_at"
+                        )
+                    return {
+                        "state": "UNCHANGED",
+                        "observed_at": metadata["observed_at"],
+                        "repository_count": len(metadata["repositories"]),
+                        "observed_count": metadata["observed_count"],
+                        "canonical_count": metadata["canonical_count"],
+                        "noncanonical_count": metadata["noncanonical_count"],
+                        "authority": "DERIVED_READ_ONLY",
+                    }
         atomic_write_text(destination, encoded)
         destination.chmod(0o600)
     return {

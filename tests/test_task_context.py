@@ -612,6 +612,14 @@ verified memory task context bootstrap BODY-MARKER""",
             self.svc.publish_github_lifecycle_snapshot(symlink_input)
         self.assertEqual(published.read_bytes(), before)
 
+        published.write_text("{broken", encoding="utf-8")
+        repaired = self.svc.publish_github_lifecycle_snapshot(cli_input)
+        self.assertEqual(repaired["state"], "PUBLISHED")
+        self.assertEqual(
+            self.svc.task_context(project_id="demo")["currentness"]["state"],
+            "CURRENT",
+        )
+
         victim = self.root / "victim.json"
         victim.write_text("keep", encoding="utf-8")
         published.unlink()
