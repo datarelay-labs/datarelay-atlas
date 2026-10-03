@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from atlas.instruction_governance import (
     FILENAME,
     LEDGER_KIND,
     SCHEMA_VERSION,
+    discover_managed_surfaces,
     instruction_governance_dashboard,
     instruction_governance_routing,
     _validate_audit_result,
@@ -96,6 +98,41 @@ def _write_ledger(data_root: Path, audit: dict) -> None:
 
 
 class InstructionGovernanceRoutingTests(unittest.TestCase):
+    def test_discovery_does_not_follow_inaccessible_managed_file_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            repo.mkdir()
+            (repo / "AGENTS.md").write_text("# policy\n", encoding="utf-8")
+            rules = repo / ".cursor" / "rules"
+            rules.mkdir(parents=True)
+            blocked = base / "blocked"
+            blocked.mkdir()
+            target = blocked / "telegram-complete.mdc"
+            target.write_text("outside repository\n", encoding="utf-8")
+            (rules / "telegram-complete.mdc").symlink_to(target)
+            os.chmod(blocked, 0)
+            try:
+                surfaces = discover_managed_surfaces(repo)
+            finally:
+                os.chmod(blocked, 0o700)
+            self.assertEqual([item["path"] for item in surfaces], ["AGENTS.md"])
+
+    def test_discovery_still_fails_closed_on_unreadable_regular_surface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            managed = repo / "AGENTS.md"
+            managed.write_text("# policy\n", encoding="utf-8")
+            os.chmod(managed, 0)
+            try:
+                with self.assertRaisesRegex(
+                    ValidationError,
+                    "managed surface is unreadable",
+                ):
+                    discover_managed_surfaces(repo)
+            finally:
+                os.chmod(managed, 0o600)
+
     def test_duplicate_candidate_change_paths_fail_before_persistence(self):
         payload = {
             "schema_version": 1,
