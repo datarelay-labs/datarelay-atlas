@@ -10,7 +10,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
-from atlas.data_lock import data_root_write_lock, require_data_root_writer_owner
+from atlas.data_lock import data_root_fd_path, data_root_write_lock, require_data_root_writer_owner_fd
 from atlas.provenance import ValidationError
 from atlas.secrets import contains_unsafe_secret
 
@@ -265,13 +265,14 @@ def _parse_time(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _publish_store(path: Path, items: list[dict[str, object]]) -> None:
+def _publish_store(path: Path, items: list[dict[str, object]], *, root_fd: int) -> None:
     payload = {"schema_version": SCHEMA_VERSION, "kind": "atlas_memory_candidates", "items": items}
     encoded = (json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n").encode("utf-8")
     if len(items) > _MAX_ITEMS or len(encoded) > _MAX_FILE_BYTES:
         raise ValidationError("memory candidate store exceeds bounded size")
     if contains_unsafe_secret(encoded.decode("utf-8")):
         raise ValidationError("memory candidate store contains unsafe secret")
+    require_data_root_writer_owner_fd(root_fd)
     tmp = path.with_suffix(path.suffix + ".tmp")
     if path.is_symlink() or tmp.exists() or tmp.is_symlink():
         raise ValidationError("memory candidate store is unsafe")
@@ -279,6 +280,7 @@ def _publish_store(path: Path, items: list[dict[str, object]]) -> None:
         handle.write(encoded)
         handle.flush()
         os.fsync(handle.fileno())
+    require_data_root_writer_owner_fd(root_fd)
     os.replace(tmp, path)
     os.chmod(path, 0o600)
 
@@ -298,10 +300,11 @@ def control_memory_candidate(
     candidate_id = _identity(candidate_id, "candidate_id")  # type: ignore[assignment]
     if action not in {"PIN", "UNPIN", "FORGET", "CORRECT"}:
         raise ValidationError("memory candidate action is invalid")
-    root = Path(data_root); path = root / FILENAME
-    require_data_root_writer_owner(root)
-    with data_root_write_lock(root):
-        store = load_memory_candidates(root)
+    root = Path(data_root)
+    with data_root_write_lock(root) as root_fd:
+        require_data_root_writer_owner_fd(root_fd)
+        bound_root = data_root_fd_path(root_fd); path = bound_root / FILENAME
+        store = load_memory_candidates(bound_root)
         index = next((i for i,x in enumerate(store["items"]) if x["candidate_id"] == candidate_id), None)
         if index is None:
             raise ValidationError("unknown memory candidate")
@@ -332,7 +335,7 @@ def control_memory_candidate(
             }
             items[index] = {**item, "forgotten": True, "pinned": False}
             items.append(replacement)
-        _publish_store(path, items)
+        _publish_store(path, items, root_fd=root_fd)
     return {"state": action, "candidate_id": result_id, "authority": AUTHORITY, "canonical": False}
 
 
@@ -396,10 +399,10 @@ def ingest_memory_candidates(
         })
 
     root = Path(data_root)
-    path = root / FILENAME
-    require_data_root_writer_owner(root)
-    with data_root_write_lock(root):
-        store = load_memory_candidates(root)
+    with data_root_write_lock(root) as root_fd:
+        require_data_root_writer_owner_fd(root_fd)
+        bound_root = data_root_fd_path(root_fd); path = bound_root / FILENAME
+        store = load_memory_candidates(bound_root)
         existing = {item["candidate_id"] for item in store["items"]}
         latest_by_semantic = {}
         for item in store["items"]:
@@ -422,6 +425,7 @@ def ingest_memory_candidates(
             raise ValidationError("memory candidate store exceeds bounded size")
         if contains_unsafe_secret(encoded.decode("utf-8")):
             raise ValidationError("memory candidate store contains unsafe secret")
+        require_data_root_writer_owner_fd(root_fd)
         tmp = path.with_suffix(path.suffix + ".tmp")
         if path.is_symlink() or tmp.exists() or tmp.is_symlink():
             raise ValidationError("memory candidate store is unsafe")
@@ -429,6 +433,7 @@ def ingest_memory_candidates(
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
+        require_data_root_writer_owner_fd(root_fd)
         os.replace(tmp, path)
         os.chmod(path, 0o600)
     return {

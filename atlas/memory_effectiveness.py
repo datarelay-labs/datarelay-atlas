@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json, os
 from pathlib import Path
-from atlas.data_lock import data_root_write_lock, require_data_root_writer_owner
+from atlas.data_lock import data_root_fd_path, data_root_write_lock, require_data_root_writer_owner_fd
 from atlas.provenance import ValidationError
 from atlas.secrets import contains_unsafe_secret
 
@@ -32,15 +32,19 @@ def record_effectiveness(root: Path, observation: dict[str,object]):
         if type(v) is not int or v<0: raise ValidationError("memory effectiveness observation is invalid")
     if observation["important_recalled"]>observation["important_expected"] or not isinstance(observation["first_pass_success"],bool):
         raise ValidationError("memory effectiveness observation is invalid")
-    root=Path(root); require_data_root_writer_owner(root); p=root/FILENAME
-    with data_root_write_lock(root):
-        store=_load(root); items=[*store["observations"],dict(observation)]
+    root=Path(root)
+    with data_root_write_lock(root) as root_fd:
+        require_data_root_writer_owner_fd(root_fd)
+        bound_root=data_root_fd_path(root_fd); p=bound_root/FILENAME
+        store=_load(bound_root); items=[*store["observations"],dict(observation)]
         if len(items)>_MAX_ITEMS: raise ValidationError("memory effectiveness store is full")
         raw=(json.dumps({"schema_version":1,"kind":"atlas_memory_effectiveness","observations":items},indent=2,sort_keys=True)+"\n").encode()
         if len(raw)>_MAX_BYTES or contains_unsafe_secret(raw.decode()): raise ValidationError("memory effectiveness store exceeds bounds")
+        require_data_root_writer_owner_fd(root_fd)
         tmp=p.with_suffix(".json.tmp")
         if tmp.exists() or tmp.is_symlink() or p.is_symlink(): raise ValidationError("memory effectiveness store is unsafe")
         with tmp.open("xb") as f: f.write(raw); f.flush(); os.fsync(f.fileno())
+        require_data_root_writer_owner_fd(root_fd)
         os.replace(tmp,p); os.chmod(p,0o600)
     return {"state":"RECORDED","observation_count":len(items),"policy_mutated":False}
 
