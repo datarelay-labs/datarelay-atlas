@@ -1448,7 +1448,7 @@ def _validate_github_observation(
     }
 
 
-def _read_github_snapshot_bytes(path: Path) -> bytes:
+def _read_github_snapshot_bytes(path: Path) -> tuple[bytes, os.stat_result]:
     source = Path(path)
     if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
         _reject("GitHub snapshot path safety is unsupported")
@@ -1462,7 +1462,8 @@ def _read_github_snapshot_bytes(path: Path) -> bytes:
     except OSError as exc:
         raise ValidationError("GitHub snapshot path is unsafe or unreadable") from exc
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        opened_stat = os.fstat(fd)
+        if not stat.S_ISREG(opened_stat.st_mode):
             _reject("GitHub snapshot path is unsafe")
         chunks: list[bytes] = []
         total = 0
@@ -1474,19 +1475,35 @@ def _read_github_snapshot_bytes(path: Path) -> bytes:
             if total > MAX_SNAPSHOT_BYTES:
                 _reject("GitHub snapshot exceeds the bounded import size")
             chunks.append(block)
-        return b"".join(chunks)
+        final_stat = os.fstat(fd)
+        if (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+            opened_stat.st_size,
+            opened_stat.st_mtime_ns,
+        ) != (
+            final_stat.st_dev,
+            final_stat.st_ino,
+            final_stat.st_size,
+            final_stat.st_mtime_ns,
+        ):
+            _reject("GitHub snapshot changed while being read")
+        return b"".join(chunks), final_stat
     finally:
         os.close(fd)
 
 
 def load_github_reconciliation_snapshot(
     path: Path,
-) -> tuple[list[PacketFact], list[dict], dict]:
+    *,
+    include_file_stat: bool = False,
+):
     """Load one bounded GitHub reconciliation snapshot without GitHub access."""
     import json
 
     try:
-        raw = json.loads(_read_github_snapshot_bytes(Path(path)).decode("utf-8"))
+        raw_bytes, source_stat = _read_github_snapshot_bytes(Path(path))
+        raw = json.loads(raw_bytes.decode("utf-8"))
     except ValidationError:
         raise
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -1548,6 +1565,8 @@ def load_github_reconciliation_snapshot(
         **expected_summary,
     }
     assert_content_free(metadata)
+    if include_file_stat:
+        return facts, observations, metadata, source_stat
     return facts, observations, metadata
 
 

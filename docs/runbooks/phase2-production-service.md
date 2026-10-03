@@ -127,13 +127,13 @@ validates the complete snapshot, then refresh the registered public GitHub
 sources without a token:
 
 ```bash
+set -e
 sudo --user atlas --group atlas \
   env PYTHONPATH=/opt/datarelay-atlas \
   /opt/datarelay-atlas/.venv/bin/python -m atlas \
   --data-root /var/lib/datarelay-atlas lifecycle publish-github-snapshot \
   --snapshot /tmp/atlas-github-lifecycle.json
 
-set -e
 for project in engineering-system datarelay-atlas datarelay-link data-relay-control datarelay-grant; do
   sudo --user atlas --group atlas \
     env -u GITHUB_TOKEN PYTHONPATH=/opt/datarelay-atlas \

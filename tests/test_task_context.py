@@ -6,6 +6,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from jsonschema import Draft202012Validator
 
@@ -476,6 +478,29 @@ verified memory task context bootstrap BODY-MARKER""",
         )
         with self.assertRaises(ValidationError):
             self.svc.task_context(repository="datarelay-labs/demo")
+
+    def test_currentness_uses_file_stat_bound_to_validated_snapshot_bytes(self):
+        from atlas import lifecycle_intelligence as lifecycle_module
+
+        self._write_lifecycle()
+        path = self.root / "github-lifecycle.json"
+        facts, observations, metadata, _ = (
+            lifecycle_module.load_github_reconciliation_snapshot(
+                path,
+                include_file_stat=True,
+            )
+        )
+        expired_stat = SimpleNamespace(
+            st_mtime=(datetime.now(timezone.utc) - timedelta(hours=2)).timestamp()
+        )
+        with patch.object(
+            lifecycle_module,
+            "load_github_reconciliation_snapshot",
+            return_value=(facts, observations, metadata, expired_stat),
+        ):
+            result = self.svc.task_context(project_id="demo")
+        self.assertEqual(result["currentness"]["state"], "STALE")
+        self.assertIn("cache expired", result["lifecycle"]["work"]["detail"])
 
     def test_publish_github_snapshot_is_validated_atomic_and_cli_exposed(self):
         now = datetime.now(timezone.utc).replace(microsecond=0)

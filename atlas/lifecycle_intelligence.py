@@ -175,8 +175,11 @@ def _work_state(snapshot: Path, repository: str) -> tuple[EvidenceState, frozens
     if not snapshot.is_file():
         return EvidenceState("UNKNOWN", "no trusted local lifecycle evidence"), frozenset(), ()
     try:
-        _, observations, metadata = load_github_reconciliation_snapshot(snapshot)
-        modified_at = datetime.fromtimestamp(snapshot.stat().st_mtime, timezone.utc)
+        _, observations, metadata, source_stat = load_github_reconciliation_snapshot(
+            snapshot,
+            include_file_stat=True,
+        )
+        modified_at = datetime.fromtimestamp(source_stat.st_mtime, timezone.utc)
     except (OSError, ValidationError):
         return EvidenceState("UNAVAILABLE", "local lifecycle evidence failed validation"), frozenset(), ()
     now = datetime.now(timezone.utc)
