@@ -7,6 +7,7 @@ import json
 import os
 import re
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
 from atlas.data_lock import data_root_write_lock
@@ -14,7 +15,15 @@ from atlas.provenance import ValidationError
 from atlas.secrets import contains_unsafe_secret
 
 FILENAME = "memory-candidates.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+TTL_SECONDS = {
+    "OWNER_PREFERENCE": 365 * 24 * 3600,
+    "VALIDATED_FINDING": 30 * 24 * 3600,
+    "LESSON_LEARNED": 180 * 24 * 3600,
+    "RUN_SUMMARY": 14 * 24 * 3600,
+    "FUTURE_IDEA": 180 * 24 * 3600,
+    "REFERENCE_FACT": 30 * 24 * 3600,
+}
 AUTHORITY = "NON_AUTHORITATIVE_CANDIDATE"
 CANDIDATE_CLASSES = frozenset({
     "OWNER_PREFERENCE",
@@ -84,6 +93,7 @@ def _normalize_item(value: object) -> dict[str, object]:
     allowed = {
         "candidate_id", "candidate_class", "project_id", "repository", "workstream",
         "content", "input_kind", "observed_at", "provenance", "authority", "canonical",
+        "semantic_key", "supersedes",
     }
     if set(value) - allowed:
         raise ValidationError("memory candidate contains unsupported fields")
@@ -108,6 +118,8 @@ def _normalize_item(value: object) -> dict[str, object]:
         "provenance": _normalize_provenance(value.get("provenance")),
         "authority": AUTHORITY,
         "canonical": False,
+        "semantic_key": _identity(value.get("semantic_key"), "semantic_key"),
+        "supersedes": _identity(value.get("supersedes"), "supersedes", optional=True),
     }
 
 
@@ -134,8 +146,28 @@ def load_memory_candidates(data_root: Path) -> dict[str, object]:
         raise ValidationError("memory candidate store is invalid JSON") from exc
     if not isinstance(payload, dict) or set(payload) != {"schema_version", "kind", "items"}:
         raise ValidationError("memory candidate store is invalid")
-    if type(payload["schema_version"]) is not int or payload["schema_version"] != SCHEMA_VERSION or payload["kind"] != "atlas_memory_candidates":
+    if type(payload["schema_version"]) is not int or payload["schema_version"] not in {1, SCHEMA_VERSION} or payload["kind"] != "atlas_memory_candidates":
         raise ValidationError("memory candidate store is unsupported")
+    if payload["schema_version"] == 1:
+        migrated = []
+        for item in payload["items"]:
+            if not isinstance(item, dict):
+                raise ValidationError("memory candidate is invalid")
+            semantic = {
+                "candidate_class": item.get("candidate_class"),
+                "project_id": item.get("project_id"),
+                "repository": item.get("repository"),
+                "workstream": item.get("workstream"),
+                "content": item.get("content"),
+            }
+            migrated.append({
+                **item,
+                "semantic_key": hashlib.sha256(
+                    json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+                ).hexdigest(),
+                "supersedes": None,
+            })
+        payload = {"schema_version": SCHEMA_VERSION, "kind": "atlas_memory_candidates", "items": migrated}
     items = payload["items"]
     if not isinstance(items, list) or len(items) > _MAX_ITEMS:
         raise ValidationError("memory candidate store items are invalid")
@@ -157,6 +189,8 @@ def list_memory_candidates(
     repository: str | None = None,
     workstream: str | None = None,
     limit: int = 100,
+    as_of: str | None = None,
+    current_provenance: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, object]:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
         raise ValidationError("memory candidate limit is invalid")
@@ -166,12 +200,41 @@ def list_memory_candidates(
     if project_id is None and repository is None:
         raise ValidationError("memory candidate project_id or repository is required")
     store = load_memory_candidates(data_root)
-    items = [
+    selected = [
         item for item in store["items"]
         if (project_id is None or item["project_id"] == project_id)
         and (repository is None or item["repository"] == repository)
         and (workstream is None or item["workstream"] == workstream)
-    ][:limit]
+    ]
+    now = _parse_time(as_of) if as_of is not None else datetime.now(timezone.utc)
+    superseded = {item["supersedes"] for item in selected if item.get("supersedes")}
+    items = []
+    for item in selected[:limit]:
+        validity = "CURRENT"
+        reason = "within type-specific TTL"
+        if item["candidate_id"] in superseded:
+            validity, reason = "SUPERSEDED", "newer equivalent candidate supersedes this observation"
+        else:
+            observed = _parse_time(str(item["observed_at"]))
+            if (now - observed).total_seconds() > TTL_SECONDS[str(item["candidate_class"])]:
+                validity, reason = "STALE", "type-specific TTL expired"
+            provenance = item.get("provenance")
+            if validity == "CURRENT" and isinstance(provenance, dict) and current_provenance is not None:
+                identity = provenance.get("source_identity")
+                current = current_provenance.get(str(identity)) if identity else None
+                if current is None:
+                    validity, reason = "UNKNOWN", "current provenance fact unavailable"
+                elif (
+                    ("source_revision" in provenance and current.get("source_revision") != provenance.get("source_revision"))
+                    or ("source_digest" in provenance and current.get("source_digest") != provenance.get("source_digest"))
+                ):
+                    validity, reason = "STALE", "current provenance differs from candidate citation"
+        items.append({
+            **item,
+            "validity": validity,
+            "validity_reason": reason,
+            "ttl_seconds": TTL_SECONDS[str(item["candidate_class"])],
+        })
     return {
         "state": "OBSERVED",
         "authority": AUTHORITY,
@@ -180,6 +243,16 @@ def list_memory_candidates(
         "count": len(items),
         "items": items,
     }
+
+
+def _parse_time(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValidationError("memory candidate observed_at is invalid") from exc
+    if parsed.tzinfo is None:
+        raise ValidationError("memory candidate observed_at is invalid")
+    return parsed.astimezone(timezone.utc)
 
 
 def ingest_memory_candidates(
@@ -210,12 +283,18 @@ def ingest_memory_candidates(
             raise ValidationError("memory candidate class is invalid")
         content = _text(raw.get("content"), "content", limit=_MAX_CONTENT_CHARS)
         provenance = _normalize_provenance(raw.get("provenance"))
-        identity_payload = {
+        semantic_payload = {
             "candidate_class": candidate_class,
             "project_id": project_id,
             "repository": repository,
             "workstream": workstream,
             "content": content,
+        }
+        semantic_key = hashlib.sha256(
+            json.dumps(semantic_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        identity_payload = {
+            **semantic_payload,
             "input_kind": input_kind,
             "observed_at": observed_at,
             "provenance": provenance,
@@ -226,6 +305,8 @@ def ingest_memory_candidates(
         normalized.append({
             "candidate_id": candidate_id,
             **identity_payload,
+            "semantic_key": semantic_key,
+            "supersedes": None,
             "authority": AUTHORITY,
             "canonical": False,
         })
@@ -236,7 +317,18 @@ def ingest_memory_candidates(
     with data_root_write_lock(root):
         store = load_memory_candidates(root)
         existing = {item["candidate_id"] for item in store["items"]}
-        additions = [item for item in normalized if item["candidate_id"] not in existing]
+        latest_by_semantic = {}
+        for item in store["items"]:
+            latest_by_semantic[item["semantic_key"]] = item
+        additions = []
+        for item in normalized:
+            if item["candidate_id"] in existing:
+                continue
+            prior = latest_by_semantic.get(item["semantic_key"])
+            if prior is not None:
+                item = {**item, "supersedes": prior["candidate_id"]}
+            additions.append(item)
+            latest_by_semantic[item["semantic_key"]] = item
         combined = [*store["items"], *additions]
         if len(combined) > _MAX_ITEMS:
             raise ValidationError("memory candidate store item limit exceeded")

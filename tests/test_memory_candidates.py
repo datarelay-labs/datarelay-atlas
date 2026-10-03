@@ -60,3 +60,44 @@ class MemoryCandidateTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+
+class MemoryCandidateTemporalTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)/"data"; self.svc=AtlasService(self.root)
+        self.svc.register_project(project_id="atlas",repository="datarelay-labs/datarelay-atlas")
+
+    def _ingest(self, observed_at, provenance=None, candidate_class="REFERENCE_FACT"):
+        return self.svc.ingest_memory_candidates(
+            project_id="atlas", input_kind="CANONICAL_EVENT", observed_at=observed_at,
+            candidates=[{"candidate_class":candidate_class,"content":"same fact","provenance":provenance}]
+        )
+
+    def test_equivalent_new_observation_supersedes_old(self):
+        first=self._ingest("2026-09-01T00:00:00Z")
+        second=self._ingest("2026-09-02T00:00:00Z")
+        shown=list_memory_candidates(self.root,project_id="atlas",as_of="2026-09-03T00:00:00Z")
+        by_id={x["candidate_id"]:x for x in shown["items"]}
+        self.assertEqual(by_id[first["candidate_ids"][0]]["validity"],"SUPERSEDED")
+        self.assertEqual(by_id[second["candidate_ids"][0]]["validity"],"CURRENT")
+        self.assertEqual(by_id[second["candidate_ids"][0]]["supersedes"],first["candidate_ids"][0])
+
+    def test_type_specific_ttl(self):
+        self._ingest("2026-09-01T00:00:00Z",candidate_class="RUN_SUMMARY")
+        self._ingest("2026-09-01T00:00:00Z",candidate_class="OWNER_PREFERENCE")
+        shown=list_memory_candidates(self.root,project_id="atlas",as_of="2026-10-01T00:00:00Z")
+        states={x["candidate_class"]:x["validity"] for x in shown["items"]}
+        self.assertEqual(states["RUN_SUMMARY"],"STALE")
+        self.assertEqual(states["OWNER_PREFERENCE"],"CURRENT")
+
+    def test_provenance_revalidation_current_stale_unknown(self):
+        prov={"source_identity":"github:issue/10","source_revision":"rev-a","source_digest":"a"*64}
+        self._ingest("2026-10-01T00:00:00Z",provenance=prov)
+        current=list_memory_candidates(self.root,project_id="atlas",as_of="2026-10-02T00:00:00Z",
+            current_provenance={"github:issue/10":{"source_revision":"rev-a","source_digest":"a"*64}})
+        self.assertEqual(current["items"][0]["validity"],"CURRENT")
+        stale=list_memory_candidates(self.root,project_id="atlas",as_of="2026-10-02T00:00:00Z",
+            current_provenance={"github:issue/10":{"source_revision":"rev-b","source_digest":"b"*64}})
+        self.assertEqual(stale["items"][0]["validity"],"STALE")
+        unknown=list_memory_candidates(self.root,project_id="atlas",as_of="2026-10-02T00:00:00Z",current_provenance={})
+        self.assertEqual(unknown["items"][0]["validity"],"UNKNOWN")
