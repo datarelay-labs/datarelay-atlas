@@ -289,6 +289,31 @@ def cmd_task_context_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_memory_candidates_ingest(args: argparse.Namespace) -> int:
+    candidate = {
+        "candidate_class": args.candidate_class,
+        "content": args.content,
+    }
+    if args.source_identity or args.source_revision or args.source_digest:
+        candidate["provenance"] = {
+            key: value for key, value in {
+                "source_identity": args.source_identity,
+                "source_revision": args.source_revision,
+                "source_digest": args.source_digest,
+            }.items() if value is not None
+        }
+    _print_json(
+        _service(args).ingest_memory_candidates(
+            project_id=args.project_id,
+            input_kind=args.input_kind,
+            observed_at=args.observed_at,
+            candidates=[candidate],
+            workstream=args.workstream,
+        )
+    )
+    return 0
+
+
 def cmd_memory_candidates_show(args: argparse.Namespace) -> int:
     _print_json(
         _service(args).memory_candidates(
@@ -316,6 +341,24 @@ def cmd_memory_candidates_control(args: argparse.Namespace) -> int:
 
 def cmd_memory_effectiveness_show(args: argparse.Namespace) -> int:
     _print_json(_service(args).memory_effectiveness_report(args.project_id))
+    return 0
+
+
+def cmd_memory_effectiveness_record(args: argparse.Namespace) -> int:
+    _print_json(_service(args).record_memory_effectiveness({
+        "project_id": args.project_id,
+        "repository": args.repository,
+        "workstream": args.workstream,
+        "observed_at": args.observed_at,
+        "important_expected": args.important_expected,
+        "important_recalled": args.important_recalled,
+        "stale_injected": args.stale_injected,
+        "irrelevant_injected": args.irrelevant_injected,
+        "duplicate_injected": args.duplicate_injected,
+        "injected_context_bytes": args.injected_context_bytes,
+        "repeated_owner_explanations": args.repeated_owner_explanations,
+        "first_pass_success": args.first_pass_success,
+    }))
     return 0
 
 
@@ -1117,6 +1160,20 @@ def build_parser() -> argparse.ArgumentParser:
     memory_candidates_show.add_argument("--workstream", default=None)
     memory_candidates_show.add_argument("--limit", type=int, default=100)
     memory_candidates_show.set_defaults(func=cmd_memory_candidates_show)
+    memory_candidates_ingest = memory_candidates_sub.add_parser(
+        "ingest",
+        help="Ingest one bounded non-authoritative candidate from a trusted local workflow",
+    )
+    memory_candidates_ingest.add_argument("--project-id", required=True)
+    memory_candidates_ingest.add_argument("--workstream")
+    memory_candidates_ingest.add_argument("--input-kind", required=True, choices=["INTERACTION_SUMMARY", "RUN_SUMMARY", "CANONICAL_EVENT"])
+    memory_candidates_ingest.add_argument("--observed-at", required=True)
+    memory_candidates_ingest.add_argument("--candidate-class", required=True, choices=["OWNER_PREFERENCE", "VALIDATED_FINDING", "LESSON_LEARNED", "RUN_SUMMARY", "FUTURE_IDEA", "REFERENCE_FACT"])
+    memory_candidates_ingest.add_argument("--content", required=True)
+    memory_candidates_ingest.add_argument("--source-identity")
+    memory_candidates_ingest.add_argument("--source-revision")
+    memory_candidates_ingest.add_argument("--source-digest")
+    memory_candidates_ingest.set_defaults(func=cmd_memory_candidates_ingest)
     memory_candidates_control = memory_candidates_sub.add_parser(
         "control",
         help="Correct, forget, pin, or unpin non-authoritative candidate memory",
@@ -1136,6 +1193,15 @@ def build_parser() -> argparse.ArgumentParser:
     memory_effectiveness_show = memory_effectiveness_sub.add_parser("show", help="Show bounded effectiveness metrics")
     memory_effectiveness_show.add_argument("--project-id")
     memory_effectiveness_show.set_defaults(func=cmd_memory_effectiveness_show)
+    memory_effectiveness_record = memory_effectiveness_sub.add_parser("record", help="Record one content-free effectiveness observation")
+    memory_effectiveness_record.add_argument("--project-id", required=True)
+    memory_effectiveness_record.add_argument("--repository", required=True)
+    memory_effectiveness_record.add_argument("--workstream", required=True)
+    memory_effectiveness_record.add_argument("--observed-at", required=True)
+    for field in ("important-expected", "important-recalled", "stale-injected", "irrelevant-injected", "duplicate-injected", "injected-context-bytes", "repeated-owner-explanations"):
+        memory_effectiveness_record.add_argument(f"--{field}", type=int, required=True)
+    memory_effectiveness_record.add_argument("--first-pass-success", action="store_true")
+    memory_effectiveness_record.set_defaults(func=cmd_memory_effectiveness_record)
 
     engineering_evidence = sub.add_parser(
         "engineering-evidence",
