@@ -18,7 +18,7 @@ slice records real service, health, and restart output from `prod-atlas`.
 
 | Path | Purpose | Ownership |
 | --- | --- | --- |
-| `/opt/datarelay-atlas` | Git checkout and virtualenv | `atlas:atlas` |
+| `/opt/datarelay-atlas` | Deployed tracked source tree and virtualenv | `atlas:atlas` |
 | `/etc/datarelay-atlas/service.env` | Service configuration, outside Git | `root:atlas`, mode `0640` |
 | `/etc/datarelay-atlas/introspection-client-secret` | Introspection client secret | `root:atlas`, mode `0640` |
 | `/etc/datarelay-atlas/tls/key.pem` | TLS private key | `root:atlas`, mode `0640` |
@@ -43,11 +43,17 @@ not issue tokens.
 
 ## Install
 
-Run on hostname `prod-atlas`. Create the `atlas` group and user before any
-`install` command that assigns `atlas` ownership. Copy secrets from outside
-Git. Do not commit `service.env`, the introspection secret, or `key.pem`.
-The public resource URL is `https://mcp.atlas.datarelay.run/mcp`. The process
-still binds `127.0.0.1:8443`.
+Run on hostname `prod-atlas` from an exact Git checkout of the candidate.
+Create the `atlas` group and user before any `install` command that assigns
+`atlas` ownership. Build the deployed source from `git archive` rather than
+copying the operator working tree: ignored/untracked provider workspace files,
+absolute symlinks, and local agent state must never enter `/opt/datarelay-atlas`.
+The sync uses `--delete` so a previously deployed stale workspace artifact is
+removed while the excluded deployed `.venv` is retained. The tracked archive
+must not contain `.cursor`, `.cursorignore`, or `.cursorrules`; fail before the
+sync if any appears. Copy secrets from outside Git. Do not commit `service.env`,
+the introspection secret, or `key.pem`. The public resource URL is
+`https://mcp.atlas.datarelay.run/mcp`. The process still binds `127.0.0.1:8443`.
 
 ```bash
 sudo groupadd --system atlas
@@ -55,7 +61,14 @@ sudo useradd --system --gid atlas --home /var/lib/datarelay-atlas --shell /usr/s
 sudo install -d -o root -g atlas -m 0750 /etc/datarelay-atlas /etc/datarelay-atlas/tls
 sudo install -d -o atlas -g atlas -m 0750 /var/lib/datarelay-atlas
 sudo install -d -o atlas -g atlas -m 0755 /opt/datarelay-atlas
-sudo rsync -a --exclude .venv ./ /opt/datarelay-atlas/
+deploy_src="$(mktemp -d)"
+trap 'rm -rf "$deploy_src"' EXIT
+deploy_head="$(git rev-parse --verify 'HEAD^{commit}')"
+git archive --format=tar "$deploy_head" | tar -xf - -C "$deploy_src"
+for forbidden in .cursor .cursorignore .cursorrules; do
+  test ! -e "$deploy_src/$forbidden"
+done
+sudo rsync -a --delete --exclude .venv "$deploy_src/" /opt/datarelay-atlas/
 sudo -u atlas python3 -m venv /opt/datarelay-atlas/.venv
 sudo -u atlas /opt/datarelay-atlas/.venv/bin/pip install --no-cache-dir -r /opt/datarelay-atlas/requirements.txt
 sudo install -m 0640 -o root -g atlas /path/outside/git/service.env /etc/datarelay-atlas/service.env
