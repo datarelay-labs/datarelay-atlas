@@ -217,8 +217,10 @@ Configuration readiness is `ops check`. Runtime readiness is HTTPS
 `GET /healthz` on the serving process:
 
 ```bash
-curl --silent --show-error --fail --cacert /etc/datarelay-atlas/tls/cert.pem \
-  https://127.0.0.1:8443/healthz
+curl --silent --show-error --fail --noproxy '*' \
+  --cacert /etc/datarelay-atlas/tls/cert.pem \
+  --resolve mcp.atlas.datarelay.run:8443:127.0.0.1 \
+  https://mcp.atlas.datarelay.run:8443/healthz
 ```
 
 A ready process responds `{"status":"ready"}`. If the data root is missing, or
