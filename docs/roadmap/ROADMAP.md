@@ -143,11 +143,11 @@ Current post-release execution order:
 5. advance #55/#56 only from measured evidence;
 6. evaluate optional/provider-specific experiments only after the above loop is useful in daily work.
 
-# Portfolio Commercial Validation Track
+# Portfolio Commercial Validation Projection
 
-This track runs **alongside** each product's engineering roadmap. It is a market-learning overlay, not a release gate and not a replacement for canonical engineering truth.
+This section is a **non-authoritative Atlas portfolio projection** of commercial-validation hypotheses and evidence. It is not the canonical product roadmap for DataRelay Link, DataRelay Control, or DataRelay Grant.
 
-Commercial state may influence prioritization only when the underlying evidence is attributable. GitHub/OpenSpec/code/tests/ADR/CI remain authoritative for engineering state, and Engineering System remains authoritative for engineering methodology.
+Product decisions remain owned by each product's canonical repository. Atlas may aggregate attributable commercial evidence and propose prioritization context, but an owning-repository decision always wins if this projection is stale or contradictory. GitHub/OpenSpec/code/tests/ADR/CI remain authoritative for engineering state, and Engineering System remains authoritative for engineering methodology.
 
 ## Shared commercial evidence contract
 
@@ -162,23 +162,29 @@ Every product track records:
 - **Evidence** — attributable customer conversation, PoC/request, procurement action, paid use, renewal/referral, or equivalent market signal.
 - **Moat** — defensibility hypothesis such as workflow depth, integration cost, know-how, IP, or accumulated evidence.
 
-Commercial validation progresses only through explicit evidence:
+Commercial validation is tracked on **independent evidence dimensions**, not one forced linear stage:
 
-`IDEA -> HYPOTHESIS -> CUSTOMER_CONFIRMED -> PAID_SIGNAL -> BUILD -> USER_VALIDATED -> REPEATABLE`
+- **Problem evidence:** `IDEA -> HYPOTHESIS -> CUSTOMER_CONFIRMED -> REPEATED_PROBLEM`
+- **Product/user evidence:** `UNVALIDATED -> PILOT_VALIDATED -> USER_VALIDATED -> REPEATABLE_USE`
+- **Commercial evidence:** `WTP_UNKNOWN -> PROCUREMENT_SIGNAL -> PAID_SIGNAL -> REPEATABLE_REVENUE`
+- **Engineering readiness:** derived from the owning repository's roadmap/release evidence; it is not a commercial stage.
 
 Rules:
 
 - `HYPOTHESIS` is not evidence.
 - Positive feedback without a concrete action is not `PAID_SIGNAL`.
-- Free PoC/use may validate workflow value but does not establish WTP.
+- Free PoC/use may advance product/user evidence without advancing commercial evidence.
+- A paid commitment may advance commercial evidence without claiming broad product validation.
 - Paid evidence must preserve the actual price/commitment context; discounts do not silently redefine list-price assumptions.
 - Atlas may store bounded provenance/references to commercial evidence, but should not ingest unnecessary sensitive customer content.
 - A commercial stage never overrides security, correctness, exact-HEAD validation, release, or owner-approval gates.
 - These tracks do not commit DataRelay to hosted SaaS, multi-tenancy, a pricing model, or an external product launch.
 
-## DataRelay Link — Commercial Track
+## DataRelay Link — Commercial Projection
 
-**Current stage: HYPOTHESIS**
+**Owning product authority:** `datarelay-labs/datarelay-link`, current product roadmap #45.
+
+**Atlas projection:** Problem = `HYPOTHESIS`; Product/User = `UNVALIDATED`; Commercial = `WTP_UNKNOWN`.
 
 - **Problem hypothesis:** teams need secure, low-friction remote access/service exposure without expanding inbound firewall/public-service footprint or relying on brittle manual tunnel operations.
 - **Buyer hypothesis:** security, network, infrastructure/platform operations, and managed-service teams.
@@ -191,9 +197,11 @@ Rules:
 
 Next commercial exit: obtain attributable customer confirmation of the problem and buyer, then request a concrete paid or procurement commitment before broad feature expansion.
 
-## DataRelay Control — Commercial Track
+## DataRelay Control — Commercial Projection
 
-**Current stage: HYPOTHESIS**
+**Owning product authority:** `datarelay-labs/datarelay-control`, current v1 product roadmap #91.
+
+**Atlas projection:** Problem = `HYPOTHESIS`; Product/User = `UNVALIDATED`; Commercial = `WTP_UNKNOWN`.
 
 - **Problem hypothesis:** teams managing many security/data integrations need one operational control plane for routing, transformation, delivery health, governance, and connector lifecycle instead of fragmented per-integration tooling.
 - **Buyer hypothesis:** security operations/platform engineering, integration operations, MSSP/MDR platform teams, and technical owners responsible for reliable data delivery.
@@ -206,9 +214,11 @@ Next commercial exit: obtain attributable customer confirmation of the problem a
 
 Next commercial exit: identify one repeated integration/operations pain with a named buyer and convert a bounded pilot into a paid signal.
 
-## DataRelay Grant — Commercial Track
+## DataRelay Grant — Commercial Projection
 
-**Current stage: HYPOTHESIS**
+**Owning product authority:** `datarelay-labs/datarelay-grant`. The repository is currently a pre-release product definition; no canonical commercial roadmap is assumed by Atlas.
+
+**Atlas projection:** Problem = `HYPOTHESIS`; Product/User = `UNVALIDATED`; Commercial = `WTP_UNKNOWN`.
 
 - **Problem hypothesis:** organizations need a reusable approval/governance layer for sensitive or privileged actions instead of embedding inconsistent approval logic inside every product/workflow.
 - **Buyer hypothesis:** security/IT governance, platform owners, compliance-sensitive operations, and product teams that need auditable human approval.
@@ -223,7 +233,9 @@ Next commercial exit: validate that the approval problem is independently budget
 
 ## DataRelay Atlas — Commercial Track
 
-**External commercial stage: IDEA**
+**Owning product authority:** this repository and its canonical Atlas roadmap.
+
+**External commercial posture:** Problem = `HYPOTHESIS`; External Product/User = `UNVALIDATED`; Commercial = `WTP_UNKNOWN`.
 
 Atlas remains **internal/dogfood-first**. Internal usage can validate product utility and operating leverage, but it must not be counted as external buyer/WTP evidence.
 
@@ -247,6 +259,8 @@ When choosing between otherwise valid roadmap items, Atlas may surface the stron
 - **commercial validation** — will a real buyer commit money/resources for it?
 
 The desired portfolio behavior is to invest more heavily only as evidence advances, while retaining a bounded exploration budget for new hypotheses.
+
+For Link, Control, and Grant, Atlas must treat these entries as projections and reconcile them against the owning repository before using them for prioritization. A missing or stale owning-repository commercial contract remains `UNKNOWN`, not implied approval.
 
 # Atlas Core
 
