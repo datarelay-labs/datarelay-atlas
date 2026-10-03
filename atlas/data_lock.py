@@ -18,6 +18,25 @@ from atlas.provenance import ValidationError
 
 LOCK_NAME = ".write.lock"
 
+
+def _effective_uid() -> int:
+    return os.geteuid()
+
+
+def require_data_root_writer_owner(data_root: Path) -> None:
+    """Reject writers that would create service-unreadable 0600 data files."""
+    root = Path(data_root)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        current = os.stat(root, follow_symlinks=False)
+    except OSError as exc:
+        raise ValidationError("data root writer ownership cannot be verified") from exc
+    if not stat.S_ISDIR(current.st_mode):
+        raise ValidationError("data root writer ownership cannot be verified")
+    if current.st_uid != _effective_uid():
+        raise ValidationError("data root writer does not own data root")
+
+
 _holders: dict[str, "_Holder"] = {}
 _holders_guard = threading.Lock()
 
