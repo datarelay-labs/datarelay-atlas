@@ -490,6 +490,7 @@ class OpsCheckTests(unittest.TestCase):
         self.assertLess(install.index("groupadd"), install.index("useradd"))
         self.assertLess(install.index("useradd"), install.index("install -d"))
         self.assertLess(install.index("ops check --prod"), install.index("systemctl enable"))
+        self.assertIn("/opt/datarelay-atlas/.venv/bin/pip install --no-cache-dir -r", install)
         check = blocks[1]
         self.assertIn("sudo --user atlas --group atlas", check)
         self.assertIn("/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod", check)
