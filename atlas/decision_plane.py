@@ -33,7 +33,7 @@ OUTCOMES = frozenset({"UNKNOWN", "VERIFIED_SUCCESS", "VERIFIED_FAILURE"})
 _MAX_BYTES = 1024 * 1024
 _MAX_RECORDS = 1000
 _MAX_CANDIDATES = 128
-_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$")
+_ID = re.compile(r"^(?:[A-Za-z0-9]|\.[A-Za-z0-9])[A-Za-z0-9._:/@+-]{0,255}$")
 _PROVIDER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$")
 _SECRET = re.compile(r"(?:^|[^A-Za-z0-9])(?:sk-|ghp_|github_pat_|AKIA|Bearer |-----BEGIN)")
@@ -58,6 +58,7 @@ def _identity(value: object, *, label: str, provider: bool = False) -> str:
     pattern = _PROVIDER if provider else _ID
     if (
         not isinstance(value, str)
+        or len(value) > 256
         or pattern.fullmatch(value) is None
         or _SECRET.search(value) is not None
     ):

@@ -49,6 +49,14 @@ from atlas.decision_plane_canary import (
     decision_canary_dashboard,
     publish_decision_canary_admission,
 )
+from atlas.decision_plane_limited_active import limited_active_dashboard
+from atlas.decision_plane_focused_check_limited_active import (
+    focused_check_limited_active_dashboard,
+)
+from atlas.decision_plane_measured_active import (
+    measured_active_dashboard,
+    record_measured_active_observation,
+)
 from atlas.operations_readiness import operations_readiness
 from atlas.runtime_observability import runtime_observability_snapshot
 from atlas.personal_knowledge import build_personal_retriever, personal_knowledge_dashboard
@@ -517,6 +525,36 @@ class AtlasService:
     def publish_decision_canary_admission(self, request: object) -> dict[str, object]:
         """Publish one derived bounded canary admission snapshot."""
         return publish_decision_canary_admission(self.data_root, request)
+
+    def decision_limited_active_dashboard(self) -> dict[str, object]:
+        """Return bounded OPTIONAL_CONTEXT_SELECTION limited-active evidence."""
+        return limited_active_dashboard(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+        )
+
+    def decision_focused_check_limited_active_dashboard(
+        self,
+    ) -> dict[str, object]:
+        """Return bounded FOCUSED_CHECK_SELECTION limited-active evidence."""
+        return focused_check_limited_active_dashboard(
+            self.data_root,
+            repo_root=Path(__file__).resolve().parents[1],
+        )
+
+    def decision_measured_active_dashboard(self) -> dict[str, object]:
+        """Return measured LIMITED_ACTIVE outcome and rollback evidence."""
+        return measured_active_dashboard(self.data_root)
+
+    def record_decision_measured_active(
+        self,
+        observation: object,
+    ) -> dict[str, object]:
+        """Record one exact-receipt downstream measured-active observation."""
+        return record_measured_active_observation(
+            self.data_root,
+            observation,
+        )
 
     def append_decision_plane_observation(self, observation: object) -> dict[str, object]:
         """Append one validated derived Decision Plane observation."""

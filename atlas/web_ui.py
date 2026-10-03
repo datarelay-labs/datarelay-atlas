@@ -691,6 +691,59 @@ def render_decision_plane(
             "effective_decision": "CANARY_NOT_ELIGIBLE",
             "admission": None,
         }
+    try:
+        limited_active = service.decision_limited_active_dashboard()
+    except ValidationError:
+        limited_active = {
+            "state": "UNAVAILABLE",
+            "authority": "OPTIONAL_CONTEXT_SELECTION_ONLY",
+            "rollout_state": "LIMITED_ACTIVE",
+            "effect_count": 0,
+            "terminal_count": 0,
+            "in_progress_count": 0,
+            "binding_state": "UNKNOWN",
+            "result_counts": {"APPLIED_CANARY": 0, "FALLBACK": 0},
+            "latest_effect": None,
+        }
+    try:
+        focused_limited_active = (
+            service.decision_focused_check_limited_active_dashboard()
+        )
+    except ValidationError:
+        focused_limited_active = {
+            "state": "UNAVAILABLE",
+            "authority": "FOCUSED_CHECK_SELECTION_ONLY",
+            "rollout_state": "LIMITED_ACTIVE",
+            "effect_count": 0,
+            "terminal_count": 0,
+            "in_progress_count": 0,
+            "binding_state": "UNKNOWN",
+            "result_counts": {
+                "APPLIED_CANARY": 0,
+                "FALLBACK": 0,
+                "NO_EFFECT": 0,
+            },
+            "latest_effect": None,
+        }
+
+    try:
+        measured_active = service.decision_measured_active_dashboard()
+    except ValidationError:
+        measured_active = {
+            "state": "UNAVAILABLE",
+            "authority": "MEASURED_ACTIVE_EVIDENCE_ONLY",
+            "expansion_authority": "NONE",
+            "pass_authority": "NONE",
+            "human_required_authority": "NONE",
+            "measurement_count": 0,
+            "class_policies": [],
+            "latest_record": None,
+        }
+    measured_policy_text = ", ".join(
+        f'{item["decision_class"]}:{item["effective_state"]}'
+        for item in measured_active["class_policies"]
+    ) or "NONE"
+
     canary_rows = "".join(
         f'<tr><td><code>{escape(str(item["decision_class"]))}</code></td>'
         f'<td><span class="pill">{escape(str(item["replay_assessment"]))}</span></td>'
@@ -752,6 +805,32 @@ def render_decision_plane(
         '<button type="submit">Prepare checks</button></form>'
         + check_html
         + '<p class="muted">Terminal release gates remain deterministic and outside model selection authority.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Limited-active optional context</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(limited_active["state"]))}</span></dd>'
+        f'<dt>Rollout</dt><dd><span class="pill">{escape(str(limited_active["rollout_state"]))}</span></dd>'
+        f'<dt>Effects</dt><dd>{limited_active["effect_count"]}</dd>'
+        f'<dt>Terminal / in-progress</dt><dd>{limited_active["terminal_count"]} / {limited_active["in_progress_count"]}</dd>'
+        f'<dt>Binding</dt><dd><span class="pill">{escape(str(limited_active["binding_state"]))}</span></dd>'
+        f'<dt>Applied / fallback</dt><dd>{limited_active["result_counts"]["APPLIED_CANARY"]} / {limited_active["result_counts"]["FALLBACK"]}</dd>'
+        f'<dt>Authority</dt><dd><code>{escape(str(limited_active["authority"]))}</code></dd></dl>'
+        '<p class="muted">Only OPTIONAL_CONTEXT_SELECTION may be applied. Invalid selector choices fall back to the complete Atlas-prepared candidate set; permission, deploy, release and final PASS authority remain NONE.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Limited-active focused checks</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(focused_limited_active["state"]))}</span></dd>'
+        f'<dt>Rollout</dt><dd><span class="pill">{escape(str(focused_limited_active["rollout_state"]))}</span></dd>'
+        f'<dt>Effects</dt><dd>{focused_limited_active["effect_count"]}</dd>'
+        f'<dt>Terminal / in-progress</dt><dd>{focused_limited_active["terminal_count"]} / {focused_limited_active["in_progress_count"]}</dd>'
+        f'<dt>Binding</dt><dd><span class="pill">{escape(str(focused_limited_active["binding_state"]))}</span></dd>'
+        f'<dt>Applied / fallback / no effect</dt><dd>{focused_limited_active["result_counts"]["APPLIED_CANARY"]} / {focused_limited_active["result_counts"]["FALLBACK"]} / {focused_limited_active["result_counts"]["NO_EFFECT"]}</dd>'
+        f'<dt>Authority</dt><dd><code>{escape(str(focused_limited_active["authority"]))}</code></dd></dl>'
+        '<p class="muted">FOCUSED_CHECK_SELECTION may narrow only affected non-terminal checks. Every terminal/release-required check remains mandatory; invalid choices fall back to all affected checks and no affected checks produce deterministic NO_EFFECT.</p></section>'
+        '<section class="card" style="margin-top:16px"><h2>Measured active / rollback</h2><dl>'
+        f'<dt>State</dt><dd><span class="pill">{escape(str(measured_active["state"]))}</span></dd>'
+        f'<dt>Measurements</dt><dd>{measured_active["measurement_count"]}</dd>'
+        f'<dt>Policies</dt><dd><code>{escape(measured_policy_text)}</code></dd>'
+        f'<dt>Authority</dt><dd><code>{escape(str(measured_active["authority"]))}</code></dd>'
+        f'<dt>Expansion authority</dt><dd><code>{escape(str(measured_active["expansion_authority"]))}</code></dd>'
+        f'<dt>PASS authority</dt><dd><code>{escape(str(measured_active["pass_authority"]))}</code></dd></dl>'
+        '<p class="muted">Verified quality regression forces subsequent LIMITED_ACTIVE selectors back to deterministic current-choice fallback. MEASURED_EXPANSION_ELIGIBLE is evidence only and grants no activation, release, or PASS authority.</p></section>'
         '<section class="card" style="margin-top:16px"><h2>Canary admission readiness</h2>'
         f'<p><span class="pill">{escape(str(canary["authority"]))}</span> '
         f'<span class="pill">rollout {escape(str(canary["rollout_state"]))}</span> '

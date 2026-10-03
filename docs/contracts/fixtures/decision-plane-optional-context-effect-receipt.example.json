@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "kind": "decision_plane_optional_context_effect_receipt",
+  "activation_id": "activation-example",
+  "canary_request_id": "request-1",
+  "admission_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "decision_class": "OPTIONAL_CONTEXT_SELECTION",
+  "project_id": "datarelay-atlas",
+  "task_kind": "DEVELOPMENT",
+  "activated_at": "2026-09-30T17:00:00Z",
+  "candidate_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "candidate_ids": [
+    ".engineering/project.yaml",
+    "AGENTS.md",
+    "atlas/service.py"
+  ],
+  "required_candidate_ids": [
+    ".engineering/project.yaml",
+    "AGENTS.md"
+  ],
+  "selected_candidate_ids": [
+    ".engineering/project.yaml",
+    "AGENTS.md"
+  ],
+  "result": "APPLIED_CANARY",
+  "fallback_reason": null,
+  "selector_attribution": {
+    "provider": "jev",
+    "model": "system-one",
+    "profile": "bounded-v1",
+    "decision_ref": "decision:optional-context:001"
+  },
+  "authority": "OPTIONAL_CONTEXT_SELECTION_ONLY",
+  "permission_authority": "NONE",
+  "release_authority": "NONE",
+  "deploy_authority": "NONE",
+  "pass_authority": "NONE",
+  "human_required_authority": "NONE",
+  "rollout_state": "LIMITED_ACTIVE"
+}

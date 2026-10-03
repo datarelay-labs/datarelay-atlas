@@ -15,8 +15,10 @@ from atlas.cli import main
 from atlas.data_protection import backup_data_root
 from atlas.decision_plane import (
     append_decision_observation,
+    build_optional_context_candidates,
     decision_canary_readiness,
     decision_plane_dashboard,
+    validate_decision_observation,
 )
 from atlas.decision_plane_canary import (
     FILENAME as CANARY_FILENAME,
@@ -111,6 +113,23 @@ def request_for(
 
 
 class DecisionCanaryTests(unittest.TestCase):
+    def test_generated_mandatory_repository_paths_are_valid_observation_ids(self):
+        candidates = build_optional_context_candidates(
+            ROOT,
+            ["docs/contracts/decision-plane-shadow-replay.md"],
+        )
+        self.assertIn(".engineering/project.yaml", candidates["required_candidate_ids"])
+        observation = replay("mandatory-hidden-path")
+        observation["candidate_ids"] = candidates["candidate_ids"]
+        observation["required_candidate_ids"] = candidates["required_candidate_ids"]
+        observation["current_choice_ids"] = candidates["candidate_ids"]
+        observation["model_choice_ids"] = candidates["required_candidate_ids"]
+        self.assertEqual(validate_decision_observation(observation)["record_id"], "mandatory-hidden-path")
+        schema = json.loads(
+            (CONTRACTS / "decision-plane-observation.schema.json").read_text()
+        )
+        Draft202012Validator(schema).validate(observation)
+
     def test_public_schema_fixtures_and_runtime_are_valid(self):
         readiness_schema = json.loads(
             (CONTRACTS / "decision-plane-canary-readiness.schema.json").read_text()
