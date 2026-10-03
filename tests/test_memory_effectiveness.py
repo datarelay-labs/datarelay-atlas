@@ -70,6 +70,14 @@ class MemoryEffectivenessTests(unittest.TestCase):
                 self.svc.record_memory_effectiveness(self.obs())
         self.assertFalse(store.exists())
 
+    def test_owner_drift_before_publish_cleans_temp(self):
+        actual_uid=self.root.stat().st_uid
+        with patch("atlas.data_lock._effective_uid", side_effect=[actual_uid, actual_uid, actual_uid + 1]):
+            with self.assertRaisesRegex(ValidationError, "does not own data root"):
+                self.svc.record_memory_effectiveness(self.obs())
+        self.assertFalse((self.root/"memory-effectiveness.json").exists())
+        self.assertFalse((self.root/"memory-effectiveness.json.tmp").exists())
+
     def test_data_root_path_swap_while_waiting_fails_closed(self):
         lock_root=Path(self.tmp.name)/"swap-root"; moved=Path(self.tmp.name)/"swap-old"; original=fcntl.flock
         swapped={"done":False}

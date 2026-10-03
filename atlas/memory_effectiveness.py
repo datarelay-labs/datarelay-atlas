@@ -43,9 +43,14 @@ def record_effectiveness(root: Path, observation: dict[str,object]):
         require_data_root_writer_owner_fd(root_fd)
         tmp=p.with_suffix(".json.tmp")
         if tmp.exists() or tmp.is_symlink() or p.is_symlink(): raise ValidationError("memory effectiveness store is unsafe")
-        with tmp.open("xb") as f: f.write(raw); f.flush(); os.fsync(f.fileno())
-        require_data_root_writer_owner_fd(root_fd)
-        os.replace(tmp,p); os.chmod(p,0o600)
+        try:
+            with tmp.open("xb") as f: f.write(raw); f.flush(); os.fsync(f.fileno())
+            require_data_root_writer_owner_fd(root_fd)
+            os.replace(tmp,p); os.chmod(p,0o600)
+        except Exception:
+            try: tmp.unlink(missing_ok=True)
+            except OSError: pass
+            raise
     return {"state":"RECORDED","observation_count":len(items),"policy_mutated":False}
 
 def effectiveness_report(root: Path, *, project_id: str|None=None):

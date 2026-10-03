@@ -276,13 +276,20 @@ def _publish_store(path: Path, items: list[dict[str, object]], *, root_fd: int) 
     tmp = path.with_suffix(path.suffix + ".tmp")
     if path.is_symlink() or tmp.exists() or tmp.is_symlink():
         raise ValidationError("memory candidate store is unsafe")
-    with tmp.open("xb") as handle:
-        handle.write(encoded)
-        handle.flush()
-        os.fsync(handle.fileno())
-    require_data_root_writer_owner_fd(root_fd)
-    os.replace(tmp, path)
-    os.chmod(path, 0o600)
+    try:
+        with tmp.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        require_data_root_writer_owner_fd(root_fd)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def control_memory_candidate(
@@ -419,23 +426,7 @@ def ingest_memory_candidates(
         combined = [*store["items"], *additions]
         if len(combined) > _MAX_ITEMS:
             raise ValidationError("memory candidate store item limit exceeded")
-        payload = {"schema_version": SCHEMA_VERSION, "kind": "atlas_memory_candidates", "items": combined}
-        encoded = (json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n").encode("utf-8")
-        if len(encoded) > _MAX_FILE_BYTES:
-            raise ValidationError("memory candidate store exceeds bounded size")
-        if contains_unsafe_secret(encoded.decode("utf-8")):
-            raise ValidationError("memory candidate store contains unsafe secret")
-        require_data_root_writer_owner_fd(root_fd)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        if path.is_symlink() or tmp.exists() or tmp.is_symlink():
-            raise ValidationError("memory candidate store is unsafe")
-        with tmp.open("xb") as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-        require_data_root_writer_owner_fd(root_fd)
-        os.replace(tmp, path)
-        os.chmod(path, 0o600)
+        _publish_store(path, combined, root_fd=root_fd)
     return {
         "state": "INGESTED",
         "authority": AUTHORITY,

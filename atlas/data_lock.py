@@ -87,7 +87,11 @@ def data_root_write_lock(data_root: Path):
             path = Path(data_root)
             path.mkdir(parents=True, exist_ok=True)
             root_fd = _open_data_root_dir(path)
-            fd = _open_lock_file_at(root_fd)
+            try:
+                fd = _open_lock_file_at(root_fd)
+            except Exception:
+                os.close(root_fd)
+                raise
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX)
                 _verify_data_root_identity(path, root_fd)
