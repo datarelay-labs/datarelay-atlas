@@ -59,6 +59,10 @@ class AtlasContextTools:
             [str | None, str | None, str | None],
             dict[str, object],
         ] | None = None,
+        memory_candidates_factory: Callable[
+            [str | None, str | None, str | None, int],
+            dict[str, object],
+        ] | None = None,
     ) -> None:
         if (retriever is None) == (retriever_factory is None):
             raise ValueError("AtlasContextTools requires exactly one retriever source")
@@ -90,6 +94,7 @@ class AtlasContextTools:
         self._decision_canary_factory = decision_canary_factory
         self._decision_canary_admission_factory = decision_canary_admission_factory
         self._task_context_factory = task_context_factory
+        self._memory_candidates_factory = memory_candidates_factory
 
     def _retriever_for(self, project_id: str) -> Retriever:
         if self._retriever_factory is not None:
@@ -113,6 +118,13 @@ class AtlasContextTools:
                 {
                     "name": "get_task_context",
                     "description": "Return one bounded current task-context bootstrap with JIT retrieval references",
+                }
+            )
+        if self._memory_candidates_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_memory_candidates",
+                    "description": "Return bounded non-authoritative candidate memory for one explicit scope",
                 }
             )
         if self._intelligence_factory is not None and READ_SCOPE in scopes:
@@ -309,7 +321,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_task_context", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_route_quality", "get_provider_transition_preview", "get_decision_plane", "get_decision_canary_readiness", "get_decision_plane_canary", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_instruction_governance_routing", "get_instruction_governance_disposition", "get_instruction_governance_canary", "get_concurrency_admission", "get_concurrency_dispatch_authorization", "get_concurrency_dispatch_effects", "get_concurrency_dispatch_joins", "get_concurrency_execution_cycles", "get_personal_knowledge", "search_personal_knowledge", "get_engineering_evidence", "search_knowledge"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_task_context", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_route_quality", "get_provider_transition_preview", "get_decision_plane", "get_decision_canary_readiness", "get_decision_plane_canary", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_instruction_governance_routing", "get_instruction_governance_disposition", "get_instruction_governance_canary", "get_concurrency_admission", "get_concurrency_dispatch_authorization", "get_concurrency_dispatch_effects", "get_concurrency_dispatch_joins", "get_concurrency_execution_cycles", "get_personal_knowledge", "search_personal_knowledge", "get_memory_candidates", "get_engineering_evidence", "search_knowledge"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "get_task_context":
@@ -323,6 +335,21 @@ class AtlasContextTools:
                     project_id,
                     repository,
                     workstream,
+                )
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_memory_candidates":
+            if self._memory_candidates_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_memory_candidates")
+            try:
+                project_id = _optional_text(args, "project_id") or None
+                repository = _optional_text(args, "repository") or None
+                workstream = _optional_text(args, "workstream") or None
+                limit = _positive_limit(args.get("limit", 100))
+                payload = self._memory_candidates_factory(
+                    project_id, repository, workstream, limit
                 )
             except ValidationError as exc:
                 return ToolResult(ok=False, data=None, error=str(exc))

@@ -20,6 +20,7 @@ from atlas.engineering_evidence import (
     validate_engineering_evidence_store,
 )
 from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
+from atlas.memory_candidates import FILENAME as MEMORY_CANDIDATES_FILENAME, validate_memory_candidate_store
 from atlas.personal_knowledge import (
     MANIFEST_FILENAME as PERSONAL_MANIFEST_FILENAME,
     validate_personal_import_manifest,
@@ -73,7 +74,7 @@ PARTIAL_SUFFIX = ".partial"
 _DURABLE_NAME = "registry.json"
 _PROJECTIONS_DIR = "projections"
 _CONTROLLER_NAME = "work-controller.json"
-_DURABLE_METADATA_FILES = frozenset({ENGINEERING_EVIDENCE_FILENAME})
+_DURABLE_METADATA_FILES = frozenset({ENGINEERING_EVIDENCE_FILENAME, MEMORY_CANDIDATES_FILENAME})
 _REPLAY_STATE_FILES = frozenset(
     {
         CONCURRENCY_EFFECTS_FILENAME,
@@ -294,6 +295,8 @@ def _collect_snapshot(root: Path) -> list[_SnapshotFile]:
         )
     if ENGINEERING_EVIDENCE_FILENAME in durable_metadata_files:
         validate_engineering_evidence_store(root)
+    if MEMORY_CANDIDATES_FILENAME in durable_metadata_files:
+        validate_memory_candidate_store(root)
     personal_manifest = root / PERSONAL_MANIFEST_FILENAME
     if personal_manifest.exists():
         validate_personal_import_manifest(root)
@@ -611,6 +614,7 @@ def _assert_backup_tree(backup: Path) -> list[_SnapshotFile]:
     _validate_snapshot_files(files)
     validate_personal_import_manifest(backup)
     validate_engineering_evidence_store(backup)
+    validate_memory_candidate_store(backup)
     _load_projects(backup)
     _load_controller(backup)
     return files

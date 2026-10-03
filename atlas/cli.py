@@ -289,6 +289,18 @@ def cmd_task_context_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_memory_candidates_show(args: argparse.Namespace) -> int:
+    _print_json(
+        _service(args).memory_candidates(
+            project_id=args.project_id,
+            repository=args.repository,
+            workstream=args.workstream,
+            limit=args.limit,
+        )
+    )
+    return 0
+
+
 def cmd_engineering_evidence_show(args: argparse.Namespace) -> int:
     project_ids = list(args.project_id or [])
     _print_json(_service(args).engineering_evidence_dashboard(project_ids or None))
@@ -1068,6 +1080,25 @@ def build_parser() -> argparse.ArgumentParser:
     identity.add_argument("--repository")
     task_context_show.add_argument("--workstream", default=None)
     task_context_show.set_defaults(func=cmd_task_context_show)
+
+    memory_candidates = sub.add_parser(
+        "memory-candidates",
+        help="Read-only non-authoritative candidate memory",
+    )
+    memory_candidates_sub = memory_candidates.add_subparsers(
+        dest="memory_candidates_command",
+        required=True,
+    )
+    memory_candidates_show = memory_candidates_sub.add_parser(
+        "show",
+        help="Show bounded candidates for one explicit project/repository scope",
+    )
+    memory_identity = memory_candidates_show.add_mutually_exclusive_group(required=True)
+    memory_identity.add_argument("--project-id")
+    memory_identity.add_argument("--repository")
+    memory_candidates_show.add_argument("--workstream", default=None)
+    memory_candidates_show.add_argument("--limit", type=int, default=100)
+    memory_candidates_show.set_defaults(func=cmd_memory_candidates_show)
 
     engineering_evidence = sub.add_parser(
         "engineering-evidence",
