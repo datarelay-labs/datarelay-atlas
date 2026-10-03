@@ -21,6 +21,7 @@ from atlas.engineering_evidence import (
 )
 from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
 from atlas.memory_candidates import FILENAME as MEMORY_CANDIDATES_FILENAME, validate_memory_candidate_store
+from atlas.memory_effectiveness import FILENAME as MEMORY_EFFECTIVENESS_FILENAME
 from atlas.personal_knowledge import (
     MANIFEST_FILENAME as PERSONAL_MANIFEST_FILENAME,
     validate_personal_import_manifest,
@@ -74,7 +75,7 @@ PARTIAL_SUFFIX = ".partial"
 _DURABLE_NAME = "registry.json"
 _PROJECTIONS_DIR = "projections"
 _CONTROLLER_NAME = "work-controller.json"
-_DURABLE_METADATA_FILES = frozenset({ENGINEERING_EVIDENCE_FILENAME, MEMORY_CANDIDATES_FILENAME})
+_DURABLE_METADATA_FILES = frozenset({ENGINEERING_EVIDENCE_FILENAME, MEMORY_CANDIDATES_FILENAME, MEMORY_EFFECTIVENESS_FILENAME})
 _REPLAY_STATE_FILES = frozenset(
     {
         CONCURRENCY_EFFECTS_FILENAME,

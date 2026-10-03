@@ -314,6 +314,11 @@ def cmd_memory_candidates_control(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_memory_effectiveness_show(args: argparse.Namespace) -> int:
+    _print_json(_service(args).memory_effectiveness_report(args.project_id))
+    return 0
+
+
 def cmd_engineering_evidence_show(args: argparse.Namespace) -> int:
     project_ids = list(args.project_id or [])
     _print_json(_service(args).engineering_evidence_dashboard(project_ids or None))
@@ -1122,6 +1127,15 @@ def build_parser() -> argparse.ArgumentParser:
     memory_candidates_control.add_argument("--content")
     memory_candidates_control.add_argument("--observed-at")
     memory_candidates_control.set_defaults(func=cmd_memory_candidates_control)
+
+    memory_effectiveness = sub.add_parser(
+        "memory-effectiveness",
+        help="Measurement-only memory/context effectiveness report",
+    )
+    memory_effectiveness_sub = memory_effectiveness.add_subparsers(dest="memory_effectiveness_command", required=True)
+    memory_effectiveness_show = memory_effectiveness_sub.add_parser("show", help="Show bounded effectiveness metrics")
+    memory_effectiveness_show.add_argument("--project-id")
+    memory_effectiveness_show.set_defaults(func=cmd_memory_effectiveness_show)
 
     engineering_evidence = sub.add_parser(
         "engineering-evidence",
