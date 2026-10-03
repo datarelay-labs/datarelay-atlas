@@ -73,6 +73,7 @@ from atlas.instruction_governance_canary import (
     record_instruction_governance_canary,
 )
 from atlas.memory_candidates import control_memory_candidate, ingest_memory_candidates, list_memory_candidates
+from atlas.memory_effectiveness import effectiveness_report, record_effectiveness
 from atlas.local_markdown import (
     IMPORT_DIRNAME,
     SNAPSHOT_DIRNAME,
@@ -179,6 +180,20 @@ class AtlasService:
             workstream=workstream,
             limit=limit,
         )
+
+    def memory_effectiveness_report(self, project_id: str | None = None) -> dict[str, object]:
+        if project_id is not None:
+            self.registry.get(project_id)
+        return effectiveness_report(self.data_root, project_id=project_id)
+
+    def record_memory_effectiveness(self, observation: dict[str, object]) -> dict[str, object]:
+        project_id = observation.get("project_id") if isinstance(observation, dict) else None
+        if not isinstance(project_id, str):
+            raise ValidationError("memory effectiveness project_id is invalid")
+        project = self.registry.get(project_id)
+        if observation.get("repository") != project.repository:
+            raise ValidationError("memory effectiveness repository does not match project")
+        return record_effectiveness(self.data_root, observation)
 
     def control_memory_candidate(
         self,
