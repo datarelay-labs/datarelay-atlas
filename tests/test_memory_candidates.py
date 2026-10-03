@@ -2,6 +2,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from atlas.memory_candidates import AUTHORITY, ingest_memory_candidates, list_memory_candidates
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
@@ -57,6 +58,21 @@ class MemoryCandidateTests(unittest.TestCase):
         backup=Path(self.tmp.name)/"backup"; restored=Path(self.tmp.name)/"restored"
         backup_data_root(self.root,backup); restore_test(backup,restored)
         self.assertEqual(load_memory_candidates(restored),load_memory_candidates(self.root))
+
+    def test_writer_uid_must_match_data_root_owner(self):
+        store=self.root/"memory-candidates.json"
+        with patch("atlas.data_lock._effective_uid", return_value=self.root.stat().st_uid + 1):
+            with self.assertRaisesRegex(ValidationError, "does not own data root"):
+                self.svc.ingest_memory_candidates(project_id="atlas",input_kind="RUN_SUMMARY",
+                    observed_at="2026-10-03T01:00:00Z",candidates=[{"candidate_class":"RUN_SUMMARY","content":"safe"}])
+        self.assertFalse(store.exists())
+
+    def test_unreadable_store_is_bounded_validation_error(self):
+        self.svc.ingest_memory_candidates(project_id="atlas",input_kind="RUN_SUMMARY",
+            observed_at="2026-10-03T01:00:00Z",candidates=[{"candidate_class":"RUN_SUMMARY","content":"safe"}])
+        with patch.object(Path, "read_bytes", side_effect=PermissionError(13, "denied")):
+            with self.assertRaisesRegex(ValidationError, "store is unreadable"):
+                self.svc.memory_candidates(project_id="atlas")
 
 if __name__=="__main__":
     unittest.main()
@@ -134,3 +150,10 @@ class MemoryCandidateControlTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.svc.control_memory_candidate(project_id="atlas",candidate_id=self.cid,action="CORRECT",
                 content="password=unsafe-secret-value",observed_at="2026-10-03T00:00:00Z")
+
+    def test_control_rejects_writer_uid_mismatch_without_rewrite(self):
+        store=self.root/"memory-candidates.json"; before=store.read_bytes()
+        with patch("atlas.data_lock._effective_uid", return_value=self.root.stat().st_uid + 1):
+            with self.assertRaisesRegex(ValidationError, "does not own data root"):
+                self.svc.control_memory_candidate(project_id="atlas",candidate_id=self.cid,action="PIN")
+        self.assertEqual(store.read_bytes(), before)

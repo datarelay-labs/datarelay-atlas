@@ -10,7 +10,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
-from atlas.data_lock import data_root_write_lock
+from atlas.data_lock import data_root_write_lock, require_data_root_writer_owner
 from atlas.provenance import ValidationError
 from atlas.secrets import contains_unsafe_secret
 
@@ -138,7 +138,10 @@ def load_memory_candidates(data_root: Path) -> dict[str, object]:
         return _empty_store()
     if not path.is_file():
         raise ValidationError("memory candidate store is unsafe")
-    raw = path.read_bytes()
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ValidationError("memory candidate store is unreadable") from exc
     if len(raw) > _MAX_FILE_BYTES:
         raise ValidationError("memory candidate store exceeds bounded size")
     try:
@@ -296,6 +299,7 @@ def control_memory_candidate(
     if action not in {"PIN", "UNPIN", "FORGET", "CORRECT"}:
         raise ValidationError("memory candidate action is invalid")
     root = Path(data_root); path = root / FILENAME
+    require_data_root_writer_owner(root)
     with data_root_write_lock(root):
         store = load_memory_candidates(root)
         index = next((i for i,x in enumerate(store["items"]) if x["candidate_id"] == candidate_id), None)
@@ -393,7 +397,7 @@ def ingest_memory_candidates(
 
     root = Path(data_root)
     path = root / FILENAME
-    root.mkdir(parents=True, exist_ok=True)
+    require_data_root_writer_owner(root)
     with data_root_write_lock(root):
         store = load_memory_candidates(root)
         existing = {item["candidate_id"] for item in store["items"]}

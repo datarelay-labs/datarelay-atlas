@@ -1,6 +1,8 @@
 import tempfile, unittest
 from pathlib import Path
+from unittest.mock import patch
 from atlas.service import AtlasService
+from atlas.memory_effectiveness import effectiveness_report
 from atlas.provenance import ValidationError
 from atlas.data_protection import backup_data_root, restore_test
 
@@ -37,3 +39,16 @@ class MemoryEffectivenessTests(unittest.TestCase):
         backup_data_root(self.root,backup); restore_test(backup,restored)
         other=AtlasService(restored)
         self.assertEqual(other.memory_effectiveness_report("atlas")["observation_count"],1)
+
+    def test_writer_uid_must_match_data_root_owner(self):
+        store=self.root/"memory-effectiveness.json"
+        with patch("atlas.data_lock._effective_uid", return_value=self.root.stat().st_uid + 1):
+            with self.assertRaisesRegex(ValidationError, "does not own data root"):
+                self.svc.record_memory_effectiveness(self.obs())
+        self.assertFalse(store.exists())
+
+    def test_unreadable_store_is_bounded_validation_error(self):
+        self.svc.record_memory_effectiveness(self.obs())
+        with patch.object(Path, "read_text", side_effect=PermissionError(13, "denied")):
+            with self.assertRaisesRegex(ValidationError, "store is unreadable"):
+                effectiveness_report(self.root, project_id="atlas")

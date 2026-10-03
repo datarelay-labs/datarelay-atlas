@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json, os
 from pathlib import Path
-from atlas.data_lock import data_root_write_lock
+from atlas.data_lock import data_root_write_lock, require_data_root_writer_owner
 from atlas.provenance import ValidationError
 from atlas.secrets import contains_unsafe_secret
 
@@ -15,6 +15,7 @@ def _load(root: Path):
     if not p.exists(): return {"schema_version":1,"kind":"atlas_memory_effectiveness","observations":[]}
     if p.is_symlink() or not p.is_file() or p.stat().st_size>_MAX_BYTES: raise ValidationError("memory effectiveness store is unsafe")
     try: x=json.loads(p.read_text())
+    except OSError as e: raise ValidationError("memory effectiveness store is unreadable") from e
     except (ValueError,UnicodeError) as e: raise ValidationError("memory effectiveness store is invalid") from e
     if not isinstance(x,dict) or set(x)!={"schema_version","kind","observations"} or x["schema_version"]!=1 or x["kind"]!="atlas_memory_effectiveness" or not isinstance(x["observations"],list) or len(x["observations"])>_MAX_ITEMS:
         raise ValidationError("memory effectiveness store is invalid")
@@ -31,7 +32,7 @@ def record_effectiveness(root: Path, observation: dict[str,object]):
         if type(v) is not int or v<0: raise ValidationError("memory effectiveness observation is invalid")
     if observation["important_recalled"]>observation["important_expected"] or not isinstance(observation["first_pass_success"],bool):
         raise ValidationError("memory effectiveness observation is invalid")
-    root=Path(root); root.mkdir(parents=True,exist_ok=True); p=root/FILENAME
+    root=Path(root); require_data_root_writer_owner(root); p=root/FILENAME
     with data_root_write_lock(root):
         store=_load(root); items=[*store["observations"],dict(observation)]
         if len(items)>_MAX_ITEMS: raise ValidationError("memory effectiveness store is full")
