@@ -57,7 +57,7 @@ sudo install -d -o atlas -g atlas -m 0750 /var/lib/datarelay-atlas
 sudo install -d -o atlas -g atlas -m 0755 /opt/datarelay-atlas
 sudo rsync -a --exclude .venv ./ /opt/datarelay-atlas/
 sudo -u atlas python3 -m venv /opt/datarelay-atlas/.venv
-sudo -u atlas /opt/datarelay-atlas/.venv/bin/pip install -r /opt/datarelay-atlas/requirements.txt
+sudo -u atlas /opt/datarelay-atlas/.venv/bin/pip install --no-cache-dir -r /opt/datarelay-atlas/requirements.txt
 sudo install -m 0640 -o root -g atlas /path/outside/git/service.env /etc/datarelay-atlas/service.env
 sudo install -m 0640 -o root -g atlas /path/outside/git/introspection-client-secret /etc/datarelay-atlas/introspection-client-secret
 sudo install -m 0640 -o root -g atlas /path/outside/git/key.pem /etc/datarelay-atlas/tls/key.pem
