@@ -1,4 +1,5 @@
 import contextlib
+from datetime import datetime, timezone
 import io
 import json
 import os
@@ -341,10 +342,13 @@ class EngineeringEvidenceTests(unittest.TestCase):
             self._import("efficiency", secret)
 
     def _write_lifecycle(self, head: str) -> None:
+        observed_at = datetime.now(timezone.utc).replace(
+            microsecond=0
+        ).isoformat().replace("+00:00", "Z")
         snapshot = {
             "schema_version": 1,
             "kind": "cursor_github_reconciliation",
-            "observed_at": "2026-10-02T07:01:00Z",
+            "observed_at": observed_at,
             "repositories": ["datarelay-labs/demo"],
             "observations": [
                 {

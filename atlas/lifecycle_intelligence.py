@@ -190,10 +190,15 @@ def _work_state(snapshot: Path, repository: str) -> tuple[EvidenceState, frozens
     except (OSError, ValidationError):
         return EvidenceState("UNAVAILABLE", "local lifecycle evidence failed validation"), frozenset(), ()
     now = datetime.now(timezone.utc)
+    observed_at = _github_snapshot_time(metadata["observed_at"])
     if modified_at > now + timedelta(seconds=_GITHUB_LIFECYCLE_MAX_FUTURE_SKEW_SECONDS):
         return EvidenceState("UNAVAILABLE", "local lifecycle cache timestamp is in the future"), frozenset(), ()
+    if observed_at > now + timedelta(seconds=_GITHUB_LIFECYCLE_MAX_FUTURE_SKEW_SECONDS):
+        return EvidenceState("UNAVAILABLE", "local lifecycle observation is in the future"), frozenset(), ()
     if modified_at < now - timedelta(seconds=_GITHUB_LIFECYCLE_MAX_AGE_SECONDS):
         return EvidenceState("STALE", "local lifecycle cache expired"), frozenset(), ()
+    if observed_at < now - timedelta(seconds=_GITHUB_LIFECYCLE_MAX_AGE_SECONDS):
+        return EvidenceState("STALE", "local lifecycle observation expired"), frozenset(), ()
     matching = [item for item in observations if item.get("repository") == repository]
     if not matching:
         return EvidenceState("UNKNOWN", f"snapshot {metadata['observed_at']} has no project observation"), frozenset(), ()

@@ -54,10 +54,13 @@ class TaskContextTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _write_lifecycle(self, *, canonical: bool = True) -> None:
+        observed_at = datetime.now(timezone.utc).replace(
+            microsecond=0
+        ).isoformat().replace("+00:00", "Z")
         snapshot = {
             "schema_version": 1,
             "kind": "cursor_github_reconciliation",
-            "observed_at": "2026-10-03T00:00:00Z",
+            "observed_at": observed_at,
             "repositories": ["datarelay-labs/demo"],
             "observations": [
                 {
@@ -241,6 +244,19 @@ class TaskContextTests(unittest.TestCase):
         self.assertIn("cache expired", expired["lifecycle"]["work"]["detail"])
 
         self._write_lifecycle()
+        observation_stale = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+        observation_stale["observed_at"] = (
+            datetime.now(timezone.utc) - timedelta(hours=2)
+        ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        lifecycle_path.write_text(json.dumps(observation_stale), encoding="utf-8")
+        observation_expired = self.svc.task_context(project_id="demo")
+        self.assertEqual(observation_expired["currentness"]["state"], "STALE")
+        self.assertIn(
+            "observation expired",
+            observation_expired["lifecycle"]["work"]["detail"],
+        )
+
+        self._write_lifecycle()
         future_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).timestamp()
         os.utime(lifecycle_path, (future_time, future_time))
         future = self.svc.task_context(project_id="demo")
@@ -288,7 +304,9 @@ class TaskContextTests(unittest.TestCase):
         snapshot = {
             "schema_version": 1,
             "kind": "cursor_github_reconciliation",
-            "observed_at": "2026-10-03T00:00:00Z",
+            "observed_at": datetime.now(timezone.utc).replace(
+                microsecond=0
+            ).isoformat().replace("+00:00", "Z"),
             "repositories": ["datarelay-labs/demo"],
             "observations": observations,
             "summary": {

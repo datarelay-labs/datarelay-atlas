@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import hashlib
 import json
 import tempfile
@@ -11,6 +12,12 @@ from atlas.cli import build_parser
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
 from atlas.web_ui import _adoption_projection_state, _source_relation, create_app, render_cross_project_search, serve_ui
+
+def _fresh_utc() -> str:
+    return datetime.now(timezone.utc).replace(
+        microsecond=0
+    ).isoformat().replace("+00:00", "Z")
+
 
 class WebUiTests(unittest.TestCase):
     def setUp(self):
@@ -163,7 +170,7 @@ class WebUiTests(unittest.TestCase):
     def test_valid_local_lifecycle_snapshot_surfaces_active_packet(self):
         snapshot = {
             "schema_version": 1, "kind": "cursor_github_reconciliation",
-            "observed_at": "2026-09-30T00:00:00Z", "repositories": ["datarelay-labs/demo"],
+            "observed_at": _fresh_utc(), "repositories": ["datarelay-labs/demo"],
             "observations": [{
                 "repository": "datarelay-labs/demo", "issue_number": 162, "issue_state": "OPEN",
                 "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted",
@@ -183,7 +190,7 @@ class WebUiTests(unittest.TestCase):
     def test_noncanonical_head_mismatch_is_stale_not_observed(self):
         snapshot = {
             "schema_version": 1, "kind": "cursor_github_reconciliation",
-            "observed_at": "2026-09-30T00:00:00Z", "repositories": ["datarelay-labs/demo"],
+            "observed_at": _fresh_utc(), "repositories": ["datarelay-labs/demo"],
             "observations": [{
                 "repository": "datarelay-labs/demo", "issue_number": 171, "issue_state": "OPEN",
                 "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted",
@@ -202,7 +209,7 @@ class WebUiTests(unittest.TestCase):
         head = "b" * 40
         snapshot = {
             "schema_version": 1, "kind": "cursor_github_reconciliation",
-            "observed_at": "2026-09-30T00:00:00Z", "repositories": ["datarelay-labs/demo"],
+            "observed_at": _fresh_utc(), "repositories": ["datarelay-labs/demo"],
             "observations": [{"repository": "datarelay-labs/demo", "issue_number": 171, "issue_state": "OPEN",
                 "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted", "packet_status": "ACTIVE",
                 "branch": "feat/lifecycle", "head": head, "pr_number": 172, "pr_state": "OPEN", "pr_head": head,
@@ -228,7 +235,7 @@ class WebUiTests(unittest.TestCase):
 
     def test_different_candidate_lifecycle_evidence_is_stale(self):
         head = "b" * 40
-        snapshot = {"schema_version": 1, "kind": "cursor_github_reconciliation", "observed_at": "2026-09-30T00:00:00Z",
+        snapshot = {"schema_version": 1, "kind": "cursor_github_reconciliation", "observed_at": _fresh_utc(),
             "repositories": ["datarelay-labs/demo"], "observations": [{"repository": "datarelay-labs/demo", "issue_number": 171,
                 "issue_state": "OPEN", "issue_updated_at": "2026-09-30T00:00:00Z", "author_trust": "trusted", "packet_status": "ACTIVE",
                 "branch": "feat/lifecycle", "head": head, "pr_number": None, "pr_state": "NONE", "pr_head": None,
