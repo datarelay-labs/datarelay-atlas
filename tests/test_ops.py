@@ -494,6 +494,7 @@ class OpsCheckTests(unittest.TestCase):
         self.assertIn("usage github-snapshot", text)
         self.assertIn("lifecycle publish-github-snapshot", text)
         self.assertIn("env -u GITHUB_TOKEN", text)
+        self.assertIn("set -e\nfor project in", text)
         self.assertIn("Atlas does not provide\nan SSH/credential-relay transport", text)
         check = blocks[1]
         self.assertIn("sudo --user atlas --group atlas", check)

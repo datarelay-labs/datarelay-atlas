@@ -133,6 +133,7 @@ sudo --user atlas --group atlas \
   --data-root /var/lib/datarelay-atlas lifecycle publish-github-snapshot \
   --snapshot /tmp/atlas-github-lifecycle.json
 
+set -e
 for project in engineering-system datarelay-atlas datarelay-link data-relay-control datarelay-grant; do
   sudo --user atlas --group atlas \
     env -u GITHUB_TOKEN PYTHONPATH=/opt/datarelay-atlas \
@@ -143,9 +144,12 @@ done
 
 The lifecycle publisher validates the same bounded snapshot schema consumed by
 the read path and atomically replaces only `github-lifecycle.json`. Publication
-requires an observation no more than one hour old, permits at most five minutes
-of future clock skew, refuses rollback behind an already-published observation,
-and treats an identical same-time replay as a no-op. `github-lifecycle.json`
+requires the complete registered GitHub repository set, an observation no more
+than one hour old, permits at most five minutes of future clock skew, refuses
+rollback behind an already-published observation, and treats an identical
+same-time replay as a no-op. The read path also expires a lifecycle cache whose
+publication mtime is older than one hour, so a stopped refresh job cannot leave
+old Work Packet state marked current. `github-lifecycle.json`
 remains backup-excluded derived cache. A malformed, oversized, secret-bearing,
 unsafe, stale, future-dated, rollback, or conflicting same-time snapshot fails
 closed without replacing the previous valid cache. Schedule this sequence only on an approved operator host

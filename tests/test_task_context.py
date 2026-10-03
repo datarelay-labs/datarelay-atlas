@@ -1,6 +1,7 @@
 import contextlib
 from datetime import datetime, timedelta, timezone
 import io
+import os
 import json
 import tempfile
 import unittest
@@ -228,6 +229,20 @@ class TaskContextTests(unittest.TestCase):
         (self.root / "github-lifecycle.json").write_text("{broken", encoding="utf-8")
         unavailable = self.svc.task_context(project_id="demo")
         self.assertEqual(unavailable["currentness"]["state"], "UNAVAILABLE")
+
+        self._write_lifecycle()
+        lifecycle_path = self.root / "github-lifecycle.json"
+        expired_time = (datetime.now(timezone.utc) - timedelta(hours=2)).timestamp()
+        os.utime(lifecycle_path, (expired_time, expired_time))
+        expired = self.svc.task_context(project_id="demo")
+        self.assertEqual(expired["currentness"]["state"], "STALE")
+        self.assertIn("cache expired", expired["lifecycle"]["work"]["detail"])
+
+        self._write_lifecycle()
+        future_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).timestamp()
+        os.utime(lifecycle_path, (future_time, future_time))
+        future = self.svc.task_context(project_id="demo")
+        self.assertEqual(future["currentness"]["state"], "UNAVAILABLE")
 
         self._write_lifecycle(canonical=False)
         stale = self.svc.task_context(project_id="demo")
@@ -579,6 +594,40 @@ verified memory task context bootstrap BODY-MARKER""",
         with self.assertRaisesRegex(ValidationError, "destination is unsafe"):
             self.svc.publish_github_lifecycle_snapshot(cli_input)
         self.assertEqual(victim.read_text(encoding="utf-8"), "keep")
+
+    def test_publish_requires_complete_registered_github_repository_set(self):
+        self.svc.register_project(
+            project_id="peer",
+            repository="datarelay-labs/peer",
+            display_name="Peer",
+        )
+        self.svc.add_source(
+            "peer",
+            source_id="context",
+            source_path="README.md",
+            title="Peer",
+        )
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        partial = {
+            "schema_version": 1,
+            "kind": "cursor_github_reconciliation",
+            "observed_at": now.isoformat().replace("+00:00", "Z"),
+            "repositories": ["datarelay-labs/demo"],
+            "observations": [],
+            "summary": {
+                "observed_count": 0,
+                "canonical_count": 0,
+                "noncanonical_count": 0,
+            },
+        }
+        path = self.root / "partial-lifecycle.json"
+        path.write_text(json.dumps(partial), encoding="utf-8")
+        with self.assertRaisesRegex(
+            ValidationError,
+            "repository set does not match",
+        ):
+            self.svc.publish_github_lifecycle_snapshot(path)
+        self.assertFalse((self.root / "github-lifecycle.json").exists())
 
     def test_cli_and_mcp_expose_equivalent_read_only_context(self):
         self._write_lifecycle()

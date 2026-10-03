@@ -87,6 +87,7 @@ def publish_github_lifecycle_snapshot(
     data_root: Path,
     snapshot_path: Path,
     *,
+    expected_repositories: tuple[str, ...],
     observed_now: datetime | None = None,
 ) -> dict[str, object]:
     """Validate and atomically publish fresh, monotonic GitHub lifecycle cache state."""
@@ -94,6 +95,11 @@ def publish_github_lifecycle_snapshot(
     if source.is_symlink() or not source.is_file():
         raise ValidationError("GitHub lifecycle snapshot input is unsafe")
     _, observations, metadata = load_github_reconciliation_snapshot(source)
+    normalized_expected = tuple(sorted(set(expected_repositories)))
+    if tuple(metadata["repositories"]) != normalized_expected:
+        raise ValidationError(
+            "GitHub lifecycle snapshot repository set does not match the registered GitHub projects"
+        )
     payload = _github_snapshot_payload(observations, metadata)
     assert_content_free(payload)
 
@@ -170,8 +176,14 @@ def _work_state(snapshot: Path, repository: str) -> tuple[EvidenceState, frozens
         return EvidenceState("UNKNOWN", "no trusted local lifecycle evidence"), frozenset(), ()
     try:
         _, observations, metadata = load_github_reconciliation_snapshot(snapshot)
-    except ValidationError:
+        modified_at = datetime.fromtimestamp(snapshot.stat().st_mtime, timezone.utc)
+    except (OSError, ValidationError):
         return EvidenceState("UNAVAILABLE", "local lifecycle evidence failed validation"), frozenset(), ()
+    now = datetime.now(timezone.utc)
+    if modified_at > now + timedelta(seconds=_GITHUB_LIFECYCLE_MAX_FUTURE_SKEW_SECONDS):
+        return EvidenceState("UNAVAILABLE", "local lifecycle cache timestamp is in the future"), frozenset(), ()
+    if modified_at < now - timedelta(seconds=_GITHUB_LIFECYCLE_MAX_AGE_SECONDS):
+        return EvidenceState("STALE", "local lifecycle cache expired"), frozenset(), ()
     matching = [item for item in observations if item.get("repository") == repository]
     if not matching:
         return EvidenceState("UNKNOWN", f"snapshot {metadata['observed_at']} has no project observation"), frozenset(), ()
