@@ -55,6 +55,7 @@ class AtlasContextTools:
         provider_route_quality_factory: Callable[[], dict[str, object]] | None = None,
         decision_canary_factory: Callable[[], dict[str, object]] | None = None,
         decision_canary_admission_factory: Callable[[], dict[str, object]] | None = None,
+        decision_limited_active_factory: Callable[[], dict[str, object]] | None = None,
         task_context_factory: Callable[
             [str | None, str | None, str | None],
             dict[str, object],
@@ -94,6 +95,7 @@ class AtlasContextTools:
         self._provider_route_quality_factory = provider_route_quality_factory
         self._decision_canary_factory = decision_canary_factory
         self._decision_canary_admission_factory = decision_canary_admission_factory
+        self._decision_limited_active_factory = decision_limited_active_factory
         self._task_context_factory = task_context_factory
         self._memory_candidates_factory = memory_candidates_factory
         self._memory_effectiveness_factory = memory_effectiveness_factory
@@ -199,6 +201,13 @@ class AtlasContextTools:
                 {
                     "name": "get_decision_plane_canary",
                     "description": "Return the bounded Decision Plane canary admission snapshot and replay-evidence binding state",
+                }
+            )
+        if self._decision_limited_active_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "get_decision_plane_limited_active",
+                    "description": "Return bounded optional-context LIMITED_ACTIVE effect evidence with deterministic fallback",
                 }
             )
         if self._decision_context_candidates_factory is not None and READ_SCOPE in scopes:
@@ -325,7 +334,7 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_task_context", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_route_quality", "get_provider_transition_preview", "get_decision_plane", "get_decision_canary_readiness", "get_decision_plane_canary", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_instruction_governance_routing", "get_instruction_governance_disposition", "get_instruction_governance_canary", "get_concurrency_admission", "get_concurrency_dispatch_authorization", "get_concurrency_dispatch_effects", "get_concurrency_dispatch_joins", "get_concurrency_execution_cycles", "get_personal_knowledge", "search_personal_knowledge", "get_memory_candidates", "get_memory_effectiveness", "get_engineering_evidence", "search_knowledge"} and READ_SCOPE not in scopes:
+        if tool_name in {"search_project", "get_provenance", "get_task_context", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_route_quality", "get_provider_transition_preview", "get_decision_plane", "get_decision_canary_readiness", "get_decision_plane_canary", "get_decision_plane_limited_active", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_instruction_governance_routing", "get_instruction_governance_disposition", "get_instruction_governance_canary", "get_concurrency_admission", "get_concurrency_dispatch_authorization", "get_concurrency_dispatch_effects", "get_concurrency_dispatch_joins", "get_concurrency_execution_cycles", "get_personal_knowledge", "search_personal_knowledge", "get_memory_candidates", "get_memory_effectiveness", "get_engineering_evidence", "search_knowledge"} and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
 
         if tool_name == "get_task_context":
@@ -591,6 +600,15 @@ class AtlasContextTools:
                 return ToolResult(ok=False, data=None, error="unknown_tool:get_decision_plane_canary")
             try:
                 payload = self._decision_canary_admission_factory()
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
+
+        if tool_name == "get_decision_plane_limited_active":
+            if self._decision_limited_active_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:get_decision_plane_limited_active")
+            try:
+                payload = self._decision_limited_active_factory()
             except ValidationError as exc:
                 return ToolResult(ok=False, data=None, error=str(exc))
             return ToolResult(ok=True, data=payload)
