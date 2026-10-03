@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import re
+import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -1446,22 +1448,48 @@ def _validate_github_observation(
     }
 
 
+def _read_github_snapshot_bytes(path: Path) -> bytes:
+    source = Path(path)
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+        _reject("GitHub snapshot path safety is unsupported")
+    try:
+        if not stat.S_ISREG(os.lstat(source).st_mode):
+            _reject("GitHub snapshot path is unsafe")
+        fd = os.open(
+            source,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+        )
+    except OSError as exc:
+        raise ValidationError("GitHub snapshot path is unsafe or unreadable") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            _reject("GitHub snapshot path is unsafe")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            block = os.read(fd, min(64 * 1024, MAX_SNAPSHOT_BYTES - total + 1))
+            if not block:
+                break
+            total += len(block)
+            if total > MAX_SNAPSHOT_BYTES:
+                _reject("GitHub snapshot exceeds the bounded import size")
+            chunks.append(block)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def load_github_reconciliation_snapshot(
     path: Path,
 ) -> tuple[list[PacketFact], list[dict], dict]:
     """Load one bounded GitHub reconciliation snapshot without GitHub access."""
     import json
 
-    source = Path(path)
     try:
-        size = source.stat().st_size
-    except OSError as exc:
-        raise ValidationError("GitHub snapshot is not readable") from exc
-    if size > MAX_SNAPSHOT_BYTES:
-        _reject("GitHub snapshot exceeds the bounded import size")
-    try:
-        raw = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raw = json.loads(_read_github_snapshot_bytes(Path(path)).decode("utf-8"))
+    except ValidationError:
+        raise
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValidationError("GitHub snapshot is not JSON") from exc
     if not isinstance(raw, dict):
         _reject("GitHub snapshot must be a JSON object")

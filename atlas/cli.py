@@ -648,6 +648,11 @@ def cmd_lifecycle_validate(args: argparse.Namespace) -> int:
     return 0 if not unavailable else 2
 
 
+def cmd_lifecycle_publish_github_snapshot(args: argparse.Namespace) -> int:
+    _print_json(_service(args).publish_github_lifecycle_snapshot(Path(args.snapshot)))
+    return 0
+
+
 def cmd_web_serve(args: argparse.Namespace) -> int:
     from atlas.web_ui import serve_ui
 
@@ -1459,7 +1464,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search.set_defaults(func=cmd_search)
 
-    lifecycle = sub.add_parser("lifecycle", help="Read-only normalized lifecycle evidence")
+    lifecycle = sub.add_parser("lifecycle", help="Normalized lifecycle evidence and bounded cache publication")
     lifecycle_sub = lifecycle.add_subparsers(dest="lifecycle_command", required=True)
     lifecycle_show = lifecycle_sub.add_parser("show", help="Show normalized lifecycle state")
     lifecycle_show.add_argument("project_id")
@@ -1467,6 +1472,12 @@ def build_parser() -> argparse.ArgumentParser:
     lifecycle_validate = lifecycle_sub.add_parser("validate", help="Validate local lifecycle evidence for a project")
     lifecycle_validate.add_argument("project_id")
     lifecycle_validate.set_defaults(func=cmd_lifecycle_validate)
+    lifecycle_publish = lifecycle_sub.add_parser(
+        "publish-github-snapshot",
+        help="Validate and atomically publish bounded GitHub lifecycle cache state",
+    )
+    lifecycle_publish.add_argument("--snapshot", required=True)
+    lifecycle_publish.set_defaults(func=cmd_lifecycle_publish_github_snapshot)
 
     web = sub.add_parser("web", help="Read-only Human UI")
     web_sub = web.add_subparsers(dest="web_command", required=True)

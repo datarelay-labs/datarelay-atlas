@@ -491,6 +491,10 @@ class OpsCheckTests(unittest.TestCase):
         self.assertLess(install.index("useradd"), install.index("install -d"))
         self.assertLess(install.index("ops check --prod"), install.index("systemctl enable"))
         self.assertIn("/opt/datarelay-atlas/.venv/bin/pip install --no-cache-dir -r", install)
+        self.assertIn("usage github-snapshot", text)
+        self.assertIn("lifecycle publish-github-snapshot", text)
+        self.assertIn("env -u GITHUB_TOKEN", text)
+        self.assertIn("Atlas does not provide\nan SSH/credential-relay transport", text)
         check = blocks[1]
         self.assertIn("sudo --user atlas --group atlas", check)
         self.assertIn("/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod", check)

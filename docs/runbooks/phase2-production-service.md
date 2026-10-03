@@ -102,6 +102,53 @@ Exit 0 prints `"status": "ready"`. Exit 1 lists missing setting names and
 invalid codes. The report does not contain secret values, registry documents,
 or projection text. The command reads that file only, not the ambient shell.
 
+## Production context freshness
+
+Canonical source projections and GitHub lifecycle cache are derived state, not
+authority. Keep them fresh without placing GitHub credentials in the production
+service environment.
+
+On an already-authenticated development/operator host, generate the bounded
+content-free lifecycle snapshot:
+
+```bash
+PYTHONPATH=. python3 -m atlas usage github-snapshot \
+  --repository datarelay-labs/engineering-system \
+  --repository datarelay-labs/datarelay-atlas \
+  --repository datarelay-labs/datarelay-link \
+  --repository datarelay-labs/datarelay-control \
+  --repository datarelay-labs/datarelay-grant \
+  > /tmp/atlas-github-lifecycle.json
+```
+
+Transfer that file through an operator-approved channel. Atlas does not provide
+an SSH/credential-relay transport. On `prod-atlas`, publish only after Atlas
+validates the complete snapshot, then refresh the registered public GitHub
+sources without a token:
+
+```bash
+sudo --user atlas --group atlas \
+  env PYTHONPATH=/opt/datarelay-atlas \
+  /opt/datarelay-atlas/.venv/bin/python -m atlas \
+  --data-root /var/lib/datarelay-atlas lifecycle publish-github-snapshot \
+  --snapshot /tmp/atlas-github-lifecycle.json
+
+for project in engineering-system datarelay-atlas datarelay-link data-relay-control datarelay-grant; do
+  sudo --user atlas --group atlas \
+    env -u GITHUB_TOKEN PYTHONPATH=/opt/datarelay-atlas \
+    /opt/datarelay-atlas/.venv/bin/python -m atlas \
+    --data-root /var/lib/datarelay-atlas sync "$project"
+done
+```
+
+The lifecycle publisher validates the same bounded snapshot schema consumed by
+the read path and atomically replaces only `github-lifecycle.json`.
+`github-lifecycle.json` remains backup-excluded derived cache. A malformed,
+oversized, secret-bearing or unsafe snapshot fails closed without replacing the
+previous valid cache. Schedule this sequence only on an approved operator host
+that already has GitHub read authority; never copy its GitHub credential to
+`prod-atlas`.
+
 ## Lifecycle
 
 ```bash

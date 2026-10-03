@@ -461,6 +461,75 @@ verified memory task context bootstrap BODY-MARKER""",
         with self.assertRaises(ValidationError):
             self.svc.task_context(repository="datarelay-labs/demo")
 
+    def test_publish_github_snapshot_is_validated_atomic_and_cli_exposed(self):
+        snapshot = {
+            "schema_version": 1,
+            "kind": "cursor_github_reconciliation",
+            "observed_at": "2026-10-03T01:00:00Z",
+            "repositories": ["datarelay-labs/demo"],
+            "observations": [{
+                "repository": "datarelay-labs/demo",
+                "issue_number": 299,
+                "issue_state": "OPEN",
+                "issue_updated_at": "2026-10-03T01:00:00Z",
+                "author_trust": "trusted",
+                "packet_status": "ACTIVE",
+                "branch": "fix/freshness",
+                "head": self.head,
+                "pr_number": None,
+                "pr_state": "NONE",
+                "pr_head": None,
+                "canonical_fact": True,
+                "reasons": [],
+            }],
+            "summary": {"observed_count": 1, "canonical_count": 1, "noncanonical_count": 0},
+        }
+        incoming = self.root / "incoming-lifecycle.json"
+        incoming.write_text(json.dumps(snapshot), encoding="utf-8")
+        result = self.svc.publish_github_lifecycle_snapshot(incoming)
+        self.assertEqual(result["state"], "PUBLISHED")
+        self.assertEqual(result["authority"], "DERIVED_READ_ONLY")
+        published = self.root / "github-lifecycle.json"
+        self.assertEqual(published.stat().st_mode & 0o777, 0o600)
+        current = self.svc.task_context(project_id="demo")
+        self.assertEqual(current["currentness"]["state"], "CURRENT")
+        self.assertEqual(current["currentness"]["current_head"], self.head)
+
+        parser = build_parser()
+        cli_input = self.root / "incoming-lifecycle-cli.json"
+        snapshot["observed_at"] = "2026-10-03T01:01:00Z"
+        cli_input.write_text(json.dumps(snapshot), encoding="utf-8")
+        args = parser.parse_args([
+            "--data-root", str(self.root), "lifecycle", "publish-github-snapshot",
+            "--snapshot", str(cli_input),
+        ])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = args.func(args)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out.getvalue())["state"], "PUBLISHED")
+
+        before = published.read_bytes()
+        bad = self.root / "bad-lifecycle.json"
+        bad.write_text('{"kind":"wrong"}', encoding="utf-8")
+        with self.assertRaises(ValidationError):
+            self.svc.publish_github_lifecycle_snapshot(bad)
+        self.assertEqual(published.read_bytes(), before)
+
+        symlink_input = self.root / "symlink-lifecycle.json"
+        symlink_input.symlink_to(cli_input)
+        with self.assertRaisesRegex(ValidationError, "input is unsafe"):
+            self.svc.publish_github_lifecycle_snapshot(symlink_input)
+        self.assertEqual(published.read_bytes(), before)
+
+        victim = self.root / "victim.json"
+        victim.write_text("keep", encoding="utf-8")
+        published.unlink()
+        published.symlink_to(victim)
+        with self.assertRaisesRegex(ValidationError, "destination is unsafe"):
+            self.svc.publish_github_lifecycle_snapshot(cli_input)
+        self.assertEqual(victim.read_text(encoding="utf-8"), "keep")
+
     def test_cli_and_mcp_expose_equivalent_read_only_context(self):
         self._write_lifecycle()
         parser = build_parser()

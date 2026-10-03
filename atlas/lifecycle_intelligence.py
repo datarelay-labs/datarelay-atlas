@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 import re
 
-from atlas.cursor_usage import assert_content_free, load_github_reconciliation_snapshot
+from atlas.cursor_usage import SCHEMA_VERSION as GITHUB_SNAPSHOT_SCHEMA_VERSION, assert_content_free, load_github_reconciliation_snapshot
+from atlas.data_lock import atomic_write_text, data_root_fd_path, data_root_write_lock
 from atlas.provenance import ValidationError
 
 _HEAD = re.compile(r"^[0-9a-f]{40}$")
@@ -16,6 +17,7 @@ _HUMAN_GATES = ("surface_reconciliation", "full_user_e2e")
 _OUTCOMES = {"PASS", "FAIL", "BLOCKED"}
 _EVIDENCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@#?=&%+-]{0,511}$")
 _MAX_EVIDENCE_BYTES = 32 * 1024
+_GITHUB_LIFECYCLE_FILENAME = "github-lifecycle.json"
 
 @dataclass(frozen=True)
 class EvidenceState:
@@ -46,6 +48,45 @@ class LifecycleView:
     release: EvidenceState
     surface_reconciliation: EvidenceState
     full_user_e2e: EvidenceState
+
+
+def publish_github_lifecycle_snapshot(data_root: Path, snapshot_path: Path) -> dict[str, object]:
+    """Validate and atomically publish bounded GitHub lifecycle cache state."""
+    source = Path(snapshot_path)
+    if source.is_symlink() or not source.is_file():
+        raise ValidationError("GitHub lifecycle snapshot input is unsafe")
+    _, observations, metadata = load_github_reconciliation_snapshot(source)
+    payload = {
+        "schema_version": GITHUB_SNAPSHOT_SCHEMA_VERSION,
+        "kind": "cursor_github_reconciliation",
+        "observed_at": metadata["observed_at"],
+        "repositories": list(metadata["repositories"]),
+        "observations": observations,
+        "summary": {
+            "observed_count": metadata["observed_count"],
+            "canonical_count": metadata["canonical_count"],
+            "noncanonical_count": metadata["noncanonical_count"],
+        },
+    }
+    assert_content_free(payload)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    root = Path(data_root)
+    with data_root_write_lock(root) as root_fd:
+        bound_root = data_root_fd_path(root_fd)
+        destination = bound_root / _GITHUB_LIFECYCLE_FILENAME
+        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+            raise ValidationError("GitHub lifecycle destination is unsafe")
+        atomic_write_text(destination, encoded)
+        destination.chmod(0o600)
+    return {
+        "state": "PUBLISHED",
+        "observed_at": metadata["observed_at"],
+        "repository_count": len(metadata["repositories"]),
+        "observed_count": metadata["observed_count"],
+        "canonical_count": metadata["canonical_count"],
+        "noncanonical_count": metadata["noncanonical_count"],
+        "authority": "DERIVED_READ_ONLY",
+    }
 
 def _unknown(channel: str) -> EvidenceState:
     label = {"ci": "CI", "tests": "test", "release": "release"}[channel]

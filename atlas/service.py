@@ -19,6 +19,7 @@ from atlas.engineering_evidence import (
     import_engineering_evidence,
 )
 from atlas.task_context import build_task_context, resolve_task_project
+from atlas.lifecycle_intelligence import publish_github_lifecycle_snapshot
 from atlas.concurrency_admission import (
     concurrency_dashboard,
     publish_concurrency_snapshot,
@@ -706,6 +707,9 @@ class AtlasService:
         )
         assert_adoption_project_consistency(adoption, project_id=project_id)
         return adoption
+
+    def publish_github_lifecycle_snapshot(self, snapshot_path: Path) -> dict[str, object]:
+        return publish_github_lifecycle_snapshot(self.data_root, snapshot_path)
 
     def projection_records(self, project_id: str) -> list[dict[str, Any]]:
         return self.projections.list_records(project_id=project_id)
