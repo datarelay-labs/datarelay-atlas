@@ -142,6 +142,19 @@ class AtlasService:
     def list_projects(self) -> list[ProjectRecord]:
         return self.registry.list_projects()
 
+    def list_project_summaries(self) -> list[dict[str, object]]:
+        """Return bounded registry metadata sufficient for model-side project selection."""
+        return [
+            {
+                "project_id": project.project_id,
+                "display_name": project.display_name,
+                "repository": project.repository,
+                "default_ref": project.default_ref,
+                "enabled": project.enabled,
+            }
+            for project in self.registry.list_projects()
+        ]
+
     def personal_knowledge_dashboard(self) -> dict[str, object]:
         """Return read-only Personal Knowledge Plane inventory and import metadata."""
         return personal_knowledge_dashboard(
@@ -271,6 +284,51 @@ class AtlasService:
             workstream=workstream,
             engineering_system=self.engineering_system_observation(project.project_id),
         )
+
+    def bootstrap_task_context(
+        self,
+        *,
+        project_hint: str | None = None,
+        repository: str | None = None,
+        workstream: str | None = None,
+    ) -> dict[str, object]:
+        """Resolve one registered project from a bounded exact hint, then reuse task_context."""
+        hint = project_hint.strip() if isinstance(project_hint, str) else ""
+        repo = repository.strip() if isinstance(repository, str) else ""
+        if bool(hint) == bool(repo):
+            raise ValidationError("exactly one of project_hint or repository is required")
+        if len(hint) > 256 or len(repo) > 256:
+            raise ValidationError("project hint is too long")
+
+        projects = self.registry.list_projects()
+        if repo:
+            needle = repo.casefold()
+            matches = [project for project in projects if project.repository.casefold() == needle]
+            unknown = f"unknown repository: {repo}"
+            ambiguous = f"ambiguous repository: {repo}"
+        else:
+            needle = hint.casefold()
+            matches = [
+                project
+                for project in projects
+                if needle
+                in {
+                    project.project_id.casefold(),
+                    project.display_name.casefold(),
+                    project.repository.casefold(),
+                }
+            ]
+            unknown = f"unknown project hint: {hint}"
+            ambiguous = f"ambiguous project hint: {hint}"
+
+        if not matches:
+            raise ValidationError(unknown)
+        if len(matches) != 1:
+            raise ValidationError(ambiguous)
+        project = matches[0]
+        if not project.enabled:
+            raise ValidationError(f"project is disabled: {project.project_id}")
+        return self.task_context(project_id=project.project_id, workstream=workstream)
 
     def import_engineering_evidence(
         self,

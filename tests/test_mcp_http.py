@@ -727,6 +727,65 @@ class McpHttpTests(unittest.TestCase):
             thread.start()
             try:
                 self._wait_until(lambda: server.started, "MCP HTTPS server did not start")
+                tool_descriptors = asyncio.run(_list_tools(resource, "good"))
+                names = {item["name"] for item in tool_descriptors}
+                self.assertIn("list_projects", names)
+                self.assertIn("bootstrap_datarelay_context", names)
+                for item in tool_descriptors:
+                    self.assertEqual(
+                        item["annotations"],
+                        {
+                            "readOnlyHint": True,
+                            "destructiveHint": False,
+                            "idempotentHint": True,
+                            "openWorldHint": False,
+                        },
+                    )
+                    self.assertEqual(
+                        item["_meta"]["securitySchemes"],
+                        [{"type": "oauth2", "scopes": [READ_SCOPE]}],
+                    )
+
+                projects = json.loads(
+                    asyncio.run(_tool(resource, "good", "list_projects", {}))
+                )
+                self.assertEqual(
+                    [
+                        {
+                            "project_id": item["project_id"],
+                            "display_name": item["display_name"],
+                            "repository": item["repository"],
+                            "enabled": item["enabled"],
+                        }
+                        for item in projects
+                    ],
+                    [
+                        {
+                            "project_id": "alpha",
+                            "display_name": "alpha",
+                            "repository": "datarelay-labs/alpha",
+                            "enabled": True,
+                        },
+                        {
+                            "project_id": "beta",
+                            "display_name": "beta",
+                            "repository": "datarelay-labs/beta",
+                            "enabled": True,
+                        },
+                    ],
+                )
+                bootstrap = json.loads(
+                    asyncio.run(
+                        _tool(
+                            resource,
+                            "good",
+                            "bootstrap_datarelay_context",
+                            {"repository": "datarelay-labs/alpha"},
+                        )
+                    )
+                )
+                self.assertEqual(bootstrap["project"]["project_id"], "alpha")
+
                 payload = asyncio.run(_search(resource, "good", "alpha", "alpha-mcp-quill"))
                 self.assertEqual(payload[0]["provenance"]["source_revision"], "rev-alpha")
                 self.assertEqual(payload[0]["path"], "docs/charter.md")
@@ -923,6 +982,27 @@ async def _provenance(url: str, token: str, **arguments):
 async def _task_context(url: str, token: str, **arguments):
     text = await _tool(url, token, "get_task_context", arguments)
     return json.loads(text)
+
+
+async def _list_tools(url: str, token: str) -> list[dict]:
+    from mcp import Client
+    from mcp.client.streamable_http import streamable_http_client
+
+    http = httpx2.AsyncClient(
+        headers={"Authorization": f"Bearer {token}"},
+        verify=False,
+        timeout=10.0,
+    )
+    transport = streamable_http_client(url, http_client=http)
+    try:
+        async with Client(transport, read_timeout_seconds=10) as client:
+            page = await client.list_tools(cache_mode="bypass")
+    finally:
+        await http.aclose()
+    return [
+        tool.model_dump(by_alias=True, exclude_none=True)
+        for tool in page.tools
+    ]
 
 
 async def _tool(url: str, token: str, name: str, arguments: dict) -> str:

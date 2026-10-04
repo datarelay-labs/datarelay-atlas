@@ -680,6 +680,123 @@ verified memory task context bootstrap BODY-MARKER""",
             self.svc.publish_github_lifecycle_snapshot(path)
         self.assertFalse((self.root / "github-lifecycle.json").exists())
 
+    def test_chatgpt_bootstrap_project_discovery_is_bounded_and_fail_closed(self):
+        summaries = self.svc.list_project_summaries()
+        self.assertEqual(
+            summaries,
+            [
+                {
+                    "project_id": "demo",
+                    "display_name": "Demo",
+                    "repository": "datarelay-labs/demo",
+                    "default_ref": "main",
+                    "enabled": True,
+                }
+            ],
+        )
+        self.assertNotIn("sources", summaries[0])
+        self.assertNotIn("engineering_metadata_path", summaries[0])
+
+        for kwargs in (
+            {"project_hint": "demo"},
+            {"project_hint": "Demo"},
+            {"project_hint": "datarelay-labs/demo"},
+            {"repository": "datarelay-labs/demo"},
+        ):
+            payload = self.svc.bootstrap_task_context(**kwargs)
+            VALIDATOR.validate(payload)
+            self.assertEqual(payload["project"]["project_id"], "demo")
+
+        with self.assertRaisesRegex(
+            ValidationError,
+            "exactly one of project_hint or repository is required",
+        ):
+            self.svc.bootstrap_task_context()
+        with self.assertRaisesRegex(
+            ValidationError,
+            "exactly one of project_hint or repository is required",
+        ):
+            self.svc.bootstrap_task_context(
+                project_hint="demo",
+                repository="datarelay-labs/demo",
+            )
+        with self.assertRaisesRegex(ValidationError, "unknown project hint"):
+            self.svc.bootstrap_task_context(project_hint="missing")
+        with self.assertRaisesRegex(ValidationError, "project hint is too long"):
+            self.svc.bootstrap_task_context(project_hint="x" * 257)
+
+        self.svc.register_project(
+            project_id="demo-two",
+            repository="datarelay-labs/demo-two",
+            display_name="Demo",
+        )
+        with self.assertRaisesRegex(ValidationError, "ambiguous project hint"):
+            self.svc.bootstrap_task_context(project_hint="Demo")
+
+        self.svc.register_project(
+            project_id="disabled",
+            repository="datarelay-labs/disabled",
+            display_name="Disabled",
+            enabled=False,
+        )
+        with self.assertRaisesRegex(ValidationError, "project is disabled"):
+            self.svc.bootstrap_task_context(project_hint="disabled")
+
+    def test_chatgpt_bootstrap_tools_require_read_scope_and_reuse_task_context(self):
+        tools = AtlasContextTools(
+            retriever_factory=self.svc.project_retriever,
+            project_list_factory=self.svc.list_project_summaries,
+            bootstrap_context_factory=lambda project_hint, repository, workstream: self.svc.bootstrap_task_context(
+                project_hint=project_hint,
+                repository=repository,
+                workstream=workstream,
+            ),
+            task_context_factory=lambda project_id, repository, workstream: self.svc.task_context(
+                project_id=project_id,
+                repository=repository,
+                workstream=workstream,
+            ),
+        )
+        names = {item["name"] for item in tools.list_tools(default_read_scopes())}
+        self.assertIn("list_projects", names)
+        self.assertIn("bootstrap_datarelay_context", names)
+        self.assertIn("get_task_context", names)
+
+        listed = tools.call("list_projects", {}, scopes=default_read_scopes())
+        self.assertTrue(listed.ok)
+        self.assertEqual(listed.data[0]["project_id"], "demo")
+
+        bootstrapped = tools.call(
+            "bootstrap_datarelay_context",
+            {"project_hint": "Demo", "workstream": WORKSTREAM},
+            scopes=default_read_scopes(),
+        )
+        self.assertTrue(bootstrapped.ok)
+        self.assertEqual(bootstrapped.data["project"]["project_id"], "demo")
+        self.assertEqual(
+            bootstrapped.data["request"]["workstream"],
+            WORKSTREAM,
+        )
+
+        strict = tools.call(
+            "get_task_context",
+            {},
+            scopes=default_read_scopes(),
+        )
+        self.assertFalse(strict.ok)
+        self.assertIn(
+            "exactly one of project_id or repository is required",
+            strict.error,
+        )
+
+        for name, args in (
+            ("list_projects", {}),
+            ("bootstrap_datarelay_context", {"project_hint": "demo"}),
+        ):
+            denied = tools.call(name, args, scopes=["atlas.write"])
+            self.assertFalse(denied.ok)
+            self.assertEqual(denied.error, "unauthorized")
+
     def test_cli_and_mcp_expose_equivalent_read_only_context(self):
         self._write_lifecycle()
         parser = build_parser()

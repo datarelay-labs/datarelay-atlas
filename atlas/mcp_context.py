@@ -15,6 +15,45 @@ from atlas.retrieval import Retriever, normalize_path
 from atlas.security import READ_SCOPE, WRITE_SCOPE, authorize_tool, reject_canonical_mutation
 
 WRITE_TOOL_NAMES = {"create_note"}  # placeholder non-canonical only; no Wiki writes
+READ_TOOL_NAMES = frozenset(
+    {
+        "list_projects",
+        "bootstrap_datarelay_context",
+        "search_project",
+        "get_provenance",
+        "get_task_context",
+        "get_project_intelligence",
+        "get_intelligence_overview",
+        "get_source_detail",
+        "get_operations_readiness",
+        "get_provider_dashboard",
+        "get_provider_route_quality",
+        "get_provider_transition_preview",
+        "get_decision_plane",
+        "get_decision_canary_readiness",
+        "get_decision_plane_canary",
+        "get_decision_plane_limited_active",
+        "get_decision_plane_focused_check_limited_active",
+        "get_decision_plane_measured_active",
+        "get_decision_context_candidates",
+        "get_decision_focused_check_candidates",
+        "get_instruction_governance",
+        "get_instruction_governance_routing",
+        "get_instruction_governance_disposition",
+        "get_instruction_governance_canary",
+        "get_concurrency_admission",
+        "get_concurrency_dispatch_authorization",
+        "get_concurrency_dispatch_effects",
+        "get_concurrency_dispatch_joins",
+        "get_concurrency_execution_cycles",
+        "get_personal_knowledge",
+        "search_personal_knowledge",
+        "get_memory_candidates",
+        "get_memory_effectiveness",
+        "get_engineering_evidence",
+        "search_knowledge",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +101,11 @@ class AtlasContextTools:
             [str | None, str | None, str | None],
             dict[str, object],
         ] | None = None,
+        project_list_factory: Callable[[], list[dict[str, object]]] | None = None,
+        bootstrap_context_factory: Callable[
+            [str | None, str | None, str | None],
+            dict[str, object],
+        ] | None = None,
         memory_candidates_factory: Callable[
             [str | None, str | None, str | None, int],
             dict[str, object],
@@ -103,6 +147,8 @@ class AtlasContextTools:
         )
         self._decision_measured_active_factory = decision_measured_active_factory
         self._task_context_factory = task_context_factory
+        self._project_list_factory = project_list_factory
+        self._bootstrap_context_factory = bootstrap_context_factory
         self._memory_candidates_factory = memory_candidates_factory
         self._memory_effectiveness_factory = memory_effectiveness_factory
 
@@ -123,6 +169,20 @@ class AtlasContextTools:
                 "description": "Return provenance for a projected path in a project",
             },
         ]
+        if self._project_list_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "list_projects",
+                    "description": "List registered DataRelay projects for selecting one explicit Atlas scope",
+                }
+            )
+        if self._bootstrap_context_factory is not None and READ_SCOPE in scopes:
+            tools.append(
+                {
+                    "name": "bootstrap_datarelay_context",
+                    "description": "Resolve one DataRelay project from an exact repository/project hint and return bounded current task context",
+                }
+            )
         if self._task_context_factory is not None and READ_SCOPE in scopes:
             tools.append(
                 {
@@ -357,8 +417,29 @@ class AtlasContextTools:
         if not authorize_tool(tool_name, scopes, write_tools=WRITE_TOOL_NAMES):
             return ToolResult(ok=False, data=None, error="unauthorized")
 
-        if tool_name in {"search_project", "get_provenance", "get_task_context", "get_project_intelligence", "get_intelligence_overview", "get_source_detail", "get_operations_readiness", "get_provider_dashboard", "get_provider_route_quality", "get_provider_transition_preview", "get_decision_plane", "get_decision_canary_readiness", "get_decision_plane_canary", "get_decision_plane_limited_active", "get_decision_plane_focused_check_limited_active", "get_decision_plane_measured_active", "get_decision_context_candidates", "get_decision_focused_check_candidates", "get_instruction_governance", "get_instruction_governance_routing", "get_instruction_governance_disposition", "get_instruction_governance_canary", "get_concurrency_admission", "get_concurrency_dispatch_authorization", "get_concurrency_dispatch_effects", "get_concurrency_dispatch_joins", "get_concurrency_execution_cycles", "get_personal_knowledge", "search_personal_knowledge", "get_memory_candidates", "get_memory_effectiveness", "get_engineering_evidence", "search_knowledge"} and READ_SCOPE not in scopes:
+        if tool_name in READ_TOOL_NAMES and READ_SCOPE not in scopes:
             return ToolResult(ok=False, data=None, error="unauthorized")
+
+        if tool_name == "list_projects":
+            if self._project_list_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:list_projects")
+            return ToolResult(ok=True, data=self._project_list_factory())
+
+        if tool_name == "bootstrap_datarelay_context":
+            if self._bootstrap_context_factory is None:
+                return ToolResult(ok=False, data=None, error="unknown_tool:bootstrap_datarelay_context")
+            try:
+                project_hint = _optional_text(args, "project_hint") or None
+                repository = _optional_text(args, "repository") or None
+                workstream = _optional_text(args, "workstream") or None
+                payload = self._bootstrap_context_factory(
+                    project_hint,
+                    repository,
+                    workstream,
+                )
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
 
         if tool_name == "get_task_context":
             if self._task_context_factory is None:
