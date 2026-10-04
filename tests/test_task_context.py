@@ -689,13 +689,13 @@ verified memory task context bootstrap BODY-MARKER""",
                     "project_id": "demo",
                     "display_name": "Demo",
                     "repository": "datarelay-labs/demo",
-                    "default_ref": "main",
                     "enabled": True,
                 }
             ],
         )
         self.assertNotIn("sources", summaries[0])
         self.assertNotIn("engineering_metadata_path", summaries[0])
+        self.assertNotIn("default_ref", summaries[0])
 
         for kwargs in (
             {"project_hint": "demo"},
@@ -742,6 +742,44 @@ verified memory task context bootstrap BODY-MARKER""",
         with self.assertRaisesRegex(ValidationError, "project is disabled"):
             self.svc.bootstrap_task_context(project_hint="disabled")
 
+    def test_chatgpt_project_discovery_fails_closed_on_unbounded_registry_metadata(self):
+        self.svc.register_project(
+            project_id="oversized",
+            repository="datarelay-labs/oversized",
+            display_name="x" * 257,
+        )
+        with self.assertRaisesRegex(
+            ValidationError,
+            "project discovery field exceeds bounded limit: display_name",
+        ):
+            self.svc.list_project_summaries()
+
+        self.svc.registry.path.unlink()
+        for index in range(33):
+            self.svc.register_project(
+                project_id=f"project-{index}",
+                repository=f"datarelay-labs/project-{index}",
+            )
+        with self.assertRaisesRegex(
+            ValidationError,
+            "project discovery exceeds bounded project limit",
+        ):
+            self.svc.list_project_summaries()
+
+        self.svc.registry.path.unlink()
+        long_repo_name = "r" * 235
+        for index in range(32):
+            self.svc.register_project(
+                project_id=f"project-{index}",
+                repository=f"owner{index}/{long_repo_name}",
+                display_name="d" * 256,
+            )
+        with self.assertRaisesRegex(
+            ValidationError,
+            "project discovery exceeds bounded response size",
+        ):
+            self.svc.list_project_summaries()
+
     def test_chatgpt_bootstrap_tools_require_read_scope_and_reuse_task_context(self):
         tools = AtlasContextTools(
             retriever_factory=self.svc.project_retriever,
@@ -765,6 +803,15 @@ verified memory task context bootstrap BODY-MARKER""",
         listed = tools.call("list_projects", {}, scopes=default_read_scopes())
         self.assertTrue(listed.ok)
         self.assertEqual(listed.data[0]["project_id"], "demo")
+
+        self.svc.register_project(
+            project_id="oversized",
+            repository="datarelay-labs/oversized",
+            display_name="x" * 257,
+        )
+        bounded = tools.call("list_projects", {}, scopes=default_read_scopes())
+        self.assertFalse(bounded.ok)
+        self.assertIn("project discovery field exceeds bounded limit", bounded.error)
 
         bootstrapped = tools.call(
             "bootstrap_datarelay_context",

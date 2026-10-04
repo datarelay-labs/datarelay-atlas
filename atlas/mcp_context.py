@@ -423,7 +423,11 @@ class AtlasContextTools:
         if tool_name == "list_projects":
             if self._project_list_factory is None:
                 return ToolResult(ok=False, data=None, error="unknown_tool:list_projects")
-            return ToolResult(ok=True, data=self._project_list_factory())
+            try:
+                payload = self._project_list_factory()
+            except ValidationError as exc:
+                return ToolResult(ok=False, data=None, error=str(exc))
+            return ToolResult(ok=True, data=payload)
 
         if tool_name == "bootstrap_datarelay_context":
             if self._bootstrap_context_factory is None:

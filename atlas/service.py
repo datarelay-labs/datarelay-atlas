@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 from typing import Any
@@ -98,6 +99,9 @@ from atlas.semantic_retrieval import EmbeddingClient, EmbeddingConfig
 
 
 _MAX_SOURCE_DETAIL_CHARS = 128 * 1024
+PROJECT_DISCOVERY_MAX_PROJECTS = 32
+PROJECT_DISCOVERY_MAX_FIELD_CHARS = 256
+PROJECT_DISCOVERY_MAX_BYTES = 16 * 1024
 
 
 class AtlasService:
@@ -143,17 +147,37 @@ class AtlasService:
         return self.registry.list_projects()
 
     def list_project_summaries(self) -> list[dict[str, object]]:
-        """Return bounded registry metadata sufficient for model-side project selection."""
-        return [
-            {
+        """Return fail-closed bounded metadata sufficient for model-side project selection."""
+        projects = self.registry.list_projects()
+        if len(projects) > PROJECT_DISCOVERY_MAX_PROJECTS:
+            raise ValidationError(
+                "project discovery exceeds bounded project limit; "
+                "use an exact project hint or repository"
+            )
+
+        summaries: list[dict[str, object]] = []
+        for project in projects:
+            summary: dict[str, object] = {
                 "project_id": project.project_id,
                 "display_name": project.display_name,
                 "repository": project.repository,
-                "default_ref": project.default_ref,
                 "enabled": project.enabled,
             }
-            for project in self.registry.list_projects()
-        ]
+            for key in ("project_id", "display_name", "repository"):
+                value = summary[key]
+                if not isinstance(value, str) or len(value) > PROJECT_DISCOVERY_MAX_FIELD_CHARS:
+                    raise ValidationError(
+                        f"project discovery field exceeds bounded limit: {key}"
+                    )
+            summaries.append(summary)
+
+        encoded = json.dumps(summaries, sort_keys=True).encode("utf-8")
+        if len(encoded) > PROJECT_DISCOVERY_MAX_BYTES:
+            raise ValidationError(
+                "project discovery exceeds bounded response size; "
+                "use an exact project hint or repository"
+            )
+        return summaries
 
     def personal_knowledge_dashboard(self) -> dict[str, object]:
         """Return read-only Personal Knowledge Plane inventory and import metadata."""
