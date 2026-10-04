@@ -243,7 +243,7 @@ def discover_managed_surfaces(repo_root: Path) -> list[dict[str, object]]:
     root = Path(repo_root).resolve()
     surfaces: list[dict[str, object]] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.is_symlink():
+        if path.is_symlink() or not path.is_file():
             continue
         relative = path.relative_to(root).as_posix()
         if relative.startswith(".git/") or relative.startswith(".venv/") or relative.startswith("tests/"):

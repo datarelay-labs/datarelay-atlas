@@ -491,6 +491,16 @@ class OpsCheckTests(unittest.TestCase):
         self.assertLess(install.index("useradd"), install.index("install -d"))
         self.assertLess(install.index("ops check --prod"), install.index("systemctl enable"))
         self.assertIn("/opt/datarelay-atlas/.venv/bin/pip install --no-cache-dir -r", install)
+        self.assertIn('git archive --format=tar "$deploy_head"', install)
+        self.assertIn(
+            'sudo rsync -a --delete --exclude .venv "$deploy_src/" /opt/datarelay-atlas/',
+            install,
+        )
+        self.assertIn("for forbidden in .cursor .cursorignore .cursorrules", install)
+        self.assertIn('[ -e "$deploy_src/$forbidden" ] || [ -L "$deploy_src/$forbidden" ]', install)
+        self.assertIn("exit 1", install)
+        self.assertNotIn("sudo rsync -a --exclude .venv ./ /opt/datarelay-atlas/", install)
+        self.assertLess(install.index("git archive"), install.index("sudo rsync -a --delete"))
         self.assertIn("usage github-snapshot", text)
         self.assertIn("lifecycle publish-github-snapshot", text)
         self.assertIn("env -u GITHUB_TOKEN", text)
