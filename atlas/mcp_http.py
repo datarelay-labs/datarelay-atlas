@@ -14,6 +14,7 @@ Design gate (ADR-0008):
 from __future__ import annotations
 
 import json
+from functools import partial
 from urllib.parse import urlsplit
 
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -22,6 +23,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -43,13 +45,15 @@ def build_mcp_application(
     verifier: TokenVerifier,
 ) -> Starlette:
     """SDK Streamable HTTP app with resource-server auth and Atlas tools."""
-    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, instruction_governance_routing_factory=service.instruction_governance_routing, instruction_governance_disposition_factory=service.instruction_governance_disposition_dashboard, instruction_governance_canary_factory=service.instruction_governance_canary_dashboard, concurrency_factory=service.concurrency_dashboard, concurrency_authorization_factory=service.concurrency_dispatch_authorization_dashboard, concurrency_effects_factory=service.concurrency_dispatch_effect_dashboard, concurrency_joins_factory=service.concurrency_dispatch_join_dashboard, concurrency_execution_factory=service.concurrency_execution_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), engineering_evidence_factory=service.engineering_evidence_dashboard, knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit), provider_route_quality_factory=service.provider_route_quality_dashboard, decision_canary_factory=service.decision_canary_readiness, decision_canary_admission_factory=service.decision_canary_dashboard, decision_limited_active_factory=service.decision_limited_active_dashboard, decision_focused_check_limited_active_factory=service.decision_focused_check_limited_active_dashboard, decision_measured_active_factory=service.decision_measured_active_dashboard, task_context_factory=lambda project_id, repository, workstream: service.task_context(project_id=project_id, repository=repository, workstream=workstream), memory_candidates_factory=lambda project_id, repository, workstream, limit: service.memory_candidates(project_id=project_id, repository=repository, workstream=workstream, limit=limit), memory_effectiveness_factory=service.memory_effectiveness_report)
+    tools = AtlasContextTools(retriever_factory=service.project_retriever, intelligence_factory=service.project_intelligence, intelligence_overview_factory=service.intelligence_overview, source_detail_factory=service.source_detail, operations_readiness_factory=service.operations_readiness, provider_dashboard_factory=service.provider_dashboard, provider_transition_preview_factory=service.provider_transition_preview, decision_plane_factory=service.decision_plane_dashboard, decision_context_candidates_factory=service.decision_plane_optional_context_candidates, decision_check_candidates_factory=service.decision_plane_focused_check_candidates, instruction_governance_factory=service.instruction_governance_dashboard, instruction_governance_routing_factory=service.instruction_governance_routing, instruction_governance_disposition_factory=service.instruction_governance_disposition_dashboard, instruction_governance_canary_factory=service.instruction_governance_canary_dashboard, concurrency_factory=service.concurrency_dashboard, concurrency_authorization_factory=service.concurrency_dispatch_authorization_dashboard, concurrency_effects_factory=service.concurrency_dispatch_effect_dashboard, concurrency_joins_factory=service.concurrency_dispatch_join_dashboard, concurrency_execution_factory=service.concurrency_execution_dashboard, personal_knowledge_factory=service.personal_knowledge_dashboard, personal_search_factory=lambda project_id, query, limit: service.personal_search(project_id, query, limit=limit), engineering_evidence_factory=service.engineering_evidence_dashboard, knowledge_search_factory=lambda query, project_ids, source_class, limit: service.search_across_projects(query, project_ids=project_ids, source_class=source_class, limit_per_project=limit), provider_route_quality_factory=service.provider_route_quality_dashboard, decision_canary_factory=service.decision_canary_readiness, decision_canary_admission_factory=service.decision_canary_dashboard, decision_limited_active_factory=service.decision_limited_active_dashboard, decision_focused_check_limited_active_factory=service.decision_focused_check_limited_active_dashboard, decision_measured_active_factory=service.decision_measured_active_dashboard, task_context_factory=lambda project_id, repository, workstream: service.task_context(project_id=project_id, repository=repository, workstream=workstream), project_list_factory=service.list_project_summaries, bootstrap_context_factory=lambda project_hint, repository, workstream: service.bootstrap_task_context(project_hint=project_hint, repository=repository, workstream=workstream), memory_candidates_factory=lambda project_id, repository, workstream, limit: service.memory_candidates(project_id=project_id, repository=repository, workstream=workstream, limit=limit), memory_effectiveness_factory=service.memory_effectiveness_report)
     server = MCPServer(
         name="datarelay-atlas",
         instructions=(
-            "Project-scoped Atlas retrieval and engineering context. For repository/workstream "
-            "continuation or resume, call get_task_context first; it returns the bounded current "
-            "bootstrap and JIT retrieval references. "
+            "Project-scoped Atlas retrieval and engineering context for DataRelay work only. "
+            "For DataRelay continuation or resume when an internal project_id is not already known, "
+            "call bootstrap_datarelay_context first with an exact repository, project id, or display-name hint; "
+            "use list_projects only when project discovery is needed. Keep get_task_context for callers that "
+            "already know the explicit project_id or repository. These tools are not for unrelated general requests. "
             "search_project returns provenance and a projection identity; pass that identity to "
             "get_provenance. get_source_detail returns bounded validated projection "
             "content. get_project_intelligence returns non-authoritative derived context; "
@@ -130,7 +134,50 @@ def serve_mcp(config: McpServeConfig) -> None:
 
 
 def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
-    @server.tool(
+    read_tool = partial(
+        server.tool,
+        annotations=ToolAnnotations(
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+        meta={
+            "securitySchemes": [
+                {"type": "oauth2", "scopes": [READ_SCOPE]},
+            ]
+        },
+    )
+
+    @read_tool(
+        name="list_projects",
+        description="List registered DataRelay Atlas projects so a model can select one explicit read-only project scope",
+        structured_output=False,
+    )
+    async def list_projects() -> str:
+        return _call_tool(tools, "list_projects", {})
+
+    @read_tool(
+        name="bootstrap_datarelay_context",
+        description="For DataRelay continuation/resume, resolve one project from an exact repository, project id, or display-name hint and return bounded current task context",
+        structured_output=False,
+    )
+    async def bootstrap_datarelay_context(
+        project_hint: str = "",
+        repository: str = "",
+        workstream: str = "",
+    ) -> str:
+        return _call_tool(
+            tools,
+            "bootstrap_datarelay_context",
+            {
+                "project_hint": project_hint,
+                "repository": repository,
+                "workstream": workstream,
+            },
+        )
+
+    @read_tool(
         name="get_task_context",
         description="Return one bounded current task-context bootstrap with JIT retrieval references",
         structured_output=False,
@@ -150,7 +197,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             },
         )
 
-    @server.tool(
+    @read_tool(
         name="get_memory_candidates",
         description="Return bounded non-authoritative candidate memory for one explicit project/repository scope",
         structured_output=False,
@@ -172,7 +219,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             },
         )
 
-    @server.tool(
+    @read_tool(
         name="get_memory_effectiveness",
         description="Return measurement-only memory/context effectiveness metrics without policy mutation",
         structured_output=False,
@@ -180,7 +227,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_memory_effectiveness(project_id: str = "") -> str:
         return _call_tool(tools, "get_memory_effectiveness", {"project_id": project_id})
 
-    @server.tool(
+    @read_tool(
         name="search_project",
         description="Project-scoped keyword retrieval with attributable provenance",
         structured_output=False,
@@ -192,7 +239,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {"project_id": project_id, "query": query, "limit": limit},
         )
 
-    @server.tool(
+    @read_tool(
         name="search_knowledge",
         description="Search an explicit project scope with all/engineering/personal filtering and attributable provenance",
         structured_output=False,
@@ -214,7 +261,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             },
         )
 
-    @server.tool(
+    @read_tool(
         name="get_project_intelligence",
         description="Return deterministic non-authoritative project intelligence from validated projections",
         structured_output=False,
@@ -226,7 +273,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {"project_id": project_id},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_intelligence_overview",
         description="Return deterministic cross-project intelligence for an explicit project_ids scope",
         structured_output=False,
@@ -238,7 +285,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {"project_ids": project_ids},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_operations_readiness",
         description="Return read-only runtime, operations, and release readiness without executing operations",
         structured_output=False,
@@ -250,7 +297,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_provider_dashboard",
         description="Return validated provider capacity evidence and recomputed advisory broker state",
         structured_output=False,
@@ -262,7 +309,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_provider_route_quality",
         description="Return verified provider-route outcome measurements with no broker ranking or execution authority",
         structured_output=False,
@@ -270,7 +317,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_provider_route_quality() -> str:
         return _call_tool(tools, "get_provider_route_quality", {})
 
-    @server.tool(
+    @read_tool(
         name="get_provider_transition_preview",
         description="Return one advisory failover recommendation without executing a provider transition",
         structured_output=False,
@@ -292,7 +339,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             },
         )
 
-    @server.tool(
+    @read_tool(
         name="get_decision_plane",
         description="Return Decision Plane shadow/replay measurements without activation authority",
         structured_output=False,
@@ -304,7 +351,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_decision_canary_readiness",
         description="Return deterministic readiness evidence for a bounded Decision Plane canary request",
         structured_output=False,
@@ -312,7 +359,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_decision_canary_readiness() -> str:
         return _call_tool(tools, "get_decision_canary_readiness", {})
 
-    @server.tool(
+    @read_tool(
         name="get_decision_plane_canary",
         description="Return the bounded Decision Plane canary admission snapshot and replay-evidence binding state",
         structured_output=False,
@@ -320,7 +367,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_decision_plane_canary() -> str:
         return _call_tool(tools, "get_decision_plane_canary", {})
 
-    @server.tool(
+    @read_tool(
         name="get_decision_plane_limited_active",
         description="Return bounded optional-context LIMITED_ACTIVE effect evidence with deterministic fallback",
         structured_output=False,
@@ -328,7 +375,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_decision_plane_limited_active() -> str:
         return _call_tool(tools, "get_decision_plane_limited_active", {})
 
-    @server.tool(
+    @read_tool(
         name="get_decision_plane_focused_check_limited_active",
         description="Return focused-check LIMITED_ACTIVE evidence with terminal checks preserved",
         structured_output=False,
@@ -340,7 +387,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_decision_plane_measured_active",
         description="Return measured LIMITED_ACTIVE outcomes, expansion evidence and rollback state",
         structured_output=False,
@@ -352,7 +399,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_decision_context_candidates",
         description="Prepare optional-context candidates while preserving mandatory repository context",
         structured_output=False,
@@ -364,7 +411,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {"optional_paths": optional_paths or []},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_decision_focused_check_candidates",
         description="Prepare affected focused-check candidates while keeping terminal release gates separate",
         structured_output=False,
@@ -376,7 +423,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {"changed_paths": changed_paths},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_instruction_governance",
         description="Return managed instruction inventory and advisory audit history without mutation authority",
         structured_output=False,
@@ -388,7 +435,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_instruction_governance_routing",
         description="Return deterministic instruction candidate routing without repository mutation",
         structured_output=False,
@@ -396,7 +443,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_instruction_governance_routing() -> str:
         return _call_tool(tools, "get_instruction_governance_routing", {})
 
-    @server.tool(
+    @read_tool(
         name="get_instruction_governance_disposition",
         description="Return audit-bound instruction disposition and digest-bound PR handoff evidence",
         structured_output=False,
@@ -404,7 +451,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_instruction_governance_disposition() -> str:
         return _call_tool(tools, "get_instruction_governance_disposition", {})
 
-    @server.tool(
+    @read_tool(
         name="get_instruction_governance_canary",
         description="Return instruction-governance canary/adoption-gate evidence without GitHub mutation authority",
         structured_output=False,
@@ -412,7 +459,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_instruction_governance_canary() -> str:
         return _call_tool(tools, "get_instruction_governance_canary", {})
 
-    @server.tool(
+    @read_tool(
         name="get_concurrency_admission",
         description="Return provider-neutral multi-node admission and measured join evidence without dispatch authority",
         structured_output=False,
@@ -424,7 +471,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_concurrency_dispatch_authorization",
         description="Return exact-plan multi-node dispatch authorization without dispatch effect authority",
         structured_output=False,
@@ -432,7 +479,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_concurrency_dispatch_authorization() -> str:
         return _call_tool(tools, "get_concurrency_dispatch_authorization", {})
 
-    @server.tool(
+    @read_tool(
         name="get_concurrency_dispatch_effects",
         description="Return one-shot multi-node dispatch effect receipts without join or PASS authority",
         structured_output=False,
@@ -440,7 +487,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_concurrency_dispatch_effects() -> str:
         return _call_tool(tools, "get_concurrency_dispatch_effects", {})
 
-    @server.tool(
+    @read_tool(
         name="get_concurrency_dispatch_joins",
         description="Return dispatch-bound completion/join evidence with measurement-only PASS semantics",
         structured_output=False,
@@ -448,7 +495,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_concurrency_dispatch_joins() -> str:
         return _call_tool(tools, "get_concurrency_dispatch_joins", {})
 
-    @server.tool(
+    @read_tool(
         name="get_concurrency_execution_cycles",
         description="Return provider-neutral execution-cycle orchestration state without engineering PASS authority",
         structured_output=False,
@@ -456,7 +503,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_concurrency_execution_cycles() -> str:
         return _call_tool(tools, "get_concurrency_execution_cycles", {})
 
-    @server.tool(
+    @read_tool(
         name="get_personal_knowledge",
         description="Return non-authoritative personal/reference inventory and bounded import/quarantine metadata",
         structured_output=False,
@@ -464,7 +511,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
     async def get_personal_knowledge() -> str:
         return _call_tool(tools, "get_personal_knowledge", {})
 
-    @server.tool(
+    @read_tool(
         name="search_personal_knowledge",
         description="Search only personal/reference projections within one explicit project",
         structured_output=False,
@@ -476,7 +523,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {"project_id": project_id, "query": query, "limit": limit},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_engineering_evidence",
         description="Return bounded Engineering System evidence federation state without execution authority",
         structured_output=False,
@@ -487,7 +534,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             args["project_ids"] = project_ids
         return _call_tool(tools, "get_engineering_evidence", args)
 
-    @server.tool(
+    @read_tool(
         name="get_source_detail",
         description="Return one registered source with bounded validated projection content and provenance",
         structured_output=False,
@@ -499,7 +546,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             {"project_id": project_id, "source_id": source_id},
         )
 
-    @server.tool(
+    @read_tool(
         name="get_provenance",
         description=(
             "Return provenance for one projection. Pass the search hit identity "

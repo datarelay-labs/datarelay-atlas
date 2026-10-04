@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 from typing import Any
@@ -98,6 +99,9 @@ from atlas.semantic_retrieval import EmbeddingClient, EmbeddingConfig
 
 
 _MAX_SOURCE_DETAIL_CHARS = 128 * 1024
+PROJECT_DISCOVERY_MAX_PROJECTS = 32
+PROJECT_DISCOVERY_MAX_FIELD_CHARS = 256
+PROJECT_DISCOVERY_MAX_BYTES = 16 * 1024
 
 
 class AtlasService:
@@ -141,6 +145,39 @@ class AtlasService:
 
     def list_projects(self) -> list[ProjectRecord]:
         return self.registry.list_projects()
+
+    def list_project_summaries(self) -> list[dict[str, object]]:
+        """Return fail-closed bounded metadata sufficient for model-side project selection."""
+        projects = self.registry.list_projects()
+        if len(projects) > PROJECT_DISCOVERY_MAX_PROJECTS:
+            raise ValidationError(
+                "project discovery exceeds bounded project limit; "
+                "use an exact project hint or repository"
+            )
+
+        summaries: list[dict[str, object]] = []
+        for project in projects:
+            summary: dict[str, object] = {
+                "project_id": project.project_id,
+                "display_name": project.display_name,
+                "repository": project.repository,
+                "enabled": project.enabled,
+            }
+            for key in ("project_id", "display_name", "repository"):
+                value = summary[key]
+                if not isinstance(value, str) or len(value) > PROJECT_DISCOVERY_MAX_FIELD_CHARS:
+                    raise ValidationError(
+                        f"project discovery field exceeds bounded limit: {key}"
+                    )
+            summaries.append(summary)
+
+        encoded = json.dumps(summaries, sort_keys=True).encode("utf-8")
+        if len(encoded) > PROJECT_DISCOVERY_MAX_BYTES:
+            raise ValidationError(
+                "project discovery exceeds bounded response size; "
+                "use an exact project hint or repository"
+            )
+        return summaries
 
     def personal_knowledge_dashboard(self) -> dict[str, object]:
         """Return read-only Personal Knowledge Plane inventory and import metadata."""
@@ -271,6 +308,51 @@ class AtlasService:
             workstream=workstream,
             engineering_system=self.engineering_system_observation(project.project_id),
         )
+
+    def bootstrap_task_context(
+        self,
+        *,
+        project_hint: str | None = None,
+        repository: str | None = None,
+        workstream: str | None = None,
+    ) -> dict[str, object]:
+        """Resolve one registered project from a bounded exact hint, then reuse task_context."""
+        hint = project_hint.strip() if isinstance(project_hint, str) else ""
+        repo = repository.strip() if isinstance(repository, str) else ""
+        if bool(hint) == bool(repo):
+            raise ValidationError("exactly one of project_hint or repository is required")
+        if len(hint) > 256 or len(repo) > 256:
+            raise ValidationError("project hint is too long")
+
+        projects = self.registry.list_projects()
+        if repo:
+            needle = repo.casefold()
+            matches = [project for project in projects if project.repository.casefold() == needle]
+            unknown = f"unknown repository: {repo}"
+            ambiguous = f"ambiguous repository: {repo}"
+        else:
+            needle = hint.casefold()
+            matches = [
+                project
+                for project in projects
+                if needle
+                in {
+                    project.project_id.casefold(),
+                    project.display_name.casefold(),
+                    project.repository.casefold(),
+                }
+            ]
+            unknown = f"unknown project hint: {hint}"
+            ambiguous = f"ambiguous project hint: {hint}"
+
+        if not matches:
+            raise ValidationError(unknown)
+        if len(matches) != 1:
+            raise ValidationError(ambiguous)
+        project = matches[0]
+        if not project.enabled:
+            raise ValidationError(f"project is disabled: {project.project_id}")
+        return self.task_context(project_id=project.project_id, workstream=workstream)
 
     def import_engineering_evidence(
         self,
