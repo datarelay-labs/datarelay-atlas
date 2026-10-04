@@ -497,6 +497,8 @@ class OpsCheckTests(unittest.TestCase):
             install,
         )
         self.assertIn("for forbidden in .cursor .cursorignore .cursorrules", install)
+        self.assertIn('[ -e "$deploy_src/$forbidden" ] || [ -L "$deploy_src/$forbidden" ]', install)
+        self.assertIn("exit 1", install)
         self.assertNotIn("sudo rsync -a --exclude .venv ./ /opt/datarelay-atlas/", install)
         self.assertLess(install.index("git archive"), install.index("sudo rsync -a --delete"))
         self.assertIn("usage github-snapshot", text)

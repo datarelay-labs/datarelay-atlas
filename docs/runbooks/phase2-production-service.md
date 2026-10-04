@@ -66,7 +66,10 @@ trap 'rm -rf "$deploy_src"' EXIT
 deploy_head="$(git rev-parse --verify 'HEAD^{commit}')"
 git archive --format=tar "$deploy_head" | tar -xf - -C "$deploy_src"
 for forbidden in .cursor .cursorignore .cursorrules; do
-  test ! -e "$deploy_src/$forbidden"
+  if [ -e "$deploy_src/$forbidden" ] || [ -L "$deploy_src/$forbidden" ]; then
+    echo "refusing tracked provider workspace artifact: $forbidden" >&2
+    exit 1
+  fi
 done
 sudo rsync -a --delete --exclude .venv "$deploy_src/" /opt/datarelay-atlas/
 sudo -u atlas python3 -m venv /opt/datarelay-atlas/.venv
