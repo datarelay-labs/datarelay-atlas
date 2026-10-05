@@ -111,6 +111,15 @@ class ProdContextRefreshTests(TestCase):
         self.assertIn("OnUnitActiveSec=15min", timer)
         self.assertIn("/var/backups/datarelay-atlas-operator/prod-refresh", installer)
         self.assertIn("prod-context-refresh.py", installer)
+        self.assertLess(
+            installer.index("systemctl stop atlas-prod-refresh.timer"),
+            installer.index('install -o root -g root -m 0755 "$SCRIPT_SRC"'),
+        )
+        self.assertLess(
+            installer.index("systemctl stop atlas-prod-refresh.service"),
+            installer.index('install -o root -g root -m 0755 "$SCRIPT_SRC"'),
+        )
+        self.assertIn("Environment=PYTHONDONTWRITEBYTECODE=1", service)
 
     def test_scripts_parse(self):
         subprocess.run(

@@ -28,6 +28,12 @@ for src in "$SCRIPT_DST" "$SERVICE_DST" "$TIMER_DST"; do
   fi
 done
 
+# Quiesce the old schedule before replacing executable/unit bytes. Stopping an
+# in-flight refresh is safe because lifecycle/projection state is derived and
+# each publish/sync primitive already fails closed or writes atomically.
+systemctl stop atlas-prod-refresh.timer || true
+systemctl stop atlas-prod-refresh.service || true
+
 install -d -o root -g root -m 0755 /usr/local/lib/datarelay-atlas
 install -o root -g root -m 0755 "$SCRIPT_SRC" "$SCRIPT_DST"
 install -o root -g root -m 0644 "$SERVICE_SRC" "$SERVICE_DST"

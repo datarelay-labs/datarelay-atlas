@@ -8,6 +8,7 @@ Type=oneshot
 User=aella
 Group=aella
 Environment=HOME=/home/aella
+Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PATH=/home/aella/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=ATLAS_OPERATOR_REPO=/home/aella/datarelay-atlas
 Environment=ATLAS_OPERATOR_PYTHON=/home/aella/.local/share/datarelay-atlas/prod-refresh-venv/bin/python
