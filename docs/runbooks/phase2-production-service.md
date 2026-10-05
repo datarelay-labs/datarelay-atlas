@@ -133,13 +133,19 @@ The canonical operator script still builds the content-free evidence with `pytho
 
 - `scripts/prod-context-refresh.py` — discovers the current production
   GitHub-backed repositories/projects, builds the bounded lifecycle snapshot on
-  the authenticated operator host, publishes it, revalidates the target set,
-  and syncs each GitHub-backed project with `GITHUB_TOKEN` removed on prod.
+  the authenticated operator host, fetches every registered GitHub source on
+  that operator host, publishes lifecycle state, revalidates the target/source
+  identity set, and streams one bounded credential-free source payload into the
+  existing production `AtlasService.sync_project(..., fetch=custom_fetch)`
+  projection path.
 - `deploy/systemd/atlas-prod-refresh.service` and
   `deploy/systemd/atlas-prod-refresh.timer` — run that installed script every
   15 minutes from the operator host.
-- `scripts/install-prod-context-refresh-systemd.sh` — root installer. It saves
-  the previous script/unit files under
+- `scripts/install-prod-context-refresh-systemd.sh` — root installer. It also
+  installs the exact candidate `atlas/` tree from `git archive HEAD` under
+  `/usr/local/lib/datarelay-atlas/operator-src`, root-owned and non-writable by
+  the service user, so scheduled imports do not execute a mutable developer
+  checkout. It saves the previous script/unit/runtime files under
   `/var/backups/datarelay-atlas-operator/prod-refresh/<timestamp-pid>/`
   before replacement and prints the exact rollback directory.
 
@@ -157,7 +163,12 @@ complete registered GitHub repository set, and the script re-reads the registry
 before sync so a mid-run registry change also fails closed.
 
 The production-side primitives remain explicit and independently auditable. The
-script transfers only the generated snapshot, then performs the equivalent of:
+script first transfers the generated content-free lifecycle snapshot, then
+streams the source payload on stdin to a one-shot `atlas` process. The payload
+contains only registered source identity, fetched source content, and GitHub
+content revision; it never contains the GitHub token. The production process
+revalidates the current registry before using the existing projection writer.
+Conceptually the production side remains:
 
 ```bash
 set -e
@@ -169,13 +180,17 @@ sudo --user atlas --group atlas \
 
 sudo --user atlas --group atlas \
   env -u GITHUB_TOKEN PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/opt/datarelay-atlas \
-  /opt/datarelay-atlas/.venv/bin/python -m atlas \
-  --data-root /var/lib/datarelay-atlas sync <registry-derived-project-id>
+  /opt/datarelay-atlas/.venv/bin/python -c '<validate payload; AtlasService.sync_project(..., fetch=custom_fetch)>'
 ```
 
 Atlas does not provide
 an SSH/credential-relay transport. The operator host supplies its existing SSH
-and GitHub authentication; only the bounded lifecycle snapshot crosses to prod.
+and GitHub authentication. For public or private GitHub repositories, source
+fetching occurs only on that operator host. Before transfer, source content is
+bounded and screened with the same Atlas GitHub projection secret detector;
+production re-applies the normal secret/provenance checks before atomic
+projection persistence. The source payload is streamed over the authenticated
+SSH process and is not written as a production temporary file.
 
 Install/update the scheduled operator job only through the approved production
 change path:
@@ -193,15 +208,17 @@ systemctl status atlas-prod-refresh.timer atlas-prod-refresh.service --no-pager
 curl -fsS https://mcp.atlas.datarelay.run/healthz
 ```
 
-The installed operator script is root-owned and non-writable by the `aella` service user. It uses the existing authenticated GitHub context only while
-building the snapshot on the operator host. It never copies a GitHub credential
-to `prod-atlas`, explicitly removes `GITHUB_TOKEN` for production sync, and
-transfers only the bounded content-free lifecycle snapshot. The snapshot is
-removed from both hosts after the run.
+The installed operator script is root-owned and non-writable by the `aella`
+service user. It uses the existing authenticated GitHub context only on the
+operator host. It never copies a GitHub credential to `prod-atlas`; the remote
+sync process explicitly removes `GITHUB_TOKEN`. The lifecycle snapshot is
+removed from both hosts after the run and the bounded source payload is held
+only in process memory/stdin for the one sync attempt.
 
-To roll back the scheduler files, restore the three files printed in
-`PROD_REFRESH_ROLLBACK_DIR`, run `systemctl daemon-reload`, and restart the
-timer. A rollback does not alter the Atlas durable data root.
+To roll back the scheduler, restore the script, unit files, and `operator-src`
+runtime from `PROD_REFRESH_ROLLBACK_DIR` when present, run `systemctl
+daemon-reload`, and restart the timer. A rollback does not alter the Atlas
+durable data root.
 
 ## Lifecycle
 
