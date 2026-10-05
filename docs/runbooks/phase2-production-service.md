@@ -141,8 +141,11 @@ The canonical operator script still builds the content-free evidence with `pytho
 - `deploy/systemd/atlas-prod-refresh.service` and
   `deploy/systemd/atlas-prod-refresh.timer` — run that installed script every
   15 minutes from the operator host.
-- `scripts/install-prod-context-refresh-systemd.sh` — root installer. It saves
-  the previous script/unit files under
+- `scripts/install-prod-context-refresh-systemd.sh` — root installer. It also
+  installs the exact candidate `atlas/` tree from `git archive HEAD` under
+  `/usr/local/lib/datarelay-atlas/operator-src`, root-owned and non-writable by
+  the service user, so scheduled imports do not execute a mutable developer
+  checkout. It saves the previous script/unit/runtime files under
   `/var/backups/datarelay-atlas-operator/prod-refresh/<timestamp-pid>/`
   before replacement and prints the exact rollback directory.
 
@@ -212,9 +215,10 @@ sync process explicitly removes `GITHUB_TOKEN`. The lifecycle snapshot is
 removed from both hosts after the run and the bounded source payload is held
 only in process memory/stdin for the one sync attempt.
 
-To roll back the scheduler files, restore the three files printed in
-`PROD_REFRESH_ROLLBACK_DIR`, run `systemctl daemon-reload`, and restart the
-timer. A rollback does not alter the Atlas durable data root.
+To roll back the scheduler, restore the script, unit files, and `operator-src`
+runtime from `PROD_REFRESH_ROLLBACK_DIR` when present, run `systemctl
+daemon-reload`, and restart the timer. A rollback does not alter the Atlas
+durable data root.
 
 ## Lifecycle
 

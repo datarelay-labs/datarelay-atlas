@@ -246,6 +246,17 @@ class ProdContextRefreshTests(TestCase):
             installer.index('install -o root -g root -m 0755 "$SCRIPT_SRC"'),
         )
         self.assertIn("Environment=PYTHONDONTWRITEBYTECODE=1", service)
+        self.assertIn(
+            "Environment=ATLAS_OPERATOR_REPO=/usr/local/lib/datarelay-atlas/operator-src",
+            service,
+        )
+        self.assertIn(
+            "WorkingDirectory=/usr/local/lib/datarelay-atlas/operator-src",
+            service,
+        )
+        self.assertIn('git -C "$ROOT" archive --format=tar "$SOURCE_HEAD" atlas', installer)
+        self.assertIn("printf '%s\\n' \"$SOURCE_HEAD\" > \"$RUNTIME_DST/REVISION\"", installer)
+        self.assertIn('chown -R root:root "$RUNTIME_DST"', installer)
 
     def test_scripts_parse(self):
         subprocess.run(

@@ -11,6 +11,7 @@ SCRIPT_SRC="$ROOT/scripts/prod-context-refresh.py"
 SERVICE_SRC="$ROOT/deploy/systemd/atlas-prod-refresh.service"
 TIMER_SRC="$ROOT/deploy/systemd/atlas-prod-refresh.timer"
 SCRIPT_DST=/usr/local/lib/datarelay-atlas/prod-context-refresh.py
+RUNTIME_DST=/usr/local/lib/datarelay-atlas/operator-src
 SERVICE_DST=/etc/systemd/system/atlas-prod-refresh.service
 TIMER_DST=/etc/systemd/system/atlas-prod-refresh.timer
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -22,7 +23,7 @@ test -f "$TIMER_SRC"
 test -x /home/aella/.local/share/datarelay-atlas/prod-refresh-venv/bin/python
 
 install -d -o root -g root -m 0700 "$BACKUP"
-for src in "$SCRIPT_DST" "$SERVICE_DST" "$TIMER_DST"; do
+for src in "$SCRIPT_DST" "$SERVICE_DST" "$TIMER_DST" "$RUNTIME_DST"; do
   if [ -e "$src" ]; then
     cp -a "$src" "$BACKUP/"
   fi
@@ -35,6 +36,13 @@ systemctl stop atlas-prod-refresh.timer || true
 systemctl stop atlas-prod-refresh.service || true
 
 install -d -o root -g root -m 0755 /usr/local/lib/datarelay-atlas
+rm -rf "$RUNTIME_DST"
+install -d -o root -g root -m 0755 "$RUNTIME_DST"
+SOURCE_HEAD="$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')"
+git -C "$ROOT" archive --format=tar "$SOURCE_HEAD" atlas | tar -xf - -C "$RUNTIME_DST"
+printf '%s\n' "$SOURCE_HEAD" > "$RUNTIME_DST/REVISION"
+chown -R root:root "$RUNTIME_DST"
+chmod -R go-w "$RUNTIME_DST"
 install -o root -g root -m 0755 "$SCRIPT_SRC" "$SCRIPT_DST"
 install -o root -g root -m 0644 "$SERVICE_SRC" "$SERVICE_DST"
 install -o root -g root -m 0644 "$TIMER_SRC" "$TIMER_DST"
@@ -42,4 +50,5 @@ systemctl daemon-reload
 systemctl enable --now atlas-prod-refresh.timer
 
 echo "PROD_REFRESH_INSTALL=PASS"
+echo "PROD_REFRESH_RUNTIME_HEAD=$SOURCE_HEAD"
 echo "PROD_REFRESH_ROLLBACK_DIR=$BACKUP"

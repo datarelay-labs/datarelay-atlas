@@ -16,11 +16,12 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
-DEFAULT_REPO_ROOT = Path("/home/aella/datarelay-atlas")
+DEFAULT_REPO_ROOT = Path("/usr/local/lib/datarelay-atlas/operator-src")
 DEFAULT_ATLAS_PYTHON = Path(
     "/home/aella/.local/share/datarelay-atlas/prod-refresh-venv/bin/python"
 )
@@ -500,6 +501,9 @@ def refresh(*, repo_root: Path, atlas_python: Path, host: str) -> int:
         raise RefreshError(
             f"operator Atlas interpreter is unavailable: {atlas_python}"
         )
+    repo_text = str(repo_root)
+    if repo_text not in sys.path:
+        sys.path.insert(0, repo_text)
 
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with LOCK_PATH.open("a+", encoding="utf-8") as lock:
