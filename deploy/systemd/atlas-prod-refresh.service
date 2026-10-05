@@ -1,0 +1,17 @@
+[Unit]
+Description=Refresh derived DataRelay Atlas production context
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=aella
+Group=aella
+Environment=HOME=/home/aella
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PATH=/home/aella/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=ATLAS_OPERATOR_REPO=/home/aella/datarelay-atlas
+Environment=ATLAS_OPERATOR_PYTHON=/home/aella/.local/share/datarelay-atlas/prod-refresh-venv/bin/python
+Environment=ATLAS_PROD_HOST=prod-atlas
+WorkingDirectory=/home/aella/datarelay-atlas
+ExecStart=/usr/local/lib/datarelay-atlas/prod-context-refresh.py

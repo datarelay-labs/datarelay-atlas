@@ -122,55 +122,86 @@ or projection text. The command reads that file only, not the ambient shell.
 
 Canonical source projections and GitHub lifecycle cache are derived state, not
 authority. Keep them fresh without placing GitHub credentials in the production
-service environment.
+service environment. The scheduled refresh runs on an already-authenticated
+operator host and discovers the complete enabled GitHub-backed target set from
+the live production registry on every run. Do **not** maintain a separate
+hard-coded repository allowlist for the timer.
 
-On an already-authenticated development/operator host, generate the bounded
-content-free lifecycle snapshot:
+The canonical operator artifacts are:
+
+The canonical operator script still builds the content-free evidence with `python -m atlas usage github-snapshot`; target repositories are supplied from live registry discovery rather than a hand-maintained list.
+
+- `scripts/prod-context-refresh.py` — discovers the current production
+  GitHub-backed repositories/projects, builds the bounded lifecycle snapshot on
+  the authenticated operator host, publishes it, revalidates the target set,
+  and syncs each GitHub-backed project with `GITHUB_TOKEN` removed on prod.
+- `deploy/systemd/atlas-prod-refresh.service` and
+  `deploy/systemd/atlas-prod-refresh.timer` — run that installed script every
+  15 minutes from the operator host.
+- `scripts/install-prod-context-refresh-systemd.sh` — root installer. It saves
+  the previous script/unit files under
+  `/var/backups/datarelay-atlas-operator/prod-refresh/<timestamp-pid>/`
+  before replacement and prints the exact rollback directory.
+
+Before installation or a manual production refresh, inspect the read-only plan:
 
 ```bash
-PYTHONPATH=. python3 -m atlas usage github-snapshot \
-  --repository datarelay-labs/engineering-system \
-  --repository datarelay-labs/datarelay-atlas \
-  --repository datarelay-labs/datarelay-link \
-  --repository datarelay-labs/datarelay-control \
-  --repository datarelay-labs/datarelay-grant \
-  > /tmp/atlas-github-lifecycle.json
+python3 scripts/prod-context-refresh.py --print-plan
 ```
 
-Transfer that file through an operator-approved channel. Atlas does not provide
-an SSH/credential-relay transport. On `prod-atlas`, publish only after Atlas
-validates the complete snapshot, then refresh the registered public GitHub
-sources without a token:
+The plan must include every enabled project with at least one enabled GitHub
+source and each unique corresponding repository. Personal/local-markdown-only
+projects are intentionally excluded. Empty, invalid, duplicate, or oversized
+target sets fail closed. Snapshot publication independently requires the same
+complete registered GitHub repository set, and the script re-reads the registry
+before sync so a mid-run registry change also fails closed.
+
+The production-side primitives remain explicit and independently auditable. The
+script transfers only the generated snapshot, then performs the equivalent of:
 
 ```bash
 set -e
 sudo --user atlas --group atlas \
-  env PYTHONPATH=/opt/datarelay-atlas \
+  env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/opt/datarelay-atlas \
   /opt/datarelay-atlas/.venv/bin/python -m atlas \
   --data-root /var/lib/datarelay-atlas lifecycle publish-github-snapshot \
   --snapshot /tmp/atlas-github-lifecycle.json
 
-for project in engineering-system datarelay-atlas datarelay-link data-relay-control datarelay-grant; do
-  sudo --user atlas --group atlas \
-    env -u GITHUB_TOKEN PYTHONPATH=/opt/datarelay-atlas \
-    /opt/datarelay-atlas/.venv/bin/python -m atlas \
-    --data-root /var/lib/datarelay-atlas sync "$project"
-done
+sudo --user atlas --group atlas \
+  env -u GITHUB_TOKEN PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/opt/datarelay-atlas \
+  /opt/datarelay-atlas/.venv/bin/python -m atlas \
+  --data-root /var/lib/datarelay-atlas sync <registry-derived-project-id>
 ```
 
-The lifecycle publisher validates the same bounded snapshot schema consumed by
-the read path and atomically replaces only `github-lifecycle.json`. Publication
-requires the complete registered GitHub repository set, an observation no more
-than one hour old, permits at most five minutes of future clock skew, refuses
-rollback behind an already-published observation, and treats an identical
-same-time replay as a no-op. The read path also expires a lifecycle cache whose
-publication mtime is older than one hour, so a stopped refresh job cannot leave
-old Work Packet state marked current. `github-lifecycle.json`
-remains backup-excluded derived cache. A malformed, oversized, secret-bearing,
-unsafe, stale, future-dated, rollback, or conflicting same-time snapshot fails
-closed without replacing the previous valid cache. Schedule this sequence only on an approved operator host
-that already has GitHub read authority; never copy its GitHub credential to
-`prod-atlas`.
+Atlas does not provide
+an SSH/credential-relay transport. The operator host supplies its existing SSH
+and GitHub authentication; only the bounded lifecycle snapshot crosses to prod.
+
+Install/update the scheduled operator job only through the approved production
+change path:
+
+```bash
+sudo scripts/install-prod-context-refresh-systemd.sh
+```
+
+Then execute one scheduled-equivalent run and verify the timer and serving
+health:
+
+```bash
+/usr/local/lib/datarelay-atlas/prod-context-refresh.py
+systemctl status atlas-prod-refresh.timer atlas-prod-refresh.service --no-pager
+curl -fsS https://mcp.atlas.datarelay.run/healthz
+```
+
+The installed operator script is root-owned and non-writable by the `aella` service user. It uses the existing authenticated GitHub context only while
+building the snapshot on the operator host. It never copies a GitHub credential
+to `prod-atlas`, explicitly removes `GITHUB_TOKEN` for production sync, and
+transfers only the bounded content-free lifecycle snapshot. The snapshot is
+removed from both hosts after the run.
+
+To roll back the scheduler files, restore the three files printed in
+`PROD_REFRESH_ROLLBACK_DIR`, run `systemctl daemon-reload`, and restart the
+timer. A rollback does not alter the Atlas durable data root.
 
 ## Lifecycle
 
