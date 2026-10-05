@@ -635,6 +635,42 @@ class McpHttpTests(unittest.TestCase):
                 self.assertEqual(client.get("/authorize").status_code, 404)
                 self.assertEqual(client.post("/token").status_code, 404)
 
+                discovery_paths = [
+                    "/.well-known/oauth-authorization-server/mcp",
+                    "/mcp/.well-known/oauth-authorization-server",
+                    "/.well-known/oauth-authorization-server",
+                    "/mcp/.well-known/openid-configuration",
+                    "/.well-known/openid-configuration/mcp",
+                    "/.well-known/openid-configuration",
+                ]
+                for path in discovery_paths:
+                    discovered = client.get(path)
+                    self.assertEqual(discovered.status_code, 200, path)
+                    discovered_body = discovered.json()
+                    self.assertEqual(discovered_body["issuer"], ISSUER)
+                    self.assertEqual(
+                        discovered_body["authorization_endpoint"],
+                        f"{ISSUER}/protocol/openid-connect/auth",
+                    )
+                    self.assertEqual(
+                        discovered_body["token_endpoint"],
+                        f"{ISSUER}/protocol/openid-connect/token",
+                    )
+                    self.assertEqual(
+                        discovered_body["registration_endpoint"],
+                        f"{ISSUER}/clients-registrations/openid-connect",
+                    )
+                    self.assertIn(READ_SCOPE, discovered_body["scopes_supported"])
+                    self.assertIn(
+                        "S256",
+                        discovered_body["code_challenge_methods_supported"],
+                    )
+                    self.assertTrue(
+                        discovered_body[
+                            "authorization_response_iss_parameter_supported"
+                        ]
+                    )
+
                 anonymous = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
                 self.assertEqual(anonymous.status_code, 401)
                 www = anonymous.headers["www-authenticate"]

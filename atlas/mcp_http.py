@@ -92,6 +92,35 @@ def build_mcp_application(
     )
     _register_tools(server, tools)
 
+    @server.custom_route("/.well-known/oauth-authorization-server/mcp", methods=["GET"], include_in_schema=False)
+    @server.custom_route("/mcp/.well-known/oauth-authorization-server", methods=["GET"], include_in_schema=False)
+    @server.custom_route("/.well-known/oauth-authorization-server", methods=["GET"], include_in_schema=False)
+    @server.custom_route("/mcp/.well-known/openid-configuration", methods=["GET"], include_in_schema=False)
+    @server.custom_route("/.well-known/openid-configuration/mcp", methods=["GET"], include_in_schema=False)
+    @server.custom_route("/.well-known/openid-configuration", methods=["GET"], include_in_schema=False)
+    async def oauth_discovery(_request: Request) -> JSONResponse:
+        issuer = config.issuer_url.rstrip("/")
+        return JSONResponse(
+            {
+                "issuer": issuer,
+                "authorization_endpoint": f"{issuer}/protocol/openid-connect/auth",
+                "token_endpoint": f"{issuer}/protocol/openid-connect/token",
+                "registration_endpoint": f"{issuer}/clients-registrations/openid-connect",
+                "scopes_supported": ["openid", "offline_access", READ_SCOPE],
+                "response_types_supported": ["code"],
+                "grant_types_supported": ["authorization_code", "refresh_token"],
+                "token_endpoint_auth_methods_supported": [
+                    "none",
+                    "client_secret_basic",
+                    "client_secret_post",
+                    "private_key_jwt",
+                ],
+                "code_challenge_methods_supported": ["S256"],
+                "authorization_response_iss_parameter_supported": True,
+            },
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
     @server.custom_route("/healthz", methods=["GET"], include_in_schema=False)
     async def healthz(_request: Request) -> JSONResponse:
         if data_root_runtime_ready(config.data_root):
