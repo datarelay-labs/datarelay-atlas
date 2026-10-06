@@ -239,6 +239,7 @@ def validate_prod_deployment_env(text: str) -> None:
 
 def validate_ingress_service_text(text: str) -> None:
     required = (
+        "Environment=PYTHONPATH=/opt/datarelay-atlas\n",
         f"ExecStart={PROD_INGRESS_PROXY}\n",
         "After=datarelay-atlas.service keycloak.service\n",
         "Requires=datarelay-atlas.service\n",

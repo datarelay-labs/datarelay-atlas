@@ -304,6 +304,7 @@ class OpsCheckTests(unittest.TestCase):
             )
         self.assertIn("ListenStream=0.0.0.0:443\n", socket_text)
         self.assertNotIn("BindIPv6Only=", socket_text)
+        self.assertIn("Environment=PYTHONPATH=/opt/datarelay-atlas\n", proxy_text)
         self.assertIn(
             "ExecStart=/opt/datarelay-atlas/.venv/bin/python -m atlas.sni_ingress\n",
             proxy_text,
