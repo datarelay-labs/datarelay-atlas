@@ -2,7 +2,9 @@
 
 Install the authenticated MCP process and the read-only Human UI as non-root
 systemd services on hostname `prod-atlas`. The public MCP name is
-`mcp.atlas.datarelay.run`. The initial production Human UI remains loopback-only
+`mcp.atlas.datarelay.run`; the public OAuth name is
+`auth.atlas.datarelay.run`. Both use standard HTTPS on TCP 443. The initial
+production Human UI remains loopback-only
 on `127.0.0.1:8788` and is reached through authenticated SSH local forwarding;
 a public `app.atlas.datarelay.run` surface is not required. This runbook does
 not provision DNS, complete ChatGPT OAuth, or flip `production_oriented`. Issue #41 stays blocked and is not a launch gate.
@@ -26,24 +28,31 @@ slice records real service, health, and restart output from `prod-atlas`.
 | `/var/lib/datarelay-atlas` | `ATLAS_DATA_ROOT` | `atlas:atlas`, mode `0750` |
 
 `deploy/datarelay-atlas.service.env.example` is the prod deployment env.
-Its resource URL is `https://mcp.atlas.datarelay.run/mcp`. Bind stays
-`127.0.0.1:8443`. A loopback audience is rejected for that file. Generic
-`ops check` still accepts other resource URLs. Unknown
+Its resource URL is `https://mcp.atlas.datarelay.run/mcp` and its issuer is
+`https://auth.atlas.datarelay.run/realms/atlas`. Bind stays
+`127.0.0.1:8443`. A loopback audience or production issuer containing the
+legacy `:9443` public port is rejected for that file. Generic
+`ops check` still accepts other resource and issuer URLs. Unknown
 keys, a world-accessible env file or private key, and a partial semantic
 configuration are not ready. Do not put `GITHUB_TOKEN` in the service env
 file. `atlas sync` reads `GITHUB_TOKEN` from the operator shell.
 
-TLS terminates in the MCP process. Production ingress is not optional.
-`datarelay-atlas-ingress.socket` listens on `0.0.0.0:443`.
-`systemd-socket-proxyd` forwards that TCP stream to `127.0.0.1:8443`.
-The proxy unit is `DynamicUser=yes`, has no TLS file paths, and does not run
-as root. The MCP process still binds only `127.0.0.1:8443` and does not
-receive `CAP_NET_BIND_SERVICE`. The process does not bind cleartext and does
-not issue tokens.
+TLS terminates in the existing MCP and Keycloak processes. Production ingress
+is not optional. `datarelay-atlas-ingress.socket` listens on
+`0.0.0.0:443` and passes the inherited listening descriptor to the Atlas
+stdlib SNI ingress. The ingress inspects only the TLS ClientHello SNI:
+`mcp.atlas.datarelay.run` routes to `127.0.0.1:8443` and
+`auth.atlas.datarelay.run` routes to Keycloak on `127.0.0.1:9443`.
+Unknown TLS SNI is rejected. The ingress configuration contains no TLS
+certificate, key, token, or service-env path. The unit is `DynamicUser=yes`
+and does not run as root or receive `CAP_NET_BIND_SERVICE`. The MCP process
+still binds only `127.0.0.1:8443`; Keycloak keeps its 9443 TLS listener for
+backend routing and rollback. See ADR-0018.
 
 ## Install
 
 Run on hostname `prod-atlas` from an exact Git checkout of the candidate.
+The SNI ingress is shipped in the deployed Atlas source and adds no external proxy package dependency.
 Create the `atlas` group and user before any `install` command that assigns
 `atlas` ownership. Build the deployed source from `git archive` rather than
 copying the operator working tree: ignored/untracked provider workspace files,
@@ -93,13 +102,37 @@ sudo systemctl enable --now datarelay-atlas-web.service
 sudo systemctl enable --now datarelay-atlas-ingress.socket
 ```
 
-`ops stage` copies the service unit and the port-443 ingress units. It does
-not call `systemctl` and does not need root. Enable them only after
+`ops stage` validates and copies the service unit and port-443 ingress units.
+The SNI router is part of the deployed `atlas` Python package. The stage command
+does not call `systemctl` and does not need root. Enable units only after
 `ops check --prod` reports ready. The unit's `ExecStartPre` runs that same
 prod check before every start, so a loopback resource URL, a world-accessible
 env file, secret, or TLS key, or an unknown or conflicting setting, does not
 reach `mcp serve`. Generic `ops check` without `--prod` remains the
 non-production health command.
+
+## Standard-443 ingress rollback
+
+Before replacing the production ingress, save the currently installed ingress
+service and service environment outside the deployed source tree. Keep the
+Keycloak 9443 listener running throughout rollout. If either public hostname,
+OAuth metadata, or MCP health fails after cutover, restore the saved MCP-only
+ingress service and the previous service environment, then reload systemd and
+restart the ingress socket and Atlas service. The rollback target must restore
+the prior public issuer containing `:9443`; do not leave the standard-443 issuer
+advertised while 443 forwards only to the MCP backend.
+
+```bash
+rollback_dir="/var/backups/datarelay-atlas/standard-443-$(date +%Y%m%d%H%M%S)"
+sudo install -d -m 0700 "$rollback_dir"
+sudo cp -a /etc/systemd/system/datarelay-atlas-ingress.service "$rollback_dir/"
+sudo cp -a /etc/datarelay-atlas/service.env "$rollback_dir/"
+# On rollback, restore both saved files, then:
+sudo systemctl daemon-reload
+sudo systemctl restart datarelay-atlas.service datarelay-atlas-ingress.socket
+```
+
+Do not remove the Keycloak 9443 listener as part of the emergency rollback.
 
 ## Config check
 
@@ -117,6 +150,77 @@ sudo --user atlas --group atlas \
 Exit 0 prints `"status": "ready"`. Exit 1 lists missing setting names and
 invalid codes. The report does not contain secret values, registry documents,
 or projection text. The command reads that file only, not the ambient shell.
+
+## OAuth standard-443 cutover
+
+For an existing deployment that still advertises
+`https://auth.atlas.datarelay.run:9443/realms/atlas`, preserve exact rollback
+state before changing the ingress or issuer. Do not remove Keycloak's 9443
+listener. The transition order is deliberate: install the SNI router first,
+prove the auth certificate is reachable on 443, then change Keycloak's public
+hostname, and only then switch Atlas issuer/introspection URLs.
+
+```bash
+set -e
+rollback="/root/atlas-oauth443-rollback-$(date -u +%Y%m%dT%H%M%SZ)"
+sudo install -d -m 0700 "$rollback"
+sudo cp -a /etc/systemd/system/datarelay-atlas-ingress.service "$rollback/"
+sudo cp -a /etc/systemd/system/datarelay-atlas-ingress.socket "$rollback/"
+sudo cp -a /etc/keycloak/keycloak.env "$rollback/"
+sudo cp -a /etc/datarelay-atlas/service.env "$rollback/"
+
+sudo install -m 0644 /opt/datarelay-atlas/deploy/systemd/datarelay-atlas-ingress.service /etc/systemd/system/datarelay-atlas-ingress.service
+sudo install -m 0644 /opt/datarelay-atlas/deploy/systemd/datarelay-atlas-ingress.socket /etc/systemd/system/datarelay-atlas-ingress.socket
+sudo systemctl daemon-reload
+sudo systemctl stop datarelay-atlas-ingress.service || true
+sudo systemctl restart datarelay-atlas-ingress.socket
+
+curl --fail --silent --show-error \
+  https://auth.atlas.datarelay.run:443/realms/atlas/.well-known/openid-configuration \
+  >/tmp/atlas-auth-before-hostname.json
+
+sudo sed -i \
+  's|^KC_HOSTNAME=.*|KC_HOSTNAME=https://auth.atlas.datarelay.run|' \
+  /etc/keycloak/keycloak.env
+sudo systemctl restart keycloak.service
+
+curl --fail --silent --show-error \
+  https://auth.atlas.datarelay.run/realms/atlas/.well-known/openid-configuration \
+  >/tmp/atlas-auth-standard443.json
+python3 -c 'import json; p=json.load(open("/tmp/atlas-auth-standard443.json")); assert p["issuer"] == "https://auth.atlas.datarelay.run/realms/atlas"; assert ":9443" not in p["authorization_endpoint"]; assert ":9443" not in p["token_endpoint"]'
+
+sudo sed -i \
+  -e 's|^ATLAS_MCP_ISSUER_URL=.*|ATLAS_MCP_ISSUER_URL=https://auth.atlas.datarelay.run/realms/atlas|' \
+  -e 's|^ATLAS_MCP_INTROSPECTION_URL=.*|ATLAS_MCP_INTROSPECTION_URL=https://auth.atlas.datarelay.run/realms/atlas/protocol/openid-connect/token/introspect|' \
+  /etc/datarelay-atlas/service.env
+sudo --user atlas --group atlas \
+  env PYTHONPATH=/opt/datarelay-atlas \
+  /opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod \
+  --env-file /etc/datarelay-atlas/service.env
+sudo systemctl restart datarelay-atlas.service
+sudo systemctl restart datarelay-atlas-ingress.service
+```
+
+After the cutover, validate both SNI routes separately. The MCP route must
+remain unauthenticated-by-default and return its OAuth challenge; the auth route
+must return Keycloak metadata whose issuer, authorization endpoint, token
+endpoint, and registration endpoint use standard HTTPS without `:9443`.
+Also confirm the loopback Human UI remains HTTP 200.
+
+Rollback restores the saved ingress units, Keycloak env, and Atlas service env,
+reloads systemd, restarts Keycloak and Atlas, and re-enables the ingress socket:
+
+```bash
+sudo cp -a "$rollback/datarelay-atlas-ingress.service" /etc/systemd/system/datarelay-atlas-ingress.service
+sudo cp -a "$rollback/datarelay-atlas-ingress.socket" /etc/systemd/system/datarelay-atlas-ingress.socket
+sudo cp -a "$rollback/keycloak.env" /etc/keycloak/keycloak.env
+sudo cp -a "$rollback/service.env" /etc/datarelay-atlas/service.env
+sudo systemctl daemon-reload
+sudo systemctl restart keycloak.service datarelay-atlas.service
+sudo systemctl restart datarelay-atlas-ingress.socket
+```
+
+Keep the rollback directory until the ChatGPT Web connection succeeds.
 
 ## Production context freshness
 

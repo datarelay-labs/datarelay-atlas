@@ -1,11 +1,12 @@
 [Unit]
-Description=DataRelay Atlas TCP forward from port 443 to the loopback MCP process
+Description=DataRelay Atlas SNI TLS ingress on TCP port 443
 Documentation=file:/opt/datarelay-atlas/docs/runbooks/phase2-production-service.md
-After=datarelay-atlas.service
+After=datarelay-atlas.service keycloak.service
 Requires=datarelay-atlas.service
+Wants=keycloak.service
 
 [Service]
-ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:8443
+ExecStart=/opt/datarelay-atlas/.venv/bin/python -m atlas.sni_ingress
 DynamicUser=yes
 NoNewPrivileges=true
 PrivateTmp=true
