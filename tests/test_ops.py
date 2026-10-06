@@ -536,6 +536,10 @@ class OpsCheckTests(unittest.TestCase):
         self.assertIn("usage github-snapshot", text)
         self.assertIn("lifecycle publish-github-snapshot", text)
         self.assertIn("env -u GITHUB_TOKEN", text)
+        self.assertIn('sudo cp -a "$rollback/keycloak.env" /etc/keycloak/keycloak.env', text)
+        self.assertIn('sudo cp -a "$rollback/service.env" /etc/datarelay-atlas/service.env', text)
+        self.assertIn("sudo systemctl restart keycloak.service datarelay-atlas.service", text)
+        self.assertIn("sudo systemctl restart datarelay-atlas-ingress.socket", text)
         self.assertIn("```bash\nset -e\nsudo --user atlas --group atlas", text)
         self.assertIn("Atlas does not provide\nan SSH/credential-relay transport", text)
         check = next(

@@ -208,7 +208,18 @@ endpoint, and registration endpoint use standard HTTPS without `:9443`.
 Also confirm the loopback Human UI remains HTTP 200.
 
 Rollback restores the saved ingress units, Keycloak env, and Atlas service env,
-reloads systemd, restarts Keycloak and Atlas, and re-enables the ingress socket.
+reloads systemd, restarts Keycloak and Atlas, and re-enables the ingress socket:
+
+```bash
+sudo cp -a "$rollback/datarelay-atlas-ingress.service" /etc/systemd/system/datarelay-atlas-ingress.service
+sudo cp -a "$rollback/datarelay-atlas-ingress.socket" /etc/systemd/system/datarelay-atlas-ingress.socket
+sudo cp -a "$rollback/keycloak.env" /etc/keycloak/keycloak.env
+sudo cp -a "$rollback/service.env" /etc/datarelay-atlas/service.env
+sudo systemctl daemon-reload
+sudo systemctl restart keycloak.service datarelay-atlas.service
+sudo systemctl restart datarelay-atlas-ingress.socket
+```
+
 Keep the rollback directory until the ChatGPT Web connection succeeds.
 
 ## Production context freshness
