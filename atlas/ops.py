@@ -44,12 +44,15 @@ INGRESS_UNIT_NAME = "datarelay-atlas-ingress.service"
 WEB_UNIT_NAME = "datarelay-atlas-web.service"
 PROD_HOSTNAME = "prod-atlas"
 PROD_MCP_DNS = "mcp.atlas.datarelay.run"
+PROD_AUTH_DNS = "auth.atlas.datarelay.run"
 PROD_RESOURCE_URL = "https://mcp.atlas.datarelay.run/mcp"
+PROD_ISSUER_URL = "https://auth.atlas.datarelay.run/realms/atlas"
 PROD_BIND_HOST = "127.0.0.1"
 PROD_BIND_PORT = 8443
 PROD_INGRESS_LISTEN = "0.0.0.0:443"
-PROD_INGRESS_PROXY = "/usr/lib/systemd/systemd-socket-proxyd"
+PROD_INGRESS_PROXY = "/opt/datarelay-atlas/.venv/bin/python -m atlas.sni_ingress"
 PROD_INGRESS_TARGET = "127.0.0.1:8443"
+PROD_AUTH_INGRESS_TARGET = "127.0.0.1:9443"
 PROD_WEB_BIND_HOST = "127.0.0.1"
 PROD_WEB_BIND_PORT = 8788
 PROD_WEB_REMOTE_ACCESS = "ssh_local_forward"
@@ -100,6 +103,9 @@ def prod_launch_contract() -> dict:
         "data_root": "/var/lib/datarelay-atlas",
         "env_file": "/etc/datarelay-atlas/service.env",
         "hostname": PROD_HOSTNAME,
+        "auth_dns": PROD_AUTH_DNS,
+        "auth_issuer": PROD_ISSUER_URL,
+        "auth_ingress_target": PROD_AUTH_INGRESS_TARGET,
         "ingress_listen": PROD_INGRESS_LISTEN,
         "ingress_proxy": PROD_INGRESS_PROXY,
         "ingress_socket": INGRESS_SOCKET_NAME,
@@ -227,19 +233,24 @@ def validate_prod_deployment_env(text: str) -> None:
     host = (urlsplit(url).hostname or "").lower().strip("[]")
     if url != PROD_RESOURCE_URL or host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
         raise ValidationError("prod deployment resource URL must be the public MCP audience")
+    if values.get(ISSUER_URL_ENV) != PROD_ISSUER_URL:
+        raise ValidationError("prod deployment issuer URL must use standard HTTPS")
 
 
 def validate_ingress_service_text(text: str) -> None:
     required = (
-        "ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:8443\n",
+        f"ExecStart={PROD_INGRESS_PROXY}\n",
+        "After=datarelay-atlas.service keycloak.service\n",
         "Requires=datarelay-atlas.service\n",
+        "Wants=keycloak.service\n",
         "DynamicUser=yes\n",
         "NoNewPrivileges=true\n",
         "IPAddressAllow=localhost\n",
         "IPAddressDeny=any\n",
     )
-    if any(line not in text for line in required) or "User=root" in text:
-        raise ValidationError("ingress service does not forward TCP to 127.0.0.1:8443")
+    forbidden = ("User=root", "CAP_NET_BIND_SERVICE", "systemd-socket-proxyd")
+    if any(line not in text for line in required) or any(token in text for token in forbidden):
+        raise ValidationError("ingress service does not enforce SNI TLS passthrough")
     _reject_ingress_secrets(text)
 
 

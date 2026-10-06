@@ -3,6 +3,9 @@
 Status: Accepted
 Date: 2026-09-26
 
+Port-443 ingress detail in Decision 5 is superseded by ADR-0018. The original
+launch decision and loopback MCP bind remain in force.
+
 ## Context
 
 ADR-0009 installed the MCP process as a non-root systemd service and did not

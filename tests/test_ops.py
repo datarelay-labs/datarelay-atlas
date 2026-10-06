@@ -258,11 +258,18 @@ class OpsCheckTests(unittest.TestCase):
         self.assertEqual(contract["status"], "contract")
         self.assertEqual(contract["hostname"], "prod-atlas")
         self.assertEqual(contract["mcp_dns"], "mcp.atlas.datarelay.run")
+        self.assertEqual(contract["auth_dns"], "auth.atlas.datarelay.run")
+        self.assertEqual(contract["auth_issuer"], "https://auth.atlas.datarelay.run/realms/atlas")
         self.assertEqual(contract["resource_url"], "https://mcp.atlas.datarelay.run/mcp")
         self.assertEqual(contract["bind_host"], "127.0.0.1")
         self.assertEqual(contract["bind_port"], 8443)
         self.assertEqual(contract["ingress_listen"], "0.0.0.0:443")
+        self.assertEqual(
+            contract["ingress_proxy"],
+            "/opt/datarelay-atlas/.venv/bin/python -m atlas.sni_ingress",
+        )
         self.assertEqual(contract["ingress_target"], "127.0.0.1:8443")
+        self.assertEqual(contract["auth_ingress_target"], "127.0.0.1:9443")
         self.assertEqual(contract["resource_port"], 443)
         self.assertEqual(contract["web_unit"], "datarelay-atlas-web.service")
         self.assertEqual(contract["web_bind_host"], "127.0.0.1")
@@ -297,8 +304,14 @@ class OpsCheckTests(unittest.TestCase):
             )
         self.assertIn("ListenStream=0.0.0.0:443\n", socket_text)
         self.assertNotIn("BindIPv6Only=", socket_text)
-        self.assertIn("systemd-socket-proxyd 127.0.0.1:8443\n", proxy_text)
+        self.assertIn(
+            "ExecStart=/opt/datarelay-atlas/.venv/bin/python -m atlas.sni_ingress\n",
+            proxy_text,
+        )
+        self.assertIn("Requires=datarelay-atlas.service\n", proxy_text)
+        self.assertIn("Wants=keycloak.service\n", proxy_text)
         self.assertNotIn("key.pem", socket_text + proxy_text)
+        self.assertNotIn("cert.pem", socket_text + proxy_text)
         self.assertNotIn("service.env", socket_text + proxy_text)
         self.assertNotIn("CAP_NET_BIND_SERVICE", socket_text + proxy_text)
         with self.assertRaises(ValidationError):
@@ -310,7 +323,12 @@ class OpsCheckTests(unittest.TestCase):
         )
         validate_prod_deployment_env(example)
         self.assertIn("ATLAS_MCP_BIND_HOST=127.0.0.1", example)
+        self.assertIn(
+            "ATLAS_MCP_ISSUER_URL=https://auth.atlas.datarelay.run/realms/atlas",
+            example,
+        )
         self.assertNotIn("https://127.0.0.1:8443/mcp", example)
+        self.assertNotIn("auth.atlas.datarelay.run:9443", example)
         with self.assertRaises(ValidationError):
             validate_prod_deployment_env(
                 example.replace(
@@ -321,6 +339,14 @@ class OpsCheckTests(unittest.TestCase):
             )
         with self.assertRaises(ValidationError):
             validate_ingress_service_text(proxy_text + "EnvironmentFile=/etc/datarelay-atlas/service.env\n")
+        with self.assertRaises(ValidationError):
+            validate_prod_deployment_env(
+                example.replace(
+                    "https://auth.atlas.datarelay.run/realms/atlas",
+                    "https://auth.atlas.datarelay.run:9443/realms/atlas",
+                    1,
+                )
+            )
         project = (ROOT / ".engineering" / "project.yaml").read_text(encoding="utf-8")
         self.assertIn("production_oriented: false", project)
         text = (ROOT / "deploy" / "systemd" / "datarelay-atlas.service").read_text(
@@ -350,9 +376,15 @@ class OpsCheckTests(unittest.TestCase):
             self.assertNotIn('"status": "ready"', stdout.getvalue())
             public = root / "prod.env"
             public.write_text(
-                loopback.read_text(encoding="utf-8").replace(
+                loopback.read_text(encoding="utf-8")
+                .replace(
                     "https://127.0.0.1:8443/mcp",
                     "https://mcp.atlas.datarelay.run/mcp",
+                    1,
+                )
+                .replace(
+                    "ATLAS_MCP_ISSUER_URL=https://issuer.example",
+                    "ATLAS_MCP_ISSUER_URL=https://auth.atlas.datarelay.run/realms/atlas",
                     1,
                 ),
                 encoding="utf-8",
@@ -506,7 +538,10 @@ class OpsCheckTests(unittest.TestCase):
         self.assertIn("env -u GITHUB_TOKEN", text)
         self.assertIn("```bash\nset -e\nsudo --user atlas --group atlas", text)
         self.assertIn("Atlas does not provide\nan SSH/credential-relay transport", text)
-        check = blocks[1]
+        check = next(
+            block for block in blocks
+            if "/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod" in block
+        )
         self.assertIn("sudo --user atlas --group atlas", check)
         self.assertIn("/opt/datarelay-atlas/.venv/bin/python -m atlas ops check --prod", check)
         self.assertIn("--env-file /etc/datarelay-atlas/service.env", check)

@@ -1,5 +1,5 @@
 [Unit]
-Description=DataRelay Atlas public MCP ingress on TCP port 443
+Description=DataRelay Atlas public TLS ingress on TCP port 443
 Documentation=file:/opt/datarelay-atlas/docs/runbooks/phase2-production-service.md
 After=network-online.target
 Wants=network-online.target
