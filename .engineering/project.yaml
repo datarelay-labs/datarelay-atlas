@@ -5,7 +5,7 @@ engineering_system:
   ci_mode: shared
   native_ci_workflows: []
   merge_gate_status: unknown
-  policy_epoch: 15
+  policy_epoch: 19
   governance_epoch: 0
 project:
   name: datarelay-atlas
