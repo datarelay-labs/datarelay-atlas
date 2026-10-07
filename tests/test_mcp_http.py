@@ -637,7 +637,7 @@ class McpHttpTests(unittest.TestCase):
                 body = metadata.json()
                 self.assertEqual(body["resource"], resource)
                 self.assertEqual(body["authorization_servers"], [ISSUER])
-                self.assertIn(READ_SCOPE, body["scopes_supported"])
+                self.assertEqual(body["scopes_supported"], [READ_SCOPE, WRITE_SCOPE])
                 self.assertEqual(client.get("/authorize").status_code, 404)
                 self.assertEqual(client.post("/token").status_code, 404)
 
