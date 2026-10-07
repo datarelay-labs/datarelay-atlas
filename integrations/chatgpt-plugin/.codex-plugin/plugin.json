@@ -1,0 +1,20 @@
+{
+  "name": "datarelay-atlas",
+  "version": "0.1.2",
+  "description": "Optional read-only DataRelay Atlas context for missing project continuity, prior decisions, lessons and provenance without blocking normal development.",
+  "author": {
+    "name": "DataRelay Labs"
+  },
+  "interface": {
+    "displayName": "DataRelay Atlas",
+    "shortDescription": "Atlas engineering context",
+    "longDescription": "Use DataRelay Atlas as optional read-only engineering context when canonical project facts leave a meaningful gap. Continue normal work when Atlas is unavailable.",
+    "developerName": "DataRelay Labs",
+    "category": "Productivity",
+    "defaultPrompt": "Use scoped DataRelay Atlas context only when missing prior decisions, lessons, or project continuity matter; reuse current context and keep working from canonical sources if retrieval fails.",
+    "capabilities": []
+  },
+  "keywords": [],
+  "skills": "./skills",
+  "mcpServers": "./.mcp.json"
+}

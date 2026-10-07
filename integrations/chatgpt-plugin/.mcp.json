@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "datarelay-atlas": {
+      "type": "streamable-http",
+      "url": "https://mcp.atlas.datarelay.run/mcp",
+      "headers": {}
+    }
+  }
+}
