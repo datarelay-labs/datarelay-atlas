@@ -27,6 +27,7 @@ from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 from atlas.mcp_auth import HttpxIntrospectionTransport, Rfc7662TokenVerifier
 from atlas.mcp_config import McpServeConfig
@@ -128,11 +129,36 @@ def build_mcp_application(
             return JSONResponse({"status": "ready"})
         return JSONResponse({"status": "not_ready"}, status_code=503)
 
-    return server.streamable_http_app(
+    app = server.streamable_http_app(
         streamable_http_path="/mcp",
         transport_security=_transport_security(config),
         host=config.bind_host,
     )
+
+    async def protected_resource_metadata(_request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "resource": config.resource_url,
+                "authorization_servers": [config.issuer_url],
+                "scopes_supported": [READ_SCOPE, WRITE_SCOPE],
+                "bearer_methods_supported": ["header"],
+            },
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    # The MCP SDK derives RFC 9728 advertised scopes from the transport-wide
+    # required_scopes setting. Keep that enforcement at atlas.read, but put the
+    # richer metadata route first so clients can also request the tool-scoped
+    # atlas.write capability without making write mandatory for every MCP call.
+    app.routes.insert(
+        0,
+        Route(
+            "/.well-known/oauth-protected-resource/mcp",
+            endpoint=protected_resource_metadata,
+            methods=["GET"],
+        ),
+    )
+    return app
 
 
 def serve_mcp(config: McpServeConfig) -> None:
