@@ -47,7 +47,7 @@ from atlas.mcp_config import (
 from atlas.mcp_context import AtlasContextTools, default_read_scopes
 from atlas.mcp_http import _transport_security, build_mcp_application
 from atlas.provenance import ValidationError
-from atlas.security import READ_SCOPE
+from atlas.security import READ_SCOPE, WRITE_SCOPE
 from atlas.service import AtlasService
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -611,6 +611,12 @@ class McpHttpTests(unittest.TestCase):
                     scopes=["atlas.write"],
                     resource=resource_url,
                 ),
+                "read-write": AccessToken(
+                    token="read-write",
+                    client_id="chatgpt",
+                    scopes=[READ_SCOPE, WRITE_SCOPE],
+                    resource=resource_url,
+                ),
                 "other-resource": AccessToken(
                     token="other-resource",
                     client_id="chatgpt",
@@ -767,20 +773,57 @@ class McpHttpTests(unittest.TestCase):
                 names = {item["name"] for item in tool_descriptors}
                 self.assertIn("list_projects", names)
                 self.assertIn("bootstrap_datarelay_context", names)
+                self.assertIn("create_write_probe", names)
+                self.assertIn("get_write_probe", names)
+                self.assertIn("delete_write_probe", names)
                 for item in tool_descriptors:
-                    self.assertEqual(
-                        item["annotations"],
-                        {
-                            "readOnlyHint": True,
-                            "destructiveHint": False,
-                            "idempotentHint": True,
-                            "openWorldHint": False,
-                        },
+                    if item["name"] in {"create_write_probe", "delete_write_probe"}:
+                        self.assertEqual(item["annotations"]["readOnlyHint"], False)
+                        self.assertEqual(
+                            item["_meta"]["securitySchemes"],
+                            [{"type": "oauth2", "scopes": [WRITE_SCOPE]}],
+                        )
+                    else:
+                        self.assertEqual(item["annotations"]["readOnlyHint"], True)
+                        self.assertEqual(
+                            item["_meta"]["securitySchemes"],
+                            [{"type": "oauth2", "scopes": [READ_SCOPE]}],
+                        )
+
+                probe = json.loads(
+                    asyncio.run(
+                        _tool(
+                            resource,
+                            "read-write",
+                            "create_write_probe",
+                            {"value": "mcp-write-probe-round-trip"},
+                        )
                     )
-                    self.assertEqual(
-                        item["_meta"]["securitySchemes"],
-                        [{"type": "oauth2", "scopes": [READ_SCOPE]}],
+                )
+                self.assertTrue(probe["isolated"])
+                self.assertFalse(probe["canonical"])
+                fetched_probe = json.loads(
+                    asyncio.run(
+                        _tool(
+                            resource,
+                            "good",
+                            "get_write_probe",
+                            {"probe_id": probe["probe_id"]},
+                        )
                     )
+                )
+                self.assertEqual(fetched_probe["value"], "mcp-write-probe-round-trip")
+                deleted_probe = json.loads(
+                    asyncio.run(
+                        _tool(
+                            resource,
+                            "read-write",
+                            "delete_write_probe",
+                            {"probe_id": probe["probe_id"]},
+                        )
+                    )
+                )
+                self.assertTrue(deleted_probe["deleted"])
 
                 projects = json.loads(
                     asyncio.run(_tool(resource, "good", "list_projects", {}))

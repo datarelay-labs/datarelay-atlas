@@ -6,9 +6,9 @@ Design gate (ADR-0008):
   E2E, a web UI, and cross-project search.
 - Contract: ``python -m atlas mcp serve`` binds TLS and mounts ``/mcp``.
 - State: no new durable store. Tools rebuild a project retriever per call.
-- Security: OAuth 2.1 resource server only. ``atlas.read`` and the configured
-  resource URL are required. Introspection credentials and TLS keys stay
-  outside Git.
+- Security: OAuth 2.1 resource server only. Normal Atlas context requires
+  ``atlas.read``. ADR-0022 permits only the isolated write probe to require
+  ``atlas.write``. Introspection credentials and TLS keys stay outside Git.
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ from atlas.mcp_config import McpServeConfig
 from atlas.mcp_context import AtlasContextTools
 from atlas.ops import data_root_runtime_ready, require_ready_to_bind
 from atlas.provenance import ValidationError
-from atlas.security import READ_SCOPE
+from atlas.security import READ_SCOPE, WRITE_SCOPE
+from atlas.write_probe import WriteProbeStore
 from atlas.service import AtlasService
 
 _UNLISTED_BIND_HOSTS = frozenset({"0.0.0.0", "::", ""})
@@ -90,7 +91,7 @@ def build_mcp_application(
             validate_token_resource=True,
         ),
     )
-    _register_tools(server, tools)
+    _register_tools(server, tools, WriteProbeStore(config.resource_url))
 
     @server.custom_route("/.well-known/oauth-authorization-server/mcp", methods=["GET"], include_in_schema=False)
     @server.custom_route("/mcp/.well-known/oauth-authorization-server", methods=["GET"], include_in_schema=False)
@@ -106,7 +107,7 @@ def build_mcp_application(
                 "authorization_endpoint": f"{issuer}/protocol/openid-connect/auth",
                 "token_endpoint": f"{issuer}/protocol/openid-connect/token",
                 "registration_endpoint": f"{issuer}/clients-registrations/openid-connect",
-                "scopes_supported": ["openid", "offline_access", READ_SCOPE],
+                "scopes_supported": ["openid", "offline_access", READ_SCOPE, WRITE_SCOPE],
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "token_endpoint_auth_methods_supported": [
@@ -162,7 +163,7 @@ def serve_mcp(config: McpServeConfig) -> None:
     server.run()
 
 
-def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
+def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: WriteProbeStore) -> None:
     read_tool = partial(
         server.tool,
         annotations=ToolAnnotations(
@@ -177,6 +178,52 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
             ]
         },
     )
+
+    write_tool = partial(
+        server.tool,
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+        meta={"securitySchemes": [{"type": "oauth2", "scopes": [WRITE_SCOPE]}]},
+    )
+
+    @write_tool(
+        name="create_write_probe",
+        description="Create one isolated 15-minute MCP write probe; never mutates Atlas knowledge, projects, GitHub, or canonical state.",
+        structured_output=False,
+    )
+    async def create_write_probe(value: str) -> str:
+        _require_scope(WRITE_SCOPE)
+        try:
+            return json.dumps(write_probes.create(value), sort_keys=True)
+        except ValidationError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @read_tool(
+        name="get_write_probe",
+        description="Read one isolated MCP write probe by probe_id to verify a prior write.",
+        structured_output=False,
+    )
+    async def get_write_probe(probe_id: str) -> str:
+        try:
+            return json.dumps(write_probes.get(probe_id), sort_keys=True)
+        except ValidationError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @write_tool(
+        name="delete_write_probe",
+        description="Delete one isolated MCP write probe by probe_id; cannot delete Atlas knowledge, projects, GitHub, or canonical state.",
+        structured_output=False,
+    )
+    async def delete_write_probe(probe_id: str) -> str:
+        _require_scope(WRITE_SCOPE)
+        try:
+            return json.dumps(write_probes.delete(probe_id), sort_keys=True)
+        except ValidationError as exc:
+            raise ToolError(str(exc)) from exc
 
     @read_tool(
         name="list_projects",
@@ -590,6 +637,12 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools) -> None:
         if identity:
             args["identity"] = identity
         return _call_tool(tools, "get_provenance", args)
+
+
+def _require_scope(scope: str) -> None:
+    token = get_access_token()
+    if token is None or scope not in list(token.scopes):
+        raise ToolError("unauthorized")
 
 
 def _call_tool(tools: AtlasContextTools, name: str, args: dict[str, object]) -> str:
