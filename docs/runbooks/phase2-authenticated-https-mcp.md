@@ -41,8 +41,8 @@ are present, each must identify this MCP resource URL. An `aud` list is valid
 when it includes that URL.
 
 Protected resource metadata is published at
-`/.well-known/oauth-protected-resource/mcp`. Read tools require scope
-`atlas.read`. A token whose audience is a different resource is rejected.
+`/.well-known/oauth-protected-resource/mcp`. Normal Atlas context tools require scope
+`atlas.read`. ADR-0022's isolated capability-test mutations require `atlas.write`; they do not mutate Atlas project or knowledge state. A token whose audience is a different resource is rejected.
 
 `search_project` returns `path` and `identity`. Pass `identity` to
 `get_provenance`. A source path alone is accepted only when one projection
