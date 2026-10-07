@@ -83,6 +83,10 @@ PYTHONPATH=. python3 -m atlas rebuild datarelay-atlas
 
 로컬 durable state 기본 경로는 `.atlas-data/`(gitignore)입니다. 자격 증명은 `GITHUB_TOKEN`/런타임 환경만 사용합니다. 상세: `docs/runbooks/phase1-project-registry-canonical-sync.md`.
 
+## ChatGPT에서 활용
+
+[Atlas 사용 지침](integrations/chatgpt-plugin/README.md)은 이전 결정·교훈·프로젝트 문맥이 부족할 때만 필요한 내용을 조회하도록 안내합니다. 이미 충분한 문맥은 재사용하고, Atlas가 응답하지 않거나 최신성이 불명확해도 저장소와 GitHub를 기준으로 개발을 계속합니다. 매 턴 조회, 대화 자동 저장, Work 모드 전환이나 새 권한을 요구하지 않습니다.
+
 ## Engineering
 
 이 저장소는 [Data Relay Labs Engineering System](https://github.com/datarelay-labs/engineering-system)을 따르며 `.engineering/project.yaml`에 canonical baseline을 고정합니다.
