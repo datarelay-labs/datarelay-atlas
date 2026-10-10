@@ -17,6 +17,7 @@ import json
 import logging
 import re
 from functools import partial
+from typing import Callable
 from urllib.parse import urlsplit
 
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -239,10 +240,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: W
     )
     async def create_write_probe(value: str) -> str:
         _require_scope(WRITE_SCOPE)
-        try:
-            return json.dumps(write_probes.create(value), sort_keys=True)
-        except ValidationError as exc:
-            raise ToolError(str(exc)) from exc
+        return _call_probe_tool("create_write_probe", lambda: write_probes.create(value))
 
     @read_tool(
         name="get_write_probe",
@@ -250,10 +248,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: W
         structured_output=False,
     )
     async def get_write_probe(probe_id: str) -> str:
-        try:
-            return json.dumps(write_probes.get(probe_id), sort_keys=True)
-        except ValidationError as exc:
-            raise ToolError(str(exc)) from exc
+        return _call_probe_tool("get_write_probe", lambda: write_probes.get(probe_id))
 
     @write_tool(
         name="delete_write_probe",
@@ -262,10 +257,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: W
     )
     async def delete_write_probe(probe_id: str) -> str:
         _require_scope(WRITE_SCOPE)
-        try:
-            return json.dumps(write_probes.delete(probe_id), sort_keys=True)
-        except ValidationError as exc:
-            raise ToolError(str(exc)) from exc
+        return _call_probe_tool("delete_write_probe", lambda: write_probes.delete(probe_id))
 
     @read_tool(
         name="list_projects",
@@ -679,6 +671,20 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: W
         if identity:
             args["identity"] = identity
         return _call_tool(tools, "get_provenance", args)
+
+
+def _call_probe_tool(name: str, operation: Callable[[], object]) -> str:
+    """Count actual SDK write-probe tool invocations without changing scope checks."""
+    try:
+        encoded = json.dumps(operation(), sort_keys=True)
+    except ValidationError as exc:
+        _audit_mcp_execution(name, "BLOCK")
+        raise ToolError(str(exc)) from exc
+    except Exception:
+        _audit_mcp_execution(name, "ERROR")
+        raise
+    _audit_mcp_execution(name, "SUCCESS")
+    return encoded
 
 
 def _require_scope(scope: str) -> None:

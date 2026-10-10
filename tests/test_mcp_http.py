@@ -48,7 +48,7 @@ from atlas.mcp_config import (
     resolve_mcp_serve_config,
 )
 from atlas.mcp_context import AtlasContextTools, default_read_scopes
-from atlas.mcp_http import _call_tool, _transport_security, build_mcp_application
+from atlas.mcp_http import _call_probe_tool, _call_tool, _transport_security, build_mcp_application
 from atlas.provenance import ValidationError
 from atlas.security import READ_SCOPE, WRITE_SCOPE
 from atlas.service import AtlasService
@@ -655,6 +655,22 @@ class McpHttpTests(unittest.TestCase):
                     _call_tool(tools, "bootstrap_datarelay_context", request_args)
             audit.info.assert_not_called()
 
+    def test_mcp_probe_audit_blocks_without_logging_validation_detail(self):
+        def invalid() -> object:
+            raise ValidationError("NEVER_LOG_PROBE_SENSITIVE_VALUE")
+
+        with patch("atlas.mcp_http._MCP_USAGE_LOGGER") as audit:
+            with self.assertRaises(ToolError):
+                _call_probe_tool("get_write_probe", invalid)
+            audit.info.assert_called_once_with(
+                "ATLAS_MCP_TOOL_EXECUTION tool=%s outcome=%s",
+                "get_write_probe",
+                "BLOCK",
+            )
+            self.assertNotIn(
+                "NEVER_LOG_PROBE_SENSITIVE_VALUE", repr(audit.info.call_args)
+            )
+
     def _app(self, tmp: Path, resource_url: str):
         data = tmp / "data"
         _seed(data)
@@ -852,38 +868,56 @@ class McpHttpTests(unittest.TestCase):
                             [{"type": "oauth2", "scopes": [READ_SCOPE]}],
                         )
 
-                probe = json.loads(
-                    asyncio.run(
-                        _tool(
-                            resource,
-                            "read-write",
-                            "create_write_probe",
-                            {"value": "mcp-write-probe-round-trip"},
+                with patch("atlas.mcp_http._MCP_USAGE_LOGGER") as write_audit:
+                    probe = json.loads(
+                        asyncio.run(
+                            _tool(
+                                resource,
+                                "read-write",
+                                "create_write_probe",
+                                {"value": "mcp-write-probe-round-trip"},
+                            )
                         )
                     )
+                write_audit.info.assert_called_once_with(
+                    "ATLAS_MCP_TOOL_EXECUTION tool=%s outcome=%s",
+                    "create_write_probe",
+                    "SUCCESS",
                 )
                 self.assertTrue(probe["isolated"])
                 self.assertFalse(probe["canonical"])
-                fetched_probe = json.loads(
-                    asyncio.run(
-                        _tool(
-                            resource,
-                            "good",
-                            "get_write_probe",
-                            {"probe_id": probe["probe_id"]},
+                with patch("atlas.mcp_http._MCP_USAGE_LOGGER") as read_audit:
+                    fetched_probe = json.loads(
+                        asyncio.run(
+                            _tool(
+                                resource,
+                                "good",
+                                "get_write_probe",
+                                {"probe_id": probe["probe_id"]},
+                            )
                         )
                     )
+                read_audit.info.assert_called_once_with(
+                    "ATLAS_MCP_TOOL_EXECUTION tool=%s outcome=%s",
+                    "get_write_probe",
+                    "SUCCESS",
                 )
                 self.assertEqual(fetched_probe["value"], "mcp-write-probe-round-trip")
-                deleted_probe = json.loads(
-                    asyncio.run(
-                        _tool(
-                            resource,
-                            "read-write",
-                            "delete_write_probe",
-                            {"probe_id": probe["probe_id"]},
+                with patch("atlas.mcp_http._MCP_USAGE_LOGGER") as delete_audit:
+                    deleted_probe = json.loads(
+                        asyncio.run(
+                            _tool(
+                                resource,
+                                "read-write",
+                                "delete_write_probe",
+                                {"probe_id": probe["probe_id"]},
+                            )
                         )
                     )
+                delete_audit.info.assert_called_once_with(
+                    "ATLAS_MCP_TOOL_EXECUTION tool=%s outcome=%s",
+                    "delete_write_probe",
+                    "SUCCESS",
                 )
                 self.assertTrue(deleted_probe["deleted"])
 
