@@ -14,6 +14,8 @@ Design gate (ADR-0008):
 from __future__ import annotations
 
 import json
+import logging
+import re
 from functools import partial
 from urllib.parse import urlsplit
 
@@ -39,6 +41,20 @@ from atlas.write_probe import WriteProbeStore
 from atlas.service import AtlasService
 
 _UNLISTED_BIND_HOSTS = frozenset({"0.0.0.0", "::", ""})
+
+# This logger is configured by the running Uvicorn server and routed to
+# journald. Log the registered tool name and verified server-side outcome only.
+# Never include tokens, caller identity, arguments, return data or error detail.
+_MCP_USAGE_LOGGER = logging.getLogger("uvicorn.error")
+_AUDITABLE_TOOL_NAME = re.compile(r"[a-z][a-z0-9_]{0,80}\Z")
+
+
+def _audit_mcp_execution(name: str, outcome: str) -> None:
+    safe_name = name if isinstance(name, str) and _AUDITABLE_TOOL_NAME.fullmatch(name) else "unknown"
+    _MCP_USAGE_LOGGER.info(
+        "ATLAS_MCP_TOOL_EXECUTION tool=%s outcome=%s", safe_name, outcome
+    )
+
 
 
 def build_mcp_application(
@@ -674,14 +690,26 @@ def _require_scope(scope: str) -> None:
 def _call_tool(tools: AtlasContextTools, name: str, args: dict[str, object]) -> str:
     token = get_access_token()
     if token is None or READ_SCOPE not in list(token.scopes):
+        # Unauthorized transport traffic is not a real Atlas tool execution.
         raise ToolError("unauthorized")
     try:
         result = tools.call(name, args, scopes=list(token.scopes))
     except ValidationError as exc:
+        _audit_mcp_execution(name, "BLOCK")
         raise ToolError(str(exc)) from exc
+    except Exception:
+        _audit_mcp_execution(name, "ERROR")
+        raise
     if not result.ok:
+        _audit_mcp_execution(name, "BLOCK")
         raise ToolError(result.error or "error")
-    return json.dumps(result.data, sort_keys=True)
+    try:
+        encoded = json.dumps(result.data, sort_keys=True)
+    except Exception:
+        _audit_mcp_execution(name, "ERROR")
+        raise
+    _audit_mcp_execution(name, "SUCCESS")
+    return encoded
 
 
 def _transport_security(config: McpServeConfig) -> TransportSecuritySettings:

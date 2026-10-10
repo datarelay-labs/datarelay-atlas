@@ -19,6 +19,8 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +31,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from mcp.server.auth.provider import AccessToken
+from mcp.server.mcpserver.exceptions import ToolError
 from starlette.testclient import TestClient
 
 from atlas.github_sync import FetchedSource
@@ -45,7 +48,7 @@ from atlas.mcp_config import (
     resolve_mcp_serve_config,
 )
 from atlas.mcp_context import AtlasContextTools, default_read_scopes
-from atlas.mcp_http import _transport_security, build_mcp_application
+from atlas.mcp_http import _call_tool, _transport_security, build_mcp_application
 from atlas.provenance import ValidationError
 from atlas.security import READ_SCOPE, WRITE_SCOPE
 from atlas.service import AtlasService
@@ -593,6 +596,65 @@ class IntrospectionVerifierTests(unittest.TestCase):
 
 
 class McpHttpTests(unittest.TestCase):
+    def test_mcp_tool_audit_logs_only_authenticated_dispatch_outcomes(self):
+        token = AccessToken(
+            token="NEVER_LOG_BEARER_TOKEN",
+            client_id="NEVER_LOG_CLIENT_ID",
+            scopes=[READ_SCOPE],
+            resource="https://127.0.0.1:8443/mcp",
+        )
+        request_args = {"repository": "NEVER_LOG_REPOSITORY", "hint": "NEVER_LOG_QUERY"}
+        tools = Mock()
+        tools.call.return_value = SimpleNamespace(
+            ok=True, data={"private": "NEVER_LOG_RETURN_DATA"},
+        )
+        with patch("atlas.mcp_http.get_access_token", return_value=token), patch(
+            "atlas.mcp_http._MCP_USAGE_LOGGER"
+        ) as audit:
+            result = _call_tool(tools, "bootstrap_datarelay_context", request_args)
+            self.assertIn("NEVER_LOG_RETURN_DATA", result)
+            audit.info.assert_called_once_with(
+                "ATLAS_MCP_TOOL_EXECUTION tool=%s outcome=%s",
+                "bootstrap_datarelay_context",
+                "SUCCESS",
+            )
+            log_args = repr(audit.info.call_args)
+            for secret in (
+                "NEVER_LOG_BEARER_TOKEN", "NEVER_LOG_CLIENT_ID",
+                "NEVER_LOG_REPOSITORY", "NEVER_LOG_QUERY", "NEVER_LOG_RETURN_DATA",
+            ):
+                self.assertNotIn(secret, log_args)
+            tools.call.assert_called_once_with(
+                "bootstrap_datarelay_context", request_args, scopes=[READ_SCOPE]
+            )
+            audit.reset_mock()
+            tools.reset_mock()
+            tools.call.return_value = SimpleNamespace(
+                ok=False, data=None, error="NEVER_LOG_PRIVATE_ERROR_DETAIL",
+            )
+            with self.assertRaises(ToolError):
+                _call_tool(tools, "get_task_context", request_args)
+            audit.info.assert_called_once_with(
+                "ATLAS_MCP_TOOL_EXECUTION tool=%s outcome=%s",
+                "get_task_context",
+                "BLOCK",
+            )
+            self.assertNotIn("NEVER_LOG_PRIVATE_ERROR_DETAIL", repr(audit.info.call_args))
+
+            audit.reset_mock()
+            tools.call.return_value = SimpleNamespace(ok=True, data={})
+            _call_tool(tools, "BAD_NAME\\nNEVER_LOG_INJECTED_DETAIL", request_args)
+            audit.info.assert_called_once_with(
+                "ATLAS_MCP_TOOL_EXECUTION tool=%s outcome=%s",
+                "unknown",
+                "SUCCESS",
+            )
+            audit.reset_mock()
+            with patch("atlas.mcp_http.get_access_token", return_value=None):
+                with self.assertRaises(ToolError):
+                    _call_tool(tools, "bootstrap_datarelay_context", request_args)
+            audit.info.assert_not_called()
+
     def _app(self, tmp: Path, resource_url: str):
         data = tmp / "data"
         _seed(data)
@@ -825,8 +887,16 @@ class McpHttpTests(unittest.TestCase):
                 )
                 self.assertTrue(deleted_probe["deleted"])
 
-                projects = json.loads(
-                    asyncio.run(_tool(resource, "good", "list_projects", {}))
+                # This is a genuine MCP tools/call over TLS, not a ping,
+                # tools/list handshake or a health check.
+                with patch("atlas.mcp_http._MCP_USAGE_LOGGER") as live_audit:
+                    projects = json.loads(
+                        asyncio.run(_tool(resource, "good", "list_projects", {}))
+                    )
+                live_audit.info.assert_called_once_with(
+                    "ATLAS_MCP_TOOL_EXECUTION tool=%s outcome=%s",
+                    "list_projects",
+                    "SUCCESS",
                 )
                 self.assertEqual(
                     [
