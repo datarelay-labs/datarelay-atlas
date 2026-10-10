@@ -14,7 +14,10 @@ Design gate (ADR-0008):
 from __future__ import annotations
 
 import json
+import logging
+import re
 from functools import partial
+from typing import Callable
 from urllib.parse import urlsplit
 
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -39,6 +42,20 @@ from atlas.write_probe import WriteProbeStore
 from atlas.service import AtlasService
 
 _UNLISTED_BIND_HOSTS = frozenset({"0.0.0.0", "::", ""})
+
+# This logger is configured by the running Uvicorn server and routed to
+# journald. Log the registered tool name and verified server-side outcome only.
+# Never include tokens, caller identity, arguments, return data or error detail.
+_MCP_USAGE_LOGGER = logging.getLogger("uvicorn.error")
+_AUDITABLE_TOOL_NAME = re.compile(r"[a-z][a-z0-9_]{0,80}\Z")
+
+
+def _audit_mcp_execution(name: str, outcome: str) -> None:
+    safe_name = name if isinstance(name, str) and _AUDITABLE_TOOL_NAME.fullmatch(name) else "unknown"
+    _MCP_USAGE_LOGGER.info(
+        "ATLAS_MCP_TOOL_EXECUTION tool=%s outcome=%s", safe_name, outcome
+    )
+
 
 
 def build_mcp_application(
@@ -223,10 +240,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: W
     )
     async def create_write_probe(value: str) -> str:
         _require_scope(WRITE_SCOPE)
-        try:
-            return json.dumps(write_probes.create(value), sort_keys=True)
-        except ValidationError as exc:
-            raise ToolError(str(exc)) from exc
+        return _call_probe_tool("create_write_probe", lambda: write_probes.create(value))
 
     @read_tool(
         name="get_write_probe",
@@ -234,10 +248,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: W
         structured_output=False,
     )
     async def get_write_probe(probe_id: str) -> str:
-        try:
-            return json.dumps(write_probes.get(probe_id), sort_keys=True)
-        except ValidationError as exc:
-            raise ToolError(str(exc)) from exc
+        return _call_probe_tool("get_write_probe", lambda: write_probes.get(probe_id))
 
     @write_tool(
         name="delete_write_probe",
@@ -246,10 +257,7 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: W
     )
     async def delete_write_probe(probe_id: str) -> str:
         _require_scope(WRITE_SCOPE)
-        try:
-            return json.dumps(write_probes.delete(probe_id), sort_keys=True)
-        except ValidationError as exc:
-            raise ToolError(str(exc)) from exc
+        return _call_probe_tool("delete_write_probe", lambda: write_probes.delete(probe_id))
 
     @read_tool(
         name="list_projects",
@@ -665,6 +673,20 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: W
         return _call_tool(tools, "get_provenance", args)
 
 
+def _call_probe_tool(name: str, operation: Callable[[], object]) -> str:
+    """Count actual SDK write-probe tool invocations without changing scope checks."""
+    try:
+        encoded = json.dumps(operation(), sort_keys=True)
+    except ValidationError as exc:
+        _audit_mcp_execution(name, "BLOCK")
+        raise ToolError(str(exc)) from exc
+    except Exception:
+        _audit_mcp_execution(name, "ERROR")
+        raise
+    _audit_mcp_execution(name, "SUCCESS")
+    return encoded
+
+
 def _require_scope(scope: str) -> None:
     token = get_access_token()
     if token is None or scope not in list(token.scopes):
@@ -674,14 +696,26 @@ def _require_scope(scope: str) -> None:
 def _call_tool(tools: AtlasContextTools, name: str, args: dict[str, object]) -> str:
     token = get_access_token()
     if token is None or READ_SCOPE not in list(token.scopes):
+        # Unauthorized transport traffic is not a real Atlas tool execution.
         raise ToolError("unauthorized")
     try:
         result = tools.call(name, args, scopes=list(token.scopes))
     except ValidationError as exc:
+        _audit_mcp_execution(name, "BLOCK")
         raise ToolError(str(exc)) from exc
+    except Exception:
+        _audit_mcp_execution(name, "ERROR")
+        raise
     if not result.ok:
+        _audit_mcp_execution(name, "BLOCK")
         raise ToolError(result.error or "error")
-    return json.dumps(result.data, sort_keys=True)
+    try:
+        encoded = json.dumps(result.data, sort_keys=True)
+    except Exception:
+        _audit_mcp_execution(name, "ERROR")
+        raise
+    _audit_mcp_execution(name, "SUCCESS")
+    return encoded
 
 
 def _transport_security(config: McpServeConfig) -> TransportSecuritySettings:
