@@ -14,6 +14,7 @@ from atlas.data_lock import LOCK_NAME
 from atlas.data_protection import (
     _CONTROLLER_DIRS,
     _CONTROLLER_NAME,
+    _DURABLE_METADATA_FILES,
     _DERIVED_CACHE_DIRS,
     _DERIVED_CACHE_FILES,
     _DURABLE_NAME,
@@ -167,7 +168,11 @@ def _storage_stats(root: Path) -> dict[str, int]:
             continue
         if name.endswith(".tmp"):
             _reject("runtime observability data root is unsafe")
-        if name in {_DURABLE_NAME, _CONTROLLER_NAME} or name in _REPLAY_STATE_FILES:
+        if (
+            name in {_DURABLE_NAME, _CONTROLLER_NAME}
+            or name in _DURABLE_METADATA_FILES
+            or name in _REPLAY_STATE_FILES
+        ):
             durable_files += 1
             durable_bytes += _regular_size(
                 entry,
