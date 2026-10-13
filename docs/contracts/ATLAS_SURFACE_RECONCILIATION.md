@@ -6,7 +6,7 @@ This gate reconciles the exact release candidate's implemented browser surface a
 
 ## Required execution
 
-- Executor/final auditor: **ChatGPT itself**. ChatGPT directly acts as the applicable real user persona and drives the actual Atlas browser surface. Coding agents, alternate models, wrappers, scripted replays, CI jobs, and automated harnesses are supporting evidence only and cannot produce gate PASS.
+- **Default AI_DIRECT:** the execution-profile-selected ChatGPT runtime acts as the real user and final auditor. **Explicit HUMAN_OWNER_WITH_CHATGPT_AUDIT:** the authenticated owner personally operates the actual browser, and the same ChatGPT runtime independently audits owner-authenticated observations. This optional mode requires the owner's explicit run-specific opt-in and the canonical Engineering System human-evidence contract; it does not switch runtime or grant release authority. Other agents, wrappers, CI jobs and scripted replays never substitute for the acting user.
 - Surface: the actual Atlas browser UI launched from the exact candidate.
 - Browser: a real Chromium/Chrome process; source inspection, API calls, jsdom, or static HTML parsing do not substitute.
 - Candidate: execute from a clean immutable checkout (or equivalently content-addressed release artifact) of the exact Git commit, record that commit/artifact identity before launch, and reject dirty-worktree, untracked-file, or different-candidate evidence. `git rev-parse HEAD` alone is not sufficient candidate binding.
@@ -36,8 +36,8 @@ PASS requires all current browser-visible capabilities to be accounted for and e
 
 ## Engineering System User Acceptance v2
 
-- Start feature-first and black-box-first. The acting ChatGPT persona discovers Atlas from the public browser surface before source/route/test inspection; implementation knowledge is auditor-only after public evidence is frozen.
+- Start feature-first and black-box-first. The acting user (ChatGPT in `AI_DIRECT`, or the real owner after explicit `HUMAN_OWNER_WITH_CHATGPT_AUDIT` opt-in) discovers Atlas through the browser before consulting source/route/test inspection; implementation knowledge is auditor-only after public evidence is frozen.
 - A finding is not a stop condition. Preserve evidence and continue every safe independent route/state. Do not patch source or this contract during the frozen discovery pass. After safe coverage is exhausted, freeze the complete finding set, batch-remediate, and rerun from the beginning.
 - Reconcile capability → discoverable route/control → persona goal → state/empty/error/recovery semantics → user-visible result. Every mandatory capability/route receives an explicit disposition; blocked/partial/not-run never becomes PASS.
 - Retain exact candidate HEAD, committed contract digest, browser identity, route/scenario ledger, findings ledger, and a ledger-derived summary. Release PASS requires 100% applicable capability/public-surface coverage and zero mandatory FAIL/PARTIAL/BLOCKED or unresolved blocking finding.
-- Static/API/source inspection is supporting evidence only. A real Chromium/Chrome process driven by ChatGPT remains mandatory for the user action.
+- Static/API/source inspection is supporting evidence only. A real Chromium/Chrome process must be operated by the selected acting user (ChatGPT in `AI_DIRECT`; the human owner in explicit human-owner mode), with ChatGPT independently auditing any owner-operated run.

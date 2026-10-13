@@ -111,3 +111,16 @@ scenarios:
       - "Atlas build/test paths do not require datarelay-labs/athena"
       - "public provenance schema does not expose Wiki.js identity fields"
     release_gate: true
+
+  - id: ATLAS-USER-ACCEPTANCE-001
+    name: Explicit human-owner E2E evidence contract and fail-closed provenance regressions
+    level: unit
+    domains: [methodology, knowledge, integrations]
+    triggers: [affected, pr, release]
+    platforms: [linux]
+    command: "python3 tools/test_user_acceptance_contract.py"
+    invariants:
+      - "explicit human-owner mode remains structurally valid only for same-repository exact-HEAD evidence with complete browser scenario metadata"
+      - "foreign repository, incomplete observations, synthetic authority and stale candidate fail closed"
+      - "default AI_DIRECT behavior remains unchanged; structural PASS never grants real user-gate or release PASS"
+    release_gate: true
