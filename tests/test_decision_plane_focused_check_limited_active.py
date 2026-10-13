@@ -488,6 +488,7 @@ class FocusedCheckLimitedActiveTests(unittest.TestCase):
                 "ATLAS-CONTRACT-001",
                 "ATLAS-UNIT-001",
                 "ATLAS-INDEPENDENCE-001",
+                "ATLAS-USER-ACCEPTANCE-001",
             ]
             receipt = commit_focused_check_effect(
                 data,
