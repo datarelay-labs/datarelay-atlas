@@ -11,6 +11,8 @@ human run; its unchanged canonical identity/evidence rules continue to apply.
 
 ## Required environment and immutable identity
 
+Use a clean immutable checkout; dirty-worktree or untracked runtime bytes invalidate evidence.
+`git rev-parse HEAD` alone is not sufficient: verify source/archive hashes too.
 Read this entire contract before acting. Record clean exact candidate HEAD,
 committed contract SHA-256, archive/file hashes, isolated state root, timestamp,
 MCP endpoint, TLS identity, test-scoped credentials (never logged), client version

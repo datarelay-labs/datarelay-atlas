@@ -13,6 +13,7 @@ under HUMAN_OWNER_WITH_CHATGPT_AUDIT, never a default dependency.
 
 ## Required starting state
 
+Use a clean immutable checkout; dirty/untracked bytes invalidate evidence.
 Read this complete contract. Bind HEAD, committed contract digest, runtime
 archive/file hashes, isolated fixture scope, client/browser versions and run ID.
 Use at least two projects, attributable engineering and personal sources, and
