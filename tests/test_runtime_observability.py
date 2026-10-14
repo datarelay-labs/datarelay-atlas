@@ -10,6 +10,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from atlas.cli import main
+from atlas.data_protection import _DURABLE_METADATA_FILES
 from atlas.github_sync import FetchedSource
 from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
 from atlas.mcp_context import AtlasContextTools, default_read_scopes
@@ -172,6 +173,37 @@ class RuntimeObservabilityTests(unittest.TestCase):
             self.assertEqual(snapshot["source"]["state"], "UNKNOWN")
             self.assertEqual(snapshot["source"]["head"], "UNKNOWN")
             self.assertEqual(snapshot["source"]["clean"], "UNKNOWN")
+
+    def test_canonical_durable_metadata_files_are_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            before = self._snapshot(root)
+            contents = '{"schema_version": 1}\n'
+            for filename in sorted(_DURABLE_METADATA_FILES):
+                (root / filename).write_text(contents, encoding="utf-8")
+
+            after = self._snapshot(root)
+            self.assertEqual(
+                after["storage"]["durable_file_count"],
+                before["storage"]["durable_file_count"] + len(_DURABLE_METADATA_FILES),
+            )
+            self.assertEqual(
+                after["storage"]["durable_byte_count"],
+                before["storage"]["durable_byte_count"]
+                + len(contents.encode("utf-8")) * len(_DURABLE_METADATA_FILES),
+            )
+            self.assertEqual(after["derived_cache"], before["derived_cache"])
+
+    def test_durable_metadata_symlink_remains_unsafe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            (root / sorted(_DURABLE_METADATA_FILES)[0]).symlink_to(
+                root / "missing-metadata"
+            )
+            with self.assertRaisesRegex(ValidationError, "durable state is unsafe"):
+                self._snapshot(root)
 
     def test_unexpected_state_fails_closed_without_echoing_content(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -23,7 +23,7 @@ human_equivalent_user_tests_required: true
 human_equivalent_user_tests:
   executor: EXECUTION_PROFILE
   actual_user_surface_required: true
-  primary_user_surface: browser
+  primary_user_surface: mixed
   actual_browser_process_required: true
   same_candidate_required: true
   ci_contract_validation_only: true

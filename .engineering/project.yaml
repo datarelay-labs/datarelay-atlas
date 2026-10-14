@@ -1,7 +1,7 @@
 engineering_system:
   version: 1.7.0
   mode: adopted
-  baseline: 1e12573f5d24f93d5498dea3580f2a87bcb518d6
+  baseline: e85d6a4de7e7df2dcbcf4f5dd43269bb308de195
   ci_mode: shared
   native_ci_workflows: []
   merge_gate_status: unknown
@@ -12,7 +12,7 @@ project:
   type: engineering-platform
   maturity: development
   user_facing: true
-  primary_user_surface: browser
+  primary_user_surface: mixed
 domains:
 - methodology
 - project-registry

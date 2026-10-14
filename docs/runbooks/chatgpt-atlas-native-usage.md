@@ -24,6 +24,17 @@ For a repository-scoped continuation, call bootstrap_datarelay_context
 with repository datarelay-labs/engineering-system. A real scoped call
 qualifies that conversation, not automatic activation in other chats.
 
+Scoped callers must supply **exactly one** of `repository` or `project_hint`
+to `bootstrap_datarelay_context`, never both. If a repository is shared by
+two registered Atlas projects, its mapping deliberately fails closed; use the
+exact `project_hint` (for example `datarelay-atlas`) or, for
+`get_task_context`, the exact `project_id`. The optional `workstream`
+is a Work Packet slug, not an Issue number or free-text task description.
+If specified, it must match `^[a-z0-9][a-z0-9-]{0,63}$` (1-64 lowercase
+ASCII letters, digits, and hyphens; starts alphanumeric). Copy the actual
+slug from the ACTIVE Work Packet, or omit it when unknown. Do not
+relax server-side validation to compensate for malformed caller inputs.
+
 ## 2. Public authentication contract, without credentials
 
 - GET /healthz on https://mcp.atlas.datarelay.run should be HTTP 200.
@@ -38,6 +49,13 @@ qualifies that conversation, not automatic activation in other chats.
   Do not turn off authentication or add atlas.write as a workaround.
 
 ## 3. Real tool execution vs. HTTP and refresh activity
+
+A merged instrumentation PR does not prove the running service was updated.
+On the authorized production host, first check whether the deployed source
+contains `ATLAS_MCP_TOOL_EXECUTION` in
+`/opt/datarelay-atlas/atlas/mcp_http.py`; a missing marker means tool-event
+counts are **not observable**, not evidence of zero Atlas use. Do not deploy
+as part of this read-only measurement.
 
 After the separately reviewed instrumented service version is deployed,
 a successfully dispatched authenticated MCP tool call logs an event like:

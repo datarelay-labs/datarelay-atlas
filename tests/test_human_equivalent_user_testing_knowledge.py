@@ -26,7 +26,7 @@ class HumanEquivalentUserTestingKnowledgeTests(unittest.TestCase):
 
         project = PROJECT.read_text(encoding="utf-8")
         self.assertIn("user_facing: true", project)
-        self.assertIn("primary_user_surface: browser", project)
+        self.assertIn("primary_user_surface: mixed", project)
         release = (ROOT / ".engineering/release.yaml").read_text(encoding="utf-8")
         self.assertIn("human_equivalent_user_tests_required: true", release)
         self.assertIn("actual_browser_process_required: true", release)
