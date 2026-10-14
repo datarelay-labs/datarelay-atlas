@@ -12,7 +12,7 @@ project:
   type: engineering-platform
   maturity: development
   user_facing: true
-  primary_user_surface: browser
+  primary_user_surface: mixed
 domains:
 - methodology
 - project-registry

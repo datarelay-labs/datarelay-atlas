@@ -118,7 +118,7 @@ scenarios:
     domains: [methodology, knowledge, integrations]
     triggers: [affected, pr, release]
     platforms: [linux]
-    command: "python3 tools/test_user_acceptance_contract.py"
+    command: "python3 tools/test_user_acceptance_contract.py && python3 -m unittest tests.test_mcp_primary_contract -q"
     invariants:
       - "explicit human-owner mode remains structurally valid only for same-repository exact-HEAD evidence with complete browser scenario metadata"
       - "foreign repository, incomplete observations, synthetic authority and stale candidate fail closed"

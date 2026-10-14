@@ -91,6 +91,23 @@ Atlas owns **retrieval, provenance, scope, integrity, and bounded context packag
 
 Atlas does not require a general-purpose chat/answer-generation surface for Core completion. A ChatGPT or other approved MCP client may synthesize an answer from Atlas context. Any future Atlas-native answer synthesis must be introduced as an explicit bounded contract with provenance and failure semantics; it must not blur canonical and derived state.
 
+## Primary interaction and acceptance boundary — 2026-10-14
+
+The operational user of Atlas context is the approved AI/MCP client, acting for
+the engineering owner. The primary workflow is authenticated MCP project resume,
+retrieval, provenance verification and use of that context in real repository work.
+The owner is not required to operate the read-only web dashboard to enable this
+workflow. The public surface is mixed: MCP-first, with an operator CLI and an
+auxiliary human observability UI. Both views must remain consistent and secure.
+
+ChatGPT executes the core user journey through actual MCP tools and audits it
+against current Git/GitHub facts. It also performs actual-browser regression for
+the shipped UI. Browser navigation alone is not proof of AI context consumption;
+API-only tests cannot substitute for actual browser checks of the UI. This is a
+product-specific application of the unchanged Engineering System user gates,
+not a waiver of authentication, exact-candidate, evidence or release requirements.
+See ADR-0023 and the two repository-local acceptance contracts.
+
 ## Human UI boundary
 
 The current Atlas Human UI is primarily a **read-mostly/read-only observability and navigation surface**.
@@ -167,7 +184,7 @@ Atlas Core is complete when one representative project journey can be demonstrat
 5. show current lifecycle/validation/release state while distinguishing observed, stale, contradictory, and unknown evidence;
 6. surface the minimum Core derived intelligence needed to navigate decisions, contradictions, and knowledge gaps without becoming a competing source of truth;
 7. survive the production operating journey: deploy, health check, backup/restore test, upgrade/rollback, and restart while preserving/rebuilding the intended state;
-8. for user-facing releases, pass required exact-candidate machine gates plus actual-browser Surface Reconciliation and Full User E2E under the active Engineering System release standard.
+8. pass required exact-candidate machine gates, MCP-first Surface Reconciliation and Full User E2E, plus real-browser regression of the auxiliary UI under the active Engineering System release standard; normal operation must not depend on the owner performing dashboard tests.
 
 A checklist of optional Automation Extension or experimental features is not a substitute for this end-to-end Core acceptance journey.
 
