@@ -123,6 +123,44 @@ class WebUiTests(unittest.TestCase):
         self.assertEqual(state["status"], "500 Internal Server Error")
         self.assertIn("Atlas state unavailable", body)
 
+    def test_corrupt_source_metadata_is_safe_for_service_mcp_and_browser(self):
+        from atlas.mcp_context import AtlasContextTools, default_read_scopes
+        path = self.root / "projections/projections.json"
+        original = path.read_bytes()
+        svc = AtlasService(self.root)
+        tools = AtlasContextTools(
+            retriever_factory=svc.project_retriever,
+            source_detail_factory=svc.source_detail,
+        )
+        try:
+            for malformed in ("{PRIVATE_MARKER", "[]", '{"projections": []}',
+                              '{"projections": {"demo/readme": null}}'):
+                with self.subTest(metadata=malformed):
+                    path.write_text(malformed)
+                    with self.assertRaisesRegex(ValidationError, "source projection metadata is unavailable"):
+                        svc.source_detail("demo", "readme")
+                    result = tools.call("get_source_detail", {"project_id": "demo", "source_id": "readme"}, scopes=default_read_scopes())
+                    self.assertFalse(result.ok)
+                    state, body = self.get("/projects/demo/sources/readme")
+                    self.assertEqual(state["status"], "500 Internal Server Error")
+                    self.assertIn("Source unavailable", body)
+                    self.assertIn("Back to projects", body)
+                    self.assertNotIn("PRIVATE_MARKER", body)
+                    self.assertNotIn("Traceback", body)
+                    self.assertEqual(self.get("/projects/demo/sources/missing")[0]["status"], "404 Not Found")
+        finally:
+            path.write_bytes(original)
+        state, body = self.get("/projects/demo/sources/readme")
+        self.assertEqual(state["status"], "200 OK")
+        self.assertIn("needle", body)
+
+    def test_unreadable_source_metadata_is_normalized_without_details(self):
+        from unittest.mock import patch
+        svc = AtlasService(self.root)
+        with patch.object(svc.projections, "list_records", side_effect=OSError("PRIVATE_FILESYSTEM_DETAIL")):
+            with self.assertRaisesRegex(ValidationError, "^source projection metadata is unavailable$"):
+                svc.source_detail("demo", "readme")
+
     def test_adoption_state_uses_configured_engineering_metadata_source(self):
         metadata = SimpleNamespace(provider="github", enabled=True, source_path=".engineering/project.yaml")
         other = SimpleNamespace(provider="github", enabled=True, source_path="README.md")

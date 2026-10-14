@@ -860,14 +860,19 @@ class AtlasService:
         if source is None:
             raise ValidationError(f"unknown source_id: {source_id}")
 
-        record = next(
-            (
-                item
-                for item in self.projection_records(project_id)
-                if item.get("source_id") == source_id
-            ),
-            None,
-        )
+        try:
+            record = next(
+                (
+                    item
+                    for item in self.projection_records(project_id)
+                    if item.get("source_id") == source_id
+                ),
+                None,
+            )
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            # Preserve not-found semantics above; corrupt persisted metadata is
+            # unavailable, never a raw decoder/filesystem error on public surfaces.
+            raise ValidationError("source projection metadata is unavailable") from exc
         projection_state = str((record or {}).get("sync_state") or "missing").upper()
         result: dict[str, Any] = {
             "project_id": project_id,
