@@ -542,6 +542,118 @@ class IntrospectionVerifierTests(unittest.TestCase):
         self.assertIsNone(malformed)
         self.assertIsNone(bracket)
 
+    def test_introspection_issuer_identity_is_exact(self):
+        # OAuth issuer identifiers are case-sensitive strings, not equivalent
+        # URL spellings (RFC 8414/9207 identity semantics).
+        base = {
+            "active": True,
+            "client_id": "chatgpt",
+            "scope": "atlas.read",
+            "aud": "https://atlas.example/mcp",
+        }
+        issuers = {
+            "exact": ISSUER,
+            "trailing-slash": ISSUER + "/",
+            "leading-space": " " + ISSUER,
+            "uppercase-host": "https://ISSUER.example",
+        }
+        scripted = ScriptedIntrospection(
+            {key: {**base, "iss": issuer} for key, issuer in issuers.items()}
+        )
+        verifier = Rfc7662TokenVerifier(
+            introspection_url="https://issuer.example/introspect",
+            client_id="atlas-resource",
+            client_secret=SECRET,
+            resource_url="https://atlas.example/mcp",
+            issuer_url=ISSUER,
+            transport=scripted,
+        )
+
+        async def check():
+            return [await verifier.verify_token(key) for key in issuers]
+
+        exact, trailing, leading, uppercase = asyncio.run(check())
+        self.assertIsNotNone(exact)
+        self.assertIsNone(trailing)
+        self.assertIsNone(leading)
+        self.assertIsNone(uppercase)
+
+    def test_expiration_is_exclusive_and_not_before_is_inclusive(self):
+        # RFC 7519: now must be strictly before exp; nbf may equal now.
+        now = 1800000000
+        base = {
+            "active": True,
+            "client_id": "chatgpt",
+            "scope": "atlas.read",
+            "aud": "https://atlas.example/mcp",
+            "iss": ISSUER,
+        }
+        scripted = ScriptedIntrospection({
+            "expired-at-now": {**base, "exp": now},
+            "expires-next": {**base, "exp": now + 1},
+            "starts-now": {**base, "nbf": now},
+            "starts-next": {**base, "nbf": now + 1},
+        })
+        verifier = Rfc7662TokenVerifier(
+            introspection_url="https://issuer.example/introspect",
+            client_id="atlas-resource",
+            client_secret=SECRET,
+            resource_url="https://atlas.example/mcp",
+            issuer_url=ISSUER,
+            transport=scripted,
+        )
+
+        async def check():
+            return [await verifier.verify_token(key) for key in scripted.payloads]
+
+        with patch("atlas.mcp_auth.time.time", return_value=now):
+            at_exp, future_exp, at_nbf, future_nbf = asyncio.run(check())
+        self.assertIsNone(at_exp)
+        self.assertIsNotNone(future_exp)
+        self.assertIsNotNone(at_nbf)
+        self.assertIsNone(future_nbf)
+
+    def test_rfc7662_present_null_claims_fail_closed(self):
+        # RFC 7662 makes these claims OPTIONAL, not nullable. Omitted claims
+        # remain compatible with Keycloak; explicit JSON null is malformed.
+        resource = "https://mcp.atlas.datarelay.run/mcp"
+        base = {
+            "active": True,
+            "client_id": "chatgpt",
+            "scope": "atlas.read",
+            "aud": resource,
+            "iss": ISSUER,
+        }
+        cases = {
+            "issuer-null": {"iss": None},
+            "audience-null": {"aud": None, "resource": resource},
+            "resource-null": {"resource": None},
+            "expiration-null": {"exp": None},
+            "not-before-null": {"nbf": None},
+            "scope-null": {"scope": None},
+        }
+        scripted = ScriptedIntrospection(
+            {key: {**base, **overrides} for key, overrides in cases.items()}
+            | {"valid-omitted-issuer": {k: v for k, v in base.items() if k != "iss"}}
+        )
+        verifier = Rfc7662TokenVerifier(
+            introspection_url="https://issuer.example/introspect",
+            client_id="atlas-resource",
+            client_secret=SECRET,
+            resource_url=resource,
+            issuer_url=ISSUER,
+            transport=scripted,
+        )
+
+        async def check():
+            rejected = [await verifier.verify_token(key) for key in cases]
+            accepted = await verifier.verify_token("valid-omitted-issuer")
+            return rejected, accepted
+
+        rejected, accepted = asyncio.run(check())
+        self.assertEqual(rejected, [None] * len(cases))
+        self.assertIsNotNone(accepted)
+
     def test_http_transport_posts_form_and_does_not_follow_redirects(self):
         hits = {"introspect": 0, "collected": 0}
 
@@ -714,6 +826,7 @@ class McpHttpTests(unittest.TestCase):
                 self.assertEqual(metadata.status_code, 200)
                 body = metadata.json()
                 self.assertEqual(body["resource"], resource)
+                self.assertEqual(body["resource_name"], "DataRelay Atlas MCP")
                 self.assertEqual(body["authorization_servers"], [ISSUER])
                 self.assertEqual(body["scopes_supported"], [READ_SCOPE, WRITE_SCOPE])
                 self.assertEqual(client.get("/authorize").status_code, 404)
@@ -849,6 +962,12 @@ class McpHttpTests(unittest.TestCase):
                 self._wait_until(lambda: server.started, "MCP HTTPS server did not start")
                 tool_descriptors = asyncio.run(_list_tools(resource, "good"))
                 names = {item["name"] for item in tool_descriptors}
+                # MCP SDK 2.x serves both the stateless 2026-07-28 protocol
+                # and older initialize-handshake clients on this same URL.
+                modern = asyncio.run(_list_tools(resource, "good", mode="2026-07-28"))
+                legacy = asyncio.run(_list_tools(resource, "good", mode="legacy"))
+                self.assertEqual({item["name"] for item in modern}, names)
+                self.assertEqual({item["name"] for item in legacy}, names)
                 self.assertIn("list_projects", names)
                 self.assertIn("bootstrap_datarelay_context", names)
                 self.assertIn("create_write_probe", names)
@@ -1167,7 +1286,7 @@ async def _task_context(url: str, token: str, **arguments):
     return json.loads(text)
 
 
-async def _list_tools(url: str, token: str) -> list[dict]:
+async def _list_tools(url: str, token: str, *, mode: str = "auto") -> list[dict]:
     from mcp import Client
     from mcp.client.streamable_http import streamable_http_client
 
@@ -1178,7 +1297,7 @@ async def _list_tools(url: str, token: str) -> list[dict]:
     )
     transport = streamable_http_client(url, http_client=http)
     try:
-        async with Client(transport, read_timeout_seconds=10) as client:
+        async with Client(transport, read_timeout_seconds=10, mode=mode) as client:
             page = await client.list_tools(cache_mode="bypass")
     finally:
         await http.aclose()
