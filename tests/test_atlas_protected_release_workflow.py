@@ -44,8 +44,10 @@ class ProtectedReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("secrets", job)
         self.assertNotIn("runs-on", job)
         self.assertNotIn("steps", job)
-        self.assertIn("github.ref_protected", job["if"])
-        self.assertIn("refs/heads/main", job["if"])
+        # A job-level `if` can silently SKIP the only authorization gate,
+        # making an unprotected-branch dispatch look successful.
+        # The canonical reusable authorizer must instead run and FAIL.
+        self.assertNotIn("if", job)
         self.assertEqual(
             job["with"]["profile_path"], ".engineering/release.yaml"
         )

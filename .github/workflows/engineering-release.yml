@@ -1,6 +1,7 @@
-# Preparation-only workflow: never performs a production code or env switch.
-# The SHA-pinned canonical release contract enforces main-ref authorization,
-# self-hosted runner group and immutable candidate ancestry before execution.
+# Qualification-only. No production code/env swap or credential handoff.
+# Do not guard the reusable job with an if: a skipped job can make the
+# workflow appear green without ever running the protected-ref authorizer.
+# The pinned Engineering System authorizer must FAIL on unprotected refs.
 name: Atlas Protected Release Boundary Qualification
 
 on:
@@ -20,9 +21,6 @@ concurrency:
 
 jobs:
   bounded-qualification:
-    # Defense in depth: canonical reusable workflow independently checks
-    # protected default-branch dispatch and candidate SHA ancestry.
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true
     uses: datarelay-labs/engineering-system/.github/workflows/release-contract.yml@e85d6a4de7e7df2dcbcf4f5dd43269bb308de195
     with:
       expected_sha: ${{ inputs.expected_sha }}

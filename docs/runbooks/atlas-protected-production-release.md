@@ -73,7 +73,8 @@ protection state is inferred.
 
 Use the GitHub Actions manual dispatch for
 `Atlas Protected Release Boundary Qualification`, from protected `main`,
-with `phase=qualify` and the **full current reviewed commit SHA**.
+with the **full current reviewed commit SHA**; the workflow fixes
+`phase=qualify` rather than accepting a caller-controlled phase.
 The canonical reusable workflow and local gate must both PASS at that same
 candidate HEAD. A green result means the *runner boundary and this limited
 qualification contract* passed, not a production cutover or release acceptance.
