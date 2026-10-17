@@ -25,6 +25,30 @@ class MemoryCandidateTests(unittest.TestCase):
         self.assertEqual(shown["count"],1); item=shown["items"][0]
         self.assertFalse(item["canonical"]); self.assertEqual(item["authority"],AUTHORITY)
 
+    def test_duplicate_in_one_batch_is_rejected_before_persisting(self):
+        duplicate = {
+            "candidate_class": "LESSON_LEARNED",
+            "content": "Reuse verified E2E runbooks.",
+        }
+        args = dict(
+            project_id="atlas", workstream="e2e",
+            input_kind="RUN_SUMMARY",
+            observed_at="2026-10-17T00:00:00Z",
+            candidates=[duplicate, dict(duplicate)],
+        )
+        with self.assertRaisesRegex(ValidationError, "duplicate"):
+            self.svc.ingest_memory_candidates(**args)
+        self.assertFalse((self.root / "memory-candidates.json").exists())
+
+        # A rejected batch must not poison subsequent operations.
+        result = self.svc.ingest_memory_candidates(
+            **{**args, "candidates": [duplicate]}
+        )
+        self.assertEqual(result["accepted"], 1)
+        self.assertEqual(
+            self.svc.memory_candidates(project_id="atlas")["count"], 1
+        )
+
     def test_rejects_unapproved_input_unsafe_scope_and_secret(self):
         with self.assertRaises(ValidationError):
             self.svc.ingest_memory_candidates(project_id="atlas",input_kind="RAW_TRANSCRIPT",

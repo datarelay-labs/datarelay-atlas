@@ -135,6 +135,17 @@ class McpBoundedWriteHttpTests(unittest.TestCase):
                     self.assertEqual(AtlasService(data).memory_candidates(
                         project_id="alpha"
                     )["count"], 1)
+                    with self.assertRaises(AssertionError):
+                        asyncio.run(_tool(
+                            resource, "memory", "ingest_memory_candidates",
+                            {**arguments, "candidates": [
+                                arguments["candidates"][0],
+                                dict(arguments["candidates"][0]),
+                            ]},
+                        ))
+                    self.assertEqual(AtlasService(data).memory_candidates(
+                        project_id="alpha"
+                    )["count"], 1)
 
                     src = {
                         "project_id": "alpha",
