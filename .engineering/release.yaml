@@ -4,17 +4,17 @@ artifact_hash_required: false
 provenance_required: false
 sbom_required: false
 setup_command: ''
-preflight_required: false
-preflight_command: ''
-qualification_command: ''
+preflight_required: true
+preflight_command: 'python3 scripts/atlas_protected_release_gate.py preflight'
+qualification_command: 'python3 scripts/atlas_protected_release_gate.py qualify'
 artifact_hash_command: ''
 provenance_command: ''
 sbom_command: ''
 operational_e2e_required: false
 operational_e2e_command: ''
 full_e2e_passes: 0
-public_smoke_required: false
-public_smoke_command: ''
+public_smoke_required: true
+public_smoke_command: 'python3 scripts/atlas_protected_release_gate.py public-smoke'
 blockers:
   p0: true
   p1: true
@@ -45,4 +45,4 @@ human_equivalent_user_tests:
   complete_rerun_after_remediation_required: true
   wrapper_user_substitution_forbidden: true
   contract_review_attestation_version: 1
-execution_context: github-hosted
+execution_context: protected-production
