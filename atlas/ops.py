@@ -66,8 +66,13 @@ _REQUIRED_KEYS = (
     TLS_CERT_ENV,
     TLS_KEY_ENV,
 )
+_MCP_WRITE_FEATURE_FLAGS = (
+    "ATLAS_MCP_MEMORY_WRITE_ENABLED",
+    "ATLAS_MCP_SOURCE_WRITE_ENABLED",
+)
 _ALLOWED_KEYS = frozenset(
     _REQUIRED_KEYS
+    + _MCP_WRITE_FEATURE_FLAGS
     + (
         BIND_HOST_ENV,
         BIND_PORT_ENV,
@@ -327,6 +332,9 @@ def require_ready_to_bind(
         source[INTROSPECTION_CLIENT_SECRET_FILE_ENV] = secret_file
     else:
         source[INTROSPECTION_CLIENT_SECRET_ENV] = config.introspection_client_secret
+    for flag in _MCP_WRITE_FEATURE_FLAGS:
+        if flag in env:
+            source[flag] = env[flag]
     report = assess_service_environment(source)
     if report["status"] != "ready":
         raise ValidationError("mcp serve configuration is not ready")
@@ -400,6 +408,9 @@ def assess_service_environment(
         elif _world_accessible(root_path):
             invalid.append("data_root_permissions")
 
+    for flag in _MCP_WRITE_FEATURE_FLAGS:
+        if flag in source and source[flag] not in {"0", "1"}:
+            invalid.append(f"{flag}_value")
     semantic = _semantic_state(source, invalid)
     github = "present" if source.get("GITHUB_TOKEN", "").strip() else "absent"
 

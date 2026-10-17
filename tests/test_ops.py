@@ -94,6 +94,71 @@ class OpsCheckTests(unittest.TestCase):
             self.assertNotIn("ambient-secret-value", encoded)
             self.assertNotIn(str(env), encoded)
 
+    def test_opt_in_mcp_write_flags_are_strict_in_ops_and_serve_preflight(self):
+        from atlas.ops import require_ready_to_bind
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            enabled = _write_env(
+                root,
+                extra="ATLAS_MCP_MEMORY_WRITE_ENABLED=1\n"
+                      "ATLAS_MCP_SOURCE_WRITE_ENABLED=0\n",
+            )
+            report = assess_service_environment({}, env_file=enabled)
+            self.assertEqual(report["status"], "ready")
+            self.assertEqual(report["unknown_keys"], [])
+            require_ready_to_bind(
+                _serve_config(root),
+                environ={
+                    "ATLAS_MCP_MEMORY_WRITE_ENABLED": "1",
+                    "ATLAS_MCP_SOURCE_WRITE_ENABLED": "0",
+                },
+            )
+            # The same systemd ExecStartPre contract must permit these flags
+            # when the resource audience/issuer are valid for production.
+            public = root / "prod-write.env"
+            public.write_text(
+                enabled.read_text(encoding="utf-8")
+                .replace("https://127.0.0.1:8443/mcp", "https://mcp.atlas.datarelay.run/mcp")
+                .replace(
+                    "ATLAS_MCP_ISSUER_URL=https://issuer.example",
+                    "ATLAS_MCP_ISSUER_URL=https://auth.atlas.datarelay.run/realms/atlas",
+                ),
+                encoding="utf-8",
+            )
+            os.chmod(public, 0o640)
+            output = StringIO()
+            with patch("sys.stdout", output):
+                self.assertEqual(
+                    main(["ops", "check", "--prod", "--env-file", str(public)]), 0
+                )
+            self.assertIn('"status": "ready"', output.getvalue())
+            # Only exact 0/1 are accepted for *both* flags. A mistaken value
+            # must fail closed before binding a production MCP listener.
+            original = enabled.read_text(encoding="utf-8")
+            for flag, configured in (
+                ("ATLAS_MCP_MEMORY_WRITE_ENABLED", "1"),
+                ("ATLAS_MCP_SOURCE_WRITE_ENABLED", "0"),
+            ):
+                for bad in ("true", "yes", "2", ""):
+                    with self.subTest(flag=flag, value=bad):
+                        enabled.write_text(
+                            original.replace(f"{flag}={configured}", f"{flag}={bad}"),
+                            encoding="utf-8",
+                        )
+                        wrong = assess_service_environment({}, env_file=enabled)
+                        self.assertEqual(wrong["status"], "not_ready")
+                        self.assertIn(f"{flag}_value", wrong["invalid"])
+                        if bad:
+                            self.assertNotIn(bad, json.dumps(wrong))
+                        with self.assertRaisesRegex(
+                            ValidationError, "mcp serve configuration is not ready"
+                        ):
+                            require_ready_to_bind(
+                                _serve_config(root), environ={flag: bad}
+                            )
+            enabled.write_text(original, encoding="utf-8")
+
     def test_missing_and_world_readable_secret_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

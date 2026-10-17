@@ -11,7 +11,7 @@ Existing normal MCP tools require `atlas.read`. Two optional tool families are d
 | `ATLAS_MCP_MEMORY_WRITE_ENABLED=1` | `ingest_memory_candidates` | `atlas.write` |
 | `ATLAS_MCP_SOURCE_WRITE_ENABLED=1` | `register_github_source` | `atlas.sources.write` |
 
-The MCP client token needs `atlas.read` plus the appropriate tool-specific scope. Enabling any flag/issuing a new scope on production is a governed permission+production change, **not** part of this code PR.
+The MCP client token needs `atlas.read` plus the appropriate tool-specific scope. Enabling any flag/issuing a new scope on production is a governed permission+production change, **not** part of this code PR. The production `ops check --prod` and runtime `require_ready_to_bind` accept these two optional flags with **exactly `0` or `1`**; unknown or mistyped values fail closed rather than leaving the operator believing the tool is enabled. A valid feature flag does **not** grant OAuth scope.
 
 ## Submit bounded memory
 
