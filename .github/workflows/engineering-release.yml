@@ -1,0 +1,28 @@
+# Qualification-only. No production code/env swap or credential handoff.
+# Do not guard the reusable job with an if: a skipped job can make the
+# workflow appear green without ever running the protected-ref authorizer.
+# The pinned Engineering System authorizer must FAIL on unprotected refs.
+name: Atlas Protected Release Boundary Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: "Exact 40-character main-ancestry candidate commit SHA"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-protected-release-boundary
+  cancel-in-progress: false
+
+jobs:
+  bounded-qualification:
+    uses: datarelay-labs/engineering-system/.github/workflows/release-contract.yml@e85d6a4de7e7df2dcbcf4f5dd43269bb308de195
+    with:
+      expected_sha: ${{ inputs.expected_sha }}
+      phase: qualify
+      profile_path: .engineering/release.yaml
