@@ -13,8 +13,8 @@ sbom_command: ''
 operational_e2e_required: false
 operational_e2e_command: ''
 full_e2e_passes: 0
-public_smoke_required: true
-public_smoke_command: 'python3 scripts/atlas_protected_release_gate.py public-smoke'
+public_smoke_required: false
+public_smoke_command: ''
 blockers:
   p0: true
   p1: true

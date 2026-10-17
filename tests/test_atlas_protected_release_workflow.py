@@ -29,9 +29,9 @@ class ProtectedReleaseWorkflowTests(unittest.TestCase):
 
     def test_explicit_sha_and_bounded_phase(self):
         inputs = self.workflow["on"]["workflow_dispatch"]["inputs"]
-        self.assertEqual(set(inputs), {"expected_sha", "phase"})
+        self.assertEqual(set(inputs), {"expected_sha"})
         self.assertEqual(inputs["expected_sha"]["required"], "true")
-        self.assertEqual(inputs["phase"]["options"], ["qualify", "post-release"])
+        self.assertEqual(self.workflow["jobs"]["bounded-qualification"]["with"]["phase"], "qualify")
 
     def test_immutable_canonical_workflow_no_secrets(self):
         jobs = self.workflow["jobs"]
@@ -67,10 +67,10 @@ class ProtectedReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIs(self.release["operational_e2e_required"], False)
         self.assertFalse(self.release["operational_e2e_command"])
-        self.assertIs(self.release["public_smoke_required"], True)
+        self.assertIs(self.release["public_smoke_required"], False)
         self.assertEqual(
             self.release["public_smoke_command"],
-            "python3 scripts/atlas_protected_release_gate.py public-smoke",
+            "",
         )
         commands = " ".join(
             str(self.release.get(k, ""))

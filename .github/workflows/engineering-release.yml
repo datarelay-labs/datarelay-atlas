@@ -10,14 +10,6 @@ on:
         description: "Exact 40-character main-ancestry candidate commit SHA"
         type: string
         required: true
-      phase:
-        description: "Qualification, or read-only public smoke after a separately approved cutover"
-        type: choice
-        required: true
-        default: qualify
-        options:
-          - qualify
-          - post-release
 
 permissions:
   contents: read
@@ -34,5 +26,5 @@ jobs:
     uses: datarelay-labs/engineering-system/.github/workflows/release-contract.yml@e85d6a4de7e7df2dcbcf4f5dd43269bb308de195
     with:
       expected_sha: ${{ inputs.expected_sha }}
-      phase: ${{ inputs.phase }}
+      phase: qualify
       profile_path: .engineering/release.yaml

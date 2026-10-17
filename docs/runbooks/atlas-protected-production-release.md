@@ -31,8 +31,8 @@ is **qualification-only**:
   ref, execution context, `CANDIDATE_ROOT`, exact checked-out HEAD and phase.
 - Qualification emits `BOUNDARY_ONLY_NOT_RELEASE_AUTHORIZATION`: it does not
   stage or swap code/env, restart ingress or write Atlas data.
-- The `post-release` mode is read-only HTTPS observation of both public SNI
-  routes; it does not assert deployment identity or native MCP write acceptance.
+- The public SNI read-only smoke helper exists in source but is intentionally
+  **not wired into a release phase** while this product remains nonproduction.
 
 This workflow cannot be dispatched usefully until an administrator separately
 provisions the trusted runner group, runner and branch protection. A GitHub
@@ -79,7 +79,8 @@ candidate HEAD. A green result means the *runner boundary and this limited
 qualification contract* passed, not a production cutover or release acceptance.
 
 After a separately authorized and independently verified successful cutover,
-`phase=post-release` performs read-only TLS observations of
+the **currently unconfigured** public-smoke gate may be reviewed separately.
+The source helper can make read-only TLS observations of
 `https://mcp.atlas.datarelay.run/healthz` and
 `https://auth.atlas.datarelay.run/realms/atlas/.well-known/openid-configuration`.
 Keycloak issuer and both OAuth endpoints must retain their expected HTTPS
