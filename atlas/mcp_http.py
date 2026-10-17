@@ -7,14 +7,17 @@ Design gate (ADR-0008):
 - Contract: ``python -m atlas mcp serve`` binds TLS and mounts ``/mcp``.
 - State: no new durable store. Tools rebuild a project retriever per call.
 - Security: OAuth 2.1 resource server only. Normal Atlas context requires
-  ``atlas.read``. ADR-0022 permits only the isolated write probe to require
-  ``atlas.write``. Introspection credentials and TLS keys stay outside Git.
+  ``atlas.read``. ADR-0022 permits isolated write probes; ADR-0024
+  stages separately scoped and disabled-by-default knowledge/source writes.
+  Production OAuth and privilege activation are never implied by code merge.
+  Introspection credentials and TLS keys stay outside Git.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from functools import partial
 from typing import Callable
@@ -35,6 +38,9 @@ from starlette.routing import Route
 from atlas.mcp_auth import HttpxIntrospectionTransport, Rfc7662TokenVerifier
 from atlas.mcp_config import McpServeConfig
 from atlas.mcp_context import AtlasContextTools
+from atlas.mcp_write import (
+    SOURCE_WRITE_SCOPE, ingest_candidate_memory, register_project_github_markdown,
+)
 from atlas.ops import data_root_runtime_ready, require_ready_to_bind
 from atlas.provenance import ValidationError
 from atlas.security import READ_SCOPE, WRITE_SCOPE
@@ -99,7 +105,9 @@ def build_mcp_application(
             "get_concurrency_execution_cycles reports plan-replay-protected orchestration state with no engineering PASS authority; "
             "get_personal_knowledge and search_personal_knowledge keep personal/reference content explicitly non-authoritative; "
             "get_engineering_evidence returns bounded Engineering System evidence metadata without execution authority; "
-            "search_knowledge requires explicit project_ids and supports all/engineering/personal source-class filtering."
+            "search_knowledge requires explicit project_ids and supports all/engineering/personal source-class filtering. "
+            "Optional write tools are deployment-gated: submit bounded noncanonical candidate memory, "
+            "or register/sync a Markdown document already canonical in the project's registered GitHub repo."
         ),
         token_verifier=verifier,
         auth=AuthSettings(
@@ -109,7 +117,7 @@ def build_mcp_application(
             validate_token_resource=True,
         ),
     )
-    _register_tools(server, tools, WriteProbeStore(config.resource_url))
+    _register_tools(server, tools, WriteProbeStore(config.resource_url), service)
 
     @server.custom_route("/.well-known/oauth-authorization-server/mcp", methods=["GET"], include_in_schema=False)
     @server.custom_route("/mcp/.well-known/oauth-authorization-server", methods=["GET"], include_in_schema=False)
@@ -125,7 +133,9 @@ def build_mcp_application(
                 "authorization_endpoint": f"{issuer}/protocol/openid-connect/auth",
                 "token_endpoint": f"{issuer}/protocol/openid-connect/token",
                 "registration_endpoint": f"{issuer}/clients-registrations/openid-connect",
-                "scopes_supported": ["openid", "offline_access", READ_SCOPE, WRITE_SCOPE],
+                "scopes_supported": ["openid", "offline_access", READ_SCOPE, WRITE_SCOPE] + (
+                    [SOURCE_WRITE_SCOPE] if os.environ.get("ATLAS_MCP_SOURCE_WRITE_ENABLED") == "1" else []
+                ),
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "token_endpoint_auth_methods_supported": [
@@ -157,7 +167,9 @@ def build_mcp_application(
             {
                 "resource": config.resource_url,
                 "authorization_servers": [config.issuer_url],
-                "scopes_supported": [READ_SCOPE, WRITE_SCOPE],
+                "scopes_supported": [READ_SCOPE, WRITE_SCOPE] + (
+                    [SOURCE_WRITE_SCOPE] if os.environ.get("ATLAS_MCP_SOURCE_WRITE_ENABLED") == "1" else []
+                ),
                 "bearer_methods_supported": ["header"],
             },
             headers={"Access-Control-Allow-Origin": "*"},
@@ -206,7 +218,9 @@ def serve_mcp(config: McpServeConfig) -> None:
     server.run()
 
 
-def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: WriteProbeStore) -> None:
+def _register_tools(
+    server: MCPServer, tools: AtlasContextTools, write_probes: WriteProbeStore, service: AtlasService
+) -> None:
     read_tool = partial(
         server.tool,
         annotations=ToolAnnotations(
@@ -258,6 +272,82 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: W
     async def delete_write_probe(probe_id: str) -> str:
         _require_scope(WRITE_SCOPE)
         return _call_probe_tool("delete_write_probe", lambda: write_probes.delete(probe_id))
+
+    # These are not enabled by the existing atlas.write probe approval.
+    # Both tools are absent from discovery until an operator explicitly
+    # enables their feature flag in an approved deployment. Production OAuth
+    # permission changes are a separately governed action.
+    if os.environ.get("ATLAS_MCP_MEMORY_WRITE_ENABLED") == "1":
+        @write_tool(
+            name="ingest_memory_candidates",
+            description=(
+                "Record 1-8 validated noncanonical project memory candidates "
+                "from a bounded interaction or run summary, with deduplication, "
+                "secret rejection, scope binding and TTL. Never edit GitHub."
+            ),
+            structured_output=False,
+        )
+        async def ingest_memory_candidates(
+            project_id: str,
+            input_kind: str,
+            observed_at: str,
+            candidates: list[dict[str, object]],
+            workstream: str = "",
+        ) -> str:
+            _require_scope(WRITE_SCOPE)
+            return _call_probe_tool(
+                "ingest_memory_candidates",
+                lambda: ingest_candidate_memory(
+                    service,
+                    project_id=project_id,
+                    input_kind=input_kind,
+                    observed_at=observed_at,
+                    candidates=candidates,
+                    workstream=workstream,
+                ),
+                sanitize_errors=True,
+            )
+
+    if os.environ.get("ATLAS_MCP_SOURCE_WRITE_ENABLED") == "1":
+        source_write_tool = partial(
+            server.tool,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=True,
+                open_world_hint=True,
+            ),
+            meta={
+                "securitySchemes": [
+                    {"type": "oauth2", "scopes": [SOURCE_WRITE_SCOPE]},
+                ],
+            },
+        )
+
+        @source_write_tool(
+            name="register_github_source",
+            description=(
+                "Register or idempotently re-sync one existing docs/*.md file "
+                "from the selected project's configured GitHub repository/main "
+                "branch. No GitHub writes; requires a separate source-write scope."
+            ),
+            structured_output=False,
+        )
+        async def register_github_source(
+            project_id: str, source_id: str, source_path: str, title: str
+        ) -> str:
+            _require_scope(SOURCE_WRITE_SCOPE)
+            return _call_probe_tool(
+                "register_github_source",
+                lambda: register_project_github_markdown(
+                    service,
+                    project_id=project_id,
+                    source_id=source_id,
+                    source_path=source_path,
+                    title=title,
+                ),
+                sanitize_errors=True,
+            )
 
     @read_tool(
         name="list_projects",
@@ -673,15 +763,21 @@ def _register_tools(server: MCPServer, tools: AtlasContextTools, write_probes: W
         return _call_tool(tools, "get_provenance", args)
 
 
-def _call_probe_tool(name: str, operation: Callable[[], object]) -> str:
-    """Count actual SDK write-probe tool invocations without changing scope checks."""
+def _call_probe_tool(
+    name: str, operation: Callable[[], object], *, sanitize_errors: bool = False
+) -> str:
+    """Audit tool outcome without logging arguments; sanitize durable writes."""
     try:
         encoded = json.dumps(operation(), sort_keys=True)
     except ValidationError as exc:
         _audit_mcp_execution(name, "BLOCK")
+        if sanitize_errors:
+            raise ToolError("bounded write request rejected") from None
         raise ToolError(str(exc)) from exc
     except Exception:
         _audit_mcp_execution(name, "ERROR")
+        if sanitize_errors:
+            raise ToolError("bounded write failed") from None
         raise
     _audit_mcp_execution(name, "SUCCESS")
     return encoded

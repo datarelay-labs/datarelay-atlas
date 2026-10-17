@@ -112,7 +112,7 @@ See ADR-0023 and the two repository-local acceptance contracts.
 
 The current Atlas Human UI is primarily a **read-mostly/read-only observability and navigation surface**.
 
-Canonical project/source/policy mutation remains in explicit operator interfaces such as GitHub and Atlas CLI unless a separate management-write contract is approved. A richer web management UI is therefore not implicitly required for Core completion.
+Canonical project/source/policy mutation remains in explicit operator interfaces such as GitHub and Atlas CLI unless a separate management-write contract is approved. See ADR-0024 for the separately gated, preflight-validated MCP source-mapping exception; it edits no GitHub content and has no default production activation. A richer web management UI is therefore not implicitly required for Core completion.
 
 ## Goals
 
