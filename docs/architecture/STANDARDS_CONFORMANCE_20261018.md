@@ -43,6 +43,10 @@ All code changes in this review remain in an independent development worktree. T
 
 A second source audit found that a present introspection `sub` value of JSON null, number, array, object, or blank string was silently treated as an absent subject. RFC 7662 defines `sub` as a string when present. The verifier now rejects those malformed values while retaining the previous behavior for a truly omitted optional `sub`. The dedicated positive/negative test covers all these cases. This does not claim production Keycloak E2E.
 
+## Provenance contract identity validation
+
+JSON Schema 2020-12 validates each object independently but does not enforce cross-object equality. The contract fixture validator now checks project, source, repository, ref, path and revision consistency between canonical source, sync result, derived record and retrieval hit. Negative mutations are checked for both GitHub and personal fixtures. This is a fixture contract gate, not a claim that every runtime ingestion path has been audited.
+
 ## Unverified / not promoted to PASS
 
 Production Keycloak/ChatGPT OAuth reconsent, live write-tool enablement, an all-message MCP spec test suite, browser user-acceptance gates, complete OWASP LLM threat testing, SLSA/in-toto provenance, universal W3C PROV interchange, and production deployment. No assertion here changes the status of Issue #346 or its already denied privileged cutover policy.
