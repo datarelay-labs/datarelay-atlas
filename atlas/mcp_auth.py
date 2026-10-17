@@ -137,7 +137,9 @@ def _access_token_from_introspection(
         return None
     if not _audience_matches(payload, expected_resource):
         return None
-    subject = payload.get("sub")
+    subject = payload.get("sub", _MISSING)
+    if subject is not _MISSING and (not isinstance(subject, str) or not subject.strip()):
+        return None
     claims: dict[str, Any] = {}
     issuer = payload.get("iss")
     if isinstance(issuer, str) and issuer.strip():
@@ -148,7 +150,7 @@ def _access_token_from_introspection(
         scopes=scopes,
         expires_at=expires_at if isinstance(expires_at, int) else None,
         resource=expected_resource,
-        subject=subject.strip() if isinstance(subject, str) and subject.strip() else None,
+        subject=subject.strip() if isinstance(subject, str) else None,
         claims=claims or None,
     )
 

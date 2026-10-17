@@ -578,6 +578,39 @@ class IntrospectionVerifierTests(unittest.TestCase):
         self.assertIsNone(leading)
         self.assertIsNone(uppercase)
 
+    def test_rfc7662_subject_claim_type_and_presence(self):
+        resource = "https://atlas.example/mcp"
+        base = {
+            "active": True, "client_id": "chatgpt", "scope": "atlas.read",
+            "aud": resource, "iss": ISSUER,
+        }
+        cases = {
+            "absent": base,
+            "valid": {**base, "sub": "owner"},
+            "null": {**base, "sub": None},
+            "numeric": {**base, "sub": 123},
+            "array": {**base, "sub": ["owner"]},
+            "object": {**base, "sub": {"id": "owner"}},
+            "empty": {**base, "sub": ""},
+            "blank": {**base, "sub": "  "},
+        }
+        verifier = Rfc7662TokenVerifier(
+            introspection_url="https://issuer.example/introspect",
+            client_id="atlas-resource", client_secret=SECRET,
+            resource_url=resource, issuer_url=ISSUER,
+            transport=ScriptedIntrospection(cases),
+        )
+
+        async def check():
+            return {key: await verifier.verify_token(key) for key in cases}
+
+        results = asyncio.run(check())
+        self.assertIsNotNone(results["absent"])
+        self.assertIsNotNone(results["valid"])
+        self.assertEqual(results["valid"].subject, "owner")
+        for key in ("null", "numeric", "array", "object", "empty", "blank"):
+            self.assertIsNone(results[key], key)
+
     def test_expiration_is_exclusive_and_not_before_is_inclusive(self):
         # RFC 7519: now must be strictly before exp; nbf may equal now.
         now = 1800000000
