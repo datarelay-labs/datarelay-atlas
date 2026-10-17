@@ -47,6 +47,10 @@ A second source audit found that a present introspection `sub` value of JSON nul
 
 JSON Schema 2020-12 validates each object independently but does not enforce cross-object equality. The contract fixture validator now checks project, source, repository, ref, path and revision consistency between canonical source, sync result, derived record and retrieval hit. Negative mutations are checked for both GitHub and personal fixtures. This is a fixture contract gate, not a claim that every runtime ingestion path has been audited.
 
+## Runtime observability provenance hardening
+
+The runtime observability document count previously used ProjectionStore.list_documents(), which reads successful projection bytes without validating their digest and provenance. The count now uses the existing iter_validated_projections reader for each registered project. A tampered derived document is rejected instead of contributing to an apparently valid count. No raw document body is included in the observability response. The focused runtime observability and retrieval regressions pass.
+
 ## Unverified / not promoted to PASS
 
 Production Keycloak/ChatGPT OAuth reconsent, live write-tool enablement, an all-message MCP spec test suite, browser user-acceptance gates, complete OWASP LLM threat testing, SLSA/in-toto provenance, universal W3C PROV interchange, and production deployment. No assertion here changes the status of Issue #346 or its already denied privileged cutover policy.

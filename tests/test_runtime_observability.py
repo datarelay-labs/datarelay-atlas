@@ -146,6 +146,16 @@ class RuntimeObservabilityTests(unittest.TestCase):
             self.assertEqual(first["pass_authority"], "NONE")
             self.assertEqual(first["repair_authority"], "NONE")
 
+    def test_tampered_projection_cannot_count_as_valid_document(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            meta = ProjectionStore(root / "projections").list_records("alpha")[0]
+            path = root / "projections" / meta["projection_path"]
+            path.write_text("tampered runtime evidence", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "projection bytes digest mismatch"):
+                self._snapshot(root)
+
     def test_digest_excludes_observation_time_but_binds_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
