@@ -50,7 +50,15 @@ cutover require a separately permitted trusted operator execution context.
    isolated `systemd-run` unit. Require all five live units and startup
    settings, public HTTPS MCP, public Keycloak issuer/OAuth endpoints and
    loopback Web HTTP200.
-3. **Cutover:** only after all preflight checks pass, stop the Ingress
+3. **Fresh data preservation:** the `--execute` transaction, after passing
+   preflight but **before stopping any service**, captures a separate
+   non-overwriting snapshot of **current** durable Atlas state. Require
+   seven projects, a nonempty manifest, identical restored file/project
+   counts, and upgrade + old-code rollback compatibility on only the new
+   disposable restore. An existing fresh-backup path or any failing proof
+   halts before service shutdown. `--preflight-only` does not claim this
+   live-fresh snapshot gate is complete.
+4. **Cutover:** only after preflight and fresh snapshot pass, stop the Ingress
    socket **and** service before moving anything, then stop Web/MCP;
    save active code and environment by rename, move the qualified 0755 code
    and feature-flagged environment into place, start MCP/Web, reset/start
@@ -65,6 +73,12 @@ verify the old code/environment identity and BOTH public hostnames. If any
 rollback step or mandatory old-state check fails, the outcome is
 `INCIDENT_UNRECOVERED`, never PASS. The failed new code is retained in a
 separate non-live directory for diagnosis; old backups are never deleted.
+
+The fresh protected snapshot path is
+`/var/backups/datarelay-atlas/atlas-mcp-write-9177c976-20261017-fresh-operator`.
+Existing historical backups are retained; the new snapshot is never silently
+overwritten or removed. A second execution against the same fresh path must
+be independently reconciled rather than replacing earlier evidence.
 
 **Limits:** a kernel crash, SIGKILL, lost root process or host failure can
 still interrupt in-process rollback; a separately authorized watchdog/

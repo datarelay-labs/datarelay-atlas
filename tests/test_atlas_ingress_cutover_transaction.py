@@ -26,6 +26,9 @@ class FakeOperations:
     def preflight(self) -> None:
         self._step("preflight")
 
+    def capture_fresh_backup(self) -> None:
+        self._step("fresh_backup")
+
     def stop(self, name: str) -> None:
         self._step("stop:" + name)
 
@@ -53,6 +56,7 @@ class FakeOperations:
 
 FORWARD = [
     "preflight",
+    "fresh_backup",
     "stop:" + release.INGRESS_SOCKET,
     "stop:" + release.INGRESS_SERVICE,
     "stop:" + release.WEB,
@@ -94,8 +98,14 @@ class TransactionOrderingTests(TestCase):
             release.Cutover(actions).execute()
         self.assertEqual(actions.trace, ["preflight"])
 
+    def test_fresh_backup_failure_cannot_stop_services(self) -> None:
+        actions = FakeOperations("fresh_backup")
+        with self.assertRaises(RuntimeError):
+            release.Cutover(actions).execute()
+        self.assertEqual(actions.trace, ["preflight", "fresh_backup"])
+
     def test_any_forward_failure_attempts_full_rollback(self) -> None:
-        for name in FORWARD[1:]:
+        for name in FORWARD[2:]:
             with self.subTest(step=name):
                 actions = FakeOperations(name)
                 with self.assertRaises(release.RolledBack):

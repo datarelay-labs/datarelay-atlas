@@ -37,6 +37,7 @@ ENV_OLD = Path("/etc/datarelay-atlas/service.env.previous-safe-" + SUFFIX)
 MANIFEST = Path("/tmp/atlas-immutable-main-" + SUFFIX + ".sha256")
 DATA = Path("/var/lib/datarelay-atlas")
 DATA_BACKUP = Path("/var/backups/datarelay-atlas/atlas-mcp-write-" + SUFFIX.replace("-20261017", "") + "-precutover-20261017")
+FRESH_BACKUP = Path("/var/backups/datarelay-atlas/atlas-mcp-write-" + SUFFIX + "-fresh-operator")
 CODE_BACKUP = Path("/var/backups/datarelay-atlas/active-code-before-pr347-20261017T0249Z")
 ENV_BACKUP = Path("/var/backups/datarelay-atlas/atlas-mcp-write-" + SUFFIX.replace("-20261017", "") + "-code-env-20261017/service.env.before")
 MCP = "datarelay-atlas.service"
@@ -336,6 +337,63 @@ class SystemOperations:
             raise CutoverError("PROD_CHECK_NOT_READY")
         # No preflight operation runs upgrade/rollback over live DATA.
 
+    def capture_fresh_backup(self) -> None:
+        """Capture current live durable state BEFORE any service shutdown.
+
+        The frozen historical DATA_BACKUP is not necessarily current. A new,
+        non-overwriting backup with independent restore/schema proof is
+        mandatory immediately before the mutable code/env transaction.
+        """
+        _require_root()
+        if FRESH_BACKUP.exists() or FRESH_BACKUP.is_symlink():
+            raise CutoverError("FRESH_BACKUP_SLOT_ALREADY_OCCUPIED")
+        root_env = dict(os.environ)
+        root_env["PYTHONPATH"] = str(STAGE)
+        root_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        base = [str(STAGE / ".venv/bin/python"), "-m", "atlas", "ops"]
+        capture = _check_json(
+            [*base, "backup", "--data-root", str(DATA),
+             "--dest", str(FRESH_BACKUP)],
+            env=root_env,
+        )
+        if (
+            capture.get("status") != "ok"
+            or capture.get("dest") != str(FRESH_BACKUP)
+            or capture.get("project_count") != 7
+            or not isinstance(capture.get("file_count"), int)
+            or capture["file_count"] < 1
+        ):
+            raise CutoverError("FRESH_BACKUP_INCOMPLETE")
+        if not _regular(FRESH_BACKUP / "manifest.json"):
+            raise CutoverError("FRESH_BACKUP_MANIFEST_MISSING")
+        with tempfile.TemporaryDirectory(prefix="atlas-current-data-restore-") as tmp:
+            proof = str(Path(tmp) / "restored")
+            restored = _check_json(
+                [*base, "restore-test", "--backup", str(FRESH_BACKUP),
+                 "--dest", proof],
+                env=root_env,
+            )
+            if (
+                restored.get("status") != "ok"
+                or restored.get("file_count") != capture["file_count"]
+                or restored.get("project_count") != capture["project_count"]
+            ):
+                raise CutoverError("FRESH_RESTORE_MISMATCH")
+            upgrade = _check_json(
+                [*base, "upgrade", "--data-root", proof],
+                env=root_env,
+            )
+            rollback = _check_json(
+                [*base, "rollback", "--data-root", proof,
+                 "--target-code", str(CODE_BACKUP)],
+                env=root_env,
+            )
+            if any(
+                report.get("status") != "ok" or report.get("rewritten") is not False
+                for report in (upgrade, rollback)
+            ):
+                raise CutoverError("FRESH_BACKUP_SCHEMA_INCOMPATIBLE")
+
     def stop(self, unit: str) -> None:
         _run(["systemctl", "stop", unit])
 
@@ -446,8 +504,10 @@ class Cutover:
             raise IncidentUnrecovered("INCIDENT_UNRECOVERED:" + ",".join(errors))
 
     def execute(self) -> None:
-        # No mutating operation occurs before the full preflight.
+        # No active service/code/env mutation before fully qualifying both
+        # historic rollback proof and a fresh snapshot of CURRENT live data.
         self.a.preflight()
+        self.a.capture_fresh_backup()
         try:
             self.a.stop(INGRESS_SOCKET)
             self.a.stop(INGRESS_SERVICE)
