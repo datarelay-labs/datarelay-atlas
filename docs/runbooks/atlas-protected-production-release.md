@@ -15,7 +15,7 @@ Do not route the refused prod-atlas operation through a new connector, terminal,
 runner or helper solely to escape that refusal. Provisioning a new production
 execution authority requires its own controls and evidence before use.
 
-The checked-in workflow `.github/workflows/atlas-protected-release-boundary.yml`
+The checked-in workflow `.github/workflows/engineering-release.yml`
 is **qualification-only**:
 
 - `workflow_dispatch` from the protected default branch; no PR trigger.

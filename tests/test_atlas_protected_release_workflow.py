@@ -17,7 +17,7 @@ class ProtectedReleaseWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.workflow = yaml.load(
-            (ROOT / ".github/workflows/atlas-protected-release-boundary.yml").read_text(),
+            (ROOT / ".github/workflows/engineering-release.yml").read_text(),
             Loader=yaml.BaseLoader,
         )
         cls.release = yaml.safe_load((ROOT / ".engineering/release.yaml").read_text())
