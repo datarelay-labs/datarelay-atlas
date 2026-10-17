@@ -88,7 +88,11 @@ candidate code switch alone does not close Issue #346.
 
 The isolated dev-atlas worktree tests exercise success, every forward
 operation fault, preflight refusal, rollback failure, stage/flag integrity,
-systemd dependency mismatch and a disposable-data restore proof. They run
+systemd dependency mismatch and a disposable-data restore proof. Additional
+**actual local filesystem** tests cover both code/env renames, partial code
+move, partial env move, already-occupied failed-release slots and corrupted
+old-code identity. These tests use disposable directories and mock only
+protected ownership/system-service boundaries; they never operate on prod. They run
 without root and without any prod-atlas SSH, systemd or data mutation.
 The real Atlas `AGENTS.md`, `.engineering/project.yaml`, user acceptance,
 exact-HEAD CI, backup and release gates remain mandatory; a new merge SHA
