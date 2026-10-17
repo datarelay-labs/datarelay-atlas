@@ -270,6 +270,8 @@ def _publish_store(path: Path, items: list[dict[str, object]], *, root_fd: int) 
     encoded = (json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n").encode("utf-8")
     if len(items) > _MAX_ITEMS or len(encoded) > _MAX_FILE_BYTES:
         raise ValidationError("memory candidate store exceeds bounded size")
+    if len({item["candidate_id"] for item in items}) != len(items):
+        raise ValidationError("memory candidate ids are duplicated")
     if contains_unsafe_secret(encoded.decode("utf-8")):
         raise ValidationError("memory candidate store contains unsafe secret")
     require_data_root_writer_owner_fd(root_fd)
@@ -404,6 +406,12 @@ def ingest_memory_candidates(
             "authority": AUTHORITY,
             "canonical": False,
         })
+
+    # Exact duplicates *within one request* must be rejected before any
+    # durable write. Checking only IDs already on disk allows a batch to
+    # poison the shared candidate store and break all future reads.
+    if len({item["candidate_id"] for item in normalized}) != len(normalized):
+        raise ValidationError("memory candidate batch contains duplicate candidates")
 
     root = Path(data_root)
     with data_root_write_lock(root) as root_fd:
