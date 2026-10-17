@@ -33,6 +33,26 @@ def _guard(fixture: dict) -> str | None:
         hit = fixture["retrieval_hit"]
         if hit.get("source_class") != "personal" or hit.get("engineering_authority") is not False:
             return "INVALID personal retrieval must be non-authoritative"
+    # JSON Schema draft 2020-12 validates each object but cannot compare
+    # independent sibling property values. Bind fixture identities explicitly.
+    project_id = fixture["project"]["project_id"]
+    source = fixture["source"]
+    sync = fixture["sync_result"]
+    derived = fixture["derived_record"]
+    hit = fixture["retrieval_hit"]
+    if source["project_id"] != project_id:
+        return "INVALID source.project_id differs from project identity"
+    if sync["source_id"] != source["source_id"]:
+        return "INVALID sync_result.source_id differs from source identity"
+    for label, record in (("derived_record", derived), ("retrieval_hit", hit)):
+        for field in ("project_id", "provider", "repository", "ref", "source_path"):
+            if record[field] != source[field]:
+                return f"INVALID {label}.{field} differs from canonical source"
+        if "source_id" in record and record["source_id"] != source["source_id"]:
+            return f"INVALID {label}.source_id differs from canonical source"
+        if "source_revision" in record and "source_revision" in sync:
+            if record["source_revision"] != sync["source_revision"]:
+                return f"INVALID {label}.source_revision differs from synced revision"
     forbidden_keys = {"token", "access_token", "secret", "password", "authorization", "api_key"}
 
     def walk(obj, path: str = "") -> None:
@@ -86,6 +106,25 @@ def main() -> int:
     if not _errors(validator, reverse):
         print("INVALID schema accepted github source with local auth", file=sys.stderr)
         return 1
+
+    # Negative fixture mutations must be rejected by the semantic identity
+    # guard even when the individual JSON Schema object remains valid.
+    import copy
+    for path in FIXTURES:
+        fixture = json.loads(path.read_text(encoding="utf-8"))
+        mutations = (
+            ("source", "project_id", "other-project"),
+            ("sync_result", "source_id", "other-source"),
+            ("derived_record", "repository", "other/repository"),
+            ("retrieval_hit", "project_id", "other-project"),
+            ("retrieval_hit", "source_revision", "other-revision"),
+        )
+        for section, field, value in mutations:
+            mutated = copy.deepcopy(fixture)
+            mutated[section][field] = value
+            if _guard(mutated) is None:
+                print(f"INVALID accepted identity mismatch {path.name}: {section}.{field}", file=sys.stderr)
+                return 1
 
     print("ATLAS-CONTRACT-001 PASS")
     return 0
