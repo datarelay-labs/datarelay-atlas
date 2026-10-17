@@ -127,6 +127,16 @@ production and tested rollback backups, is:
    access needs approved least-privilege read credentials. Keep audit
    argument/token-free.
 
-The new privileged helper, host runner administration, native write tests and
+The non-executable checklist `docs/contracts/ATLAS_INGRESS_CUTOVER_PLAN.json`
+plus `scripts/atlas_ingress_cutover_plan.py check` is now a mandatory *static*
+preflight after protected runner admission. It verifies the source-controlled
+service dependencies, required backups/permissions as named gates, exact
+forward/rollback order, both public SNI checks, and `INCIDENT_UNRECOVERED`
+on rollback failure. It performs no shell, sudo, SSH, `systemctl`, file swap,
+real backup inspection or privilege change. A static PASS is **not** evidence
+that those gates have run on prod-atlas; separate machine-observed operational
+qualification remains mandatory.
+
+The privileged helper, host runner administration, real native MCP writes and
 production switch are **pending independent qualification**. The existing
 operating service and backup directories remain untouched by this proposal.

@@ -61,7 +61,7 @@ class ProtectedReleaseWorkflowTests(unittest.TestCase):
         self.assertIs(self.release["preflight_required"], True)
         self.assertEqual(
             self.release["preflight_command"],
-            "python3 scripts/atlas_protected_release_gate.py preflight",
+            "python3 scripts/atlas_protected_release_gate.py preflight && python3 scripts/atlas_ingress_cutover_plan.py check",
         )
         self.assertEqual(
             self.release["qualification_command"],

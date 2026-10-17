@@ -5,7 +5,7 @@ provenance_required: false
 sbom_required: false
 setup_command: ''
 preflight_required: true
-preflight_command: 'python3 scripts/atlas_protected_release_gate.py preflight'
+preflight_command: 'python3 scripts/atlas_protected_release_gate.py preflight && python3 scripts/atlas_ingress_cutover_plan.py check'
 qualification_command: 'python3 scripts/atlas_protected_release_gate.py qualify'
 artifact_hash_command: ''
 provenance_command: ''
