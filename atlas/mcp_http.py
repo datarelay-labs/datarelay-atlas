@@ -166,6 +166,7 @@ def build_mcp_application(
         return JSONResponse(
             {
                 "resource": config.resource_url,
+                "resource_name": "DataRelay Atlas MCP",
                 "authorization_servers": [config.issuer_url],
                 "scopes_supported": [READ_SCOPE, WRITE_SCOPE] + (
                     [SOURCE_WRITE_SCOPE] if os.environ.get("ATLAS_MCP_SOURCE_WRITE_ENABLED") == "1" else []
