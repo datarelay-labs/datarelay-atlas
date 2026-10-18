@@ -68,8 +68,20 @@ The independent development-server artifacts were generated at
 and `/home/aella/datarelay-atlas-release-artifacts/atlas-integrated-d561eed.sha256`.
 The archive contains only the frozen Git-tracked source files: it does
 **not** contain a deployable Python environment, operator credentials, or
-any service configuration. The existence of the artifacts on dev-atlas
-is **not** evidence they were delivered to or validated on prod-atlas.
+any service configuration.
+
+**Separate operator artifact:** the reviewed operator code at commit
+`f260320c7fda17a1f94ce7187bef21402b7a4af0` was exported to
+`/home/aella/datarelay-atlas-release-artifacts/atlas-ingress-operator-f260320.py`
+with SHA256
+`604728305e8e24cad2547f053ce7120bb923d9133b5a9b3afbc24237a8a69789`.
+Its `--help` mode was verified on dev-atlas. The operator script inside the
+**frozen application archive is an earlier historical version** and must
+not be mistaken for this new reviewed operator. Separate delivery and
+execution are subject to the original trusted operations policy.
+
+The existence of the artifacts on dev-atlas is **not** evidence they were
+delivered to or validated on prod-atlas.
 A distinct, independently authorized production-artifact delivery and
 operator context must provide the same immutable manifest, a world-traversable
 0755 candidate root with exactly those tracked bytes (excluding `.venv`),
