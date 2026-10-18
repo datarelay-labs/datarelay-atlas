@@ -11,24 +11,74 @@ candidate on production through a different connector, terminal, host, account,
 interpreter, or owner-executed command as a workaround. Use it only after the
 same trusted operations boundary separately authorizes actual execution.
 
-## Frozen inputs and protected state
+## Frozen application candidate versus operator implementation
 
-- Source candidate: GitHub main
-  `9177c976a591143b045ebdeabdbccd0d48b87c6c`, 421 tracked files.
-- Immutable tracked-file SHA256 manifest:
-  `/tmp/atlas-immutable-main-9177c976-20261017.sha256`, expected digest
-  `f49f8327236b94b48912e6b5df8ca4a72469ab50911775d1bfd2ae750d18235e`.
-- Fixed 0755 release candidate (leave untouched):
-  `/opt/datarelay-atlas-failed-retry-9177c976-20261017`.
-- Old live code: `/opt/datarelay-atlas` (0755), new write module absent.
-- Old code backup:
-  `/var/backups/datarelay-atlas/active-code-before-pr347-20261017T0249Z`.
-- Data backup and independently tested restore from earlier Issue evidence:
-  `/var/backups/datarelay-atlas/atlas-mcp-write-9177c976-precutover-20261017`.
-- Old protected service environment:
-  `/var/backups/datarelay-atlas/atlas-mcp-write-9177c976-code-env-20261017/service.env.before`.
-- Keep `/var/lib/datarelay-atlas`, Keycloak, certificates, existing backups
-  and unrelated worktrees intact.
+- **Frozen application bytes:** commit
+  `d561eed138d56b6d3878048f66d08c7c5b4723cb`, **431 tracked files**.
+  This includes the earlier PR #353 integrated application snapshot
+  `01206a200b941abe7773d161f2e342b0c33224ce` (local 1259/1259
+  tests, CI #39085945899 SUCCESS), plus a source-only immutable manifest
+  generator and its two focused tests. The frozen application HEAD
+  `d561eed` separately passed CI #39098463663; these evidence sets must
+  not be conflated with tests on later operator HEADs.
+- **Operator source:** the later, independently reviewed
+  `scripts/atlas_ingress_cutover_transaction.py` in this QA branch. Its
+  Git HEAD deliberately differs from the frozen application commit; running
+  `--expected-head` must name the *application* commit, not operator HEAD.
+  Updating the operator does not silently re-freeze or deploy its source.
+- **Immutable tracked-file manifest:** the exact frozen commit's blob
+  hashes, **431** records, SHA256
+  `ebc19d743236f7f27f6dd8484950bc14d1000949d36febc8e1b6a1282b06f49c`.
+  The operator requires the separately delivered artifact at
+  `/tmp/atlas-immutable-integrated-d561eed-20261018.sha256`.
+- **New unoccupied candidate input:** `/opt/datarelay-atlas-integrated-candidate-d561eed-20261018`,
+  assembled from that immutable commit with a compatible, independently
+  qualified `.venv/bin/python` and executable dependencies. Do **not** use
+  the pre-existing failed retry path as the input. The new input is **not**
+  installed or certified on production as part of this source-only work.
+- **Separate non-live stage:** `/opt/datarelay-atlas-stage-safe-d561eed-20261018`.
+  Separate previous/failed release and environment paths also use this
+  new suffix; existing paths are never overwritten.
+- **Old live code:** `/opt/datarelay-atlas` (0755), new write module absent.
+- **Original immutable rollback code:** `/var/backups/datarelay-atlas/active-code-before-pr347-20261017T0249Z`.
+- **Original data backup:** `/var/backups/datarelay-atlas/atlas-mcp-write-9177c976-precutover-20261017`.
+- **Original service environment backup:** `/var/backups/datarelay-atlas/atlas-mcp-write-9177c976-code-env-20261017/service.env.before`.
+  These three historic identities remain bound to the original running
+  service, **not** to the new candidate suffix.
+- Keep `/var/lib/datarelay-atlas`, Keycloak, certificates, all prior
+  backups and unrelated worktrees intact.
+
+### Source-only immutable artifact preparation
+
+On an authorized **development** checkout, the following performs no
+production operation; it creates a fresh manifest from Git *blob objects*
+rather than mutable worktree bytes:
+
+```sh
+python3 scripts/atlas_release_manifest.py \
+  --repo /home/aella/datarelay-atlas-worktrees/atlas-standards-cutover-integration-20261018 \
+  --commit d561eed138d56b6d3878048f66d08c7c5b4723cb \
+  --output /tmp/atlas-immutable-integrated-d561eed-20261018.sha256
+```
+
+The exact output must have 431 entries and the pinned manifest digest.
+The independent development-server artifacts were generated at
+`/home/aella/datarelay-atlas-release-artifacts/atlas-integrated-d561eed.tar`
+(SHA256 `4cd01be9f5d3f97ca2739087855a70a680fc15654344217d34c5b3c2f104069b`)
+and `/home/aella/datarelay-atlas-release-artifacts/atlas-integrated-d561eed.sha256`.
+The archive contains only the frozen Git-tracked source files: it does
+**not** contain a deployable Python environment, operator credentials, or
+any service configuration. The existence of the artifacts on dev-atlas
+is **not** evidence they were delivered to or validated on prod-atlas.
+A distinct, independently authorized production-artifact delivery and
+operator context must provide the same immutable manifest, a world-traversable
+0755 candidate root with exactly those tracked bytes (excluding `.venv`),
+and a validated runtime interpreter at the **new** source path. The
+`prepare_stage` operation refuses a missing/mismatched manifest, an
+occupied stage, untracked candidate content and incorrect modes.
+**Do not** deliver these artifacts or invoke the operator through an
+alternate account, host, command encoding, or transport to get around the
+previous production execution-policy refusal.
 
 ## New bounded transaction
 
@@ -38,7 +88,7 @@ CI, a GitHub Action, or this handoff.** Actual privileged preparation and
 cutover require a separately permitted trusted operator execution context.
 
 1. **Prepare:** copy the fixed candidate to a new isolated stage. Verify all
-   421 hashes and code root 0755. Create an isolated root:atlas 0640
+   431 hashes and code root 0755. Create an isolated root:atlas 0640
    environment with only the memory/source write opt-in flags changed.
    Existing live code, live environment and data are untouched.
 2. **Preflight:** verify stage, manifest, existing original code/env/data
@@ -63,7 +113,7 @@ cutover require a separately permitted trusted operator execution context.
    save active code and environment by rename, move the qualified 0755 code
    and feature-flagged environment into place, start MCP/Web, reset/start
    ingress socket/service, verify all five units and startup persistence,
-   the entire live 421-file manifest, Web, public MCP and Keycloak.
+   the entire live 431-file manifest, Web, public MCP and Keycloak.
    **Do not restart or modify Keycloak itself.**
 
 A failing mutating step (including normal SIGINT/SIGTERM handling) triggers
@@ -75,7 +125,7 @@ rollback step or mandatory old-state check fails, the outcome is
 separate non-live directory for diagnosis; old backups are never deleted.
 
 The fresh protected snapshot path is
-`/var/backups/datarelay-atlas/atlas-mcp-write-9177c976-20261017-fresh-operator`.
+`/var/backups/datarelay-atlas/atlas-mcp-write-d561eed-20261018-fresh-operator`.
 Existing historical backups are retained; the new snapshot is never silently
 overwritten or removed. A second execution against the same fresh path must
 be independently reconciled rather than replacing earlier evidence.
@@ -83,7 +133,7 @@ be independently reconciled rather than replacing earlier evidence.
 **Limits:** a kernel crash, SIGKILL, lost root process or host failure can
 still interrupt in-process rollback; a separately authorized watchdog/
 out-of-band recovery mechanism is needed before claiming crash-safe rollback.
-No on-host 421-file, DynamicUser, backup, public OAuth or native MCP write
+No on-host 431-file, DynamicUser, backup, public OAuth or native MCP write
 success is asserted by unit tests. An existing platform/tool denial remains
 an absolute stop for applying the change through that boundary.
 

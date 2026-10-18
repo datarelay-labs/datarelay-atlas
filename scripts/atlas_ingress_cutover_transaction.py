@@ -22,24 +22,29 @@ import tempfile
 import time
 from urllib.request import Request, urlopen
 
-HEAD = "9177c976a591143b045ebdeabdbccd0d48b87c6c"
-MANIFEST_SHA256 = "f49f8327236b94b48912e6b5df8ca4a72469ab50911775d1bfd2ae750d18235e"
+# Frozen APPLICATION candidate, deliberately distinct from this operator's newer source commit.
+HEAD = "d561eed138d56b6d3878048f66d08c7c5b4723cb"
+MANIFEST_SHA256 = "ebc19d743236f7f27f6dd8484950bc14d1000949d36febc8e1b6a1282b06f49c"
+TRACKED_FILE_COUNT = 431
 OLD_CODE_MCP_HTTP_SHA256 = "189ab2b16991a87b8dbc5512db84a9d711a7848e0a8e6d82eb916db6f07a9fcb"
-SUFFIX = "9177c976-20261017"
+SUFFIX = "d561eed-20261018"
 LIVE = Path("/opt/datarelay-atlas")
-SOURCE = Path("/opt/datarelay-atlas-failed-retry-" + SUFFIX)
+# A NEW artifact/staging directory is required; the old failed-retry candidate is untouched.
+SOURCE = Path("/opt/datarelay-atlas-integrated-candidate-" + SUFFIX)
 STAGE = Path("/opt/datarelay-atlas-stage-safe-" + SUFFIX)
 OLD = Path("/opt/datarelay-atlas-previous-safe-" + SUFFIX)
 FAILED = Path("/opt/datarelay-atlas-failed-safe-" + SUFFIX)
 ENV = Path("/etc/datarelay-atlas/service.env")
 ENV_STAGE = Path("/etc/datarelay-atlas/service.env.stage-safe-" + SUFFIX)
 ENV_OLD = Path("/etc/datarelay-atlas/service.env.previous-safe-" + SUFFIX)
-MANIFEST = Path("/tmp/atlas-immutable-main-" + SUFFIX + ".sha256")
+MANIFEST = Path("/tmp/atlas-immutable-integrated-" + SUFFIX + ".sha256")
 DATA = Path("/var/lib/datarelay-atlas")
-DATA_BACKUP = Path("/var/backups/datarelay-atlas/atlas-mcp-write-" + SUFFIX.replace("-20261017", "") + "-precutover-20261017")
+# These ORIGINAL rollback inputs are immutable historic references. Never derive
+# them from the newly frozen application candidate.
+DATA_BACKUP = Path("/var/backups/datarelay-atlas/atlas-mcp-write-9177c976-precutover-20261017")
 FRESH_BACKUP = Path("/var/backups/datarelay-atlas/atlas-mcp-write-" + SUFFIX + "-fresh-operator")
 CODE_BACKUP = Path("/var/backups/datarelay-atlas/active-code-before-pr347-20261017T0249Z")
-ENV_BACKUP = Path("/var/backups/datarelay-atlas/atlas-mcp-write-" + SUFFIX.replace("-20261017", "") + "-code-env-20261017/service.env.before")
+ENV_BACKUP = Path("/var/backups/datarelay-atlas/atlas-mcp-write-9177c976-code-env-20261017/service.env.before")
 MCP = "datarelay-atlas.service"
 WEB = "datarelay-atlas-web.service"
 INGRESS_SOCKET = "datarelay-atlas-ingress.socket"
@@ -131,7 +136,7 @@ def _manifest(path: Path) -> None:
     if hashlib.sha256(content).hexdigest() != MANIFEST_SHA256:
         raise CutoverError("MANIFEST_SHA_MISMATCH")
     items = content.decode("utf-8").splitlines()
-    if len(items) != 421:
+    if len(items) != TRACKED_FILE_COUNT:
         raise CutoverError("MANIFEST_TRACKED_COUNT_MISMATCH")
     _directory(path, exact_mode=0o755)
     _run(["sha256sum", "--check", "--status", str(MANIFEST)], cwd=path)
@@ -143,7 +148,7 @@ def _manifest(path: Path) -> None:
             raise CutoverError("UNTRACKED_RELEASE_SYMLINK")
         if file.is_file():
             non_venv_files += 1
-    if non_venv_files != 421:
+    if non_venv_files != TRACKED_FILE_COUNT:
         raise CutoverError("UNTRACKED_RELEASE_BYTES_PRESENT")
     if not (path / ".venv/bin/python").exists():
         raise CutoverError("CANDIDATE_INTERPRETER_MISSING")
