@@ -24,11 +24,11 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 # Frozen APPLICATION candidate, deliberately distinct from this operator's newer source commit.
-HEAD = "6118cd26b991008df39f7dc5b65aaea6c77fbf37"
-MANIFEST_SHA256 = "1b267a4d17e630f97dad8206d77044aaa6f7bcb93f79e3c161fd9df28738d386"
-TRACKED_FILE_COUNT = 437
+HEAD = "826c26604c4b47b6aab45a889a15b9552985b5ef"
+MANIFEST_SHA256 = "379c0d19151ec803b72ca1c7fe3477f3573609ca93a3307a18799d1e4f75c5ba"
+TRACKED_FILE_COUNT = 439
 OLD_CODE_MCP_HTTP_SHA256 = "189ab2b16991a87b8dbc5512db84a9d711a7848e0a8e6d82eb916db6f07a9fcb"
-SUFFIX = "6118cd2-20261019"
+SUFFIX = "826c266-20261019"
 LIVE = Path("/opt/datarelay-atlas")
 # A NEW artifact/staging directory is required; the old failed-retry candidate is untouched.
 SOURCE = Path("/opt/datarelay-atlas-integrated-candidate-" + SUFFIX)
