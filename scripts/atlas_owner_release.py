@@ -293,7 +293,7 @@ def prepare(operator, base: Path = BUNDLE) -> int:
     _create_offline_runtime(temporary, base)
     operator._manifest(temporary)
     os.rename(temporary, operator.SOURCE)
-    print("SOURCE_431_VERIFIED", flush=True)
+    print(f"SOURCE_{EXPECTED_TRACKED}_VERIFIED", flush=True)
     result = operator.main(["--prepare", "--expected-head", APP_HEAD])
     if result != 0:
         raise ReleaseRefused("OPERATOR_PREPARE_FAILED:" + str(result))
