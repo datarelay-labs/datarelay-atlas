@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from wsgiref.util import setup_testing_defaults
 
 from atlas.provenance import CanonicalSource, render_derived_document
@@ -61,6 +62,85 @@ class WebUiTests(unittest.TestCase):
         self.assertNotIn("<Demo & Co>", body)
         self.assertIn("default-src 'none'", state["headers"]["Content-Security-Policy"])
         self.assertIn("no trusted local lifecycle evidence", body)
+
+    def test_overview_reuses_one_validated_snapshot_for_seven_projects(self):
+        from atlas import lifecycle_intelligence as lifecycle
+        svc = AtlasService(self.root)
+        for number in range(6):
+            svc.register_project(
+                project_id=f"family-{number}",
+                repository=f"datarelay-labs/family-{number}",
+            )
+        self.app = create_app(self.root)
+        repositories = sorted({p.repository for p in svc.list_projects()})
+        self.assertEqual(len(repositories), 7)
+        observations = [
+            {
+                "repository": repo, "issue_number": 100 + index,
+                "issue_state": "OPEN", "issue_updated_at": _fresh_utc(),
+                "author_trust": "trusted", "packet_status": "ACTIVE",
+                "branch": "feat/overview", "head": "b" * 40,
+                "pr_number": None, "pr_state": "NONE", "pr_head": None,
+                "canonical_fact": True, "reasons": [],
+            }
+            for index, repo in enumerate(repositories)
+        ]
+        snapshot = {
+            "schema_version": 1, "kind": "cursor_github_reconciliation",
+            "observed_at": _fresh_utc(), "repositories": repositories,
+            "observations": observations,
+            "summary": {
+                "observed_count": 7, "canonical_count": 7,
+                "noncanonical_count": 0,
+            },
+        }
+        path = self.root / "github-lifecycle.json"
+        path.write_text(json.dumps(snapshot))
+        with patch.object(
+            lifecycle, "load_github_reconciliation_snapshot",
+            wraps=lifecycle.load_github_reconciliation_snapshot,
+        ) as loader:
+            state, html = self.get("/")
+            self.assertEqual(state["status"], "200 OK")
+            self.assertEqual(loader.call_count, 1)
+            for index in range(7):
+                self.assertIn(f"AI Work #{100 + index} ACTIVE", html)
+            # A separate request must independently validate the latest truth.
+            detail, _ = self.get("/projects/demo/lifecycle")
+            self.assertEqual(detail["status"], "200 OK")
+            self.assertEqual(loader.call_count, 2)
+            snapshot["observations"][0]["canonical_fact"] = False
+            snapshot["observations"][0]["reasons"] = ["PR_HEAD_MISMATCH"]
+            snapshot["summary"] = {
+                "observed_count": 7, "canonical_count": 6,
+                "noncanonical_count": 1,
+            }
+            path.write_text(json.dumps(snapshot))
+            state, html = self.get("/")
+            self.assertEqual(state["status"], "200 OK")
+            self.assertEqual(loader.call_count, 3)
+            self.assertIn("STALE", html)
+            self.assertNotIn("AI Work #100 ACTIVE", html)
+
+    def test_invalid_shared_lifecycle_file_fails_closed_without_repeated_io(self):
+        from atlas import lifecycle_intelligence as lifecycle
+        svc = AtlasService(self.root)
+        for number in range(6):
+            svc.register_project(
+                project_id=f"family-{number}",
+                repository=f"datarelay-labs/family-{number}",
+            )
+        self.app = create_app(self.root)
+        (self.root / "github-lifecycle.json").write_text("{invalid")
+        with patch.object(
+            lifecycle, "load_github_reconciliation_snapshot",
+            wraps=lifecycle.load_github_reconciliation_snapshot,
+        ) as loader:
+            state, html = self.get("/")
+        self.assertEqual(state["status"], "200 OK")
+        self.assertEqual(loader.call_count, 1)
+        self.assertGreaterEqual(html.count("UNAVAILABLE"), 7)
+        self.assertNotIn("AI Work #", html)
 
     def test_source_relation_never_promotes_personal_knowledge(self):
         self.assertEqual(_source_relation({"source_class": "personal", "canonical": False, "derived": True}), "personal reference / non-authoritative")

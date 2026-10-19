@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from wsgiref.simple_server import make_server
 
-from atlas.lifecycle_intelligence import lifecycle_view
+from atlas.lifecycle_intelligence import lifecycle_view, lifecycle_views
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
 
@@ -106,11 +106,16 @@ def render_projects(service: AtlasService) -> UiResponse:
         engineering_evidence = service.engineering_evidence_dashboard()
     except ValidationError:
         engineering_evidence = {"state": "UNAVAILABLE", "record_count": 0}
+    # Validate the shared GitHub lifecycle snapshot only once per overview.
+    # Individual project pages still obtain their own fresh evidence read.
+    lifecycles = lifecycle_views(
+        service.data_root, (project.repository for project in projects),
+    )
     cards = []
     for project in projects:
         pid = quote(project.project_id, safe="")
         state = "enabled" if project.enabled else "disabled"
-        lifecycle = lifecycle_view(service.data_root, project.repository)
+        lifecycle = lifecycles[project.repository]
         cards.append(
             f'<article class="card"><span class="pill">{state}</span> <span class="pill">{escape(lifecycle.work.state)}</span>'
             f'<h2><a href="/projects/{pid}">{escape(project.display_name)}</a></h2>'
