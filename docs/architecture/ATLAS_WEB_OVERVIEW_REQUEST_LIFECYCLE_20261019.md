@@ -44,6 +44,17 @@ an unusable home page.
   repeated request freshness and invalid snapshot fail-closed behavior,
   asserting exactly **one** validated shared read per overview.
 
+## Preserve both sides of the root-page health gate
+
+Before the code switch the live service still uses the old slow overview.
+The separately reviewed operator requires its **actual root page** to return
+HTTP 200 within **20 seconds** at legacy preflight and old-code rollback
+verification, rather than the old fragile eight-second boundary.
+This is not a bypass through the quicker /operations route. After switching
+to the optimized new application, the same root page must respond within
+**8 seconds**; a timeout or non-200 status stops deployment or triggers
+rollback. The two bounded intervals are fixed operator code, not CLI options.
+
 ## Deployment/release separation
 
 Existing owner package `atlas-owner-deploy-d561eed-20261019.tar.gz`

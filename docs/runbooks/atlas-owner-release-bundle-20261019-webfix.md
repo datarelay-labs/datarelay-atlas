@@ -15,8 +15,8 @@
 
 **이 새 패키지는 그 이전 Stage를 덮어쓰지 않습니다.**
 새 애플리케이션 6118cd2는 첫 화면에서 공통 GitHub Lifecycle 증거를
-요청당 한 번만 검증하도록 개선했고, 별도 Operator는 8초 기준을
-유지하면서 `LOOPBACK_WEB_ROOT_TIMEOUT` 원인을 표시합니다.
+요청당 한 번만 검증하도록 개선했고, 별도 Operator는 **현재 구버전 첫 화면을 20초 이내 HTTP 200으로 확인**하고
+**전환 후 신버전 첫 화면은 8초 이내 HTTP 200을 요구**하면서 `LOOPBACK_WEB_ROOT_TIMEOUT` 원인을 표시합니다.
 새 배포용 경로에는 `6118cd2-20261019` 접미사를 사용하며,
 기존 `d561eed-20261018` 후보/Stage/이전 백업·환경을 **절대 삭제하거나
 수정하지 마세요.**
@@ -35,9 +35,9 @@ GitHub Draft PR #354 및 필수 릴리스·병합 승인은 별도이며,
 | 추적 파일 | 437개 |
 | 소스 아카이브 SHA-256 | 4399a92a1141d9e8de2f11e4a6e26c3355da10ef430619453dc29ec8badad775 |
 | 매니페스트 SHA-256 | 1b267a4d17e630f97dad8206d77044aaa6f7bcb93f79e3c161fd9df28738d386 |
-| 별도 검증 Operator SHA-256 | faef90c4a84cbbfbc4a770c3811cab32b9e889f91fd03e07d8b271b703abe939 |
+| 별도 검증 Operator SHA-256 | f1573263a63d436a8d37709d48b8e8065ca2945d92e58cd33e1ffb5f405cef29 |
 | 대상 | prod-atlas, Ubuntu x86_64, Python 3.12 |
-| 패키지 | atlas-owner-deploy-6118cd2-20261019.tar.gz |
+| 패키지 | atlas-owner-deploy-6118cd2-r2-20261019.tar.gz |
 
 패키지에는 deploy.py, 별도 operator.py, 고정된 Git 아카이브,
 SHA-256 매니페스트, 오프라인 휠 29개, Python 의존성 고정 목록과 uv 실행기가 포함됩니다.
@@ -54,8 +54,8 @@ SHA-256 매니페스트, 오프라인 휠 29개, Python 의존성 고정 목록�
 일반 파일 전송은 **별도 승인된 배포 경로**에서만 실행하세요.
 
 ~~~sh
-sha256sum /home/aella/datarelay-atlas-release-artifacts/atlas-owner-deploy-6118cd2-20261019.tar.gz
-scp /home/aella/datarelay-atlas-release-artifacts/atlas-owner-deploy-6118cd2-20261019.tar.gz \
+sha256sum /home/aella/datarelay-atlas-release-artifacts/atlas-owner-deploy-6118cd2-r2-20261019.tar.gz
+scp /home/aella/datarelay-atlas-release-artifacts/atlas-owner-deploy-6118cd2-r2-20261019.tar.gz \
   prod-atlas:/home/aella/
 ~~~
 
@@ -66,12 +66,12 @@ scp /home/aella/datarelay-atlas-release-artifacts/atlas-owner-deploy-6118cd2-202
 root 실행을 거부합니다.
 
 ~~~sh
-sudo install -d -o root -g root -m 0700 /root/atlas-owner-deploy-6118cd2
+sudo install -d -o root -g root -m 0700 /root/atlas-owner-deploy-6118cd2-r2
 sudo tar --no-same-owner --no-same-permissions \
-  -xzf /home/aella/atlas-owner-deploy-6118cd2-20261019.tar.gz \
-  -C /root/atlas-owner-deploy-6118cd2
-sudo chmod 0700 /root/atlas-owner-deploy-6118cd2
-sudo python3 /root/atlas-owner-deploy-6118cd2/deploy.py inspect
+  -xzf /home/aella/atlas-owner-deploy-6118cd2-r2-20261019.tar.gz \
+  -C /root/atlas-owner-deploy-6118cd2-r2
+sudo chmod 0700 /root/atlas-owner-deploy-6118cd2-r2
+sudo python3 /root/atlas-owner-deploy-6118cd2-r2/deploy.py inspect
 ~~~
 
 여기까지는 **운영 코드·데이터·서비스가 변경되지 않습니다.**
@@ -83,8 +83,8 @@ sudo python3 /root/atlas-owner-deploy-6118cd2/deploy.py inspect
 않도록 설계했습니다. 화면에 표시된 실패 코드를 공유하면 해당 경로를 조사할 수 있습니다.
 
 ~~~sh
-sudo python3 /root/atlas-owner-deploy-6118cd2/deploy.py prepare
-sudo python3 /root/atlas-owner-deploy-6118cd2/deploy.py preflight
+sudo python3 /root/atlas-owner-deploy-6118cd2-r2/deploy.py prepare
+sudo python3 /root/atlas-owner-deploy-6118cd2-r2/deploy.py preflight
 ~~~
 
 prepare: 원본 운영 코드 및 롤백 백업의 ID를 확인하고, root 전용 신규 경로에
@@ -98,7 +98,7 @@ preflight: 기존 백업의 **임시 복원**, 스키마 업그레이드·롤백
 preflight가 정상 종료된 경우에만 진행하세요.
 
 ~~~sh
-sudo python3 /root/atlas-owner-deploy-6118cd2/deploy.py deploy
+sudo python3 /root/atlas-owner-deploy-6118cd2-r2/deploy.py deploy
 ~~~
 
 **반드시 대화형 터미널(TTY)이 필요**합니다. 표시된 문구를 정확히 입력할 때만

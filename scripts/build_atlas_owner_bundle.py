@@ -16,7 +16,7 @@ import tempfile
 
 APP_SHA256 = "4399a92a1141d9e8de2f11e4a6e26c3355da10ef430619453dc29ec8badad775"
 TRACKED_SHA256 = "1b267a4d17e630f97dad8206d77044aaa6f7bcb93f79e3c161fd9df28738d386"
-OPERATOR_SHA256 = "faef90c4a84cbbfbc4a770c3811cab32b9e889f91fd03e07d8b271b703abe939"
+OPERATOR_SHA256 = "f1573263a63d436a8d37709d48b8e8065ca2945d92e58cd33e1ffb5f405cef29"
 FROZEN = "6118cd26b991008df39f7dc5b65aaea6c77fbf37"
 
 
@@ -52,7 +52,7 @@ def build(repo: Path, artifacts: Path, uv: Path, output: Path) -> dict:
     inputs = {
         "app.tar": artifacts / "atlas-integrated-6118cd2.tar",
         "tracked.sha256": artifacts / "atlas-integrated-6118cd2.sha256",
-        "operator.py": artifacts / "atlas-ingress-operator-cb1806b.py",
+        "operator.py": artifacts / "atlas-ingress-operator-47101e0.py",
         "requirements.lock": artifacts / "atlas-requirements-6118cd2.lock",
         "uv": uv,
         "deploy.py": repo / "scripts/atlas_owner_release.py",
