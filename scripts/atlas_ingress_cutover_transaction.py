@@ -23,11 +23,11 @@ import time
 from urllib.request import Request, urlopen
 
 # Frozen APPLICATION candidate, deliberately distinct from this operator's newer source commit.
-HEAD = "d561eed138d56b6d3878048f66d08c7c5b4723cb"
-MANIFEST_SHA256 = "ebc19d743236f7f27f6dd8484950bc14d1000949d36febc8e1b6a1282b06f49c"
-TRACKED_FILE_COUNT = 431
+HEAD = "6118cd26b991008df39f7dc5b65aaea6c77fbf37"
+MANIFEST_SHA256 = "1b267a4d17e630f97dad8206d77044aaa6f7bcb93f79e3c161fd9df28738d386"
+TRACKED_FILE_COUNT = 437
 OLD_CODE_MCP_HTTP_SHA256 = "189ab2b16991a87b8dbc5512db84a9d711a7848e0a8e6d82eb916db6f07a9fcb"
-SUFFIX = "d561eed-20261018"
+SUFFIX = "6118cd2-20261019"
 LIVE = Path("/opt/datarelay-atlas")
 # A NEW artifact/staging directory is required; the old failed-retry candidate is untouched.
 SOURCE = Path("/opt/datarelay-atlas-integrated-candidate-" + SUFFIX)
