@@ -455,6 +455,19 @@ class WebUiTests(unittest.TestCase):
             self.assertIn("personal-web-quill", body)
             self.assertNotIn("canonical engineering source reference", body)
 
+            # Actual source page must not fabricate GitHub provenance for
+            # local snapshots or imply canonical engineering authority.
+            env["PATH_INFO"] = "/projects/notes/sources/note"
+            env["QUERY_STRING"] = ""
+            state.clear()
+            detail_html = b"".join(app(env, start)).decode()
+            self.assertEqual(state["status"], "200 OK")
+            self.assertIn("personal reference / non-authoritative", detail_html)
+            self.assertIn("not canonical engineering truth", detail_html)
+            self.assertNotIn("canonical source ↗", detail_html)
+            self.assertNotIn("https://github.com/local/markdown", detail_html)
+            self.assertNotIn("canonical source remains authoritative", detail_html)
+
     def test_cross_project_search_preserves_project_provenance(self):
         svc = AtlasService(self.root)
         svc.register_project(project_id="other", repository="datarelay-labs/other", display_name="Other")

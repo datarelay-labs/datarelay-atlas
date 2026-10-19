@@ -55,6 +55,14 @@ def _source_detail_url(project_id: str, identity: str) -> str:
 
 
 def _canonical_source_link(provenance: dict[str, object]) -> str:
+    # Local/personal snapshots must never masquerade as GitHub canonical
+    # engineering sources, even when their synthetic repo path has a slash.
+    if (
+        provenance.get("source_class") == "personal"
+        or provenance.get("provider") == "local-markdown"
+        or provenance.get("repository") == "local/markdown"
+    ):
+        return ""
     repository = str(provenance.get("repository") or "")
     revision = str(provenance.get("source_revision") or "")
     source_path = str(provenance.get("source_path") or "")
@@ -1519,9 +1527,14 @@ def render_source_detail(service: AtlasService, project_id: str, source_id: str)
         )
     if projection.get("body") is not None:
         truncation = " · content truncated for UI safety" if projection.get("body_truncated") else ""
+        source_notice = (
+            "Read-only personal reference snapshot; not canonical engineering truth"
+            if source["source_class"] == "personal"
+            else "Read-only projection; canonical source remains authoritative"
+        )
         body += (
             '<section class="card" style="margin-top:16px"><h2>Derived projection content</h2>'
-            f'<p class="muted">Read-only projection; canonical source remains authoritative{escape(truncation)}.</p>'
+            f'<p class="muted">{escape(source_notice + truncation)}.</p>'
             f'<pre>{escape(str(projection["body"]))}</pre></section>'
         )
     else:
