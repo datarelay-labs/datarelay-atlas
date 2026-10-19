@@ -202,6 +202,23 @@ class PublicHealthTests(TestCase):
                 release._public_ready()
 
 
+    def test_web_root_timeout_is_diagnostic_and_never_accepted(self) -> None:
+        with mock.patch.object(release, "urlopen", side_effect=TimeoutError("local UI took too long")) as fetch:
+            with self.assertRaisesRegex(release.CutoverError, "^LOOPBACK_WEB_ROOT_TIMEOUT$"):
+                release._web_ready()
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(fetch.call_args.args[0].full_url, "http://127.0.0.1:8788/")
+        self.assertEqual(fetch.call_args.kwargs["timeout"], 8)
+
+    def test_web_root_connection_failure_is_not_masked_by_other_routes(self) -> None:
+        from urllib.error import URLError
+        with mock.patch.object(release, "urlopen", side_effect=URLError("no response")) as fetch:
+            with self.assertRaisesRegex(release.CutoverError, "^LOOPBACK_WEB_CONNECTION_FAILED$"):
+                release._web_ready()
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(fetch.call_args.args[0].full_url, "http://127.0.0.1:8788/")
+
+
 class LocalPathGateTests(TestCase):
     def test_release_root_must_be_world_traversable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

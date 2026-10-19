@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 # Frozen APPLICATION candidate, deliberately distinct from this operator's newer source commit.
@@ -222,10 +223,16 @@ def _public_ready() -> None:
 
 def _web_ready() -> None:
     # The Human UI is intentionally loopback-only, never published on 443.
+    # Preserve the root-page readiness gate; do not substitute /operations.
     url = "http://127.0.0.1:8788/"
-    with urlopen(Request(url, method="GET"), timeout=8) as response:
-        if response.status != 200 or response.url != url:
-            raise CutoverError("LOOPBACK_WEB_NOT_READY")
+    try:
+        with urlopen(Request(url, method="GET"), timeout=8) as response:
+            if response.status != 200 or response.url != url:
+                raise CutoverError("LOOPBACK_WEB_NOT_READY")
+    except TimeoutError as exc:
+        raise CutoverError("LOOPBACK_WEB_ROOT_TIMEOUT") from exc
+    except URLError as exc:
+        raise CutoverError("LOOPBACK_WEB_CONNECTION_FAILED") from exc
 
 
 class SystemOperations:
