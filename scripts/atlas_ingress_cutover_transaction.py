@@ -56,6 +56,11 @@ ISSUER = "https://auth.atlas.datarelay.run/realms/atlas"
 AUTH_DISCOVERY = ISSUER + "/.well-known/openid-configuration"
 MCP_HEALTH = "https://mcp.atlas.datarelay.run/healthz"
 FLAGS = ("ATLAS_MCP_MEMORY_WRITE_ENABLED", "ATLAS_MCP_SOURCE_WRITE_ENABLED")
+# The unchanged old live overview performs seven repeated validations and can
+# exceed eight seconds. Qualify it as the old baseline without disabling the
+# homepage health gate; hold the newly deployed optimized code to eight seconds.
+LEGACY_WEB_ROOT_TIMEOUT = 20
+NEW_WEB_ROOT_TIMEOUT = 8
 
 
 class CutoverError(RuntimeError):
@@ -221,12 +226,14 @@ def _public_ready() -> None:
             raise CutoverError("AUTH_ENDPOINT_MISMATCH")
 
 
-def _web_ready() -> None:
+def _web_ready(*, timeout: int = NEW_WEB_ROOT_TIMEOUT) -> None:
     # The Human UI is intentionally loopback-only, never published on 443.
     # Preserve the root-page readiness gate; do not substitute /operations.
+    if timeout not in (LEGACY_WEB_ROOT_TIMEOUT, NEW_WEB_ROOT_TIMEOUT):
+        raise CutoverError("WEB_GATE_TIMEOUT_INVALID")
     url = "http://127.0.0.1:8788/"
     try:
-        with urlopen(Request(url, method="GET"), timeout=8) as response:
+        with urlopen(Request(url, method="GET"), timeout=timeout) as response:
             if response.status != 200 or response.url != url:
                 raise CutoverError("LOOPBACK_WEB_NOT_READY")
     except TimeoutError as exc:
@@ -330,7 +337,8 @@ class SystemOperations:
             _run(["systemctl", "is-enabled", "--quiet", unit])
         _ingress_unit_contract()
         _public_ready()
-        _web_ready()
+        # Before code switch this request runs on the known-slow ORIGINAL Web.
+        _web_ready(timeout=LEGACY_WEB_ROOT_TIMEOUT)
         # Actual sandboxed ingress interpreter execution under DynamicUser.
         _run([
             "systemd-run", "--wait", "--collect",
@@ -451,7 +459,9 @@ class SystemOperations:
                 for unit in UNIT_ORDER:
                     _run(["systemctl", "is-active", "--quiet", unit])
                 _public_ready()
-                _web_ready()
+                _web_ready(
+                    timeout=LEGACY_WEB_ROOT_TIMEOUT if old else NEW_WEB_ROOT_TIMEOUT,
+                )
                 if old:
                     if (LIVE / "atlas/mcp_write.py").exists():
                         raise CutoverError("OLD_CODE_IDENTITY_MISMATCH")

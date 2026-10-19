@@ -219,6 +219,42 @@ class PublicHealthTests(TestCase):
         self.assertEqual(fetch.call_args.args[0].full_url, "http://127.0.0.1:8788/")
 
 
+    def test_legacy_web_root_has_bounded_distinct_timeout(self) -> None:
+        with mock.patch.object(release, "urlopen", side_effect=TimeoutError("slow old UI")) as fetch:
+            with self.assertRaisesRegex(release.CutoverError, "^LOOPBACK_WEB_ROOT_TIMEOUT$"):
+                release._web_ready(timeout=release.LEGACY_WEB_ROOT_TIMEOUT)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(fetch.call_args.args[0].full_url, "http://127.0.0.1:8788/")
+        self.assertEqual(fetch.call_args.kwargs["timeout"], 20)
+        with mock.patch.object(release, "urlopen") as fetch:
+            with self.assertRaisesRegex(release.CutoverError, "^WEB_GATE_TIMEOUT_INVALID$"):
+                release._web_ready(timeout=60)
+            fetch.assert_not_called()
+
+    def test_old_and_new_health_require_root_under_distinct_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "live").mkdir()
+            env = root / "env"
+            backup = root / "env-backup"
+            env.write_text("ORIGINAL=1\n")
+            backup.write_bytes(env.read_bytes())
+            with mock.patch.multiple(
+                release, LIVE=root / "live", ENV=env, ENV_BACKUP=backup,
+            ), mock.patch.object(release, "_run"), mock.patch.object(
+                release, "_public_ready"
+            ), mock.patch.object(release, "_web_ready") as probe, mock.patch.object(
+                release, "_manifest"
+            ), mock.patch.object(release, "_flags"), mock.patch.object(
+                release, "_old_code_digest"
+            ):
+                release.SystemOperations().verify(old=True)
+                probe.assert_called_once_with(timeout=release.LEGACY_WEB_ROOT_TIMEOUT)
+                probe.reset_mock()
+                release.SystemOperations().verify(old=False)
+                probe.assert_called_once_with(timeout=release.NEW_WEB_ROOT_TIMEOUT)
+
+
 class LocalPathGateTests(TestCase):
     def test_release_root_must_be_world_traversable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
