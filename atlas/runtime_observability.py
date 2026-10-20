@@ -25,6 +25,7 @@ from atlas.data_protection import (
 from atlas.local_markdown import IMPORT_DIRNAME, SNAPSHOT_DIRNAME
 from atlas.ops import data_root_runtime_ready
 from atlas.projection import ProjectionStore
+from atlas.projection_retrieval import iter_validated_projections
 from atlas.provenance import ValidationError
 from atlas.registry import ProjectRegistry
 from atlas.sbom import _source_facts
@@ -238,7 +239,11 @@ def _canonical_counts(root: Path) -> dict[str, object]:
             snapshot_root=root / SNAPSHOT_DIRNAME,
         )
         records = projections.list_records()
-        documents = projections.list_documents()
+        documents = [
+            item
+            for project in projects
+            for item in iter_validated_projections(projections, project.project_id)
+        ]
     else:
         records = []
         documents = []
