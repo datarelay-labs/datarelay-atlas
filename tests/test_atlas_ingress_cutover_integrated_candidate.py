@@ -18,9 +18,9 @@ from scripts import atlas_ingress_cutover_transaction as release
 from scripts.atlas_release_manifest import build_manifest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-FROZEN_CANDIDATE = "d561eed138d56b6d3878048f66d08c7c5b4723cb"
-FROZEN_COUNT = 431
-FROZEN_MANIFEST_DIGEST = "ebc19d743236f7f27f6dd8484950bc14d1000949d36febc8e1b6a1282b06f49c"
+FROZEN_CANDIDATE = "6118cd26b991008df39f7dc5b65aaea6c77fbf37"
+FROZEN_COUNT = 437
+FROZEN_MANIFEST_DIGEST = "1b267a4d17e630f97dad8206d77044aaa6f7bcb93f79e3c161fd9df28738d386"
 BASELINE = "9177c976a591143b045ebdeabdbccd0d48b87c6c"
 
 

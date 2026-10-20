@@ -20,14 +20,15 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 # Frozen APPLICATION candidate, deliberately distinct from this operator's newer source commit.
-HEAD = "d561eed138d56b6d3878048f66d08c7c5b4723cb"
-MANIFEST_SHA256 = "ebc19d743236f7f27f6dd8484950bc14d1000949d36febc8e1b6a1282b06f49c"
-TRACKED_FILE_COUNT = 431
+HEAD = "6118cd26b991008df39f7dc5b65aaea6c77fbf37"
+MANIFEST_SHA256 = "1b267a4d17e630f97dad8206d77044aaa6f7bcb93f79e3c161fd9df28738d386"
+TRACKED_FILE_COUNT = 437
 OLD_CODE_MCP_HTTP_SHA256 = "189ab2b16991a87b8dbc5512db84a9d711a7848e0a8e6d82eb916db6f07a9fcb"
-SUFFIX = "d561eed-20261018"
+SUFFIX = "6118cd2-20261019"
 LIVE = Path("/opt/datarelay-atlas")
 # A NEW artifact/staging directory is required; the old failed-retry candidate is untouched.
 SOURCE = Path("/opt/datarelay-atlas-integrated-candidate-" + SUFFIX)
@@ -55,6 +56,11 @@ ISSUER = "https://auth.atlas.datarelay.run/realms/atlas"
 AUTH_DISCOVERY = ISSUER + "/.well-known/openid-configuration"
 MCP_HEALTH = "https://mcp.atlas.datarelay.run/healthz"
 FLAGS = ("ATLAS_MCP_MEMORY_WRITE_ENABLED", "ATLAS_MCP_SOURCE_WRITE_ENABLED")
+# The unchanged old live overview performs seven repeated validations and can
+# exceed eight seconds. Qualify it as the old baseline without disabling the
+# homepage health gate; hold the newly deployed optimized code to eight seconds.
+LEGACY_WEB_ROOT_TIMEOUT = 20
+NEW_WEB_ROOT_TIMEOUT = 8
 
 
 class CutoverError(RuntimeError):
@@ -220,12 +226,20 @@ def _public_ready() -> None:
             raise CutoverError("AUTH_ENDPOINT_MISMATCH")
 
 
-def _web_ready() -> None:
+def _web_ready(*, timeout: int = NEW_WEB_ROOT_TIMEOUT) -> None:
     # The Human UI is intentionally loopback-only, never published on 443.
+    # Preserve the root-page readiness gate; do not substitute /operations.
+    if timeout not in (LEGACY_WEB_ROOT_TIMEOUT, NEW_WEB_ROOT_TIMEOUT):
+        raise CutoverError("WEB_GATE_TIMEOUT_INVALID")
     url = "http://127.0.0.1:8788/"
-    with urlopen(Request(url, method="GET"), timeout=8) as response:
-        if response.status != 200 or response.url != url:
-            raise CutoverError("LOOPBACK_WEB_NOT_READY")
+    try:
+        with urlopen(Request(url, method="GET"), timeout=timeout) as response:
+            if response.status != 200 or response.url != url:
+                raise CutoverError("LOOPBACK_WEB_NOT_READY")
+    except TimeoutError as exc:
+        raise CutoverError("LOOPBACK_WEB_ROOT_TIMEOUT") from exc
+    except URLError as exc:
+        raise CutoverError("LOOPBACK_WEB_CONNECTION_FAILED") from exc
 
 
 class SystemOperations:
@@ -323,7 +337,8 @@ class SystemOperations:
             _run(["systemctl", "is-enabled", "--quiet", unit])
         _ingress_unit_contract()
         _public_ready()
-        _web_ready()
+        # Before code switch this request runs on the known-slow ORIGINAL Web.
+        _web_ready(timeout=LEGACY_WEB_ROOT_TIMEOUT)
         # Actual sandboxed ingress interpreter execution under DynamicUser.
         _run([
             "systemd-run", "--wait", "--collect",
@@ -444,7 +459,9 @@ class SystemOperations:
                 for unit in UNIT_ORDER:
                     _run(["systemctl", "is-active", "--quiet", unit])
                 _public_ready()
-                _web_ready()
+                _web_ready(
+                    timeout=LEGACY_WEB_ROOT_TIMEOUT if old else NEW_WEB_ROOT_TIMEOUT,
+                )
                 if old:
                     if (LIVE / "atlas/mcp_write.py").exists():
                         raise CutoverError("OLD_CODE_IDENTITY_MISMATCH")

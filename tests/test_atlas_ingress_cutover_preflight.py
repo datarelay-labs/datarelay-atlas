@@ -84,12 +84,15 @@ class ProofIsolatedPreflightTests(unittest.TestCase):
                 ENV_BACKUP=self.env_backup,
             ))
             stack.enter_context(mock.patch.object(release.os, "geteuid", return_value=0))
+            web_probe = None
             for name in (
                 "_directory", "_manifest", "_protected_env", "_flags",
                 "_old_code_digest", "_public_ready", "_web_ready",
                 "_ingress_unit_contract",
             ):
-                stack.enter_context(mock.patch.object(release, name))
+                observer = stack.enter_context(mock.patch.object(release, name))
+                if name == "_web_ready":
+                    web_probe = observer
             commands = []
             def cmd(args, **kwargs):
                 commands.append(args)
@@ -106,6 +109,8 @@ class ProofIsolatedPreflightTests(unittest.TestCase):
                 return {"status": "ok", "rewritten": False}
             stack.enter_context(mock.patch.object(release, "_check_json", side_effect=returned))
             release.SystemOperations().preflight()
+            self.assertIsNotNone(web_probe)
+            web_probe.assert_called_once_with(timeout=release.LEGACY_WEB_ROOT_TIMEOUT)
 
         self.assertEqual(len(schema_calls), 3)
         restore, upgrade, rollback = schema_calls

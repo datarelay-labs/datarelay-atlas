@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -51,6 +52,35 @@ class LifecycleView:
     release: EvidenceState
     surface_reconciliation: EvidenceState
     full_user_e2e: EvidenceState
+
+@dataclass(frozen=True)
+class _LoadedWorkSnapshot:
+    """Validated snapshot reused only inside one UI request.
+
+    Nothing is cached between requests; every overview independently reads
+    and validates current GitHub lifecycle evidence before showing statuses.
+    """
+    state: str
+    observations: tuple[dict[str, object], ...] = ()
+    observed_at: str = ""
+    modified_at: datetime | None = None
+
+
+def _load_work_snapshot(snapshot: Path) -> _LoadedWorkSnapshot:
+    if not snapshot.is_file():
+        return _LoadedWorkSnapshot("MISSING")
+    try:
+        _, observations, metadata, source_stat = load_github_reconciliation_snapshot(
+            snapshot, include_file_stat=True,
+        )
+        modified_at = datetime.fromtimestamp(source_stat.st_mtime, timezone.utc)
+        _github_snapshot_time(metadata["observed_at"])
+    except (OSError, ValidationError, ValueError, OverflowError, KeyError):
+        return _LoadedWorkSnapshot("INVALID")
+    return _LoadedWorkSnapshot(
+        "VALID", tuple(observations), str(metadata["observed_at"]), modified_at,
+    )
+
 
 
 def _github_snapshot_payload(
@@ -178,19 +208,19 @@ def _human_unknown(gate: str) -> EvidenceState:
         f"no {label} configuration or execution evidence loaded",
     )
 
-def _work_state(snapshot: Path, repository: str) -> tuple[EvidenceState, frozenset[str], tuple[WorkPacketState, ...]]:
-    if not snapshot.is_file():
+def _work_state(
+    snapshot: Path, repository: str, *,
+    shared: _LoadedWorkSnapshot | None = None,
+) -> tuple[EvidenceState, frozenset[str], tuple[WorkPacketState, ...]]:
+    loaded = shared if shared is not None else _load_work_snapshot(snapshot)
+    if loaded.state == "MISSING":
         return EvidenceState("UNKNOWN", "no trusted local lifecycle evidence"), frozenset(), ()
-    try:
-        _, observations, metadata, source_stat = load_github_reconciliation_snapshot(
-            snapshot,
-            include_file_stat=True,
-        )
-        modified_at = datetime.fromtimestamp(source_stat.st_mtime, timezone.utc)
-    except (OSError, ValidationError):
+    if loaded.state != "VALID" or loaded.modified_at is None:
         return EvidenceState("UNAVAILABLE", "local lifecycle evidence failed validation"), frozenset(), ()
+    observations = loaded.observations
+    modified_at = loaded.modified_at
     now = datetime.now(timezone.utc)
-    observed_at = _github_snapshot_time(metadata["observed_at"])
+    observed_at = _github_snapshot_time(loaded.observed_at)
     if modified_at > now + timedelta(seconds=_GITHUB_LIFECYCLE_MAX_FUTURE_SKEW_SECONDS):
         return EvidenceState("UNAVAILABLE", "local lifecycle cache timestamp is in the future"), frozenset(), ()
     if observed_at > now + timedelta(seconds=_GITHUB_LIFECYCLE_MAX_FUTURE_SKEW_SECONDS):
@@ -201,7 +231,7 @@ def _work_state(snapshot: Path, repository: str) -> tuple[EvidenceState, frozens
         return EvidenceState("STALE", "local lifecycle observation expired"), frozenset(), ()
     matching = [item for item in observations if item.get("repository") == repository]
     if not matching:
-        return EvidenceState("UNKNOWN", f"snapshot {metadata['observed_at']} has no project observation"), frozenset(), ()
+        return EvidenceState("UNKNOWN", f"snapshot {loaded.observed_at} has no project observation"), frozenset(), ()
     canonical = [item for item in matching if item.get("canonical_fact") is True]
     noncanonical = [item for item in matching if item.get("canonical_fact") is not True]
     packets = tuple(
@@ -243,7 +273,7 @@ def _work_state(snapshot: Path, repository: str) -> tuple[EvidenceState, frozens
         else:
             pr = "no PR"
         details.append(f"AI Work #{item['issue_number']} {status} · {branch} · {head} · {pr}")
-    detail = " ; ".join(details) + f" · snapshot {metadata['observed_at']}"
+    detail = " ; ".join(details) + f" · snapshot {loaded.observed_at}"
     if noncanonical:
         detail += f" · {len(noncanonical)} noncanonical observation(s)"
     unique_head = next(iter(heads)) if len(heads) == 1 else None
@@ -388,16 +418,34 @@ def lifecycle_view_payload(data_root: Path, repository: str) -> dict[str, object
         "full_user_e2e": item(view.full_user_e2e),
     }
 
-def lifecycle_view(data_root: Path, repository: str) -> LifecycleView:
+def lifecycle_views(data_root: Path, repositories: Iterable[str]) -> dict[str, LifecycleView]:
+    """Build all overview lifecycle cards from one independently validated snapshot.
+
+    Duplicated repository identities share one result, but each request reads
+    the source again. Corrupt/stale evidence remains UNAVAILABLE/STALE, never PASS.
+    """
     root = Path(data_root)
-    work, expected_heads, work_packets = _work_state(root / "github-lifecycle.json", repository)
-    channels, gates = _load_lifecycle_evidence(root / "lifecycle-evidence.json", repository, expected_heads)
-    return LifecycleView(
-        work=work,
-        work_packets=work_packets,
-        ci=channels["ci"],
-        tests=channels["tests"],
-        release=channels["release"],
-        surface_reconciliation=gates["surface_reconciliation"],
-        full_user_e2e=gates["full_user_e2e"],
-    )
+    snapshot = root / "github-lifecycle.json"
+    loaded = _load_work_snapshot(snapshot)
+    result: dict[str, LifecycleView] = {}
+    for repository in dict.fromkeys(repositories):
+        work, expected_heads, work_packets = _work_state(
+            snapshot, repository, shared=loaded,
+        )
+        channels, gates = _load_lifecycle_evidence(
+            root / "lifecycle-evidence.json", repository, expected_heads,
+        )
+        result[repository] = LifecycleView(
+            work=work,
+            work_packets=work_packets,
+            ci=channels["ci"],
+            tests=channels["tests"],
+            release=channels["release"],
+            surface_reconciliation=gates["surface_reconciliation"],
+            full_user_e2e=gates["full_user_e2e"],
+        )
+    return result
+
+
+def lifecycle_view(data_root: Path, repository: str) -> LifecycleView:
+    return lifecycle_views(data_root, (repository,))[repository]
