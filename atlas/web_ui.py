@@ -66,9 +66,16 @@ def _canonical_source_link(provenance: dict[str, object]) -> str:
     repository = str(provenance.get("repository") or "")
     revision = str(provenance.get("source_revision") or "")
     source_path = str(provenance.get("source_path") or "")
-    if "/" not in repository or len(revision) != 40 or not source_path:
+    ref = provenance.get("ref")
+    # The GitHub Contents API revision is a file blob SHA, not a commit.
+    # Navigate using the registered ref; retain the blob as integrity evidence.
+    if (
+        "/" not in repository or len(revision) != 40 or not source_path
+        or not isinstance(ref, str) or not ref
+        or any(ord(char) <= 32 or ord(char) == 127 for char in ref)
+    ):
         return ""
-    url = f"https://github.com/{repository}/blob/{revision}/{quote(source_path, safe='/')}"
+    url = f"https://github.com/{repository}/blob/{quote(ref, safe='')}/{quote(source_path, safe='/')}"
     return f'<a href="{escape(url, quote=True)}" rel="noreferrer">canonical source ↗</a>'
 
 
