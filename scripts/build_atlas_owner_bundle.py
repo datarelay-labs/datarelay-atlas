@@ -14,10 +14,10 @@ import shutil
 import tarfile
 import tempfile
 
-APP_SHA256 = "4399a92a1141d9e8de2f11e4a6e26c3355da10ef430619453dc29ec8badad775"
-TRACKED_SHA256 = "1b267a4d17e630f97dad8206d77044aaa6f7bcb93f79e3c161fd9df28738d386"
-OPERATOR_SHA256 = "f1573263a63d436a8d37709d48b8e8065ca2945d92e58cd33e1ffb5f405cef29"
-FROZEN = "6118cd26b991008df39f7dc5b65aaea6c77fbf37"
+APP_SHA256 = "d789f25bad4fc7299f7e914a77a2d6901752829c48c7742faba4942e8946a356"
+TRACKED_SHA256 = "379c0d19151ec803b72ca1c7fe3477f3573609ca93a3307a18799d1e4f75c5ba"
+OPERATOR_SHA256 = "1cfa167b3c231c070558654978777b43b46185ea004716cdda7d79e4520a341b"
+FROZEN = "826c26604c4b47b6aab45a889a15b9552985b5ef"
 
 
 def sha(path: Path) -> str:
@@ -50,13 +50,13 @@ def build(repo: Path, artifacts: Path, uv: Path, output: Path) -> dict:
     if output.exists() or output.is_symlink():
         raise RuntimeError("REFUSED:bundle already exists")
     inputs = {
-        "app.tar": artifacts / "atlas-integrated-6118cd2.tar",
-        "tracked.sha256": artifacts / "atlas-integrated-6118cd2.sha256",
-        "operator.py": artifacts / "atlas-ingress-operator-47101e0.py",
-        "requirements.lock": artifacts / "atlas-requirements-6118cd2.lock",
+        "app.tar": artifacts / "atlas-integrated-826c266.tar",
+        "tracked.sha256": artifacts / "atlas-integrated-826c266.sha256",
+        "operator.py": artifacts / "atlas-ingress-operator-2124a1c.py",
+        "requirements.lock": artifacts / "atlas-requirements-826c266.lock",
         "uv": uv,
         "deploy.py": repo / "scripts/atlas_owner_release.py",
-        "README.md": repo / "docs/runbooks/atlas-owner-release-bundle-20261019-webfix.md",
+        "README.md": repo / "docs/runbooks/atlas-owner-release-bundle-20261019-personalfix-r3.md",
     }
     for name, path in inputs.items():
         if path.is_symlink() or not path.is_file():
@@ -68,7 +68,7 @@ def build(repo: Path, artifacts: Path, uv: Path, output: Path) -> dict:
     ):
         if sha(inputs[name]) != digest:
             raise RuntimeError("frozen release input has changed: " + name)
-    wheels_dir = artifacts / "wheels-6118cd2"
+    wheels_dir = artifacts / "wheels-826c266"
     if wheels_dir.is_symlink() or not wheels_dir.is_dir():
         raise RuntimeError("offline wheelhouse missing")
     wheels = sorted(wheels_dir.iterdir())

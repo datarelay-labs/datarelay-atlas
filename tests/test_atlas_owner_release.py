@@ -76,6 +76,32 @@ class OwnerReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(release.ReleaseRefused, "WRONG_HOST"):
                 release._require_trusted_operator(Path("/root"))
 
+    def test_prepare_reports_pinned_source_count_not_stale_label(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        with tempfile.TemporaryDirectory(prefix="atlas-owner-label-") as temp:
+            destination = Path(temp) / "source"
+            op = SimpleNamespace(SOURCE=destination, _manifest=mock.Mock(),
+                                 main=mock.Mock(return_value=0))
+            output = StringIO()
+            def create_build(_archive, target):
+                target.mkdir()
+            with mock.patch.object(release, "_require_baseline"), \
+                 mock.patch.object(release, "_save_manifest"), \
+                 mock.patch.object(release, "_extract_exact_source",
+                                   side_effect=create_build), \
+                 mock.patch.object(release, "_create_offline_runtime"), \
+                 redirect_stdout(output):
+                self.assertEqual(release.prepare(op), 0)
+            self.assertTrue(destination.is_dir())
+            self.assertIn(
+                f"SOURCE_{release.EXPECTED_TRACKED}_VERIFIED", output.getvalue()
+            )
+            self.assertNotIn("SOURCE_431_VERIFIED", output.getvalue())
+            op.main.assert_called_once_with(
+                ["--prepare", "--expected-head", release.APP_HEAD]
+            )
+
     def test_prepare_refuses_invalid_baseline_before_any_mutation(self):
         op = SimpleNamespace()
         with mock.patch.object(release, "_require_baseline",
