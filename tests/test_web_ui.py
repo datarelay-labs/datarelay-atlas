@@ -12,7 +12,7 @@ from atlas.provenance import CanonicalSource, render_derived_document
 from atlas.cli import build_parser
 from atlas.provenance import ValidationError
 from atlas.service import AtlasService
-from atlas.web_ui import _adoption_projection_state, _source_relation, create_app, render_cross_project_search, serve_ui
+from atlas.web_ui import _canonical_source_link, _adoption_projection_state, _source_relation, create_app, render_cross_project_search, serve_ui
 
 def _fresh_utc() -> str:
     return datetime.now(timezone.utc).replace(
@@ -54,6 +54,41 @@ class WebUiTests(unittest.TestCase):
             state.update(status=status, headers=dict(headers))
         body = b"".join(self.app(env, start)).decode()
         return state, body
+
+    def test_canonical_link_uses_registered_ref_not_contents_blob_sha(self):
+        commit = "f6355d5719c54b5eb814b634eaa76771757b2c31"
+        blob = "fc898cb56e6dcabdf6637cd28d6ccdc4cbd59eb1"
+        html = _canonical_source_link({"provider": "github", "repository": "datarelay-labs/datarelay-atlas",
+            "ref": commit, "source_revision": blob, "source_path": "docs/runbooks/atlas-owner-console-kit.md"})
+        self.assertIn("/blob/" + commit + "/docs/runbooks/atlas-owner-console-kit.md", html)
+        self.assertNotIn("/blob/" + blob + "/", html)
+
+    def test_canonical_link_encodes_branch_tag_and_path(self):
+        for ref, encoded in (("main", "main"), ("release/v1.0", "release%2Fv1.0"), ("v1.2.3", "v1.2.3")):
+            with self.subTest(ref=ref):
+                html = _canonical_source_link({"provider": "github", "repository": "datarelay-labs/demo",
+                    "ref": ref, "source_revision": "a" * 40, "source_path": "docs/a b&c.md"})
+                self.assertIn("/blob/" + encoded + "/docs/a%20b%26c.md", html)
+
+    def test_canonical_link_missing_or_invalid_ref_does_not_use_blob(self):
+        for ref in (None, "", " ", " main", "main\n", 123, {}):
+            with self.subTest(ref=ref):
+                self.assertEqual(_canonical_source_link({"provider": "github", "repository": "datarelay-labs/demo",
+                    "ref": ref, "source_revision": "a" * 40, "source_path": "README.md"}), "")
+
+    def test_source_detail_link_keeps_blob_revision_as_evidence(self):
+        status, body = self.get("/projects/demo/sources/readme")
+        self.assertEqual(status["status"], "200 OK")
+        self.assertIn('href="https://github.com/datarelay-labs/demo/blob/main/README.md"', body)
+        self.assertNotIn('/blob/' + "a" * 40 + '/', body)
+        self.assertIn("a" * 40, body)
+
+    def test_search_link_uses_ref_while_preserving_revision(self):
+        status, body = self.get("/projects/demo", "q=needle")
+        self.assertEqual(status["status"], "200 OK")
+        self.assertIn('/blob/main/README.md', body)
+        self.assertNotIn('/blob/' + "a" * 40 + '/', body)
+        self.assertIn("a" * 40, body)
 
     def test_project_list_escapes_source_data(self):
         state, body = self.get("/")
