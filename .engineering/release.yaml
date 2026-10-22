@@ -4,9 +4,9 @@ artifact_hash_required: false
 provenance_required: false
 sbom_required: false
 setup_command: ''
-preflight_required: false
-preflight_command: ''
-qualification_command: ''
+preflight_required: true
+preflight_command: 'python3 scripts/atlas_protected_release_gate.py preflight && python3 scripts/atlas_ingress_cutover_plan.py check'
+qualification_command: 'python3 scripts/atlas_protected_release_gate.py qualify'
 artifact_hash_command: ''
 provenance_command: ''
 sbom_command: ''
@@ -45,4 +45,4 @@ human_equivalent_user_tests:
   complete_rerun_after_remediation_required: true
   wrapper_user_substitution_forbidden: true
   contract_review_attestation_version: 1
-execution_context: github-hosted
+execution_context: protected-production
