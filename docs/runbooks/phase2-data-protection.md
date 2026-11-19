@@ -93,3 +93,31 @@ Expected result: exit 0 and JSON `"rewritten": false` when the checked code can
 read the present files. A newer, corrupt, or unsupported schema or completion
 event exits non-zero and leaves the files unchanged. Do not start the older
 build after a refused rollback.
+
+
+## Production source registration and data-root ownership
+
+Production data belongs to the non-root `atlas` service account, including
+`/var/lib/datarelay-atlas/registry.json`. Register additional GitHub sources
+**as `atlas`, never as root**. Atomic replacement creates a fresh owner-owned
+0600 file; a root-run source command could otherwise make the running Atlas
+service unable to reload the registry. The registry now refuses a writer
+whose effective UID does not own the data-root directory.
+
+1. Record the project, source path and Git ref, then make and restore-test
+   a fresh full data-root backup using the commands above.
+2. Execute the source add with the actual production service UID:
+
+~~~sh
+sudo -u atlas -g atlas -- env PYTHONPATH=/opt/datarelay-atlas \
+  /opt/datarelay-atlas/.venv/bin/python -m atlas \
+  --data-root /var/lib/datarelay-atlas source add \
+  datarelay-atlas project-metadata \
+  --path .engineering/project.yaml --ref main
+~~~
+
+The example source ID must be unused. Verify registry ownership
+`atlas:atlas` mode 0600 and `/healthz` 200. The independently scheduled
+operator refresh imports registered GitHub files; a source mapping alone
+does **not** prove synchronization. Never pass GitHub credentials into the
+production service environment or weaken safety/provenance validation.
