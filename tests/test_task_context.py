@@ -204,6 +204,63 @@ class TaskContextTests(unittest.TestCase):
         )
         self.assertEqual(by_repo["project"], payload["project"])
 
+    def test_default_bootstrap_advertises_only_provenance_backed_entrypoints(self):
+        self.svc.add_source(
+            "demo",
+            source_id="readme",
+            source_path="README.md",
+            title="Demo README",
+        )
+        self.svc.add_source(
+            "demo",
+            source_id="unrelated",
+            source_path="docs/runbooks/debugging.md",
+            title="Unrelated runbook",
+        )
+
+        def fetch(source, token):  # noqa: ARG001
+            return FetchedSource(
+                content=f"# Demo {source.source_id}\n\nDemo reference BODY-SECRET-NOT-IN-BOOTSTRAP",
+                source_revision="entrypoint-revision-1",
+            )
+
+        self.svc.sync_project("demo", fetch=fetch)
+        result = self.svc.task_context(project_id="demo")
+        VALIDATOR.validate(result)
+        self.assertIsNone(result["request"]["workstream"])
+        self.assertEqual(result["request"]["workstream_binding"], "NOT_REQUESTED")
+        self.assertEqual([ref["source_path"] for ref in result["knowledge_refs"]], ["README.md"])
+        self.assertEqual(result["knowledge_refs"][0]["source_revision"], "entrypoint-revision-1")
+        self.assertEqual(result["knowledge_refs"][0]["canonical"], False)
+        self.assertEqual(result["knowledge_refs"][0]["derived"], True)
+        self.assertNotIn("BODY-SECRET-NOT-IN-BOOTSTRAP", json.dumps(result))
+        self.assertEqual(result["jit_retrieval"][-1]["tool"], "get_provenance")
+        self.assertLess(len(json.dumps(result).encode("utf-8")), 24 * 1024)
+
+        # A task-specific bootstrap is still specific: it is not forced to
+        # prefer a README just because it matched the project name.
+        matched = self.svc.task_context(project_id="demo", workstream="unrelated")
+        VALIDATOR.validate(matched)
+        self.assertTrue(any(ref["source_path"] == "docs/runbooks/debugging.md"
+                            for ref in matched["knowledge_refs"]))
+
+    def test_default_bootstrap_without_entrypoints_remains_empty(self):
+        result = self.svc.task_context(project_id="demo")
+        VALIDATOR.validate(result)
+        self.assertEqual(result["knowledge_refs"], [])
+        self.assertFalse(any(hint["tool"] == "get_provenance"
+                             for hint in result["jit_retrieval"]))
+
+    def test_invalid_workstream_is_rejected_with_actionable_safe_hint(self):
+        with self.assertRaisesRegex(ValidationError, "omit workstream"):
+            self.svc.bootstrap_task_context(
+                project_hint="demo", workstream="feat/readme"
+            )
+        with self.assertRaisesRegex(ValidationError, "workstream is invalid"):
+            self.svc.task_context(
+                project_id="demo", workstream="free-form description"
+            )
+
     def test_workstream_binding_requires_current_evidence(self):
         self._write_lifecycle()
         self._import_current_evidence()

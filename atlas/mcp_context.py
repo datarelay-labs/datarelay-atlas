@@ -180,7 +180,7 @@ class AtlasContextTools:
             tools.append(
                 {
                     "name": "bootstrap_datarelay_context",
-                    "description": "Resolve one DataRelay project from an exact repository/project hint and return bounded current task context",
+                    "description": "Select one exact repository or project_hint for bounded context. Omit workstream unless the exact ACTIVE Work Packet slug is known (no branch path or free-form text).",
                 }
             )
         if self._task_context_factory is not None and READ_SCOPE in scopes:

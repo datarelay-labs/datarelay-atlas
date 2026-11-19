@@ -67,7 +67,7 @@ def normalize_workstream(value: str | None) -> str | None:
     if not normalized:
         return None
     if _WORKSTREAM.fullmatch(normalized) is None:
-        raise ValidationError("workstream is invalid")
+        raise ValidationError("workstream is invalid; use the ACTIVE Work Packet slug or omit workstream")
     return normalized
 
 
@@ -82,14 +82,27 @@ def _knowledge_query(workstream: str) -> str:
     return " ".join(part for part in re.split(r"[._-]+", workstream) if part)
 
 
+# Default bootstraps should point to a project entrypoint, not an arbitrary
+# matching implementation file or a large injection of derived source text.
+# Repository rules and project.yaml are always read from canonical Git directly.
+_ONBOARDING_PATHS = frozenset({
+    "README.md",
+    "docs/product/PRODUCT-CHARTER.md",
+})
+
+
 def _knowledge_refs(
     projections: ProjectionStore,
     project_id: str,
     workstream: str | None,
+    *,
+    project_display_name: str = "",
 ) -> list[dict[str, object]]:
-    if workstream is None:
-        return []
-    query = _knowledge_query(workstream)
+    unscoped = workstream is None
+    query = (
+        " ".join(project_display_name.split())
+        if unscoped else _knowledge_query(workstream)
+    )
     if not query:
         return []
     retriever = build_keyword_retriever(
@@ -97,10 +110,16 @@ def _knowledge_refs(
         project_id,
         source_classes=frozenset({"engineering"}),
     )
-    hits = retriever.search(project_id, query, limit=MAX_KNOWLEDGE_REFS)
+    # Filtering by canonical entrypoint *after* ranking must inspect more
+    # than four hits, or unrelated but high-scoring runbooks can crowd out
+    # the one useful README or charter.
+    search_limit = MAX_KNOWLEDGE_REFS * 4 if unscoped else MAX_KNOWLEDGE_REFS
+    hits = retriever.search(project_id, query, limit=search_limit)
     refs: list[dict[str, object]] = []
     for hit in hits:
         provenance = dict(hit.provenance)
+        if unscoped and provenance.get("source_path") not in _ONBOARDING_PATHS:
+            continue
         refs.append(
             {
                 "identity": hit.identity,
@@ -114,6 +133,8 @@ def _knowledge_refs(
                 "derived": provenance.get("derived", True),
             }
         )
+        if len(refs) >= MAX_KNOWLEDGE_REFS:
+            break
     return refs
 
 
@@ -296,7 +317,12 @@ def build_task_context(
         workstream=workstream,
         current_head=lifecycle["work"]["current_head"],
     )
-    refs = _knowledge_refs(projections, project.project_id, workstream)
+    refs = _knowledge_refs(
+        projections,
+        project.project_id,
+        workstream,
+        project_display_name=project.display_name,
+    )
     query_hint = _knowledge_query(workstream) if workstream else None
 
     jit: list[dict[str, object]] = [

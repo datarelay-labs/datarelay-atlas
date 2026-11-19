@@ -360,7 +360,7 @@ def _register_tools(
 
     @read_tool(
         name="bootstrap_datarelay_context",
-        description="For DataRelay continuation/resume, resolve one project from an exact repository, project id, or display-name hint and return bounded current task context",
+        description="Resolve one exact DataRelay project to bounded read-only context. Supply exactly one of repository or project_hint. Omit workstream unless the exact ACTIVE Work Packet slug is known; do not pass a branch path, issue number, or free-form task text.",
         structured_output=False,
     )
     async def bootstrap_datarelay_context(
