@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import sys
 from pathlib import Path
 import tarfile
 import tempfile
@@ -65,9 +66,21 @@ class OwnerReleaseTests(unittest.TestCase):
 
     def test_build_refuses_untrusted_root_without_changes(self):
         with tempfile.TemporaryDirectory(prefix="atlas-owner-root-") as tmp:
+            # The CI toolcache Python is 3.12 but not located at the
+            # production-only /usr/bin/python3.12 path. Supply a real local
+            # interpreter so this test reaches its intended root protection.
             with mock.patch.object(release.os, "geteuid", return_value=0), \
-                 mock.patch.object(release.socket, "gethostname", return_value="prod-atlas"):
+                 mock.patch.object(release.socket, "gethostname", return_value="prod-atlas"), \
+                 mock.patch.object(release, "PYTHON", Path(sys.executable)):
                 with self.assertRaisesRegex(release.ReleaseRefused, "BUNDLE_MUST_BE_ROOT_OWNED_PROTECTED"):
+                    release._require_trusted_operator(Path(tmp))
+
+    def test_missing_production_interpreter_remains_fail_closed(self):
+        with tempfile.TemporaryDirectory(prefix="atlas-owner-interpreter-") as tmp:
+            with mock.patch.object(release.os, "geteuid", return_value=0), \
+                 mock.patch.object(release.socket, "gethostname", return_value="prod-atlas"), \
+                 mock.patch.object(release, "PYTHON", Path(tmp) / "missing-python"):
+                with self.assertRaisesRegex(release.ReleaseRefused, "PYTHON_3_12_REQUIRED"):
                     release._require_trusted_operator(Path(tmp))
 
     def test_wrong_host_is_never_permitted(self):
