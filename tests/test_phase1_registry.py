@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from atlas.adoption import parse_adoption_yaml
 from atlas.github_sync import FetchedSource
@@ -40,6 +42,42 @@ class Phase1RegistryTests(unittest.TestCase):
             self.assertEqual(len(listed), 1)
             shown = svc.show_project("datarelay-atlas")
             self.assertEqual(shown["project"]["repository"], "datarelay-labs/datarelay-atlas")
+
+    def test_registry_writer_must_own_data_root_before_atomic_replace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = self._svc(tmp)
+            svc.register_project(
+                project_id="demo",
+                repository="datarelay-labs/demo",
+            )
+            registry_path = Path(tmp) / "registry.json"
+            before = registry_path.read_bytes()
+            with mock.patch(
+                "atlas.data_lock._effective_uid", return_value=os.geteuid() + 1
+            ), self.assertRaisesRegex(
+                ValidationError, "data root writer does not own data root"
+            ):
+                svc.add_source(
+                    "demo",
+                    source_id="readonly",
+                    source_path="README.md",
+                )
+            self.assertEqual(registry_path.read_bytes(), before)
+            self.assertEqual(svc.registry.get("demo").sources, {})
+            self.assertEqual(registry_path.stat().st_uid, os.geteuid())
+
+    def test_registry_normal_owner_preserves_registry_readability(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = self._svc(tmp)
+            svc.register_project(
+                project_id="demo",
+                repository="datarelay-labs/demo",
+            )
+            svc.add_source("demo", source_id="readme", source_path="README.md")
+            path = Path(tmp) / "registry.json"
+            self.assertEqual(path.stat().st_uid, Path(tmp).stat().st_uid)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertIn("readme", svc.registry.get("demo").sources)
 
     def test_invalid_and_duplicate_project_identity(self):
         with tempfile.TemporaryDirectory() as tmp:

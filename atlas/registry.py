@@ -8,7 +8,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from atlas.data_lock import atomic_write_text, data_root_write_lock
+from atlas.data_lock import (
+    atomic_write_text,
+    data_root_write_lock,
+    require_data_root_writer_owner_fd,
+)
 from atlas.provenance import (
     ENGINEERING_SOURCE_CLASS,
     GITHUB_PROVIDER,
@@ -83,7 +87,12 @@ class ProjectRegistry:
             "projects": data.get("projects", {}),
         }
         text = json.dumps(data, indent=2, sort_keys=True) + "\n"
-        with data_root_write_lock(self.data_root):
+        with data_root_write_lock(self.data_root) as root_fd:
+            # Atomic replacement creates a fresh 0600 inode owned by the
+            # *writer*. Root CLI writes into an atlas-owned data root would
+            # therefore lock out the running non-root Atlas service.
+            # Refuse mismatched writers before replacing any registry bytes.
+            require_data_root_writer_owner_fd(root_fd)
             atomic_write_text(self.path, text)
 
     def _validate_ref(self, ref: str) -> None:
