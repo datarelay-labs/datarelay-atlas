@@ -29,11 +29,29 @@ to `bootstrap_datarelay_context`, never both. If a repository is shared by
 two registered Atlas projects, its mapping deliberately fails closed; use the
 exact `project_hint` (for example `datarelay-atlas`) or, for
 `get_task_context`, the exact `project_id`. The optional `workstream`
-is a Work Packet slug, not an Issue number or free-text task description.
-If specified, it must match `^[a-z0-9][a-z0-9-]{0,63}$` (1-64 lowercase
-ASCII letters, digits, and hyphens; starts alphanumeric). Copy the actual
-slug from the ACTIVE Work Packet, or omit it when unknown. Do not
-relax server-side validation to compensate for malformed caller inputs.
+is a Work Packet slug, not an Issue number, a branch name containing `/`,
+or free-text task description. The portable recommended form is
+`^[a-z0-9][a-z0-9-]{0,63}$` (lowercase letters, digits and hyphens).
+The server currently validates a slightly broader form
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` but still rejects spaces and slashes.
+**When the exact ACTIVE Work Packet slug is not known, omit `workstream`
+entirely.** Do not guess from a Git branch. The project-only bootstrap
+still returns an explicitly non-authoritative, bounded project context and
+verified project entrypoint references; fetch further sources JIT.
+Do not relax server-side validation to compensate for malformed caller inputs.
+
+For reproducible, read-only aggregate usage accounting on an authorized host,
+stream the service journal JSON lines into the bundled diagnostic tool:
+
+~~~sh
+journalctl -u datarelay-atlas.service --since '7 days ago' -o json --no-pager |
+  python3 scripts/atlas_mcp_usage_report.py
+~~~
+
+The report counts execution receipts (SUCCESS/BLOCK/ERROR) without disclosing
+arguments, prompts or tokens. Failure-message counts are separate diagnostic
+lines and are **not** added again as calls. Its success percentage combines
+test and actual usage; it is **not** a measure of saved developer time.
 
 ## 2. Public authentication contract, without credentials
 
