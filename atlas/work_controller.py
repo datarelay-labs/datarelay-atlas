@@ -1104,10 +1104,29 @@ def _classify_collaborator_permission(parsed: object) -> str:
     )
 
 
+_AI_WORK_PACKET_TITLE = re.compile(
+    r"^# (?:ACTIVE |PAUSED |BLOCKED |COMPLETE )?\[AI Work\]"
+    r"(?:\s+[—:-]\s+[^\r\n]+)?$"
+)
+
+
 def _leading_packet_metadata_text(body: str) -> str:
-    """Return only the leading KEY=VALUE metadata block (before blank/##)."""
-    lines: list[str] = []
-    for line in (body or "").splitlines():
+    """Return leading metadata, permitting one explicit AI Work title.
+
+    A heading of the exact AI Work form followed by one blank line may
+    precede metadata. Never scan narrative or fenced evidence for fields.
+    Preserve the prefix for field-update helper functions.
+    """
+    source_lines = (body or "").splitlines()
+    start = (
+        2
+        if len(source_lines) >= 3
+        and _AI_WORK_PACKET_TITLE.fullmatch(source_lines[0]) is not None
+        and not source_lines[1].strip()
+        else 0
+    )
+    lines = source_lines[:start]
+    for line in source_lines[start:]:
         if not line.strip() or line.startswith("## "):
             break
         lines.append(line)

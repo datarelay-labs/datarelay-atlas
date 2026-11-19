@@ -348,7 +348,13 @@ class AtlasService:
         if not matches:
             raise ValidationError(unknown)
         if len(matches) != 1:
-            raise ValidationError(ambiguous)
+            # Selection must remain fail-closed when multiple projects share a
+            # repository or display name. IDs are already discoverable from
+            # the authenticated list_projects surface.
+            project_ids = ", ".join(sorted(p.project_id for p in matches)[:8])
+            raise ValidationError(
+                f"{ambiguous}; select one exact project_hint from: {project_ids}"
+            )
         project = matches[0]
         if not project.enabled:
             raise ValidationError(f"project is disabled: {project.project_id}")
