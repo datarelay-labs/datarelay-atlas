@@ -51,7 +51,11 @@ def resolve_task_project(
         if not matches:
             raise ValidationError(f"unknown repository: {repository_value}")
         if len(matches) != 1:
-            raise ValidationError(f"ambiguous repository: {repository_value}")
+            project_ids = ", ".join(sorted(p.project_id for p in matches)[:8])
+            raise ValidationError(
+                f"ambiguous repository: {repository_value}; "
+                f"select one exact project_id from: {project_ids}"
+            )
         project = matches[0]
     if not project.enabled:
         raise ValidationError(f"project is disabled: {project.project_id}")

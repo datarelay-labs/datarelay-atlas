@@ -360,7 +360,7 @@ def _register_tools(
 
     @read_tool(
         name="bootstrap_datarelay_context",
-        description="Resolve one exact DataRelay project to bounded read-only context. Supply exactly one of repository or project_hint. Omit workstream unless the exact ACTIVE Work Packet slug is known; do not pass a branch path, issue number, or free-form task text.",
+        description="Resolve bounded read-only context by one exact repository or project_hint. If a repository is shared, use the exact project_hint suggested by an ambiguous-repository error. Omit workstream unless the ACTIVE Work Packet slug is known; never pass branch paths or free-form text.",
         structured_output=False,
     )
     async def bootstrap_datarelay_context(

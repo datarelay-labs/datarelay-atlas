@@ -261,6 +261,20 @@ class TaskContextTests(unittest.TestCase):
                 project_id="demo", workstream="free-form description"
             )
 
+    def test_duplicate_repository_is_fail_closed_with_bounded_project_choices(self):
+        self.svc.register_project(
+            project_id="demo-personal",
+            repository="datarelay-labs/demo",
+            display_name="Demo Personal",
+        )
+        with self.assertRaisesRegex(ValidationError, "demo, demo-personal"):
+            self.svc.bootstrap_task_context(repository="datarelay-labs/demo")
+        with self.assertRaisesRegex(ValidationError, "demo, demo-personal"):
+            self.svc.task_context(repository="datarelay-labs/demo")
+        expected = self.svc.bootstrap_task_context(project_hint="demo")
+        VALIDATOR.validate(expected)
+        self.assertEqual(expected["project"]["project_id"], "demo")
+
     def test_workstream_binding_requires_current_evidence(self):
         self._write_lifecycle()
         self._import_current_evidence()

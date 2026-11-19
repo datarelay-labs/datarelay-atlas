@@ -22,6 +22,8 @@ from atlas.work_controller import (
     render_cycle_successor_active_body,
     render_rework_work_packet_body,
     sanitize_rework_findings,
+    _parse_leading_packet_metadata,
+    _set_packet_metadata_line,
 )
 
 
@@ -86,6 +88,47 @@ def _render(**overrides):
     kwargs.update(overrides)
     body = kwargs.pop("body")
     return render_rework_work_packet_body(body, **kwargs)
+
+
+class WorkPacketHeaderParsingTests(unittest.TestCase):
+    def test_exact_ai_work_title_then_blank_preserves_canonical_metadata(self):
+        body = "# ACTIVE [AI Work] — Source sync\n\n" + SAMPLE_BODY
+        parsed = _parse_leading_packet_metadata(body)
+        self.assertEqual(parsed["TARGET_REPO"], "datarelay-labs/datarelay-atlas")
+        self.assertEqual(parsed["STATUS"], "ACTIVE")
+        self.assertEqual(parsed["BRANCH"], BRANCH)
+        self.assertEqual(parsed["LAST_VERIFIED_HEAD"], "a" * 40)
+
+        updated = _set_packet_metadata_line(body, "LAST_VERIFIED_HEAD", HEAD_B)
+        self.assertTrue(updated.startswith("# ACTIVE [AI Work] — Source sync\n\n"))
+        self.assertEqual(
+            _parse_leading_packet_metadata(updated)["LAST_VERIFIED_HEAD"], HEAD_B
+        )
+        self.assertEqual(updated.count("LAST_VERIFIED_HEAD="), 1)
+
+    def test_unrecognized_heading_does_not_promote_later_metadata(self):
+        body = "# Project status\n\n" + SAMPLE_BODY
+        self.assertEqual(_parse_leading_packet_metadata(body), {})
+        self.assertEqual(
+            _parse_leading_packet_metadata("Prose intro\n\n" + SAMPLE_BODY), {}
+        )
+
+    def test_title_with_prose_or_extra_blank_never_scans_for_metadata(self):
+        for body in (
+            "# ACTIVE [AI Work] — Source sync\n\nNarrative first\n\n" + SAMPLE_BODY,
+            "# ACTIVE [AI Work] — Source sync\n\n\n" + SAMPLE_BODY,
+        ):
+            with self.subTest(body=body[:55]):
+                self.assertNotIn("TARGET_REPO", _parse_leading_packet_metadata(body))
+
+    def test_heading_only_applies_at_start_and_body_evidence_is_ignored(self):
+        body = SAMPLE_BODY + "\n# ACTIVE [AI Work] — bogus\n\nSTATUS=BLOCKED\n"
+        self.assertEqual(_parse_leading_packet_metadata(body)["STATUS"], "ACTIVE")
+        duplicate = "# ACTIVE [AI Work] — Source sync\n\n" + (
+            SAMPLE_BODY.replace("STATUS=ACTIVE\n", "STATUS=ACTIVE\nSTATUS=BLOCKED\n")
+        )
+        with self.assertRaisesRegex(ValidationError, "duplicate"):
+            _parse_leading_packet_metadata(duplicate)
 
 
 class RenderReworkWorkPacketBodyTests(unittest.TestCase):
