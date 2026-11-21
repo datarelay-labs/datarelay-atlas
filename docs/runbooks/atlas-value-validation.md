@@ -84,3 +84,19 @@ If the proof fails, retain only the low-cost provenance-backed retrieval and
 consider retiring the optional Automation/Decision layers. This experiment does
 not authorize production changes; coordinate any eventual cutover with the
 separately approved Atlas/DRLink hosting plan.
+
+
+## Executable task-value A/B measurement tool
+
+The no-network metadata comparison is described by
+`docs/contracts/ATLAS_TASK_VALUE_EXPERIMENT.md`. The CLI now implements the
+20-paired-task measurement gate without inferring task value from MCP
+success counts. It produces truthful `NO_DATA` when no real evidence is
+supplied; all values are EVALUATION_ONLY and never override canonical Git.
+
+~~~sh
+python3 scripts/atlas_task_value_eval.py
+python3 scripts/atlas_task_value_eval.py --study /path/to/approved-study.json
+~~~
+
+Never submit synthetic unit-test observations as real deployment productivity.
