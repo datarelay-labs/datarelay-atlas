@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "dataset_id": "atlas_public_official_sources_v1",
+  "scope": "PUBLIC_ONLY",
+  "providers": [
+    "baseline",
+    "parallel_mcp"
+  ],
+  "questions": [
+    {
+      "id": "kev-inclusion",
+      "category": "security-advisory",
+      "question": "What criteria does CISA use to include vulnerabilities in the Known Exploited Vulnerabilities catalog?",
+      "official_hosts": [
+        "cisa.gov"
+      ]
+    },
+    {
+      "id": "kev-remediation",
+      "category": "security-advisory",
+      "question": "How are remediation due dates and recommendations represented in the CISA KEV catalog?",
+      "official_hosts": [
+        "cisa.gov"
+      ]
+    },
+    {
+      "id": "cisa-advisory",
+      "category": "security-advisory",
+      "question": "Which observable techniques and defensive mitigations are documented in CISA Cybersecurity Advisories?",
+      "official_hosts": [
+        "cisa.gov"
+      ]
+    },
+    {
+      "id": "nvd-cve-api",
+      "category": "api-changelog",
+      "question": "How does the NVD CVE API support queries filtering by publication dates?",
+      "official_hosts": [
+        "nvd.nist.gov"
+      ]
+    },
+    {
+      "id": "nvd-cvss",
+      "category": "security-advisory",
+      "question": "How are different CVSS metric versions represented in NVD CVE records?",
+      "official_hosts": [
+        "nvd.nist.gov"
+      ]
+    },
+    {
+      "id": "mitre-techniques",
+      "category": "vendor-documentation",
+      "question": "How are MITRE ATT&CK Enterprise techniques and sub-techniques represented?",
+      "official_hosts": [
+        "attack.mitre.org"
+      ]
+    },
+    {
+      "id": "mitre-sources",
+      "category": "vendor-documentation",
+      "question": "How does MITRE ATT&CK describe data sources and data components?",
+      "official_hosts": [
+        "attack.mitre.org"
+      ]
+    },
+    {
+      "id": "owasp-top10",
+      "category": "vendor-documentation",
+      "question": "What mitigations does OWASP recommend for injection vulnerabilities in its Web Top 10?",
+      "official_hosts": [
+        "owasp.org"
+      ]
+    },
+    {
+      "id": "owasp-asvs",
+      "category": "vendor-documentation",
+      "question": "How does OWASP ASVS organize its application security verification requirements?",
+      "official_hosts": [
+        "owasp.org"
+      ]
+    },
+    {
+      "id": "rfc-tls13",
+      "category": "vendor-documentation",
+      "question": "What handshake security properties are required by the TLS 1.3 RFC 8446 specification?",
+      "official_hosts": [
+        "rfc-editor.org"
+      ]
+    },
+    {
+      "id": "rfc-syslog5424",
+      "category": "vendor-documentation",
+      "question": "What syslog header and structured-data fields are mandatory under RFC 5424?",
+      "official_hosts": [
+        "rfc-editor.org"
+      ]
+    },
+    {
+      "id": "python-ssl",
+      "category": "vendor-documentation",
+      "question": "How does the official Python ssl documentation configure a TLS client context?",
+      "official_hosts": [
+        "docs.python.org"
+      ]
+    },
+    {
+      "id": "python-logging",
+      "category": "vendor-documentation",
+      "question": "How are Python logging handlers and hierarchical propagation configured?",
+      "official_hosts": [
+        "docs.python.org"
+      ]
+    },
+    {
+      "id": "github-rate",
+      "category": "api-changelog",
+      "question": "How does GitHub document REST API primary and secondary rate limits?",
+      "official_hosts": [
+        "docs.github.com"
+      ]
+    },
+    {
+      "id": "github-advisory",
+      "category": "api-changelog",
+      "question": "Which GitHub REST API capabilities manage repository security advisories?",
+      "official_hosts": [
+        "docs.github.com"
+      ]
+    },
+    {
+      "id": "github-oidc",
+      "category": "vendor-documentation",
+      "question": "How does GitHub Actions OpenID Connect authentication avoid persistent cloud access secrets?",
+      "official_hosts": [
+        "docs.github.com"
+      ]
+    },
+    {
+      "id": "k8s-networkpolicy",
+      "category": "vendor-documentation",
+      "question": "Which Kubernetes NetworkPolicy conditions determine ingress and egress isolation?",
+      "official_hosts": [
+        "kubernetes.io"
+      ]
+    },
+    {
+      "id": "k8s-deprecation",
+      "category": "api-changelog",
+      "question": "How does Kubernetes publish its API deprecation and removal schedule?",
+      "official_hosts": [
+        "kubernetes.io"
+      ]
+    },
+    {
+      "id": "k8s-rbac",
+      "category": "vendor-documentation",
+      "question": "How do Kubernetes Roles, ClusterRoles and Bindings control API access?",
+      "official_hosts": [
+        "kubernetes.io"
+      ]
+    },
+    {
+      "id": "docker-logs",
+      "category": "vendor-documentation",
+      "question": "How do Docker logging drivers change container log persistence and retrieval?",
+      "official_hosts": [
+        "docs.docker.com"
+      ]
+    },
+    {
+      "id": "docker-compose",
+      "category": "vendor-documentation",
+      "question": "How does Docker Compose specify service dependencies and readiness conditions?",
+      "official_hosts": [
+        "docs.docker.com"
+      ]
+    },
+    {
+      "id": "aws-cloudtrail",
+      "category": "vendor-documentation",
+      "question": "How are CloudTrail management events distinguished from data events?",
+      "official_hosts": [
+        "docs.aws.amazon.com"
+      ]
+    },
+    {
+      "id": "aws-security-groups",
+      "category": "vendor-documentation",
+      "question": "How do AWS Security Groups differ from VPC network access control lists?",
+      "official_hosts": [
+        "docs.aws.amazon.com"
+      ]
+    },
+    {
+      "id": "aws-vpc-flow",
+      "category": "vendor-documentation",
+      "question": "Which metadata and capture limitations are documented for Amazon VPC Flow Logs?",
+      "official_hosts": [
+        "docs.aws.amazon.com"
+      ]
+    },
+    {
+      "id": "azure-nsg",
+      "category": "vendor-documentation",
+      "question": "How are Azure Network Security Group rule priorities and effective security rules evaluated?",
+      "official_hosts": [
+        "learn.microsoft.com"
+      ]
+    },
+    {
+      "id": "azure-vtap",
+      "category": "vendor-documentation",
+      "question": "Which prerequisites and limitations apply to Azure virtual network TAP traffic mirroring?",
+      "official_hosts": [
+        "learn.microsoft.com"
+      ]
+    },
+    {
+      "id": "defender-api",
+      "category": "api-changelog",
+      "question": "How does Microsoft document authorization for Defender XDR incident API retrieval?",
+      "official_hosts": [
+        "learn.microsoft.com"
+      ]
+    },
+    {
+      "id": "gcp-vpc-flow",
+      "category": "vendor-documentation",
+      "question": "How are Google Cloud VPC Flow Logs sampled and exported?",
+      "official_hosts": [
+        "cloud.google.com"
+      ]
+    },
+    {
+      "id": "suricata-rules",
+      "category": "vendor-documentation",
+      "question": "How are Suricata rule identifiers, flow keywords and sticky buffers defined?",
+      "official_hosts": [
+        "docs.suricata.io"
+      ]
+    },
+    {
+      "id": "otel-logs",
+      "category": "vendor-documentation",
+      "question": "How are OpenTelemetry log record fields linked to resource and trace context?",
+      "official_hosts": [
+        "opentelemetry.io"
+      ]
+    }
+  ]
+}
