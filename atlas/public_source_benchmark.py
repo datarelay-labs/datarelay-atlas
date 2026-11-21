@@ -170,9 +170,11 @@ def _validate_observation(raw: Any, questions: dict[str, dict[str, Any]], provid
         raise BenchmarkError("observation status or verdict invalid")
     _utc(raw["accessed_at"], "accessed_at")
     latency = raw["latency_ms"]
-    if isinstance(latency, bool) or not isinstance(latency, int) or not 0 <= latency <= 3600000:
+    if latency is not None and (type(latency) is not int or not 0 <= latency <= 3600000):
         raise BenchmarkError("latency_ms invalid")
-    cost = _finite_cost(raw["cost_usd"])
+    # Some native search tools do not expose per-query latency or billing.
+    # Unknown is not zero; only actual measurements can yield cost/speed claims.
+    cost = None if raw["cost_usd"] is None else _finite_cost(raw["cost_usd"])
     result_url = raw["result_url"]
     if result_url is not None:
         _public_url(result_url)
@@ -249,9 +251,11 @@ def evaluate(manifest: Any, observations: Iterable[Any]) -> dict[str, Any]:
             "independently_reviewed_declarations": sum(rec["reviewed"] for rec in subset),
             "fallback_count": sum(rec["fallback"] for rec in subset),
             "median_latency_ms": int(median(rec["latency"] for rec in subset))
-            if len(subset) == len(questions) else None,
+            if len(subset) == len(questions) and all(rec["latency"] is not None for rec in subset) else None,
             "reported_cost_usd": str(sum((rec["cost"] for rec in subset), Decimal("0")))
-            if len(subset) == len(questions) else None,
+            if len(subset) == len(questions) and all(rec["cost"] is not None for rec in subset) else None,
+            "unknown_latency_count": sum(rec["latency"] is None for rec in subset),
+            "unknown_cost_count": sum(rec["cost"] is None for rec in subset),
             "declared_agreement_rate": round(
                 sum(rec["verdict"] == "AGREES" for rec in subset) / len(questions), 4
             ) if review_complete else None,

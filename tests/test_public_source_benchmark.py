@@ -77,6 +77,36 @@ class PublicSourceBenchmarkTests(unittest.TestCase):
         self.assertEqual(r["providers"]["baseline"]["unverified"], 1)
         self.assertIsNone(r["providers"]["parallel_mcp"]["declared_agreement_rate"])
 
+    def test_rfc_editor_real_canonical_www_hostname_is_exact(self):
+        for identity in ("rfc-tls13", "rfc-syslog5424"):
+            q = next(q for q in self.questions if q["id"] == identity)
+            self.assertEqual(q["official_hosts"], ["www.rfc-editor.org", "rfc-editor.org"])
+        records = self.full()
+        index = next(i for i, q in enumerate(self.questions) if q["id"] == "rfc-tls13")
+        records[index]["result_url"] = "https://www.rfc-editor.org/rfc/rfc8446.html"
+        self.assertEqual(evaluate(self.manifest, records)["providers"]["baseline"]["official_source_hits"], 30)
+
+    def test_cisa_canonical_www_host_explicitly_allowlisted(self):
+        question = next(q for q in self.questions if q["id"] == "kev-inclusion")
+        self.assertEqual(question["official_hosts"], ["www.cisa.gov", "cisa.gov"])
+        records = self.full()
+        records[0]["result_url"] = "https://www.cisa.gov/known-exploited-vulnerabilities"
+        self.assertEqual(evaluate(self.manifest, records)["providers"]["baseline"]["official_source_hits"], 30)
+
+    def test_unmetered_native_baseline_stays_unknown_not_zero(self):
+        records = self.full()
+        for rec in records:
+            if rec["provider"] == "baseline":
+                rec["latency_ms"] = None
+                rec["cost_usd"] = None
+        report = evaluate(self.manifest, records)
+        baseline = report["providers"]["baseline"]
+        self.assertEqual(baseline["unknown_latency_count"], 30)
+        self.assertEqual(baseline["unknown_cost_count"], 30)
+        self.assertIsNone(baseline["median_latency_ms"])
+        self.assertIsNone(baseline["reported_cost_usd"])
+        self.assertEqual(report["benchmark_pass"], "NOT_ESTABLISHED")
+
     def test_nonofficial_url_counted_not_promoted(self):
         records = self.full()
         records[0]["result_url"] = "https://cisa.gov.evil.org/unverified"

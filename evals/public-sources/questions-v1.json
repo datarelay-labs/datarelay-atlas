@@ -12,6 +12,7 @@
       "category": "security-advisory",
       "question": "What criteria does CISA use to include vulnerabilities in the Known Exploited Vulnerabilities catalog?",
       "official_hosts": [
+        "www.cisa.gov",
         "cisa.gov"
       ]
     },
@@ -20,6 +21,7 @@
       "category": "security-advisory",
       "question": "How are remediation due dates and recommendations represented in the CISA KEV catalog?",
       "official_hosts": [
+        "www.cisa.gov",
         "cisa.gov"
       ]
     },
@@ -28,6 +30,7 @@
       "category": "security-advisory",
       "question": "Which observable techniques and defensive mitigations are documented in CISA Cybersecurity Advisories?",
       "official_hosts": [
+        "www.cisa.gov",
         "cisa.gov"
       ]
     },
@@ -84,6 +87,7 @@
       "category": "vendor-documentation",
       "question": "What handshake security properties are required by the TLS 1.3 RFC 8446 specification?",
       "official_hosts": [
+        "www.rfc-editor.org",
         "rfc-editor.org"
       ]
     },
@@ -92,6 +96,7 @@
       "category": "vendor-documentation",
       "question": "What syslog header and structured-data fields are mandatory under RFC 5424?",
       "official_hosts": [
+        "www.rfc-editor.org",
         "rfc-editor.org"
       ]
     },
