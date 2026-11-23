@@ -254,10 +254,49 @@ def _work_state(
             ),
         )
     )
+    # A recent, trusted, OPEN work issue that declares ACTIVE/BLOCKED/PAUSED
+    # but fails canonical reconciliation must not be eclipsed by historical
+    # COMPLETE records. It remains untrusted and cannot supply a current HEAD.
+    unresolved = [
+        item for item in noncanonical
+        if item.get("issue_state") == "OPEN"
+        and item.get("author_trust") == "trusted"
+        and item.get("packet_status") in {"ACTIVE", "BLOCKED", "PAUSED"}
+    ]
+    has_canonical_active = any(
+        item["packet_status"] == "ACTIVE" for item in canonical
+    )
+    if unresolved and canonical and not has_canonical_active:
+        details = [
+            f"GitHub Issue #{item['issue_number']} "
+            f"({','.join(item.get('reasons') or []) or 'UNVERIFIED'})"
+            for item in sorted(
+                unresolved, key=lambda record: int(record["issue_number"])
+            )[:4]
+        ]
+        detail = (
+            "UNVERIFIED_OPEN_WORK: " + "; ".join(details)
+            + "; review canonical GitHub; historical COMPLETE is not current"
+        )[:512]
+        return EvidenceState("UNKNOWN", detail), frozenset(), packets
+
     if not canonical:
         reasons = sorted({reason for item in noncanonical for reason in item.get("reasons", [])})
         suffix = f": {', '.join(reasons)}" if reasons else ""
-        return EvidenceState("STALE", f"no canonical lifecycle fact{suffix}"), frozenset(), packets
+        # Preserve historical STALE semantics for zero canonical facts;
+        # enrich only the safe issue identity so the user knows where to
+        # correct the stale status. Never let it bind a current HEAD.
+        affected = sorted(
+            int(item["issue_number"]) for item in unresolved
+        )[:4]
+        issue_hint = (
+            "; unverified OPEN work at " + ", ".join(
+                f"GitHub Issue #{number}" for number in affected
+            )
+        ) if affected else ""
+        return EvidenceState(
+            "STALE", (f"no canonical lifecycle fact{suffix}{issue_hint}")[:512]
+        ), frozenset(), packets
 
     priority = {"ACTIVE": 0, "BLOCKED": 1, "PAUSED": 2, "COMPLETE": 3}
     canonical.sort(key=lambda value: (priority.get(str(value.get("packet_status")), 9), int(value["issue_number"])))

@@ -340,6 +340,47 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("b" * 40, body)
         self.assertIn("PR #163 OPEN", body)
 
+    def test_overview_and_project_show_unverified_open_work_not_historic_complete(self):
+        snapshot = {
+            "schema_version": 1,
+            "kind": "cursor_github_reconciliation",
+            "observed_at": _fresh_utc(),
+            "repositories": ["datarelay-labs/demo"],
+            "observations": [
+                {
+                    "repository": "datarelay-labs/demo", "issue_number": 300,
+                    "issue_state": "CLOSED", "issue_updated_at": _fresh_utc(),
+                    "author_trust": "trusted", "packet_status": "COMPLETE",
+                    "branch": "feat/done", "head": "a" * 40,
+                    "pr_number": 301, "pr_state": "MERGED",
+                    "pr_head": "a" * 40,
+                    "canonical_fact": True, "reasons": [],
+                },
+                {
+                    "repository": "datarelay-labs/demo", "issue_number": 346,
+                    "issue_state": "OPEN", "issue_updated_at": _fresh_utc(),
+                    "author_trust": "trusted", "packet_status": "ACTIVE",
+                    "branch": "main", "head": "b" * 40,
+                    "pr_number": 349, "pr_state": "CLOSED",
+                    "pr_head": "c" * 40,
+                    "canonical_fact": False, "reasons": ["PR_HEAD_MISMATCH"],
+                },
+            ],
+            "summary": {
+                "observed_count": 2, "canonical_count": 1,
+                "noncanonical_count": 1,
+            },
+        }
+        (self.root / "github-lifecycle.json").write_text(json.dumps(snapshot))
+        for path in ("/", "/projects/demo", "/projects/demo/lifecycle"):
+            with self.subTest(path=path):
+                status, html = self.get(path)
+                self.assertEqual(status["status"], "200 OK")
+                self.assertIn("UNVERIFIED_OPEN_WORK", html)
+                self.assertIn("GitHub Issue #346", html)
+                self.assertIn("PR_HEAD_MISMATCH", html)
+                self.assertNotIn("AI Work #300 COMPLETE", html)
+
     def test_noncanonical_head_mismatch_is_stale_not_observed(self):
         snapshot = {
             "schema_version": 1, "kind": "cursor_github_reconciliation",

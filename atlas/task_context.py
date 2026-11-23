@@ -159,6 +159,15 @@ def _lifecycle_summary(payload: dict[str, object]) -> dict[str, object]:
         for item in canonical
         if priority.get(str(item["packet_status"]), 9) == current_priority
     ]
+    # The core lifecycle reader verified the issue's open state and author
+    # trust before emitting this bounded warning. Do not independently infer
+    # current work from incomplete/untrusted GitHub observations here.
+    must_review_active = (
+        str(work["state"]) == "UNKNOWN"
+        and str(work["detail"]).startswith("UNVERIFIED_OPEN_WORK:")
+    )
+    if must_review_active:
+        selected = []
     current_heads = {str(item["head"]) for item in selected}
     current_head = next(iter(current_heads)) if len(current_heads) == 1 else None
     packets = [
@@ -173,7 +182,9 @@ def _lifecycle_summary(payload: dict[str, object]) -> dict[str, object]:
         }
         for item in selected[:MAX_WORK_PACKETS]
     ]
-    if packets:
+    if must_review_active:
+        work_detail = _bounded_text(work["detail"])
+    elif packets:
         detail_parts = []
         for item in packets:
             pr = (

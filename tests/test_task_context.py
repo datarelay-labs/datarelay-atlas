@@ -338,6 +338,99 @@ class TaskContextTests(unittest.TestCase):
         self.assertEqual(stale["currentness"]["state"], "STALE")
         self.assertEqual(stale["lifecycle"]["work"]["canonical_packets"], [])
 
+    def test_noncanonical_active_packet_is_visible_and_old_complete_not_promoted(self):
+        """Actual Atlas #346 failure shape: an ACTIVE issue with a stale PR."""
+        self._write_lifecycle()
+        path = self.root / "github-lifecycle.json"
+        snapshot = json.loads(path.read_text())
+        complete = snapshot["observations"][0]
+        complete.update({
+            "issue_state": "CLOSED",
+            "packet_status": "COMPLETE",
+            "pr_state": "MERGED",
+        })
+        unverified = {
+            "repository": "datarelay-labs/demo",
+            "issue_number": 346,
+            "issue_state": "OPEN",
+            "issue_updated_at": "2026-11-23T00:00:00Z",
+            "author_trust": "trusted",
+            "packet_status": "ACTIVE",
+            "branch": "main",
+            "head": "a" * 40,
+            "pr_number": 349,
+            "pr_state": "CLOSED",
+            "pr_head": "c" * 40,
+            "canonical_fact": False,
+            "reasons": ["PR_HEAD_MISMATCH"],
+        }
+        snapshot["observations"].append(unverified)
+        snapshot["summary"] = {
+            "observed_count": 2,
+            "canonical_count": 1,
+            "noncanonical_count": 1,
+        }
+        path.write_text(json.dumps(snapshot))
+        context = self.svc.task_context(project_id="demo")
+        VALIDATOR.validate(context)
+        self.assertEqual(context["currentness"]["state"], "UNKNOWN")
+        self.assertIsNone(context["currentness"]["current_head"])
+        work = context["lifecycle"]["work"]
+        self.assertEqual(work["canonical_packets"], [])
+        self.assertIsNone(work["current_head"])
+        self.assertIn("GitHub Issue #346", work["detail"])
+        self.assertIn("PR_HEAD_MISMATCH", work["detail"])
+        self.assertIn("historical COMPLETE", work["detail"])
+        self.assertNotIn("SECRET", json.dumps(context))
+
+    def test_historically_closed_noncanonical_active_does_not_hide_completed_work(self):
+        self._write_lifecycle()
+        path = self.root / "github-lifecycle.json"
+        snapshot = json.loads(path.read_text())
+        complete = snapshot["observations"][0]
+        complete.update({"issue_state": "CLOSED", "packet_status": "COMPLETE", "pr_state": "MERGED"})
+        snapshot["observations"].append({
+            "repository": "datarelay-labs/demo",
+            "issue_number": 328,
+            "issue_state": "CLOSED",
+            "issue_updated_at": "2026-10-02T00:00:00Z",
+            "author_trust": "trusted",
+            "packet_status": "ACTIVE",
+            "branch": "feat/retired",
+            "head": "a" * 40,
+            "pr_number": 329,
+            "pr_state": "MERGED",
+            "pr_head": "c" * 40,
+            "canonical_fact": False,
+            "reasons": ["ISSUE_STATE_STATUS_CONFLICT", "PACKET_PR_STATE_CONFLICT", "PR_HEAD_MISMATCH"],
+        })
+        snapshot["summary"] = {"observed_count": 2, "canonical_count": 1, "noncanonical_count": 1}
+        path.write_text(json.dumps(snapshot))
+        context = self.svc.task_context(project_id="demo")
+        VALIDATOR.validate(context)
+        self.assertEqual(context["currentness"]["state"], "CURRENT")
+        self.assertEqual(context["currentness"]["current_head"], self.head)
+        self.assertNotIn("UNVERIFIED_ACTIVE_WORK", context["lifecycle"]["work"]["detail"])
+
+    def test_valid_canonical_active_wins_over_unverified_active(self):
+        self._write_lifecycle()
+        path = self.root / "github-lifecycle.json"
+        snapshot = json.loads(path.read_text())
+        broken = dict(snapshot["observations"][0])
+        broken.update({
+            "issue_number": 346, "head": "c" * 40,
+            "pr_head": "d" * 40, "canonical_fact": False,
+            "reasons": ["PR_HEAD_MISMATCH"],
+        })
+        snapshot["observations"].append(broken)
+        snapshot["summary"] = {"observed_count": 2, "canonical_count": 1, "noncanonical_count": 1}
+        path.write_text(json.dumps(snapshot))
+        context = self.svc.task_context(project_id="demo")
+        VALIDATOR.validate(context)
+        self.assertEqual(context["currentness"]["state"], "CURRENT")
+        self.assertEqual(context["currentness"]["current_head"], self.head)
+        self.assertEqual(context["lifecycle"]["work"]["canonical_packets"][0]["issue_number"], 269)
+
     def test_current_packet_priority_and_ambiguous_active_heads_fail_safe(self):
         completed_head = "d" * 40
         observations = [
