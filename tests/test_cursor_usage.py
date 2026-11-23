@@ -1015,6 +1015,29 @@ class CursorUsageGitHubSnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "unsafe secret"):
             load_github_reconciliation_snapshot(path)
 
+    def test_protected_branch_noncanonical_reasons_roundtrip_and_are_not_authority(self):
+        for reason in ("BRANCH_HEAD_MISMATCH", "BRANCH_HEAD_UNVERIFIED"):
+            with self.subTest(reason=reason):
+                path = self._snapshot_path()
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                record = payload["observations"][0]
+                record["branch"] = "main"
+                record["issue_state"] = "OPEN"
+                record["packet_status"] = "ACTIVE"
+                record["pr_number"] = None
+                record["pr_state"] = "NONE"
+                record["pr_head"] = None
+                record["canonical_fact"] = False
+                record["reasons"] = [reason]
+                payload["summary"]["canonical_count"] = 0
+                payload["summary"]["noncanonical_count"] = 1
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                facts, observations, metadata = load_github_reconciliation_snapshot(path)
+                self.assertEqual(facts, [])
+                self.assertFalse(observations[0]["canonical_fact"])
+                self.assertEqual(observations[0]["reasons"], [reason])
+                self.assertEqual(metadata["canonical_count"], 0)
+
     def test_canonical_snapshot_recomputes_pr_and_head_consistency(self):
         path = self._snapshot_path()
         payload = json.loads(path.read_text(encoding="utf-8"))
