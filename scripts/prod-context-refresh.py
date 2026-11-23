@@ -494,6 +494,62 @@ def _cleanup_remote(host: str, remote_snapshot: str) -> None:
     )
 
 
+# The installed operator source can be intentionally pinned to an old commit.
+# Successful systemd refresh/health is not evidence that its GitHub Work Packet
+# parser can understand the current canonical title+metadata envelope. Validate
+# the actual interpreter and source ROOT before fetching credentials or writing.
+_OPERATOR_PARSER_PROBE = (
+    "from atlas.work_controller import _parse_leading_packet_metadata as parse; "
+    "body = '# ACTIVE [AI Work] — Source sync\\n\\n'"
+    " + 'PACKET_VERSION=3\\nTARGET_REPO=datarelay-labs/datarelay-atlas\\n'"
+    " + 'WORKSTREAM=atlas-mcp-knowledge-write\\nSTATUS=ACTIVE\\n'"
+    " + 'BRANCH=main\\nLAST_VERIFIED_HEAD=' + ('a' * 40) + '\\n'; "
+    "meta = parse(body); "
+    "assert meta.get('PACKET_VERSION') == '3'; "
+    "assert meta.get('TARGET_REPO') == 'datarelay-labs/datarelay-atlas'; "
+    "assert meta.get('WORKSTREAM') == 'atlas-mcp-knowledge-write'; "
+    "assert meta.get('STATUS') == 'ACTIVE'; "
+    "assert meta.get('BRANCH') == 'main'; "
+    "assert meta.get('LAST_VERIFIED_HEAD') == 'a' * 40"
+)
+
+
+def verify_operator_parser_contract(repo_root: Path, atlas_python: Path) -> None:
+    """Fail closed if the deployed *operator runtime* cannot parse active work.
+
+    A missing required contract must never be reported as PROD_REFRESH=PASS;
+    the previous projection remains intact and will age to STALE normally.
+    This probe makes no HTTP, GitHub, production or file-write request.
+    """
+    if not repo_root.is_dir() or not atlas_python.is_file():
+        raise RefreshError("operator runtime/source is unavailable")
+    env = dict(os.environ)
+    # This local parser conformance check never requires credentials.
+    env.pop("GITHUB_TOKEN", None)
+    env.pop("GH_TOKEN", None)
+    env["PYTHONPATH"] = str(repo_root)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    try:
+        completed = subprocess.run(
+            [str(atlas_python), "-c", _OPERATOR_PARSER_PROBE],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RefreshError(
+            "operator parser preflight could not complete within its bounds"
+        ) from exc
+    if completed.returncode:
+        raise RefreshError(
+            "operator runtime lacks the required titled AI Work metadata "
+            "parser; requalify the exact pinned operator release"
+        )
+
+
 def refresh(*, repo_root: Path, atlas_python: Path, host: str) -> int:
     if not repo_root.is_dir():
         raise RefreshError(f"operator repository is unavailable: {repo_root}")
@@ -501,6 +557,7 @@ def refresh(*, repo_root: Path, atlas_python: Path, host: str) -> int:
         raise RefreshError(
             f"operator Atlas interpreter is unavailable: {atlas_python}"
         )
+    verify_operator_parser_contract(repo_root, atlas_python)
     repo_text = str(repo_root)
     if repo_text not in sys.path:
         sys.path.insert(0, repo_text)
@@ -594,6 +651,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("ATLAS_PROD_HOST", DEFAULT_PROD_HOST),
     )
     parser.add_argument(
+        "--check-operator",
+        action="store_true",
+        help="Qualify the installed operator parser (read-only, no SSH/credentials/writes)",
+    )
+    parser.add_argument(
         "--print-plan",
         action="store_true",
         help=(
@@ -607,6 +669,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     try:
+        if args.check_operator:
+            verify_operator_parser_contract(
+                args.repo_root.resolve(), args.atlas_python.resolve()
+            )
+            print("OPERATOR_PARSER_CONTRACT=PASS")
+            return 0
         if args.print_plan:
             targets = fetch_targets(args.prod_host)
             print(json.dumps(targets, sort_keys=True))

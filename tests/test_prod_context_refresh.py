@@ -64,6 +64,71 @@ class ProdContextRefreshTests(TestCase):
     def setUpClass(cls):
         cls.module = load_module()
 
+    def test_operator_parser_qualification_passes_with_current_code(self):
+        # Execute the real interpreter against the exact repository source.
+        # This probe never reaches GitHub/SSH or writes production state.
+        self.module.verify_operator_parser_contract(ROOT, Path(sys.executable))
+
+    def test_stale_operator_parser_is_rejected_before_refresh(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+        with TemporaryDirectory() as temp:
+            stale = Path(temp)
+            (stale / "atlas").mkdir()
+            (stale / "atlas" / "__init__.py").write_text("")
+            (stale / "atlas" / "work_controller.py").write_text(
+                "def _parse_leading_packet_metadata(body):\\n    return {}\\n"
+            )
+            with self.assertRaisesRegex(
+                self.module.RefreshError, "lacks the required titled AI Work"
+            ):
+                self.module.verify_operator_parser_contract(
+                    stale, Path(sys.executable)
+                )
+            with patch.object(
+                self.module, "fetch_targets", side_effect=AssertionError(
+                    "must not query prod when parser is obsolete"
+                )
+            ), patch.object(
+                self.module, "_github_token", side_effect=AssertionError(
+                    "must not read credentials when parser is obsolete"
+                )
+            ), self.assertRaisesRegex(
+                self.module.RefreshError, "titled AI Work"
+            ):
+                self.module.refresh(
+                    repo_root=stale,
+                    atlas_python=Path(sys.executable),
+                    host="prod-atlas",
+                )
+
+    def test_operator_preflight_timeout_fails_closed_and_sanitized(self):
+        from unittest.mock import patch
+        with patch.object(
+            self.module.subprocess, "run",
+            side_effect=subprocess.TimeoutExpired(["python", "-c", "probe"], 20),
+        ), self.assertRaisesRegex(
+            self.module.RefreshError, "could not complete within its bounds"
+        ):
+            self.module.verify_operator_parser_contract(ROOT, Path(sys.executable))
+
+    def test_readonly_check_operator_cli_passes_without_prod_access(self):
+        result = subprocess.run(
+            [
+                sys.executable, str(SCRIPT),
+                "--repo-root", str(ROOT),
+                "--atlas-python", sys.executable,
+                "--check-operator",
+                "--prod-host", "not-a-real-host",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "OPERATOR_PARSER_CONTRACT=PASS")
+        self.assertNotIn("GITHUB_TOKEN", result.stdout)
+
     def test_normalize_targets_sorts_projects_sources_and_repositories(self):
         targets = self.module.normalize_targets(target_fixture())
         self.assertEqual(
