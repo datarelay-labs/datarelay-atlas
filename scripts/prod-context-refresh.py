@@ -505,12 +505,13 @@ _OPERATOR_PARSER_PROBE = (
     " + 'WORKSTREAM=atlas-mcp-knowledge-write\\nSTATUS=ACTIVE\\n'"
     " + 'BRANCH=main\\nLAST_VERIFIED_HEAD=' + ('a' * 40) + '\\n'; "
     "meta = parse(body); "
-    "assert meta.get('PACKET_VERSION') == '3'; "
-    "assert meta.get('TARGET_REPO') == 'datarelay-labs/datarelay-atlas'; "
-    "assert meta.get('WORKSTREAM') == 'atlas-mcp-knowledge-write'; "
-    "assert meta.get('STATUS') == 'ACTIVE'; "
-    "assert meta.get('BRANCH') == 'main'; "
-    "assert meta.get('LAST_VERIFIED_HEAD') == 'a' * 40"
+    "expected = {'PACKET_VERSION': '3', "
+    "'TARGET_REPO': 'datarelay-labs/datarelay-atlas', "
+    "'WORKSTREAM': 'atlas-mcp-knowledge-write', "
+    "'STATUS': 'ACTIVE', 'BRANCH': 'main', "
+    "'LAST_VERIFIED_HEAD': 'a' * 40}; "
+    "import sys; "
+    "sys.exit(0 if all(meta.get(k) == v for k,v in expected.items()) else 2)"
 )
 
 

@@ -85,6 +85,22 @@ class ProdContextRefreshTests(TestCase):
                 self.module.verify_operator_parser_contract(
                     stale, Path(sys.executable)
                 )
+            for optimized in ("1", "2"):
+                with self.subTest(optimized=optimized), patch.dict(
+                    "os.environ", {"PYTHONOPTIMIZE": optimized}
+                ), self.assertRaisesRegex(
+                    self.module.RefreshError, "lacks the required titled AI Work"
+                ):
+                    self.module.verify_operator_parser_contract(
+                        stale, Path(sys.executable)
+                    )
+            with patch.dict(
+                "os.environ", {"PYTHONOPTIMIZE": "2"}
+            ):
+                self.module.verify_operator_parser_contract(
+                    ROOT, Path(sys.executable)
+                )
+
             with patch.object(
                 self.module, "fetch_targets", side_effect=AssertionError(
                     "must not query prod when parser is obsolete"
