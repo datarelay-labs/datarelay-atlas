@@ -3414,6 +3414,35 @@ class GitHubWorkPacketAdapter:
                 }
             )
 
+        # A protected-branch release packet must not inherit an unrelated
+        # historical PR simply because its source branch is also "main".
+        # Resolve the actual GitHub ref once per branch (read-only), then
+        # retain an explicit noncanonical reason if currentness is unverified.
+        protected_ref_cache: dict[str, str | None] = {}
+
+        def protected_branch_head(branch_name: str) -> str | None:
+            if branch_name not in {"main", "master"}:
+                return None
+            if branch_name not in protected_ref_cache:
+                candidate = None
+                try:
+                    response = self._run(
+                        ["gh", "api", f"repos/{repo}/git/ref/heads/{branch_name}"]
+                    )
+                except ValidationError:
+                    response = None
+                if response is not None and response.returncode == 0:
+                    try:
+                        document = json.loads(response.stdout or "")
+                        obj = document.get("object") if isinstance(document, dict) else None
+                        sha = obj.get("sha") if isinstance(obj, dict) else None
+                        if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha):
+                            candidate = sha
+                    except (ValueError, TypeError):
+                        pass
+                protected_ref_cache[branch_name] = candidate
+            return protected_ref_cache[branch_name]
+
         observations: list[dict[str, Any]] = []
         for issue in self._list_ai_work_issues(repo, state="all"):
             try:
@@ -3518,6 +3547,18 @@ class GitHubWorkPacketAdapter:
             if issue_state == "closed" and raw_status != "COMPLETE":
                 reasons.append("ISSUE_STATE_STATUS_CONFLICT")
 
+            # LAST_VERIFIED_HEAD may be an honestly verified *old* release.
+            # Never bind it as the current ACTIVE/PAUSED/BLOCKED main HEAD
+            # without a fresh authoritative GitHub ref comparison.
+            if branch in {"main", "master"} and raw_status in {
+                "ACTIVE", "PAUSED", "BLOCKED"
+            }:
+                tip = protected_branch_head(branch)
+                if tip is None:
+                    reasons.append("BRANCH_HEAD_UNVERIFIED")
+                elif head and tip != head:
+                    reasons.append("BRANCH_HEAD_MISMATCH")
+
             pr_number: int | None = None
             pr_state = "NONE"
             pr_head: str | None = None
@@ -3530,10 +3571,10 @@ class GitHubWorkPacketAdapter:
                 elif len(exact) > 1:
                     pr_state = "AMBIGUOUS"
                     reasons.append("PR_AMBIGUOUS")
-                elif len(matches) == 1:
+                elif branch not in {"main", "master"} and len(matches) == 1:
                     selected = matches[0]
                     reasons.append("PR_HEAD_MISMATCH")
-                elif len(matches) > 1:
+                elif branch not in {"main", "master"} and len(matches) > 1:
                     pr_state = "AMBIGUOUS"
                     reasons.extend(["PR_AMBIGUOUS", "PR_HEAD_MISMATCH"])
                 if selected is not None:

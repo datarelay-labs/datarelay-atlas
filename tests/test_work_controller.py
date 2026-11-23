@@ -1140,6 +1140,83 @@ class GitHubPacketObservationTests(unittest.TestCase):
         self.assertEqual(row["pr_state"], "NONE")
         self.assertIsNone(row["pr_head"])
 
+    def _protected_branch_fixture(
+        self, *, current_head: str | None, packet_head: str = HEAD_A,
+        pr_head: str = HEAD_B, branch_lookup_denied: bool = False,
+    ):
+        """Simulate a trusted release packet on main, plus an unrelated old PR."""
+        adapter = self._adapter(
+            issue_state="open", packet_status="ACTIVE",
+            packet_head=packet_head, pr_head=pr_head,
+        )
+        repository = "datarelay-labs/datarelay-atlas"
+        issues = adapter._list_ai_work_issues(repository, state="all")
+        pulls = adapter._list_pull_requests(repository)
+        for issue in issues:
+            issue["body"] = issue["body"].replace(
+                "BRANCH=feature/usage-dogfood", "BRANCH=main"
+            )
+        for pull in pulls:
+            pull["head"]["ref"] = "main"
+        adapter._list_ai_work_issues = lambda *args, **kwargs: issues
+        adapter._list_pull_requests = lambda *args, **kwargs: pulls
+        original = adapter._run
+        probes = []
+
+        def read(argv):
+            if argv[:3] == ["gh", "api", f"repos/{repository}/git/ref/heads/main"]:
+                probes.append(tuple(argv))
+                if branch_lookup_denied:
+                    raise ValidationError("read-only GitHub API unavailable")
+                if current_head is None:
+                    return subprocess.CompletedProcess(argv, 1, "", "unavailable")
+                return subprocess.CompletedProcess(
+                    argv, 0, json.dumps({"object": {"sha": current_head}}), ""
+                )
+            return original(argv)
+        adapter._run = read
+        return adapter, probes
+
+    def test_protected_main_ignores_unrelated_historical_pr(self):
+        adapter, probes = self._protected_branch_fixture(current_head=HEAD_A)
+        record = adapter.read_packet_observations("datarelay-labs/datarelay-atlas")[0]
+        self.assertTrue(record["canonical_fact"])
+        self.assertEqual(record["packet_status"], "ACTIVE")
+        self.assertIsNone(record["pr_number"])
+        self.assertEqual(record["pr_state"], "NONE")
+        self.assertNotIn("PR_HEAD_MISMATCH", record["reasons"])
+        self.assertEqual(len(probes), 1)
+
+    def test_protected_main_old_verified_head_is_not_current(self):
+        adapter, _ = self._protected_branch_fixture(current_head=HEAD_B)
+        record = adapter.read_packet_observations("datarelay-labs/datarelay-atlas")[0]
+        self.assertFalse(record["canonical_fact"])
+        self.assertEqual(record["head"], HEAD_A)
+        self.assertIn("BRANCH_HEAD_MISMATCH", record["reasons"])
+        self.assertNotIn("PR_HEAD_MISMATCH", record["reasons"])
+        self.assertIsNone(record["pr_head"])
+
+    def test_protected_main_unknown_branch_head_fails_closed(self):
+        for unavailable in (None, "denied"):
+            with self.subTest(unavailable=unavailable):
+                adapter, _ = self._protected_branch_fixture(
+                    current_head=None, branch_lookup_denied=unavailable == "denied"
+                )
+                record = adapter.read_packet_observations(
+                    "datarelay-labs/datarelay-atlas"
+                )[0]
+                self.assertFalse(record["canonical_fact"])
+                self.assertIn("BRANCH_HEAD_UNVERIFIED", record["reasons"])
+                self.assertIsNone(record["pr_number"])
+
+    def test_feature_branch_head_mismatch_keeps_strict_pr_validation(self):
+        record = self._adapter(
+            issue_state="open", packet_status="ACTIVE",
+            packet_head=HEAD_A, pr_head=HEAD_B,
+        ).read_packet_observations("datarelay-labs/datarelay-atlas")[0]
+        self.assertFalse(record["canonical_fact"])
+        self.assertIn("PR_HEAD_MISMATCH", record["reasons"])
+
     def test_paginated_api_falls_back_when_gh_does_not_support_slurp(self):
         calls: list[list[str]] = []
 
