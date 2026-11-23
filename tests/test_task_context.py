@@ -684,6 +684,48 @@ verified memory task context bootstrap BODY-MARKER""",
         self.assertEqual(result["currentness"]["state"], "STALE")
         self.assertIn("cache expired", result["lifecycle"]["work"]["detail"])
 
+    def test_protected_main_stale_packet_publishes_and_warns_without_false_head(self):
+        self._write_lifecycle()
+        saved = self.root / "github-lifecycle.json"
+        incoming = self.root / "incoming-protected-main.json"
+        payload = json.loads(saved.read_text())
+        active = payload["observations"][0]
+        active.update({
+            "branch": "main",
+            "head": "a" * 40,
+            "pr_number": None,
+            "pr_state": "NONE",
+            "pr_head": None,
+            "canonical_fact": False,
+            "reasons": ["BRANCH_HEAD_MISMATCH"],
+        })
+        historical = dict(active)
+        historical.update({
+            "issue_number": 268,
+            "issue_state": "CLOSED",
+            "packet_status": "COMPLETE",
+            "branch": "feat/old-work",
+            "canonical_fact": True,
+            "reasons": [],
+        })
+        payload["observations"] = [historical, active]
+        payload["summary"] = {
+            "observed_count": 2, "canonical_count": 1, "noncanonical_count": 1
+        }
+        incoming.write_text(json.dumps(payload))
+        saved.unlink()
+        published = self.svc.publish_github_lifecycle_snapshot(incoming)
+        self.assertEqual(published["state"], "PUBLISHED")
+        result = self.svc.task_context(project_id="demo")
+        VALIDATOR.validate(result)
+        self.assertEqual(result["currentness"]["state"], "UNKNOWN")
+        self.assertIsNone(result["currentness"]["current_head"])
+        details = result["lifecycle"]["work"]["detail"]
+        self.assertIn("GitHub Issue #269", details)
+        self.assertIn("BRANCH_HEAD_MISMATCH", details)
+        self.assertIn("historical COMPLETE", details)
+        self.assertEqual(result["lifecycle"]["work"]["canonical_packets"], [])
+
     def test_publish_github_snapshot_is_validated_atomic_and_cli_exposed(self):
         now = datetime.now(timezone.utc).replace(microsecond=0)
         snapshot = {
