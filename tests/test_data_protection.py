@@ -61,6 +61,51 @@ def _sample_root(root: Path) -> None:
 
 
 class DataProtectionTests(unittest.TestCase):
+    def test_registered_readme_projection_allows_secret_safe_backup_and_restore(self):
+        """Real Atlas README sync must not make an otherwise safe prod backup fail.
+
+        Keep credential detection fully enabled: any actual secret in this
+        public document must make this test fail until the source is repaired.
+        """
+        from atlas.secrets import contains_unsafe_secret
+
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertFalse(contains_unsafe_secret(readme))
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            service = AtlasService(base / "data")
+            service.register_project(
+                project_id="datarelay-atlas",
+                repository="datarelay-labs/datarelay-atlas",
+                display_name="DataRelay Atlas",
+            )
+            service.add_source(
+                "datarelay-atlas",
+                source_id="readme",
+                source_path="README.md",
+                title="README",
+            )
+            service.sync_project(
+                "datarelay-atlas",
+                fetch=lambda source, token: FetchedSource(
+                    content=readme, source_revision="readme-fixture-revision",
+                ),
+            )
+            original = (base / "data" / "registry.json").read_bytes()
+            saved = backup_data_root(base / "data", base / "snapshot")
+            self.assertEqual(saved["status"], "ok")
+            restored = restore_test(base / "snapshot", base / "proof")
+            self.assertEqual(restored["status"], "ok")
+            self.assertEqual(
+                (base / "data" / "registry.json").read_bytes(), original
+            )
+            projection = (
+                base / "proof" / "projections" / "datarelay-atlas" / "readme.md"
+            ).read_text(encoding="utf-8")
+            self.assertIn(readme, projection)
+            self.assertIn("atlas-derived: true", projection)
+            self.assertFalse(contains_unsafe_secret(projection))
+
     def test_backup_and_restore_round_trip_representative_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
