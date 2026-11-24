@@ -6,6 +6,16 @@ The organization-level pointer is Engineering System
 Universal Engineering System rules, managed adoption templates, other product
 worktrees, the production service and the working OAuth connection are unchanged.
 
+> **Duplicate-repository scope:** A single GitHub repository can back separate Atlas
+> projects (for example, engineering and personal knowledge). If
+> `bootstrap_datarelay_context(repository="...")` reports an ambiguous
+> repository, do not choose a project arbitrarily or weaken Atlas scope checks.
+> Use authenticated `list_projects` and then
+> `bootstrap_datarelay_context(project_hint="<exact-project_id>")`.
+> If the project ID is already known, use `get_task_context(project_id="...")`
+> directly. Workstream is optional unless its exact ACTIVE Work Packet slug is
+> already known; it is a retrieval hint, not an authorization binding.
+>
 ## Scope and distribution
 
 This directory versions the existing private `datarelay-atlas` package. Version

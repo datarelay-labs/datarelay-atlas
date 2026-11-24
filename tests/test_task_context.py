@@ -1001,10 +1001,18 @@ verified memory task context bootstrap BODY-MARKER""",
                 workstream=workstream,
             ),
         )
-        names = {item["name"] for item in tools.list_tools(default_read_scopes())}
+        descriptors = tools.list_tools(default_read_scopes())
+        names = {item["name"] for item in descriptors}
         self.assertIn("list_projects", names)
         self.assertIn("bootstrap_datarelay_context", names)
         self.assertIn("get_task_context", names)
+        hint = next(
+            item["description"] for item in descriptors
+            if item["name"] == "bootstrap_datarelay_context"
+        )
+        self.assertIn("multiple project_ids", hint)
+        self.assertIn("list_projects", hint)
+        self.assertIn("project_id as project_hint", hint)
 
         listed = tools.call("list_projects", {}, scopes=default_read_scopes())
         self.assertTrue(listed.ok)

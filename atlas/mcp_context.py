@@ -180,7 +180,7 @@ class AtlasContextTools:
             tools.append(
                 {
                     "name": "bootstrap_datarelay_context",
-                    "description": "Select one exact repository or project_hint for bounded context. Omit workstream unless the exact ACTIVE Work Packet slug is known (no branch path or free-form text).",
+                    "description": "Select one bounded project context. If a repository is registered under multiple project_ids, do not guess: call list_projects, then pass the exact project_id as project_hint (not repository). Omit workstream unless the exact ACTIVE Work Packet slug is known (no branch path or free-form text).",
                 }
             )
         if self._task_context_factory is not None and READ_SCOPE in scopes:
