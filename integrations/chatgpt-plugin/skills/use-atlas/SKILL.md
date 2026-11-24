@@ -19,7 +19,7 @@ Use the actual available tool schema; never invent tool names or project IDs.
 
 - Known verified project ID: `get_task_context(project_id=...)`. Supply exactly one of `project_id` or `repository`, not both. For example, the Atlas product ID is `datarelay-atlas`.
 - Unknown internal ID on a DataRelay resume: `bootstrap_datarelay_context` with the exact repository or unambiguous project hint. Use the returned verified ID thereafter; do not call both bootstrap and task-context for the same gap.
-- Repository or hint ambiguous: never pick the first project or retarget the work. Resolve with an already verified exact ID or explicit project identity. If unresolved, skip optional enrichment and continue canonical work; ask only when the user's requested Atlas answer itself needs disambiguation.
+- Repository or hint ambiguous: never pick the first project or retarget the work. One GitHub repository may be registered to multiple Atlas projects (e.g. the Atlas product and its separate personal-knowledge project). Use an already verified exact project ID or call authenticated `list_projects` **only when necessary** to identify it, then use `bootstrap_datarelay_context(project_hint="<exact-project_id>")` or `get_task_context(project_id="<exact-project_id>")`. Never weaken the fail-closed repository resolver or infer authority. If unresolved, skip optional enrichment and continue canonical work; ask only when the user's requested Atlas answer itself needs disambiguation.
 - Additional depth: follow only a task-relevant returned JIT reference, such as project intelligence or a specific source/provenance record. Cross-project reads need the explicit requested/dependency scope, not an organization-wide sweep.
 
 ## Consume evidence without promoting authority
